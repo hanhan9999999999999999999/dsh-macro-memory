@@ -1,0 +1,13 @@
+# 统一换行：仓库里一律 LF（源码里有大量按字节比对的判据，CRLF 会让它们假红）
+* text=auto eol=lf
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+
+# 这些不需要参与 diff
+package-lock.json -diff
+pnpm-lock.yaml -diff
