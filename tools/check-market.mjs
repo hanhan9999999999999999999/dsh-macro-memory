@@ -165,7 +165,98 @@ check(
 check(existsSync(join(root, 'README.md')), '仓库根的 README.md 存在（详情页读它）', 'README.md')
 check(existsSync(join(root, 'LICENSE')), '仓库根的 LICENSE 存在（MIT 要随包）', 'LICENSE')
 
+// ── 9. 国内镜像索引：同一份内容，只把 git 地址换成反代 ───────────────────────
+// 事实依据（2026-11-19 实测）：本机 raw.githubusercontent.com / cdn.jsdelivr.net /
+// cdn.statically.io 全部连不上，gh-proxy.com 可用（索引 1.9s、icon 3.4s、直连 clone 300s 超时
+// 而 gh-proxy clone 29s 成功）。所以主索引保持 GitHub 官方地址不变，另出一份镜像索引：
+// 逐字段相同、只把 source.url / repository.url / homepage 换成反代前缀。
+// 这两份必须一起改（版本、commit 任何一边漂了，有人就会装到旧代码），所以在这里对着断言。
+const CN_FILE = join(root, 'plugin-market', 'index.cn.json')
+const CN_URL = 'https://gh-proxy.com/https:/raw.githubusercontent.com/hanhan9999999999999999999/dsh-macro-memory/main/plugin-market/index.cn.json'
+// 反代前缀写成规范形式（宿主 gitUrl 要求 new URL(v).href === v，`https://h/https://x` 会被拒）
+const PROXY_PREFIX = 'https://gh-proxy.com/https:/'
+const proxied = (url) => `${PROXY_PREFIX}${url.replace(/^https:\/\//u, '')}`
+
+check(existsSync(CN_FILE), '国内镜像索引存在', 'plugin-market/index.cn.json')
+if (existsSync(CN_FILE)) {
+  let cnRaw
+  try {
+    cnRaw = JSON.parse(readFileSync(CN_FILE, 'utf8'))
+    pass('镜像索引是合法 JSON')
+  } catch (error) {
+    fail('镜像索引是合法 JSON', error.message)
+  }
+  if (cnRaw !== undefined) {
+    let cnIndex
+    try {
+      cnIndex = indexMod.parseMarketIndex(cnRaw, CN_URL)
+      pass('宿主校验器也接受镜像索引', 'parseMarketIndex 无异常')
+    } catch (error) {
+      fail('宿主校验器也接受镜像索引', `${error.path ?? ''} ${error.reason ?? error.message}`.trim())
+    }
+    if (cnIndex !== undefined) {
+      const cnEntry = cnIndex.plugins.find((p) => p.name === pkg.name)
+      check(cnEntry !== undefined, '镜像索引里也有本插件', pkg.name)
+      if (cnEntry !== undefined) {
+        const cnVersions = cnEntry.versions.map((v) => v.version).join(',')
+        check(cnVersions === versions.join(','), '镜像与主索引的版本序列一致', cnVersions)
+        check(
+          cnEntry.versions[0].source.commit === source.commit,
+          '镜像与主索引钉的是同一个 commit（钉不同就会装到不同代码）',
+          cnEntry.versions[0].source.commit.slice(0, 12),
+        )
+        check(
+          cnEntry.versions[0].source.url === proxied(source.url),
+          '镜像的安装源是主索引地址加反代前缀',
+          cnEntry.versions[0].source.url,
+        )
+        check(
+          new URL(cnEntry.versions[0].source.url).href === cnEntry.versions[0].source.url &&
+            /^(?:\/[^/]+){2,}$/u.test(new URL(cnEntry.versions[0].source.url).pathname),
+          '镜像地址过得了宿主 gitUrl 的两关（规范形式 + pathname 至少两段，双斜杠会留空段）',
+        )
+        // 阴性对照：把镜像地址写成双斜杠，宿主必须拒——证明上面那条不是白写的
+        const doubleSlash = JSON.parse(JSON.stringify(cnRaw))
+        doubleSlash.plugins[0].versions[0].source.url = doubleSlash.plugins[0].versions[0].source.url.replace(
+          'gh-proxy.com/https:/',
+          'gh-proxy.com/https://',
+        )
+        let rejected = false
+        try {
+          indexMod.parseMarketIndex(doubleSlash, CN_URL)
+        } catch {
+          rejected = true
+        }
+        check(rejected, '阴性对照：双斜杠写法的镜像地址会被宿主拒（空段 ⇒ pathname 规则不过）')
+
+        check(cnEntry.homepage === proxied(entry.homepage), '镜像的 homepage 同源反代')
+        check(cnEntry.repository?.url === proxied(entry.repository?.url), '镜像的 repository 同源反代')
+        check(
+          typeof cnEntry.title?.zh === 'string' && cnEntry.title.zh.includes('国内镜像'),
+          '镜像的标题标了「国内镜像」（别让人以为装了两个插件）',
+          cnEntry.title?.zh,
+        )
+        check(
+          cnRaw.plugins[0].icon === raw.plugins[0].icon,
+          '镜像沿用同一个相对 icon（相对各自索引 URL 解析）',
+          String(cnRaw.plugins[0].icon),
+        )
+        check(
+          JSON.stringify(cnEntry.metadata) === JSON.stringify(entry.metadata),
+          '镜像的 keywords / labels / category 与主索引逐字节相同',
+        )
+      }
+    }
+  }
+}
+check(
+  git('ls-files', '--error-unmatch', 'plugin-market/index.cn.json').status === 0,
+  '镜像索引已被 git 跟踪',
+  'plugin-market/index.cn.json',
+)
+
 console.log(`\n索引：${INDEX_FILE}`)
 console.log(`  插件 ${entry.name}@${versions[0]} · commit ${source.commit.slice(0, 12)}…`)
+console.log(`  镜像：plugin-market/index.cn.json（${PROXY_PREFIX} 反代，同一 commit）`)
 console.log(failed === 0 ? '\nALL PASS' : `\n${failed} FAILED`)
 process.exit(failed === 0 ? 0 : 1)

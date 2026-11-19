@@ -3978,7 +3978,7 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 | `versions` 非空、不重复、按 SemVer **降序** | 校验器会替你排序，但重复直接拒 |
 | `category` / `labels` / `sortKey` 的 id **必须先在索引里声明** | 直接写 `"category": "memory"` 而 `metadata.categories` 里没有 → `references undeclared id "memory"` |
 
-`tools/check-market.mjs` 的判据（32 条，`check-all` 里的第 11 支）：
+`tools/check-market.mjs` 的判据（48 条，`check-all` 里的第 11 支）：
 
 1. 真调 `parseMarketIndex`（不是自己手写一套规则），索引 URL 用一个假的 `raw.githubusercontent.com/OWNER/REPO/...` 让它解析相对 icon；
 2. 版本号 = `package.json` 版本；宿主算出来的安装命令是 `git+https://…git#<commit>`；
@@ -4000,7 +4000,7 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 
 ### 9.86.6 怎么验的
 
-- `node tools/check-market.mjs` → **32 条 ALL PASS**（真校验器 + 真 git）。
+- `node tools/check-market.mjs` → **48 条 ALL PASS**（真校验器 + 真 git；含镜像索引 15 条与一条阴性对照）。
 - `node tools/doctor.mjs` → 文档两段（内部日志 / 门面）分别过；`LICENSE` 是 MIT 原文；第三方声明三项（`Phant0Meow` / 上游地址 / `MIT`）都在；门面引用的 3 张图都在。
 - `node tools/check-all.mjs` → 13 支（新增 `tools/check-market.mjs`）。
 
@@ -4009,3 +4009,26 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 - **没有推送**：本机没有 `gh`，`git config --global user.name/user.email` 都是空的。仓库在本地已提交，`origin` 等主人给地址与凭据。
 - **索引里的 `OWNER/REPO` 已换成真值**：真实仓库是 `hanhan9999999999999999999/dsh-macro-memory`，四处一起改过（`plugin-market/index.json` 的 `homepage` / `repository.url` / `source.url`、门面里的索引 URL）。这四处没有共同出处，是本轮留下的唯一硬编码债。
 - **没给 npm 发布**：市场支持 `source.type: 'npm'`，但这份包的价值有一半在 `vendor/`，走 git 源最直接。
+
+### 9.86.8 国内网络：镜像索引与「规范 URL」那个坑
+
+本机实测（2026-11-19，Node `fetch` + 20 s 超时）：
+
+| 目标 | 结果 |
+| --- | --- |
+| `raw.githubusercontent.com/<owner>/<repo>/main/plugin-market/index.json` | `fetch failed`（116 ms 就断，不是慢是断） |
+| `cdn.jsdelivr.net/gh/<owner>/<repo>@main/plugin-market/index.json` | `fetch failed`（196 ms） |
+| `cdn.statically.io/gh/<owner>/<repo>/main/…` | `fetch failed`（10.3 s 超时） |
+| `api.github.com/repos/.../contents/plugin-market/index.json` | 200，504 ms |
+| `gh-proxy.com/https://raw.githubusercontent.com/.../index.json` | 200，1.9 s，2 814 B（与本地逐字节相同） |
+| `gh-proxy.com/https://raw.githubusercontent.com/.../plugin-market/icon.png` | 200 `image/png`，31 430 B，3.4 s |
+| `git clone https://github.com/<owner>/<repo>.git` | **300 s 超时 / Connection was reset**（退出码 128） |
+| `git clone https://gh-proxy.com/https://github.com/<owner>/<repo>.git` | 29 s 成功，164 文件 |
+| `git clone https://gh-proxy.com/https:/github.com/<owner>/<repo>.git`（单斜杠） | 23 s 成功，164 文件，checkout 到 `8826096` 后 `plugin-market/index.json` 在 |
+
+结论：**索引能取到 ≠ 能装**。市场安装走 `git clone`，所以只换索引 URL 不够，安装源地址也得能 clone。于是出第二份索引 `plugin-market/index.cn.json`：`title` / `description` / `title.zh` 带「（国内镜像）」标记，`source.url` / `repository.url` / `homepage` 换成 `gh-proxy.com` 前缀，其余字段逐字段与主索引相同（`tools/check-market.mjs` 第 9 段对着断言：版本序列一致、commit 一致、`metadata` 逐字节相同、`icon` 仍是同一个相对引用）。
+
+**那个坑**：宿主 `gitUrl()`（`dsh-plugin-market-index/src/index.ts`）要求 `new URL(value).href === value`，并要求 `pathname` 匹配 `^(?:\/[^/]+){2,}$`。写成 `https://gh-proxy.com/https://github.com/a/b` 时 `href` 那关是过的，但 `pathname` = `/https://github.com/a/b`，内层那个 `//` 让 `[^/]+` 吃到一个空段，于是被拒，报的是 `must name a repository with at least two path segments`（看起来像「仓库路径不够深」，其实是空段）。改成规范形式 `https://gh-proxy.com/https:/github.com/a/b` 后 `pathname` = `/https:/github.com/a/b`，两条规则全过，克隆照样成功（23 s）。这是「别人写的校验器替你定义了什么字符串才算地址」的又一例（教训 55）。
+
+守则：以后改这两份索引，只改 `_gen-cn.mjs`（临时脚本，不入库）或直接同时改两个文件，然后跑 `node tools/check-market.mjs`——两份之间任何一处漂移都会红。
+

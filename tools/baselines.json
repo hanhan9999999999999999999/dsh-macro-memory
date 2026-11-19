@@ -15,26 +15,26 @@
     "tools/check-yaml.mjs": 0,
     "tools/doctor.mjs": 114,
     "tools/probe-load.mjs": 14,
-    "tools/check-market.mjs": 33
+    "tools/check-market.mjs": 48
   },
   "ms": {
-    "verify.mjs": 1723,
-    "tools/probe-fusion.mjs": 7941,
-    "tools/probe-host.mjs": 1080,
-    "tools/probe-client-ui.mjs": 81,
-    "tools/coverage-audit.mjs": 91,
-    "tools/check-client-bundle.mjs": 58,
-    "tools/probe-inject.mjs": 3311,
-    "tools/check-yaml.mjs": 77,
-    "tools/doctor.mjs": 223,
-    "tools/probe-graph.mjs": 85385,
-    "tools/param-audit.mjs": 20968,
-    "tools/probe-load.mjs": 234,
-    "tools/check-market.mjs": 320
+    "verify.mjs": 1737,
+    "tools/probe-fusion.mjs": 8863,
+    "tools/probe-host.mjs": 1406,
+    "tools/probe-client-ui.mjs": 86,
+    "tools/coverage-audit.mjs": 87,
+    "tools/check-client-bundle.mjs": 67,
+    "tools/probe-inject.mjs": 504,
+    "tools/check-yaml.mjs": 74,
+    "tools/doctor.mjs": 172,
+    "tools/probe-graph.mjs": 86183,
+    "tools/param-audit.mjs": 20708,
+    "tools/probe-load.mjs": 132,
+    "tools/check-market.mjs": 263
   },
   "budgetMs": {
     "verify.mjs": 30000,
-    "tools/probe-fusion.mjs": 32000,
+    "tools/probe-fusion.mjs": 36000,
     "tools/probe-host.mjs": 30000,
     "tools/probe-client-ui.mjs": 30000,
     "tools/coverage-audit.mjs": 30000,
@@ -42,8 +42,8 @@
     "tools/probe-inject.mjs": 30000,
     "tools/check-yaml.mjs": 30000,
     "tools/doctor.mjs": 30000,
-    "tools/probe-graph.mjs": 342000,
-    "tools/param-audit.mjs": 84000,
+    "tools/probe-graph.mjs": 345000,
+    "tools/param-audit.mjs": 83000,
     "tools/probe-load.mjs": 30000,
     "tools/check-market.mjs": 30000
   }

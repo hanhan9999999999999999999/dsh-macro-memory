@@ -4429,7 +4429,7 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 
 ### 91.7 这一轮的验收
 
-- `node tools/check-market.mjs` → 32 条 ALL PASS（真校验器 + 真 git）。
+- `node tools/check-market.mjs` → 48 条 ALL PASS（真校验器 + 真 git；含镜像索引 15 条与一条阴性对照）。
 - `node tools/doctor.mjs` → 内部日志与门面两段各自过；根 `LICENSE` 是 MIT 原文；第三方声明三项（作者名 / 上游地址 / `MIT`）都在；门面引用的 3 张图都在。
 - `node tools/check-all.mjs` → 13 支（新增第 11 支 `tools/check-market.mjs`）。
 
@@ -4438,3 +4438,40 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 - **推送用的是本机已存的 GitHub 凭据**（`~/.git-credentials` 里那条 `gho_`），不是我们新申请的。仓库是 `hanhan9999999999999999999/dsh-macro-memory`（public）；`gh` CLI 本机没有，建仓走的是 REST `POST /user/repos`。
 - **索引里的 `OWNER/REPO` 已换成真值**（`plugin-market/index.json` 的 `homepage` / `repository.url` / `versions[0].source.url` 与门面里的索引 URL 四处）。换账号或改仓库名时要再改一遍这四处——它们**没有**共同出处，这是这一轮留下的唯一硬编码债。
 - **没发 npm。** 市场支持 `source.type: 'npm'`，但这份包的价值有一半在 `vendor/`（两份引擎副本随包走），走 git 源最直接。
+
+## 92. 可安装性是两个门（0.2.81）
+
+### 92.1 索引能取到，不等于能装
+
+市场安装的动作链有两段，各自独立的网络失败点：
+
+1. **取索引**：`GET <索引 URL>`，拿到 format-1 JSON；
+2. **装插件**：拿 `versions[0].source` 去 `git clone <url>` 并 checkout 到 `.git#<commit>`。
+
+本机实测（2026-11-19，Node `fetch` 20 s 超时 / git 300 s 超时）：`raw.githubusercontent.com` 116 ms 就 `fetch failed`，`cdn.jsdelivr.net` 196 ms 失败，`cdn.statically.io` 10.3 s 失败；`api.github.com` 通（504 ms）；`gh-proxy.com` 取索引 1.9 s、取图标 3.4 s。`git clone` 直连 GitHub **300 s 超时**，走反代 29 s 拉完 164 文件。
+
+所以只把索引 URL 换成反代，装到一半会死在 clone 上——而失败现场看起来像「市场坏了」，不像「网络坏了」。
+
+### 92.2 于是要两份索引，而两份必须逐字段同步
+
+新增 `plugin-market/index.cn.json`：`title` / `description` / `title.zh` 标「（国内镜像）」，`source.url` / `repository.url` / `homepage` 换成 `gh-proxy.com` 反代前缀，其余字段与主索引**逐字节相同**，钉**同一个 commit**。
+
+两份索引是典型的「复制一份就会漂移」的结构。防漂移不能靠自觉，只能靠断言：`tools/check-market.mjs` 第 9 段共 15 条，其中「版本序列一致」「commit 相同」「`metadata` 逐字节相同」「`icon` 仍是同一个相对引用」四条就是漂移探测器。为什么 `icon` 比原始相对值而不是解析后的绝对值——因为 `icon` 是**相对索引 URL** 解析的，两份索引的 base 不同，解析结果天然不同，比绝对值只会假红。
+
+### 92.3 反代地址要过别人的校验器（那个空段）
+
+宿主 `gitUrl()`（`dsh-plugin-market-index/src/index.ts`）要两件事：`new URL(value).href === value`，且 `pathname` 匹配 `^(?:\/[^/]+){2,}$`。
+
+直觉写法 `https://gh-proxy.com/https://github.com/a/b`：`href` 那关是过的，但 `pathname` = `/https://github.com/a/b`，内层那个 `//` 让 `[^/]+` 吃到一个**空段**，于是被拒，报的是 `must name a repository with at least two path segments`——听起来像「仓库路径不够深」，实际是空段。
+
+正确写法是把它写成规范形式：`https://gh-proxy.com/https:/github.com/a/b`（内层协议只留一个斜杠），`pathname` = `/https:/github.com/a/b`，两关全过，且 `git clone` 照样成功（23 s）。
+
+**这不是笔误，是契约。** 发现它的方式只有一个：**拿对方的校验器真跑**，别自己目测正则。为此在 `check-market` 里放了一条**阴性对照**：把地址改回双斜杠，`parseMarketIndex` 必须抛；它不抛，说明我们以为的规则是假的。
+
+### 92.4 教训 56
+
+1. **「能不能访问」是分层的**：索引、图标、`git clone` 各有各的通路，任何一层失败都表现为「装不上」。测可安装性要**按动作链逐段测**，不要只测第一个 URL。
+2. **镜像索引是复制品，复制品必须被断言钉住**：主副两份之间每一条共享字段都要有对照断言，尤其 commit（钉不同就装到不同代码）。
+3. **外部校验器是规格，正则直觉不是**：反代、镜像、代理地址这类「套一层」的字符串，必须用对方的解析器实测，并且把「错误写法必须被拒」写成阴性对照。
+4. **相对引用要按相对语义比**：`icon` 比原值，不比解析值。
+
