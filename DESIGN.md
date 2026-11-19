@@ -4435,6 +4435,6 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 
 ### 91.8 边界
 
-- **没有推送。** 本机没有 `gh`，`git config --global user.name/user.email` 都是空的；本地已提交，`origin` 要等真实仓库地址与凭据。提交 identity 目前是占位（`dsh-macro-memory <owner@users.noreply.github.com>`），换真值需要 `--amend` 两次历史。
-- **索引里的 `OWNER/REPO` 是占位。** 换真实仓库时要一起改四处：`plugin-market/index.json` 的 `homepage`、`repository.url`、`versions[0].source.url`，以及门面里的索引 URL。
+- **推送用的是本机已存的 GitHub 凭据**（`~/.git-credentials` 里那条 `gho_`），不是我们新申请的。仓库是 `hanhan9999999999999999999/dsh-macro-memory`（public）；`gh` CLI 本机没有，建仓走的是 REST `POST /user/repos`。
+- **索引里的 `OWNER/REPO` 已换成真值**（`plugin-market/index.json` 的 `homepage` / `repository.url` / `versions[0].source.url` 与门面里的索引 URL 四处）。换账号或改仓库名时要再改一遍这四处——它们**没有**共同出处，这是这一轮留下的唯一硬编码债。
 - **没发 npm。** 市场支持 `source.type: 'npm'`，但这份包的价值有一半在 `vendor/`（两份引擎副本随包走），走 git 源最直接。

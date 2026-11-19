@@ -128,7 +128,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 DSH → 设置 → 插件市场 → 索引源填本仓库的索引地址：
 
 ```
-https://raw.githubusercontent.com/OWNER/REPO/main/plugin-market/index.json
+https://raw.githubusercontent.com/hanhan9999999999999999999/dsh-macro-memory/main/plugin-market/index.json
 ```
 
 索引是 [格式 1](https://github.com/deepseek-ai/deepseek-harness) 的 JSON（`plugin-market/index.json`，随包校验：`tools/check-market.mjs`）。

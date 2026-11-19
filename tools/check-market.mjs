@@ -21,7 +21,7 @@ const APP = process.env.DSH_APP || 'D:\\DSH\\DSH NEXT\\resources\\app'
 const NM = join(APP, 'node_modules')
 const INDEX_FILE = join(root, 'plugin-market', 'index.json')
 /** 索引最终会被放在仓库的这个位置；相对 icon 就是相对它解析的。 */
-const INDEX_URL = 'https://raw.githubusercontent.com/OWNER/REPO/main/plugin-market/index.json'
+const INDEX_URL = 'https://raw.githubusercontent.com/hanhan9999999999999999999/dsh-macro-memory/main/plugin-market/index.json'
 
 let failed = 0
 const pass = (label, detail) => console.log(`PASS  ${label}${detail === undefined ? '' : `  ${detail}`}`)

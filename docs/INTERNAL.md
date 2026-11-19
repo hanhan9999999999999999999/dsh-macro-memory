@@ -4007,5 +4007,5 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 ### 9.86.7 边界（发布这一轮没做的事）
 
 - **没有推送**：本机没有 `gh`，`git config --global user.name/user.email` 都是空的。仓库在本地已提交，`origin` 等主人给地址与凭据。
-- **索引里的 `OWNER/REPO` 是占位**：换真实仓库后，`plugin-market/index.json` 的 `homepage` / `repository.url` / `source.url` 三处、以及门面里的索引 URL 一起改。
+- **索引里的 `OWNER/REPO` 已换成真值**：真实仓库是 `hanhan9999999999999999999/dsh-macro-memory`，四处一起改过（`plugin-market/index.json` 的 `homepage` / `repository.url` / `source.url`、门面里的索引 URL）。这四处没有共同出处，是本轮留下的唯一硬编码债。
 - **没给 npm 发布**：市场支持 `source.type: 'npm'`，但这份包的价值有一半在 `vendor/`，走 git 源最直接。
