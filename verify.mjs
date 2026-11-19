@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 20 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 21 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5959,7 +5959,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check(
     '相似检索: 基准和候选量的是同一段文字（基准也走 docText，不再只取正文）',
-    meowSrc.includes('const hits = findSimilar(docText(found.row), docs, k);') &&
+    meowSrc.includes('const hits = findSimilar(docText(found.row), docs, k, found.row.content);') &&
       !meowSrc.includes('const hits = findSimilar(found.row.content, docs, k);') &&
       meowSrc.includes('function docText(d) {'),
   )
@@ -5992,6 +5992,70 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       simSrc.includes('M2 基准自己的 keywords 真的参与了比较') &&
       simSrc.includes('M5 阴性对照') &&
       simSrc.includes('M4 这一轮已经端过的照样排除'),
+  )
+}
+
+// [macro-fusion 0.2.90] 「相似」在这个库里有两只尺子：cosine（排序用，对长文宽容）和词集 Jaccard
+// （写侧 80% 合并门槛用的那把）。0.2.89 前后只报 cosine，于是「长条目里嵌着同一句话」报 0.715 就会被
+// 读成「这句早就记过了」；而写侧对同一对内容报的「重复度 81%」在相似检索里根本无处可查。这里钉六件事：
+// 两个数都报、repeat 与写侧同源（都只比正文）、Jaccard 只有一处实现、两种误读各有校准句、排序没被动、
+// 探针进了线。实测同一对内容：近重复 0.944 / 0.808；长文嵌一句 0.545 / 0.407；同话题 0.134 / 0.025。
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools/probe-ruler.mjs'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const searchSrc = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
+  const zhSrc = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/zh/tools.md'), 'utf8')
+  const enSrc = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/en/tools.md'), 'utf8')
+  const ptSrc = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/pt-br/tools.md'), 'utf8')
+
+  check(
+    '相似检索: 两个数都报出来（similarity 排序用 / repeat 逐字级），不只报 cosine',
+    meowSrc.includes('repeat: Math.round(overlapOfSets(repeatSet, new Set(tokenize(d.content ?? ""))) * 1e3) / 1e3') &&
+      meowSrc.includes('similarity: Math.round(s * 1e3) / 1e3'),
+  )
+  check(
+    '相似检索: repeat 与写侧合并判据同源——都只比正文（keywords / title 只参与 cosine 排序）',
+    meowSrc.includes('const repeatSet = new Set(tokenize(targetContent === undefined ? target : targetContent));') &&
+      meowSrc.includes('function similarity(a, b) {\n  return overlapOfSets(') &&
+      !/function similarity\(a, b\) \{\n  const sa = new Set/.test(meowSrc),
+  )
+  check(
+    '相似检索: Jaccard 只有一处实现（similarity 与 repeat 都走 overlapOfSets，防两套口径漂移）',
+    meowSrc.includes('function overlapOfSets(sa, sb)') &&
+      (meowSrc.match(/function overlapOfSets\(/g) || []).length === 1 &&
+      (meowSrc.match(/overlapOfSets\(/g) || []).length >= 3,
+  )
+  check(
+    '相似检索: 两种误读都有校准句（看着像其实不是同一句 / 逐字 ≥80% 写侧会判重复）',
+    meowSrc.includes('function similarCalibNote(hits, freshHits)') &&
+      meowSrc.includes('const looksLike = hits.filter((h) => h.similarity >= 0.5 && h.repeat < 0.5);') &&
+      meowSrc.includes('其中 ${looksLike.length} 条看着像、其实不是同一句') &&
+      meowSrc.includes('const verbatim = hits.filter((h) => h.repeat >= DEDUP_THRESHOLD);'),
+  )
+  check(
+    '相似检索: 排序仍只按 cosine（多报一个数没有偷偷改排序，也没有按 repeat 重排）',
+    meowSrc.includes('scored.sort((a, b) => b.similarity - a.similarity);') &&
+      !/scored\.sort\(\(a, b\) => b\.repeat/.test(meowSrc),
+  )
+  check(
+    '相似检索: 校准句在工具字面量外（否则工具体积预算当场爆）+ 三语文案都有 repeat 这一键',
+    meowSrc.indexOf('function similarCalibNote(') < meowSrc.indexOf('function rememberTool(dir) {') &&
+      /memory_find_similar\.out\.hits\.repeat:/.test(zhSrc) &&
+      /memory_find_similar\.out\.hits\.repeat:/.test(enSrc) &&
+      /memory_find_similar\.out\.hits\.repeat:/.test(ptSrc),
+  )
+  // 注释里会提到旧文案（那正是记录），所以判据钉旧**字面量**而不是那个词
+  check(
+    '相似检索: 融合层兜底文案不再说「等下一次会话」（0.2.89 起本会话新写的也算候选，那是过期劝告）',
+    !/换一条基准再问一次/.test(searchSrc) && /换一条基准、把 k 给大一点再问/.test(searchSrc),
+  )
+  check(
+    '相似检索: probe-ruler 进了 check-all 的 STEPS，且带同口径 / 看着像 / 复算三条断言',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('U2 写侧回执的「重复度 N%」与相似检索的 repeat 是同一个数') &&
+      rulerSrc.includes('U3 回执点名「看着像、其实不是同一句」') &&
+      rulerSrc.includes('U8 repeat 用 tokenize 复算与工具一致'),
   )
 }
 

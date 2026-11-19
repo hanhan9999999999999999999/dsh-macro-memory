@@ -43,6 +43,7 @@
 - memory_find_similar.param.k: Number of results.
 - memory_find_similar.param.content_max: Truncate each entry's content to this length, 0=full text.
 - memory_find_similar.out.hits.similarity: Cosine similarity 0-1; higher is closer.
+- memory_find_similar.out.hits.repeat: Verbatim repeat 0-1 (token-set Jaccard over the body only — the same input and the same ruler memory_remember uses when merging; ≥0.8 means the write side calls it a duplicate). Read it apart from cosine: high cosine + low repeat = same topic, or one sentence embedded in a long entry — not the same sentence; high repeat = the same sentence.
 
 ### memory_read
 

@@ -43,6 +43,7 @@
 - memory_find_similar.param.k: 返回条数。
 - memory_find_similar.param.content_max: 每条内容截断长度，0=全文。
 - memory_find_similar.out.hits.similarity: 余弦相似度 0-1，越高越接近。
+- memory_find_similar.out.hits.repeat: 逐字重复度 0-1（词集 Jaccard，只比正文——和 memory_remember 合并判据同一个输入、同一把尺子，≥0.8 写侧就判重复）。和余弦分开看：余弦高、重复度低 = 同话题或长文里嵌了一句，不是同一句；重复度高 = 就是同一句话。
 
 ### memory_read
 

@@ -452,6 +452,11 @@ const PATCHES = [
     file: 'vendor/meow-memory/lib/index.js',
     what: '相似检索（memory_find_similar）两处口径错位：① 候选过滤原来带 r.source_session !== sessionId，把「本会话刚写的」整批排掉——可「我刚写了这几条，谁跟谁像」正是它最自然的用法，实测三条相关记忆写完，回执是「可比的候选一条都没有……等下一次会话再问」，等于把工具在自己最该用的时刻关掉；② 基准只拿 found.row.content 去比、候选取的却是 docText（title + 正文 + keywords），同一把尺子两边量的字不一样：实测只沾基准 keywords 的候选在正文口径下 0.000 分（被 s<=0 直接丢掉），基准也走 docText 才 0.228。现在两侧都走 docText，会话身份不再兼职做去重（seen 仍然排除——「别重复端」是 seen 的活），命中里若有本会话刚写的会在尾注点名「不是库里积累的旧账」。基准在 tools/probe-similar.mjs（含换会话不再点名、正文口径零命中的阴性对照）',
   },
+  {
+    marker: '[macro-fusion 0.2.90]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '相似检索只报一把尺子：「相似度」一直是 cosine（对长文宽容），而写侧 80% 合并门槛量的是词集 Jaccard——两个数能差一个量级：实测长条目里嵌着一模一样的短句是 cosine 0.715 / 逐字 0.354，近重复（改几个字）0.944 / 0.808，同话题不同结论 0.134 / 0.025。只报 cosine，读者会把「同话题」当成「同一句」，也没法跟 memory_remember 回执里那句「重复度 N%」对上号。现在①每条命中同时报 repeat（词集 Jaccard，只比正文——和写侧 similarity(r.content, content) 同一个输入、同一把尺子，实测写侧 81% vs 读侧 0.808）；②Jaccard 收成一处实现 overlapOfSets，similarity() 直接复用，防两套口径漂移；③两种典型误读当场给校准句：相似度 ≥0.50 但逐字重复度不到 50% 的说「看着像、其实不是同一句」，逐字 ≥80% 的说「写侧会判重复，多半是同一句话存进了两层」；④融合层 mode=similar 的兜底文案删掉过期的「等下一次会话」（0.2.89 起本会话新写的也算候选）。基准在 tools/probe-ruler.mjs（含写侧/读侧同口径、tokenize 复算一致两条阴性对照）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

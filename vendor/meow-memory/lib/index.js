@@ -1816,20 +1816,41 @@ function cosine(a, b) {
   }
   return dot / Math.sqrt(na * nb);
 }
-function findSimilar(target, docs, k = 5) {
-  const targetVec = tfVector(tokenize(target));
+// [macro-fusion 0.2.90] 「相似」在这个库里有两把尺子，以前只报了一把：
+//   ① cosine（tf 向量余弦）——本函数一直用的排序尺子，对长文宽容（长文里嵌一句同文也能到 0.7），
+//      回答的是「话题/用词重叠多少」，适合排序；
+//   ② overlapOfSets（词集 Jaccard）——写侧 similarity() 用的去重尺子，逐字级严格，
+//      回答的是「是不是同一句话」，memory_remember 的 80% 合并门槛量的就是它。
+// 实测同一对内容，两把尺子能差出一个量级：长条目里嵌着一模一样的短句，cosine 0.715 / Jaccard 0.35；
+// 近重复（改几个字）则 0.944 / 0.81。只报 cosine，读者会把「同话题」当成「同一句」，
+// 也没法跟 memory_remember 回执里的「重复度 N%」对上号。所以两个都算、都报。
+// 输入也必须同源：写侧合并判的是 similarity(r.content, content)——**纯正文**，不含标题和 keywords。
+// 所以 repeat 也只比正文（cosine 照旧用 docText，关键词参与排序）；否则同一对内容写侧报 81%、读侧报 71%，
+// 两个数对不上号，等于又造了一把新尺子。
+function overlapOfSets(sa, sb) {
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter++;
+  return inter / (sa.size + sb.size - inter);
+}
+function findSimilar(target, docs, k = 5, targetContent) {
+  const targetToks = tokenize(target);
+  const targetVec = tfVector(targetToks);
   if (targetVec.size === 0) return [];
+  // repeat 的基准侧：优先用调用方给的纯正文（写侧口径），没给就退回 target 本身
+  const repeatSet = new Set(tokenize(targetContent === undefined ? target : targetContent));
   const scored = [];
   for (const d of docs) {
-    const v = tfVector(tokenize(docText(d)));
-    const s = cosine(targetVec, v);
+    const toks = tokenize(docText(d));
+    const s = cosine(targetVec, tfVector(toks));
     if (s <= 0) continue;
     scored.push({
       id: d.id,
       level: d.level,
       title: d.title,
       content: d.content,
-      similarity: Math.round(s * 1e3) / 1e3
+      similarity: Math.round(s * 1e3) / 1e3,
+      repeat: Math.round(overlapOfSets(repeatSet, new Set(tokenize(d.content ?? ""))) * 1e3) / 1e3
     });
   }
   scored.sort((a, b) => b.similarity - a.similarity);
@@ -2323,12 +2344,7 @@ function sessionIdOf(exec) {
   return id;
 }
 function similarity(a, b) {
-  const sa = new Set(tokenize(a));
-  const sb = new Set(tokenize(b));
-  if (sa.size === 0 || sb.size === 0) return 0;
-  let inter = 0;
-  for (const t of sa) if (sb.has(t)) inter++;
-  return inter / (sa.size + sb.size - inter);
+  return overlapOfSets(new Set(tokenize(a)), new Set(tokenize(b)));
 }
 var DEDUP_THRESHOLD = 0.8;
 // [macro-fusion 0.2.88] 「同一句话存两层」：写去重只在同一层里比（db.list(level)），所以同一句
@@ -2337,6 +2353,23 @@ var DEDUP_THRESHOLD = 0.8;
 //   ① 写的时候扫一遍别的层，撞上了就照样写（层各有分工是合法的），但回执点名「另一层已有」；
 //   ② 检索的时候把内容几乎一样的条目折叠掉（只折「逐字级重复」，改写过的不会误折），
 //      折了几条写进尾注，并给 dedupe: false 看全量的出路（教训 63：收窄必须自带出口）。
+// [macro-fusion 0.2.90] 两个数并排报出来之后，最常见的两种误读要当场拆掉：
+// 「相似度高」被当成「同一句话」、以及「逐字重复度高」被当成「话题相同」。
+// 判据用两个绝对量（≥0.50 且 repeat <0.50），不用「相差几个点」：实测长条目里嵌一句是
+// cosine 0.715 / repeat 0.354（差 36 个点），近重复 0.944 / 0.808（差 14 个点），
+// 而轻度重叠可能只差十几个点却同样不是同一句——「逐字连一半都对不上」更贴近要说的事。
+function similarCalibNote(hits, freshHits) {
+  const calib = [];
+  if (freshHits.length > 0)
+    calib.push(`命中里有 ${freshHits.length} 条是本会话刚写的（${freshHits.map((h) => h.level).join(" / ")}）——它们是刚才那几条，不是库里积累下来的旧账；别把「我自己刚记的」当成「已有依据」。`);
+  const looksLike = hits.filter((h) => h.similarity >= 0.5 && h.repeat < 0.5);
+  if (looksLike.length > 0)
+    calib.push(`其中 ${looksLike.length} 条看着像、其实不是同一句：相似度 ≥0.50 但逐字重复度不到 50%（写侧要 ${Math.round(DEDUP_THRESHOLD * 100)}% 才算重复）——长条目里嵌了一句，或者只是同话题；别当成「这句话早就记过了」。`);
+  const verbatim = hits.filter((h) => h.repeat >= DEDUP_THRESHOLD);
+  if (verbatim.length > 0)
+    calib.push(`其中 ${verbatim.length} 条逐字重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%：写侧会判重复，多半是同一句话分别存进了两层，用 memory_update 把其中一条 status 设 archived。`);
+  return calib.join(" ");
+}
 function crossLevelDupe(db, level, content) {
   let best = null;
   for (const lv of LEVELS) {
@@ -2841,7 +2874,8 @@ function findSimilarTool(dir) {
                 level: { type: "string" },
                 title: { type: "string" },
                 content: { type: "string" },
-                similarity: { type: "number", description: T("memory_find_similar.out.hits.similarity") }
+                similarity: { type: "number", description: T("memory_find_similar.out.hits.similarity") },
+                repeat: { type: "number", description: T("memory_find_similar.out.hits.repeat") }
               }
             }
           }
@@ -2860,7 +2894,7 @@ function findSimilarTool(dir) {
         }
         return hits.map((h) => ({
           type: "text",
-          text: `[${String(h.level ?? "")} ${String(h.id ?? "").slice(0, 12)}] \u76F8\u4F3C\u5EA6 ${Number(h.similarity ?? 0).toFixed(3)} ${String(h.title ?? "")} ${String(h.content ?? "").slice(0, 80)}`
+          text: `[${String(h.level ?? "")} ${String(h.id ?? "").slice(0, 12)}] \u76F8\u4F3C\u5EA6 ${Number(h.similarity ?? 0).toFixed(3)}\uFF08\u9010\u5B57 ${Number(h.repeat ?? 0).toFixed(2)}\uFF09 ${String(h.title ?? "")} ${String(h.content ?? "").slice(0, 80)}`
         }));
       }
     },
@@ -2918,7 +2952,7 @@ function findSimilarTool(dir) {
         last_accessed_at: r.last_accessed_at
         // #91：衰减按最后使用时间
       }));
-      const hits = findSimilar(docText(found.row), docs, k);
+      const hits = findSimilar(docText(found.row), docs, k, found.row.content);
       markSearched(workspace, sessionId ?? "unknown", hits.map((h) => h.id), dir);
       // [macro-fusion 0.2.89] 本会话刚写的条目现在也会成为候选（见上面的口径注释），
       // 那就得说清楚哪几条是「刚才你写的」——否则读者会把它们当成库里积累下来的旧账，
@@ -2938,16 +2972,16 @@ function findSimilarTool(dir) {
             : candidates.length === 0
               ? `相似检索没算成：可比的候选一条都没有（库里 ${rows.length} 条，这一轮已经端给你看过的都排除了）。这不是「记忆里没有相似的东西」——换一条基准，或者把 k 给大一点再问。`
               : `这次真算过了：${candidates.length} 条候选里没有一条和它有共同词汇（相似度全是 0）。这才是「记忆里没有相似的东西」。`;
-      } else if (freshHits.length > 0) {
-        note = `命中里有 ${freshHits.length} 条是本会话刚写的（${freshHits.map((h) => h.level).join(" / ")}）——它们是刚才那几条，不是库里积累下来的旧账；别把「我自己刚记的」当成「已有依据」。`;
       }
+      if (hits.length > 0) note = similarCalibNote(hits, freshHits);
       return {
         hits: hits.map((h) => ({
           id: h.id,
           level: h.level,
           title: h.title ?? "",
           content: contentMax > 0 ? h.content.slice(0, contentMax) : h.content,
-          similarity: h.similarity
+          similarity: h.similarity,
+          repeat: h.repeat
         })),
         note
       };

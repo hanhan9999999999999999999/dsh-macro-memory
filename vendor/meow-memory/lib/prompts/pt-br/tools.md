@@ -43,6 +43,7 @@
 - memory_find_similar.param.k: Número de resultados.
 - memory_find_similar.param.content_max: Trunca o content de cada entrada neste comprimento, 0=texto completo.
 - memory_find_similar.out.hits.similarity: Similaridade de cosseno 0-1; quanto maior, mais próxima.
+- memory_find_similar.out.hits.repeat: Repetição literal 0-1 (Jaccard de conjuntos de tokens, só o corpo — a mesma entrada e a mesma régua que o memory_remember usa ao fundir; ≥0.8 significa que a escrita considera duplicado). Leia separado do cosseno: cosseno alto + repetição baixa = mesmo assunto, ou uma frase embutida num texto longo — não a mesma frase; repetição alta = a mesma frase.
 
 ### memory_read
 
