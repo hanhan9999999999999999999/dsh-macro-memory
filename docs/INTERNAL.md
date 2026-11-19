@@ -4197,5 +4197,52 @@ export const MANUAL_TOOLS = [
 - 账本只登记「确实需要手动跑」的脚本；能自动跑的一律进 check-all，不给自己留后门。
 - `patch-nebula-noinject.mjs` 保留但 `smoke: false`：它是历史证据，不是可重放工具。
 
+## 9.90 统一口径不是「记得统一」，是「有人替你问」（0.2.84）
+
+### 9.90.0 一句话
+
+同一件事（几个工具、动作有几个、注入多少字、体检分几类）同时活在四处：注入手册的文本、工具的 schema、常量表、对外的 README 与两份市场索引。以前四处一致靠「改的时候记得都改」；现在有一条探针替你去问，任何一处漂移就是红。
+
+### 9.90.1 这一轮没修错，修的是「没法知道对不对」
+
+先把现状查了一遍（临时脚本读真值，读完就删）：8 个统一工具、`createAliasTools` 11 个旧名、`ACTIONS` 八个动作、`GUIDE_TEXT.length = 1085`、`NAV_TEXT.length = 178`、七个 level、六个项目子类、四个 schema 枚举。结论是**当时四处全都一致**，README 与两份索引里 12 处「1,085 字符」也都是实测值。
+
+所以这一轮的价值不在修复，在**把一致性从「我记得」变成「有人问」**：一致性一旦没有判据，它只是当下恰好成立，下一次改代码就会悄悄失效一次——而失效的方式是模型照着旧手册去调一个已改名的工具，拿到「工具不存在」。
+
+### 9.90.2 `tools/probe-words.mjs`：真 import，不抄名单
+
+探针（check-all 第 14 支，20 条判据 + 6 条阴性对照）真 import 代码取真值，而不是把名字抄进测试：
+
+| 组 | 判据 |
+| --- | --- |
+| 工具面 | defs 文件数 = 装配数；每个 defs 声明唯一名字；声明名与装配名一致；对外正好 8 个 `memory_*` |
+| 品牌映射 | 右值里的 `memory_*` 都是真工具（死指针 → 红）；左值旧名集合 = `createAliasTools` 名单（改一处必须改另一处） |
+| 手册口径 | `memory_admin（action=…）` 逐字等于动作表键序；动作中文标签唯一非空；`memory_link` action 与 schema 同序；`memory_search` 的每个非默认 mode 都被手册提到；level 集合与顺序 = `LEVELS`；子类 = `PROJECT_SUBCATEGORIES`；status 与体检六类 = schema 枚举 |
+| 对外数字 | README + 两份索引里所有「X 字符 / X-character」必须等于 `GUIDE_TEXT.length`（融合前对照值 `4,085` 按设计跳过） |
+| 死指针 | 工具说明与注入手册里不许出现 `nebula_*` / `memory_find_similar` / `memory_home` / `meow-memory` |
+| 可读性 | 每条说明单行、非空、≤200 字；导航里「N 个 memory_*」= 实际装配数 |
+
+两个解析 helper 是这一轮真正的代码：`claimedGuideLengths(text)`（把「1,085 字符」这类声明全抓出来，允许千分位，跳过 `4085`）、`modeTokens` / `levelTokens`（从手册行里按 `|` 与 `k=v` 取 token）。手册是自然语言，判据必须能从那句话里读出来，而不是靠另一份名单对照——否则一致性只是被复制了一遍。
+
+### 9.90.3 两处假红，都是正则太聪明
+
+- `modeTokens` 第一版没按 `|` 拆，`mode=local|graph|bridge|similar` 只取到 `local`，于是「`bridge` 没被手册提到」假红；
+- `levelTokens` 第一版用 `[a-z=\/|A-Za-z ]+` 撞上中文就停，导致 level 集合永远缺一半——改成先取到句号前、再逐 `k=v` 取。
+
+两条都是「判据写错了」，不是代码错了。假红比漏红更坏（9.89.4 已经写过一次），所以这轮同样给了 6 条阴性对照：`mode=graph|bridge` 必须拆成两个、无模式返回空、`levelTokens` 只认 `k=v`、`1,086 字符` 必须被抓出、`4,085 字符` 不算声明、`nebula_recall` 必须被死指针检测认出。
+
+### 9.90.4 怎么验的
+
+- `node tools/probe-words.mjs` → 20 条 ALL PASS（exit 0）。
+- `node verify.mjs` → A84 七条（进 STEPS / 真值从 lib 取不抄名单 / 三组比对 / 死指针 / 阴性对照 / 失败置 exitCode）。
+- `node tools/check-all.mjs` → 16 支全绿；`node tools/doctor.mjs` 的补丁账本多一条（`tools/probe-words.mjs`）。
+- 探针里也写了 `process.env.DSH_HOME` 沙箱行：它只装配工具定义、不执行工具，但「将来有人顺手加一句 execute」不该碰到主人的生产记忆库。
+
+### 9.90.5 边界
+
+- 只动 `tools/`、`verify.mjs`、文档与版本号；**不碰 vendor 运行时代码、不需要重启 DSH**。
+- 判据只钉「说过的」与「代码里的」是否一致，不评价措辞好不好——文案质量靠人看，不靠探针。
+- 手册里出现的新数字（比如以后再加一个工具）必须同步更新 README 与两份索引，否则这条判据会红：这是有意的，对外承诺本来就该跟着改。
+
 
 

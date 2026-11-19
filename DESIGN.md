@@ -4630,6 +4630,57 @@ if (failures !== 0) process.exitCode = 1
 
 只动 `tools/`、`verify.mjs`、文档与版本号：不碰 vendor、不需要重启 DSH。能自动跑的脚本一律进 check-all，账本只收「确实需要人手动跑」的；`patch-nebula-noinject.mjs` 以 `smoke: false` 留存，是历史证据，不是可重放工具。
 
+## 96. 统一口径不是「记得统一」，是「有人替你问」（0.2.84）
+
+### 96.1 四处一致，靠的是「我记得」
+
+「统一所有面板口径」这个要求本身有个陷阱：它听起来像一次整理，其实是一个**持续状态**。同一件事（对外几个工具、动作有几个、注入多少字、体检分几类、旧名字还在不在）同时活在这几处：
+
+| 处 | 例子 |
+| --- | --- |
+| 注入手册（模型读的那段字） | `memory_admin（action=home\|stats\|…）`、`level（每条都要）` |
+| 工具 schema | `memory_search.mode`、`memory_link.action`、`memory_update.status` 的 enum |
+| 常量表 | `ACTIONS` 键序与中文标签、`LEVELS`、`PROJECT_SUBCATEGORIES`、`NAV_TEXT` |
+| 对外文案 | `README.md` 与两份市场索引里的「1,085 字符」「8 个统一工具」 |
+
+这一轮进场时先把真值全查了一遍：四处**当时全都一致**，12 处「1,085 字符」全是实测值。所以本轮没有修错，修的是「我们没法知道它对不对」。
+
+这两件事的差别在失效方式上：口径漂移不会抛异常，只会让模型照着一句已经过时的话去调一个已改名的工具，然后拿到「工具不存在」。**它坏起来完全安静，只有一条会主动发问的判据才看得见。**
+
+### 96.2 探针要真 import，不能抄名单
+
+`tools/probe-words.mjs`（check-all 第 14 支，20 条判据）的真值全部来自 import：`createUnifiedTools({ bridge: stub, config: {} })`、`createAliasTools`、`BRAND_MAP`、`GUIDE_TEXT` / `NAV_TEXT`、`ACTIONS`、`LEVELS`、`PROJECT_SUBCATEGORIES`，外加从 `lib/macro/defs/*.js` 正则读出的声明名。
+
+判据分四类，都是「两处独立来源必须相等」：
+
+1. **工具面**：defs 文件数 = 装配数 = 8；声明名 = 装配名；名字唯一。
+2. **品牌映射**：右值里的 `memory_*` 必须是真工具（指向不存在的名字 = 死指针 → 红）；左值旧名集合必须等于 `createAliasTools` 名单（改一处不改另一处 → 红）。
+3. **手册口径**：动作枚举与键序、动作中文标签唯一、`memory_link` 的 action 与 schema 同序、非默认 mode 全覆盖、level 集合与子类顺序、status、体检六类。
+4. **对外数字**：README 与两份索引里所有「X 字符 / X-character」必须等于 `GUIDE_TEXT.length`（融合前的对照值 `4,085` 按设计跳过）。
+
+另加两条「不要说漏嘴」的判据：说明与手册里不许出现 `nebula_*` / `memory_find_similar` / `memory_home` / `meow-memory`；每条工具说明必须单行、非空、≤200 字。
+
+关键点在于手册是**自然语言**：判据必须能从那句话里读出 token（`claimedGuideLengths`、`modeTokens`、`levelTokens`），而不是另抄一份名单去对照。抄名单只能证明「两份抄件一样」，证明不了「说明和代码一样」。
+
+### 96.3 教训 60
+
+> 跨文件的一致性不算「知道」——它只是「这次恰好一致」。
+> 一致性要么被一条判据问出来，要么就在下一次改动里静默失效。
+
+推论有三条：
+
+- **同一事实出现在 N 处，就有 N−1 个可能漂移的地方**；能收成一处就收，收不了（手册得是给人/给模型读的散文）就必须有判据盯着。
+- **判据自己也会写错**：这轮 `modeTokens` 没按 `|` 拆（漏 `bridge`）、`levelTokens` 的正则撞中文停住（level 集合永远缺半），两条都是假红。假红比漏红更坏，因为它教人忽略探测器——所以照旧配 6 条阴性对照。
+- **口径探针必须只读**：它 import 装配函数但不执行任何工具，同时把 `DSH_HOME` 指向临时目录；「将来有人顺手加一句 execute」也不该碰到主人的生产记忆库。
+
+### 96.4 验收
+
+`probe-words` → 20 条 ALL PASS；`verify` A84 七条（真值从 lib 取、不抄名单、三组比对、死指针、阴性对照、失败置 exitCode）；`check-all` → 16 支全绿；`doctor` 补丁账本多一条。
+
+### 96.5 边界
+
+只动 `tools/`、`verify.mjs`、文档与版本号：不碰 vendor 运行时代码、不需要重启 DSH。判据只管「说过的」与「代码里的」是否一致，不管措辞好坏；以后工具数或手册字数变了，README 与两份索引必须跟着改——这条判据会红，而那是应该的。
+
 
 
 

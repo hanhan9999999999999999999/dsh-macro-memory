@@ -422,6 +422,11 @@ const PATCHES = [
     file: 'tools/manual-tools.mjs',
     what: '手动脚本账本（6 条，每条带 smoke 与 why）：把「有意的」「忘了的」分开，账本不写逻辑',
   },
+  {
+    marker: '[macro-fusion 0.2.84]',
+    file: 'tools/probe-words.mjs',
+    what: '口径总账探针：手册 / schema / 常量 / README / 两份索引说的是不是同一件事（工具数、动作枚举、七个 level、体检六类、注入字符数、死指针），进 check-all 第 14 支，自带 6 条阴性对照',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 15 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 16 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5690,6 +5690,54 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '脚本: cost-baseline 进账本且标了 smoke（只读，可随时跑）',
     /file: 'tools\/cost-baseline\.mjs',\n\s+smoke: true/.test(manualSrc),
+  )
+}
+
+// ── A84. 口径总账：同一件事只许有一种说法（0.2.84）──
+// 「8 个工具 / 七个 level / action 枚举 / 体检六类 / 注入 1,085 字符」这些话同时活在
+// 注入手册、schema、代码常量、README 与两份市场索引里。漏改一处不会报错，
+// 只会让模型照手册去调一个不存在的东西、让用户读到已成历史的数字。
+// tools/probe-words.mjs 从代码里取真值再逐处比对；这一节钉住「它存在、它在跑、它真会红」。
+{
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const wordsSrc = readFileSync(join(root, 'tools/probe-words.mjs'), 'utf8')
+
+  check(
+    '口径: probe-words 进了 check-all 的 STEPS（总账真的会被对一遍）',
+    checkAllSrc.includes("['tools/probe-words.mjs'"),
+  )
+  // 判据不许自带第二份清单：真值必须从代码里取（工具名/动作表/常量/手册）。
+  check(
+    '口径: 真值从 lib 里取，不在探针里抄一份名单',
+    wordsSrc.includes('createUnifiedTools({ bridge: stub') &&
+      wordsSrc.includes("import { LEVELS, PROJECT_SUBCATEGORIES } from '../lib/macro/shared.js'") &&
+      wordsSrc.includes("import { GUIDE_TEXT, NAV_TEXT } from '../lib/macro/prompt.js'") &&
+      wordsSrc.includes("import { ACTIONS } from '../lib/macro/defs/admin.js'"),
+  )
+  // 三组核心比对：手册↔动作表、手册↔LEVELS、对外数字↔实测注入长度。
+  check(
+    '口径: 手册动作枚举与动作表逐字比、LEVELS 与手册名单比、字符数与 README/索引比',
+    wordsSrc.includes('actionsInGuide === actionKeys') &&
+      wordsSrc.includes('LEVELS.every((l) => levelsInGuide.includes(l))') &&
+      wordsSrc.includes("join(root, 'plugin-market', 'index.cn.json')"),
+  )
+  // 死指针：旧名字既不能出现在工具说明里，也不能出现在注入手册里。
+  check(
+    '口径: 判死指针（工具说明与注入手册都不许再出现旧工具名）',
+    wordsSrc.includes("const OLD = ['nebula_', 'memory_find_similar', 'memory_home', 'meow-memory']") &&
+      wordsSrc.includes("'死指针：8 个工具的说明里没有旧工具名/旧插件名'"),
+  )
+  // 阴性对照：解析器与检测器必须证明自己抓得住坏输入（教训 59）。
+  check(
+    '口径: 有阴性对照（谎报的字符数、认不出的模式都会被抓住）',
+    wordsSrc.includes('function claimedGuideLengths(text)') &&
+      wordsSrc.includes("claimedGuideLengths('常驻注入 1,086 字符')") &&
+      wordsSrc.includes("modeTokens('这里没有模式').length === 0"),
+  )
+  // 这一探针自己也得有归属与出口：失败必须置非零，否则 check-all 会把它当绿的。
+  check(
+    '口径: 失败时自己把 exitCode 置非零（不然红也读不出来）',
+    wordsSrc.includes('if (failures !== 0) process.exitCode = 1'),
   )
 }
 

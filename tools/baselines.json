@@ -1,9 +1,9 @@
 {
   "note": "断言数与耗时基线：counts=每支自检脚本的 PASS 条数，ms=上次实测耗时，budgetMs=超时就杀的上限（约 4×ms，最低 30s），实际耗时超过 ms 的 1.5 倍只提醒不判红。故意增减断言、或确认某支本来就该这么慢之后，跑 node tools/check-all.mjs --update-baselines 重记。",
   "generatedBy": "tools/check-all.mjs --update-baselines",
-  "version": "0.2.83",
+  "version": "0.2.84",
   "counts": {
-    "verify.mjs": 900,
+    "verify.mjs": 906,
     "tools/probe-fusion.mjs": 460,
     "tools/probe-graph.mjs": 58,
     "tools/probe-host.mjs": 23,
@@ -13,32 +13,34 @@
     "tools/check-client-bundle.mjs": 0,
     "tools/probe-inject.mjs": 17,
     "tools/check-yaml.mjs": 0,
-    "tools/doctor.mjs": 118,
+    "tools/doctor.mjs": 119,
     "tools/probe-load.mjs": 14,
     "tools/check-market.mjs": 48,
     "tools/probe-toolsize.mjs": 3,
-    "tools/probe-tools.mjs": 20
+    "tools/probe-tools.mjs": 20,
+    "tools/probe-words.mjs": 20
   },
   "ms": {
-    "verify.mjs": 1807,
-    "tools/probe-fusion.mjs": 7455,
-    "tools/probe-host.mjs": 944,
-    "tools/probe-client-ui.mjs": 82,
-    "tools/coverage-audit.mjs": 88,
-    "tools/check-client-bundle.mjs": 60,
-    "tools/probe-inject.mjs": 417,
-    "tools/check-yaml.mjs": 73,
-    "tools/doctor.mjs": 161,
-    "tools/probe-graph.mjs": 85329,
-    "tools/param-audit.mjs": 20656,
-    "tools/probe-load.mjs": 129,
-    "tools/check-market.mjs": 252,
-    "tools/probe-toolsize.mjs": 70,
-    "tools/probe-tools.mjs": 1618
+    "verify.mjs": 1778,
+    "tools/probe-fusion.mjs": 8172,
+    "tools/probe-host.mjs": 993,
+    "tools/probe-client-ui.mjs": 84,
+    "tools/coverage-audit.mjs": 91,
+    "tools/check-client-bundle.mjs": 64,
+    "tools/probe-inject.mjs": 446,
+    "tools/check-yaml.mjs": 80,
+    "tools/doctor.mjs": 172,
+    "tools/probe-graph.mjs": 85401,
+    "tools/param-audit.mjs": 20670,
+    "tools/probe-load.mjs": 133,
+    "tools/check-market.mjs": 275,
+    "tools/probe-toolsize.mjs": 71,
+    "tools/probe-tools.mjs": 1759,
+    "tools/probe-words.mjs": 98
   },
   "budgetMs": {
     "verify.mjs": 30000,
-    "tools/probe-fusion.mjs": 30000,
+    "tools/probe-fusion.mjs": 33000,
     "tools/probe-host.mjs": 30000,
     "tools/probe-client-ui.mjs": 30000,
     "tools/coverage-audit.mjs": 30000,
@@ -51,6 +53,7 @@
     "tools/probe-load.mjs": 30000,
     "tools/check-market.mjs": 30000,
     "tools/probe-toolsize.mjs": 30000,
-    "tools/probe-tools.mjs": 30000
+    "tools/probe-tools.mjs": 30000,
+    "tools/probe-words.mjs": 30000
   }
 }
