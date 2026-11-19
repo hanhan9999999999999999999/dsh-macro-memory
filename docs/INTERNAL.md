@@ -4719,7 +4719,7 @@ node verify.mjs              # A91 六条
 
 ### 9.97.5 现场数字
 
-- `check-all`：21 支 / 1,886 条断言 / 136.6s
+- `check-all`：21 支 / 1,887 条断言 / 139s
 - `probe-graph`：58 → 65 条（+7 = H 段）
 - `verify`：952 → 953；`doctor`：124 → 125；`check-market`：47 —（索引未提交时那条从 PASS 变 WARN，提交后回 48）
 - `vendor/` 未改：`make-vendor-manifest` 不必重跑
@@ -4731,3 +4731,18 @@ node verify.mjs              # A91 六条
 - 改的是**融合层文案与探针**，没动 vendor 的签名算法、没改 dup 门槛 0.86、没改面板排序与截断（`HY_MAX`）。
 - 面板这个数会继续顶格——这是它作为「扫全库」近似算法的固有行为，本轮只保证**读的人知道自己在读什么**。
 - 已知仍未统一：`memory_dream` 与面板其它口径还没跟着 `dedupe` / `repeat` / 这里的「相似」对齐。
+### 9.97.7 顺带修：市场索引曾写进一个「8 小时后」的时间戳
+
+发版时用 PowerShell 拿时间戳：`[int][double]::Parse((Get-Date -UFormat %s))`。在 +08:00 这台机器上它
+**多算了 8 小时**（1795149325，真实值是 1795122451）。`check-market` 那条「publishTimestamp 是合理的时间
+（不是毫秒、不在未来）」当时允 `now + 86400`，于是 8 小时后的值照样 PASS，市场详情页会把「更新时间」
+显示成未来。改了两处：
+
+- 索引两份（`plugin-market/index.json`、`index.cn.json`）的 `publishTimestamp` 与 `sortKeys.updated`
+  换成真 epoch（由 node 的 `Math.floor(Date.now()/1000)` 取，别再从 PowerShell 拼）。
+- `tools/check-market.mjs` 的容差 `now + 86400` → `now + 300`，并在代码里写明原因：
+  **24 小时的松量会把一个时区算错的值放过去**，错误不该靠余量过关。
+
+线上核实（gh-proxy raw，带 `?cb=` 绕开 CDN 缓存）：`index.json` 200 / 3,410 B / v0.2.91 /
+commit `644cc4e006` / ts `1795122451`（距今 218 秒，不在未来）；`index.cn.json` 同值 3,625 B；
+`package.json` @main 与 @发布提交都是 0.2.91。
