@@ -89,13 +89,13 @@
           "self-tested"
         ],
         "sortKeys": {
-          "updated": 1795125328
+          "updated": 1795126924
         },
-        "publishTimestamp": 1795125328
+        "publishTimestamp": 1795126924
       },
       "versions": [
         {
-          "version": "0.2.93",
+          "version": "0.2.94",
           "publishTimestamp": 1795125328,
           "source": {
             "type": "git",

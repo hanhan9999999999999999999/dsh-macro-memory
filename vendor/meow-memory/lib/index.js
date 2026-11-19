@@ -3518,6 +3518,49 @@ function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
   out.sort((x, y) => y.repeat - x.repeat);
   return out.slice(0, DREAM_DUP_MAX);
 }
+// [macro-fusion 0.2.94] 同一件事的另一种形态：一条短摘录 + 一条长详写。这种对子的逐字重复度天然很低
+//（实测 15 词 ⇄ 92 词只有 0.16，15 词 ⇄ 32 词也只有 0.47），上面那块（≥80%）与写侧 DEDUP_THRESHOLD
+// 都抓不到，但它们确实是同一句话存了两层，只是叠成了「摘要 + 全文」。
+// 判据换成覆盖度：短的那条有几个词出现在长的那条里（取小集合做分母），再套两道闸——
+// 短的那条至少要有 DREAM_COVER_MIN_WORDS 个不同的词（拦住「一个短语碰巧出现在长文里」被当成重复，
+// 这条不能用长度比来挡：实测最常见的形态就是 15 词 ⇄ 92 词，比值只有 0.16）；
+// 比值上限 DREAM_COVER_RATIO_MAX 拦住「两条差不多长，本就该各说各的」。
+// 与 ≥80% 的逐字重复对互斥（重复度已经够高的不走这一块），同一对不会印两遍。
+var DREAM_COVER_MIN = 0.9;
+var DREAM_COVER_MIN_WORDS = 8;
+var DREAM_COVER_RATIO_MAX = 0.75;
+function coverOfSets(a, b) {
+  const small = a.size <= b.size ? a : b;
+  const big = a.size <= b.size ? b : a;
+  if (small.size === 0) return 0;
+  let inter = 0;
+  for (const x of small) if (big.has(x)) inter++;
+  return inter / small.size;
+}
+function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN) {
+  if (rows.length < 2) return [];
+  const sets = rows.map((r) => new Set(tokenize(String(r.content ?? ""))));
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const a = sets[i];
+    if (a.size === 0) continue;
+    for (let j = i + 1; j < rows.length; j++) {
+      const b = sets[j];
+      if (b.size === 0) continue;
+      const smallWords = Math.min(a.size, b.size);
+      const ratio = smallWords / Math.max(a.size, b.size);
+      if (smallWords < DREAM_COVER_MIN_WORDS || ratio > DREAM_COVER_RATIO_MAX) continue;
+      const cov = coverOfSets(a, b);
+      if (cov < minContain) continue;
+      if (overlapOfSets(a, b) >= DEDUP_THRESHOLD) continue;
+      const shortRow = a.size <= b.size ? rows[i] : rows[j];
+      const longRow = a.size <= b.size ? rows[j] : rows[i];
+      out.push({ a: shortRow, b: longRow, contain: Math.round(cov * 1e3) / 1e3, ratio: Math.round(ratio * 1e3) / 1e3 });
+    }
+  }
+  out.sort((x, y) => y.contain - x.contain);
+  return out.slice(0, DREAM_DUP_MAX);
+}
 function buildDreamMessage(db, sessionId, T2, rounds, idx) {
   const round = rounds[idx];
   const lbl3 = (key, params) => fillTemplate(keyedValue("labels", key), params);
@@ -3565,7 +3608,18 @@ ${dupPairs.map((p) => {
       return inThisRound ? pairLine : `${pairLine}\uFF08${lbl3("dream.dup.crossRound")}\uFF09`;
     }).join("\n")}
 ${lbl3("dream.dup.rule", { threshold: String(Math.round(DEDUP_THRESHOLD * 100)) })}`;
-    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock, groupMarker }).split("\n"));
+    // [macro-fusion 0.2.94] 重复详写对：一短一长、短的那条几乎整句都在长的那条里。
+    // 与上面那块互斥（≥80% 的已报过），所以同一对不会印两遍。
+    const coverPairs = dreamCoverPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);
+    const coverBlock = coverPairs.length === 0 ? "" : `
+${lbl3("dream.cover.title", { n: String(coverPairs.length), contain: String(Math.round(DREAM_COVER_MIN * 100)) })}
+${coverPairs.map((p) => {
+      const line = `- ${shortOf.get(String(p.a.id))} \u2282 ${shortOf.get(String(p.b.id))}  ${p.contain.toFixed(2)} \xB7 ${p.a.level} \u21D2 ${p.b.level}`;
+      const inThis = roundIds.has(String(p.a.id)) && roundIds.has(String(p.b.id));
+      return inThis ? line : `${line}\uFF08${lbl3("dream.dup.crossRound")}\uFF09`;
+    }).join("\n")}
+${lbl3("dream.cover.rule", { contain: String(Math.round(DREAM_COVER_MIN * 100)) })}`;
+    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock, groupMarker }).split("\n"));
   }
   return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }

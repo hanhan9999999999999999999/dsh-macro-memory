@@ -288,5 +288,62 @@ check(
   `${crossSlotFiles.filter((f) => /另组|另一组|another round|outra rodada/.test(f)).length}/${crossSlotFiles.length} 份指引`,
 )
 
+
+// ── E1–E5：同一件事的「短摘录 + 长详写」（0.2.94）──────────────────────────
+// 逐字重复度判据天然抓不到这种对子：15 词的摘录对 92 词的详写只有 0.16（实测），
+// 但它们说的是同一件事。判据换成覆盖度：短的那条几乎整句都落在长的那条里。
+const coverWs = join(home, 'ws-cover')
+mkdirSync(coverWs, { recursive: true })
+const C_SHORT = 'dsh 的 sandbox 关了以后 workspace 写入会报 EPERM，得先放行目录'
+const C_LONG =
+  '排查记录：主人在 Windows 上跑 dsh 的时候发现 sandbox 关了以后 workspace 写入会报 EPERM，得先放行目录才行；具体表现是 node 进程 fs.writeFile 直接抛错、robocopy 也会失败，最后是靠 diagnose-windows-sandbox-acl 检查祖先目录 ACL 才定位到问题，结论是沙箱策略与目录权限不一致，不是插件自己的 bug，改法是把工作目录加到放行清单里并重启 dsh。'
+const C_OTHER = '另一个插件的日志说明：沙箱模式与目录权限是两件事，写日志失败通常是磁盘满或路径太长，与 sandbox 无关，遇到先看 free space。'
+const coverExec = execIn(coverWs, 'sess-ruler-cover')
+const eShort = await call('memory_remember', { content: C_SHORT, level: 'fact', keywords: ['sandbox', 'EPERM', '写入', '放行', '目录'], importance: 1, project: '全局' }, coverExec)
+const eLong = await call('memory_remember', { content: C_LONG, level: 'topic', title: 'sandbox 写入报 EPERM 的排查', keywords: ['sandbox', 'EPERM', '排查', 'ACL', '放行'], importance: 1, project: '全局' }, coverExec)
+const eOther = await call('memory_remember', { content: C_OTHER, level: 'fact', keywords: ['日志', '磁盘', '路径', '无关', '对照'], importance: 1, project: '全局' }, coverExec)
+const coverText = dreamOf('sess-ruler-cover', coverWs)
+const coverLine = (coverText.match(/^- (\S+) ⊂ (\S+)  ([0-9.]+) · (\S+) ⇒ (\S+)/m) ?? [])
+check(
+  'E1 dream 清单点名了「短摘录 + 长详写」这一对（逐字重复度低也算同一件事）',
+  /【重复详写 1 对】/.test(coverText) && coverLine.length > 0,
+  coverLine.length > 0 ? `${coverLine[1]} ⊂ ${coverLine[2]} ${coverLine[3]}` : '没这一行',
+)
+check(
+  'E2 方向对：⊂ 左边是短摘录（fact）、右边是长详写（topic），不是反着印',
+  coverLine.length > 0 &&
+    isPrefixOf(coverLine[1].trim(), eShort.id) &&
+    isPrefixOf(coverLine[2].trim(), eLong.id) &&
+    coverLine[4] === 'fact' &&
+    coverLine[5].startsWith('topic'),
+  coverLine.length > 0 ? `${coverLine[1]} ⇒ ${coverLine[2]}  ${coverLine[4]} ⇒ ${coverLine[5]}` : '没这一行',
+)
+check(
+  'E3 覆盖度与处置都写清了（≥90% 的门槛填上了，处置说的是合成一条，不是当两件事留着）',
+  coverLine.length > 0 &&
+    Number(coverLine[3]) >= 0.9 &&
+    /覆盖度 ≥90%/.test(coverText) &&
+    /合成一条/.test(coverText) &&
+    /archived/.test(coverText) &&
+    !/[{}]contain/.test(coverText),
+  (coverText.match(/覆盖度 ≥[0-9]+%/) ?? ['(没写门槛)'])[0],
+)
+check(
+  'E4 阴性对照 + 互斥：无关的那条没被凑成详写对，且这一窗只有详写块、没有逐字重复块（同一对不印两遍）',
+  coverLine.length > 0 &&
+    !isPrefixOf(coverLine[1].trim(), eOther.id) &&
+    !isPrefixOf(coverLine[2].trim(), eOther.id) &&
+    (coverText.match(/^- \S+ ⊂ \S+  [0-9.]+ · /gm) ?? []).length === 1 &&
+    !/【逐字重复对 \d+ 对】/.test(coverText),
+  `详写行 ${(coverText.match(/^- \S+ ⊂ \S+  [0-9.]+ · /gm) ?? []).length} 条`,
+)
+const coverSlotFiles = ['zh', 'en', 'pt-br'].flatMap((l) => ['dream-atomic.md', 'dream-topic.md'].map((f) => readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, f), 'utf8')))
+check(
+  'E5 三语文案与指引都有这一块（labels 的 dream.cover.title / rule + 六份指引）',
+  labelFiles.every((f) => /^- dream\.cover\.title:/m.test(f) && /^- dream\.cover\.rule:/m.test(f)) &&
+    coverSlotFiles.every((f) => /重复详写对|duplicate write-ups|redações duplicadas/.test(f)),
+  `${coverSlotFiles.filter((f) => /重复详写对|duplicate write-ups|redações duplicadas/.test(f)).length}/${coverSlotFiles.length} 份指引`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

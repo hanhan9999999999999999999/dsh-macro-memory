@@ -468,6 +468,11 @@ const PATCHES = [
     what: 'dream 拿不到「重复」这把尺子：memory_remember 写的时候算得出逐字重复度（0.2.88 跨层点名、0.2.90 检索里报 repeat），可 dream——全库唯一回头看旧条目的地方——只给清单，哪两条其实是同一句话全靠模型自己扫字面比。现在①collectDreamRounds 选出来的每一组行两两算正文词集 Jaccard（和写侧 DEDUP_THRESHOLD 同一个门槛、同一个 overlapOfSets），≥80% 的对子按重复度降序取前 5 对，在清单末尾单独列一段「【逐字重复对 N 对】」并给处置（保留信息更全的、另一条 status=archived；只是相似度高的不算）；②没有对子时一个字不加（干净清单不加噪音）；③顺手修短 id 撞车：id 开头是 base36 时间戳，同一批连写两条前 8 位常常一模一样（实测 BASE/NEAR 都截成 0mwo20eo），清单与跨层回执原来都印 slice(0,8)，读者拿着它去 memory_update 会撞上 MemoryDb.update 的歧义拒绝、报成「未找到该记忆」——现在清单内用 uniqueShortIdsAmong 保证互不撞前缀，回执用 uniqueShortId 按层确认唯一。基准在 tools/probe-ruler.mjs 的 D 段（含「成员正好是那一对」「单条目不出块」两条阴性对照）',
   },
   {
+    marker: '[macro-fusion 0.2.94]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '逐字重复度这把尺子天生抓不到「一条短摘录 + 一条长详写」：实测 15 词对 92 词只有 0.16，对 32 词也只有 0.47，全都落在 80% 门槛外面，可它们说的是同一件事，只是叠成了「摘要 + 全文」。写侧 DEDUP_THRESHOLD 与 dream 的重复对都只认 Jaccard，于是同一个知识点永久存两层、首轮注入多付一份钱。现在 dream 清单另开一块「重复详写对」：判据换成覆盖度（分母取小集合，短的那条几乎整句都在长的那条里），配两道闸——短的那条至少 8 个不同的词（拦住一个短语碰巧撞进长文；这条不能用长度比挡，最常见的形态就是 15 词 ⇄ 92 词、比值 0.16）、长度比 ≤0.75（拦住两条差不多长、本就该各说各的）；与 ≥80% 的重复对互斥，同一对不印两遍。处置写的是「合成一条、保留信息更全的那条、另一条 archived」，三语 labels 的 dream.cover.title / dream.cover.rule 提供文案，三语六份指引都说清「repeat 低也可能是同一件事」。基准在 tools/probe-ruler.mjs 的 E1–E5 段（含方向、阴性对照、与逐字重复块互斥）',
+  },
+  {
     marker: '[macro-fusion 0.2.93]',
     file: 'vendor/meow-memory/lib/index.js',
     what: 'dream 的重复对只在「本轮的行」里比，可 atomic 与 topic 是**两次独立的消息**：同一句话一条记成 fact、一条记成 topic 时，两条永远不在一轮里，重复对就永远算不出来——写侧 crossLevelDupe 扫全部层、早就能抓，dream 又漏一次（同一把尺子只在写入方向上装好，回头看时又没刻度）。现在把整个 dream 范围的行（allRows，含 atomic 与 topic 两轮）一起算对子，只由「在轮次里先出现的那一轮」负责展示：同一对只印一次，不在两轮消息里各印一遍（否则白烧一份 token，还会让模型以为有两对）；配对的那条不在本轮时，行尾标「（另一组）」并由三语 labels 的 dream.dup.crossRound 提供，三语 dream-atomic / dream-topic 指引同时说清「看不见对方也得照同一处置办，同一对只处置一次」。基准在 tools/probe-ruler.mjs 的 D8/D9/D10 段（含「整轮只印一次」「无关那条不配对」两条阴性对照）',

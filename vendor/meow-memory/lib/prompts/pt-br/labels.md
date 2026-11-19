@@ -31,6 +31,8 @@
 - dream.dup.title: [Pares duplicados literalmente: {n}] (as duas entradas abaixo coincidem em ≥{threshold}% no texto, a mesma régua que memory_remember usa para chamar algo de duplicado):
 - dream.dup.rule: O que fazer: normalmente é a mesma frase guardada em duas camadas — mantenha a que tem mais informação e a camada mais adequada, e marque a outra como status=archived via memory_update. Por outro lado, entradas que só parecem iguais e NÃO estão listadas aqui não são duplicadas: similaridade (cosine) alta com repeat baixo significa "mesmo assunto", não "mesma frase".
 - dream.dup.crossRound: outra rodada
+- dream.cover.title: [Redações duplicadas: {n}] (em cada par o item da esquerda cabe inteiro dentro do da direita — a repetição literal é de poucas dezenas por cento, porque um é um resumo curto e o outro a versão completa, mas dizem a mesma coisa; o critério é cobertura ≥{contain}%):
+- dream.cover.rule: O que fazer: junte em um só — leve para a versão completa o que só o resumo tem, mantenha a entrada mais completa e marque a outra como status=archived via memory_update. Não as trate como dois fatos só porque o repeat é baixo: o mesmo conhecimento guardado duas vezes custa duas vezes na injeção da primeira rodada.
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.

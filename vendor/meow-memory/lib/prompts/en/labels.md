@@ -31,6 +31,8 @@
 - dream.dup.title: [Verbatim duplicate pairs: {n}] (the two entries below overlap by ≥{threshold}% character-level, the same ruler memory_remember uses to call something a duplicate):
 - dream.dup.rule: What to do: this is usually one sentence stored in two layers — keep the one with more information and the more fitting level, and set the other to status=archived via memory_update. Conversely, entries that merely look alike but are NOT listed here are not duplicates: a high similarity (cosine) with a low repeat means "same topic", not "same sentence".
 - dream.dup.crossRound: another round
+- dream.cover.title: [Duplicate write-ups: {n}] (in each pair the whole of the left entry sits inside the right one — verbatim overlap is only a few dozen percent, because one is a short excerpt and the other a long write-up, but they say the same thing; the test is containment ≥{contain}%):
+- dream.cover.rule: What to do: merge them into one — move whatever the excerpt has that the long entry lacks into it, keep the fuller entry, and set the other to status=archived via memory_update. Do not file them as two separate facts just because repeat is low: the same knowledge stored twice is paid for twice in the first-round injection.
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.

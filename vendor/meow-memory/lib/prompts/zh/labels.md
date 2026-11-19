@@ -31,6 +31,8 @@
 - dream.dup.title: 【逐字重复对 {n} 对】（下面这两条正文的逐字重复度 ≥{threshold}%，与 memory_remember 判「重复」是同一把尺子）：
 - dream.dup.rule: 处置：这多半是同一句话分别存进了两层——保留信息更全、层级更合适的那一条，另一条用 memory_update 把 status 设 archived。反过来，只是「相似度高」而没列在这里的，不要当重复处理：memory_search 的 similarity（cosine）高、repeat 低，说的是「同一话题」，不是「同一句」。
 - dream.dup.crossRound: 另一组
+- dream.cover.title: 【重复详写 {n} 对】（下面每一对里，⊂ 左边那条的整句几乎都落在右边那条里——逐字重复度只有几十个百分点，因为一条是短摘录、一条是长详写，但它们讲的是同一件事，判据是覆盖度 ≥{contain}%）：
+- dream.cover.rule: 处置：合成一条——把短摘录里长那条没有的细节补进长那条，保留信息更全的那条，另一条用 memory_update 把 status 设 archived。别因为 repeat 低就当两件事记着：同一个知识点存两层，首轮注入要多付一份钱。
 - project.unlabeled: 未标记
 - project.header: 【项目：{name}】
 - project.empty: 【项目：{name}】该项目暂无记忆条目。

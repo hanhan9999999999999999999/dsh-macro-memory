@@ -6225,5 +6225,65 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+
+// [macro-fusion 0.2.94] 逐字重复度抓不到「一条短摘录 + 一条长详写」：实测 15 词对 92 词只有 0.16，
+// 但它们说的是同一件事，只是叠成了摘要 + 全文。判据换成覆盖度（小集合做分母），配两道闸：
+// 短的那条至少 8 个不同的词、长度比 ≤0.75。这里钉：常量在、判据是覆盖度、与 ≥80% 互斥、
+// 清单真用上、没对子不加字、三语 label 与指引都写了这一条、探针 E 段进线。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools/probe-ruler.mjs'), 'utf8')
+  const langs = ['zh', 'en', 'pt-br']
+  const labelOf = (l) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, 'labels.md'), 'utf8')
+  const slotOf = (l, f) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, f), 'utf8')
+  check(
+    'dream 详写对: 覆盖度判据是模块级纯函数，门槛是三个具名常量（不是散在逻辑里的魔数）',
+    vSrc.includes('var DREAM_COVER_MIN = 0.9;') &&
+      vSrc.includes('var DREAM_COVER_MIN_WORDS = 8;') &&
+      vSrc.includes('var DREAM_COVER_RATIO_MAX = 0.75;') &&
+      /function dreamCoverPairs\(rows, minContain = DREAM_COVER_MIN\)/.test(vSrc),
+  )
+  check(
+    'dream 详写对: 分母取小集合（覆盖度，不是 Jaccard），且与 ≥80% 的重复对互斥',
+    vSrc.includes('const small = a.size <= b.size ? a : b;') &&
+      vSrc.includes('return inter / small.size;') &&
+      vSrc.includes('if (overlapOfSets(a, b) >= DEDUP_THRESHOLD) continue;'),
+  )
+  check(
+    'dream 详写对: 清单在整窗口范围算详写对，只由先出现的那一轮印，且拼在 list 末尾',
+    vSrc.includes('const coverPairs = dreamCoverPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);') &&
+      vSrc.includes('list: listBlock + dupBlock + coverBlock'),
+  )
+  check(
+    'dream 详写对: 没对子一个字不加，门槛文案由常量算出来（不许把 90 写死在文案里）',
+    vSrc.includes('const coverBlock = coverPairs.length === 0 ? "" :') &&
+      (vSrc.split('String(Math.round(DREAM_COVER_MIN * 100))').length - 1) >= 2,
+  )
+  check(
+    'dream 详写对: 三语 labels 都有 dream.cover.title / dream.cover.rule，占位符按名字填（{n} / {contain}）',
+    langs.every((l) => {
+      const s = labelOf(l)
+      return /^- dream\.cover\.title:/m.test(s) && /^- dream\.cover\.rule:/m.test(s) && s.includes('{n}') && s.includes('{contain}')
+    }),
+  )
+  check(
+    'dream 详写对: 三语六份指引都写了这一条（重复度低也可能是一条摘录 + 一条全文）',
+    langs.every((l) =>
+      ['dream-atomic.md', 'dream-topic.md'].every((f) =>
+        /重复详写对|duplicate write-ups|redações duplicadas/.test(slotOf(l, f)),
+      ),
+    ),
+  )
+  check(
+    'dream 详写对: probe-ruler 的 E1–E5 进了线（含方向、阴性对照、与逐字重复块互斥）',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('E1 dream 清单点名了「短摘录 + 长详写」这一对') &&
+      rulerSrc.includes('E2 方向对：⊂ 左边是短摘录') &&
+      rulerSrc.includes('E3 覆盖度与处置都写清了') &&
+      rulerSrc.includes('E4 阴性对照 + 互斥'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
