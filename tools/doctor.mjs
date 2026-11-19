@@ -462,6 +462,11 @@ const PATCHES = [
     file: 'lib/macro/defs/admin.js',
     what: '面板与工具各说一套话：星图体检报「疑似重复（N）…（相似 1）」用的是**稀有词签名**近似（每条约留最稀有的 24 个词、只算 df≥2 的词、门槛 0.86），库小的时候签名退化成「两边共有的词」，Jaccard 会顶到 1；而工具里的「逐字重复度」是全文词集，跟写侧 80% 合并判据同源。实测同一对内容（共享前言 + 两个不同核心、各 40 余字）：面板说「相似 1」、memory_search 说「相似度 0.624（逐字 0.42）」、写侧压根没判重复——三个口径三个答案，方向还是「把两件独立的事判成一件」，照着面板去归档等于误删。融合层拿不到正文、算不出第二把尺子，所以不重算：只在真列出对子时（kind 省略或 dup、且正文里有「（相似 」）把校准句并进抬头，说清这个 N 是什么、什么时候会顶格、要判「同一句存了两层」去看 memory_search 的 repeat（≥0.80）。基准在 tools/probe-graph.mjs 的 H 段（含写侧不判重复、kind=stale 不掺两条阴性对照）',
   },
+  {
+    marker: '[macro-fusion 0.2.92]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: 'dream 拿不到「重复」这把尺子：memory_remember 写的时候算得出逐字重复度（0.2.88 跨层点名、0.2.90 检索里报 repeat），可 dream——全库唯一回头看旧条目的地方——只给清单，哪两条其实是同一句话全靠模型自己扫字面比。现在①collectDreamRounds 选出来的每一组行两两算正文词集 Jaccard（和写侧 DEDUP_THRESHOLD 同一个门槛、同一个 overlapOfSets），≥80% 的对子按重复度降序取前 5 对，在清单末尾单独列一段「【逐字重复对 N 对】」并给处置（保留信息更全的、另一条 status=archived；只是相似度高的不算）；②没有对子时一个字不加（干净清单不加噪音）；③顺手修短 id 撞车：id 开头是 base36 时间戳，同一批连写两条前 8 位常常一模一样（实测 BASE/NEAR 都截成 0mwo20eo），清单与跨层回执原来都印 slice(0,8)，读者拿着它去 memory_update 会撞上 MemoryDb.update 的歧义拒绝、报成「未找到该记忆」——现在清单内用 uniqueShortIdsAmong 保证互不撞前缀，回执用 uniqueShortId 按层确认唯一。基准在 tools/probe-ruler.mjs 的 D 段（含「成员正好是那一对」「单条目不出块」两条阴性对照）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

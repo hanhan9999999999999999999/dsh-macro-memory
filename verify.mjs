@@ -5902,11 +5902,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     meowSrc.includes('function crossLevelDupe(db, level, content) {') &&
       meowSrc.includes('if (lv === level) continue;') &&
       meowSrc.includes('if (sim >= DEDUP_THRESHOLD && (!best || sim > best.sim)) best = { id: r.id, level: lv, sim };') &&
-      meowSrc.includes('const crossNote = crossLevelNote(crossLevelDupe(db, level, content));'),
+      meowSrc.includes('const crossNote = crossLevelNote(crossLevelDupe(db, level, content), db);'),
   )
   check(
     '跨层重复: 点名要带层名、短 id、重复度，并给出两条出路（归档 / 把措辞写开）',
-    meowSrc.includes('另一层已有几乎一样的条目（${hit.level} ${hit.id.slice(0, 8)}，重复度 ${Math.round(hit.sim * 100)}%）') &&
+    // 0.2.92：这里的短 id 改成 uniqueShortId 算出来的不撞前缀（原来直接 slice(0, 8)，
+    // 同一批写下的两条会印成同一个 id，拿着它去 memory_update 会撞上歧义拒绝）。
+    meowSrc.includes('另一层已有几乎一样的条目（${hit.level} ${shortId}，重复度 ${Math.round(hit.sim * 100)}%）') &&
+      meowSrc.includes('const shortId = db === undefined ? hit.id.slice(0, 8) : uniqueShortId(db, hit.level, hit.id);') &&
       meowSrc.includes('status 设 archived') &&
       meowSrc.includes('把措辞写开一点'),
   )
@@ -6105,6 +6108,73 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       probeSrc.includes('H2 写侧没把这两条判成重复') &&
       probeSrc.includes('H6 同一对在工具里逐字只有四成') &&
       probeSrc.includes('H7 只看别的类别时不掺这句话（不制造噪音）'),
+  )
+}
+
+
+// [macro-fusion 0.2.92] dream 是全库唯一「回头看旧条目」的地方，可它原来只给清单、不给判据：哪两条
+// 其实是同一句话，只能靠模型自己扫字面比。写侧（0.2.88 / 0.2.90）早就算得出逐字重复度，dream 却
+// 拿不到——同一把尺子只在一个方向上有刻度。这里钉三件事：算出来了、只在有对子时出现、短 id 不撞。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools/probe-ruler.mjs'), 'utf8')
+  const langs = ['zh', 'en', 'pt-br']
+  const labelOf = (l) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, 'labels.md'), 'utf8')
+  const slotOf = (l, f) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, f), 'utf8')
+
+  check(
+    'dream 重复: 重复对是模块级的两个纯函数（可单测），门槛默认取写侧同一个 DEDUP_THRESHOLD',
+    vSrc.includes('function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD)') &&
+      vSrc.includes('function uniqueShortIdsAmong(rows, min = 8)') &&
+      vSrc.includes('var DREAM_DUP_MAX = 5;'),
+  )
+  check(
+    'dream 重复: 清单里真的用上了（算 / 渲染 / 并进 list 三处缺一不可）',
+    vSrc.includes('const dupPairs = dreamDupPairs(roundRows);') &&
+      vSrc.includes('const shortOf = uniqueShortIdsAmong(roundRows);') &&
+      vSrc.includes('list: listBlock + dupBlock'),
+  )
+  check(
+    'dream 重复: 没有对子就一个字不加（干净清单不加噪音），门槛数字由常量算出、不是写死的 80',
+    vSrc.includes('const dupBlock = dupPairs.length === 0 ? "" :') &&
+      (vSrc.match(/String\(Math\.round\(DEDUP_THRESHOLD \* 100\)\)/g) || []).length >= 2,
+  )
+  check(
+    'dream 重复: 对子里的短 id 走 uniqueShortIdsAmong，不再直接 slice(0, 8)（撞了就是自己和自己重复）',
+    vSrc.includes('${shortOf.get(String(p.a.id))}') &&
+      vSrc.includes('${shortOf.get(String(p.b.id))}') &&
+      !/\\\\u21C4[^`]*slice\(0, 8\)/.test(vSrc),
+  )
+  check(
+    'dream 重复: 跨层回执同样改用不撞前缀的短 id（记忆 update 的歧义拒绝不该被回执带出来）',
+    vSrc.includes('function uniqueShortId(db, level, id, min = 8)') &&
+      vSrc.includes('const shortId = db === undefined ? hit.id.slice(0, 8) : uniqueShortId(db, hit.level, hit.id);') &&
+      vSrc.includes('const crossNote = crossLevelNote(crossLevelDupe(db, level, content), db);'),
+  )
+  check(
+    'dream 重复: 三语 labels 都有这条文案，占位符按名字填（{n} / {threshold} 都不许漏印）',
+    langs.every((l) => {
+      const s = labelOf(l)
+      return /^- dream\.dup\.title:/m.test(s) && /^- dream\.dup\.rule:/m.test(s) && s.includes('{n}') && s.includes('{threshold}')
+    }),
+  )
+  check(
+    'dream 重复: 三语的整理指引都写了这条处置（≥80% 才算重复、相似只是同话题、另一条 archived）',
+    langs.every((l) => {
+      const a = slotOf(l, 'dream-atomic.md')
+      const b = slotOf(l, 'dream-topic.md')
+      return a.includes('≥80%') && a.includes('archived') && b.includes('≥80%') && b.includes('archived')
+    }),
+  )
+  check(
+    'dream 重复: probe-ruler 的 D 段七条进了线（含「成员正好是那一对」与「单条目不出块」两条阴性对照）',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('D1 dream 清单里点名了那一对逐字重复') &&
+      rulerSrc.includes('D2 两个短 id 互相可区分') &&
+      rulerSrc.includes('D4 重复对的成员正好是 BASE 与 NEAR') &&
+      rulerSrc.includes('D5 阴性对照：只有一条的窗口没有') &&
+      rulerSrc.includes('D7 三语的整理指引都写了这一条'),
   )
 }
 

@@ -4746,3 +4746,76 @@ node verify.mjs              # A91 六条
 线上核实（gh-proxy raw，带 `?cb=` 绕开 CDN 缓存）：`index.json` 200 / 3,410 B / v0.2.91 /
 commit `644cc4e006` / ts `1795122451`（距今 218 秒，不在未来）；`index.cn.json` 同值 3,625 B；
 `package.json` @main 与 @发布提交都是 0.2.91。
+
+## 9.98 dream 是唯一回头看的地方，可它没带尺子（0.2.92）
+
+### 9.98.0 一句话
+
+写侧早就算得出「这两条是不是同一句话」（0.2.88 跨层点名、0.2.90 检索里报 `repeat`，两处都是
+`DEDUP_THRESHOLD = 0.8` 的词集 Jaccard）。可 **dream**——全库唯一会回头看旧条目、判定该合并/归档的地方——
+只把清单端出来，哪两条其实是同一句话，全靠模型自己扫字面比。同一把尺子，只有写的时候有刻度。
+
+### 9.98.1 现在 dream 说什么
+
+`buildDreamMessage` 选完本组的行之后，把这一组的正文两两比一遍（`dreamDupPairs`，同一个
+`overlapOfSets`、同一个 `DEDUP_THRESHOLD`），≥80% 的对子按重复度降序取前 5 对，在清单末尾单独一段：
+
+```
+【逐字重复对 1 对】（下面这两条正文的逐字重复度 ≥80%，与 memory_remember 判「重复」是同一把尺子）：
+- 0mwo20yqb ⇄ 0mwo20yqt  0.81 · fact ⇄ lesson
+处置：这多半是同一句话分别存进了两层——保留信息更全、层级更合适的那一条，另一条用 memory_update 把 status 设 archived。
+反过来，只是「相似度高」而没列在这里的，不要当重复处理：memory_search 的 similarity（cosine）高、repeat 低，
+说的是「同一话题」，不是「同一句」。
+```
+
+没有对子时 **一个字不加**（`dupBlock` 为空串）——干净的清单不该被一段「本组没有重复」占地方。
+门槛数字从常量算出来（`String(Math.round(DEDUP_THRESHOLD * 100))`），不是文案里写死的 80，
+将来改门槛不会出现「说的是 80、判的是 90」。
+
+### 9.98.2 顺手修的：短 id 撞车
+
+id 开头是 base36 时间戳，**同一批连写两条，前 8 位常常一模一样**。实测在同一个进程里连写 BASE / NEAR，
+两条都截成 `0mwo1yus`，于是重复对印成：
+
+```
+- 0mwo1yus ⇄ 0mwo1yus  0.81 · fact ⇄ lesson
+```
+
+读起来就是「一条自己和自己重复」。更糟的是拿这个 id 去 `memory_update`：`MemoryDb.update` 遇到歧义前缀
+直接 `return false`（`if (matches.length > 1) return false`），回执却说「未找到该记忆」——**存在的东西看起来不存在**。
+0.2.91 刚教训过「同一个名字两种算法」，这里是同一家族：同一个 id 两种解析。
+
+两处都改掉：
+- 清单内：`uniqueShortIdsAmong(rows)` 从 8 位起，只要和本清单里任何另一个 id 撞前缀就往下延（一次算好，O(n²) 但 n 是几十行）。
+- 跨层回执：`uniqueShortId(db, level, id)` 按层确认唯一（`update` 也是按层解析，所以只需在本层判）。
+
+### 9.98.3 怎么验
+
+```
+node tools/probe-ruler.mjs   # D1–D7（新增 7 条）
+node verify.mjs              # A92 八条
+```
+
+- D1 dream 清单里真点了这一对（`【逐字重复对 1 对】`）
+- D2 两个短 id 互相可区分（实测都撞到 9 位）
+- D3 门槛与处置都在、没有 `{threshold}` 残留
+- D4 成员**正好**是 BASE 与 NEAR（用前缀精确匹配，不用子串——8 位前缀互为子串会让否定断言假红/假绿）
+- D5 阴性对照：只有一条的窗口没有这一块
+- D6/D7 三语 `labels.md` 与 `dream-atomic.md` 都写了这条（新文案不许只写中文）
+- A92 八条：两个纯函数是模块级 / 清单里真用上 / 没对子不加字且门槛由常量算 / 短 id 走 `uniqueShortIdsAmong` / 回执走 `uniqueShortId` / 三语 labels 带 `{n}`+`{threshold}` / 三语指引 / probe-ruler D 段进线
+
+### 9.98.4 现场数字
+
+- `probe-ruler`：12 → 19 条（+7 = D 段）
+- `verify`：953 → 960（+7 A92 与两条旧断言改写）
+- `vendor/meow-memory/lib/index.js` 262,849 → 263,334 B（`make-vendor-manifest` 必须重跑）
+- 文案：三语 `labels.md` 各 +2 键、`dream-atomic.md` 各 +1 条（第 15 条）、`dream-topic.md` 各 +1 条并重排尾项编号
+
+### 9.98.5 教训
+
+```
+69. 判据算出来了，不等于它到了需要它的地方。
+    写侧 0.2.88 就知道「这两条是同一句话」，可它只在自己那条路径上喊一声；
+    真正需要这把尺子的 dream 一直没拿到。功能齐全不等于口径统一——
+    每加一个量，都要问一句：还有谁该看这个数，却没在看？
+```

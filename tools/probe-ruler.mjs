@@ -180,5 +180,74 @@ check(
   `复算 ${replica} vs 工具 ${embedHit ? embedHit.repeat : '?'}`,
 )
 
+
+// ── D 段：dream 拿到的是同一把尺子（0.2.92）─────────────────────────────
+// dream 是全库唯一「回头看旧条目」的地方，可它原来只给清单、不给判据：哪两条其实是同一句话，
+// 只能靠模型自己扫字面。这里守的是：写侧算出来的逐字重复对，原样进清单；没对子时一个字不加。
+const dreamOf = (sid, ws) => {
+  const db = V.getDb(ws, '.dsh-meow')
+  const rounds = V.collectDreamRounds(db, sid, ws, '.dsh-meow', 0)
+  const msg = V.buildDreamMessage(db, sid, Date.now(), rounds, 0)
+  return msg.content.map((x) => x.text).join('\n')
+}
+// 本窗口那四条里，只有 BASE ⇄ NEAR 是逐字 ≥0.8（EMBED 只嵌了一句、TOPIC 只是同话题）
+const dreamText = dreamOf('sess-ruler-write', workspace)
+const dupLine = (dreamText.match(/^- (\S+) ⇄ (\S+)  ([0-9.]+) · (\S+) ⇄ (\S+)$/m) ?? [])
+const dupSection = dreamText.includes('逐字重复对') && /【逐字重复对 \d+ 对】/.test(dreamText)
+check(
+  'D1 dream 清单里点名了那一对逐字重复（清单自己算，不让模型凭字面猜）',
+  dupSection && /【逐字重复对 1 对】/.test(dreamText) && dupLine.length > 0,
+  dupLine.length > 0 ? `${dupLine[1]} ⇄ ${dupLine[2]} ${dupLine[3]}` : '没这一行',
+)
+check(
+  'D2 两个短 id 互相可区分（同一批写下的 id 前 8 位会撞，撞了就往下延）',
+  dupLine.length > 0 && dupLine[1].trim() !== dupLine[2].trim() && dupLine[1].trim().length >= 8,
+  dupLine.length > 0 ? `${dupLine[1].trim().length} / ${dupLine[2].trim().length} 位` : '没这一行',
+)
+check(
+  'D3 门槛与处置都说清了（≥80% 与写侧同一把尺子，且没有留下没填的占位符）',
+  /≥80%/.test(dreamText) && /memory_remember 判「重复」是同一把尺子/.test(dreamText) && !/[{}]threshold/.test(dreamText),
+  (dreamText.match(/逐字重复度 ≥[0-9]+%/) ?? ['(没写门槛)'])[0],
+)
+// 精确到「这一对的成员就是 BASE 与 NEAR」：不拿截断 id 去做子串匹配——8 位前缀互为子串，
+// 那样写出来的否定断言会假红/假绿（本探针第一版就这么错过了 EMBED）。
+const isPrefixOf = (pre, id) => String(id ?? '').startsWith(pre)
+const pairIds = dupLine.length > 0 ? [dupLine[1].trim(), dupLine[2].trim()] : []
+const pairCovers = (id) => pairIds.some((q) => isPrefixOf(q, id))
+check(
+  'D4 重复对的成员正好是 BASE 与 NEAR（长文嵌一句、同话题都不在里头）',
+  pairIds.length === 2 &&
+    pairIds.every((q) => isPrefixOf(q, eBase.id) || isPrefixOf(q, eNear.id)) &&
+    pairCovers(eBase.id) &&
+    pairCovers(eNear.id) &&
+    !pairCovers(eEmbed.id) &&
+    !pairCovers(eTopic.id),
+  pairIds.length > 0 ? pairIds.join(' / ') : '没这一行',
+)
+// 阴性对照：只有一个条目的窗口不该出现重复对块（没对子就一个字不加）
+const soloWs = join(home, 'ws-solo')
+mkdirSync(soloWs, { recursive: true })
+await call('memory_remember', { content: '单条目窗口，没有任何重复。', level: 'fact', keywords: ['单条', '窗口'], importance: 1, project: '全局' }, execOf('sess-ruler-solo', soloWs))
+const soloText = dreamOf('sess-ruler-solo', soloWs)
+check(
+  'D5 阴性对照：只有一条的窗口没有【逐字重复对】这一块',
+  !/【逐字重复对 \d+ 对】/.test(soloText) && soloText.includes('本组记忆'),
+  (soloText.match(/【逐字重复对 \d+ 对】/) ?? ['没有这一块（对）'])[0],
+)
+const labelFiles = ['zh', 'en', 'pt-br'].map((l) =>
+  readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, 'labels.md'), 'utf8'),
+)
+check(
+  'D6 三语 labels 都有 dream.dup.title / dream.dup.rule（新文案不许只写中文）',
+  labelFiles.every((f) => /^- dream\.dup\.title:/m.test(f) && /^- dream\.dup\.rule:/m.test(f)),
+)
+const slotFiles = ['zh', 'en', 'pt-br'].map((l) =>
+  readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, 'dream-atomic.md'), 'utf8'),
+)
+check(
+  'D7 三语的整理指引都写了这一条（≥80% 才算重复，相似只是同话题）',
+  slotFiles.every((f) => /≥80%/.test(f) && /archived/.test(f)),
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

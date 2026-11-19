@@ -17,6 +17,7 @@ If you find topics in a mess — the cause of something in topic A, its outcome 
 8. Record the project (a project name, or global) and the importance.
 9. For a topic you consider very important, if you are unsure what the truth is, go read the project's files and check. Only for memories that really matter.
 10. Important: check these topics for anything out of date, overturned, proven wrong, or misleading — archive it (status=archived) or rewrite it (prefer archiving). Never leave that active. And don't inflate importance: ordinary progress on a thread is 1, at most 2; only something serious deserves 3.
-11. When you are finished, reply directly; the first line of the reply must contain the group marker {groupMarker} verbatim (copy it character for character, no changes), followed by "this group is consolidated" and the summary from the second line on. Call no other tools.
+11. If a [verbatim duplicate pairs] block is listed: those two entries overlap by ≥80% character-level (the same ruler memory_remember uses for duplicates) — one sentence stored in two layers. Keep the one with more information and the more fitting level, and set the other to status=archived via memory_update; entries that merely look alike but are not listed are not duplicates (similarity means same topic, repeat means same sentence).
+12. When you are finished, reply directly; the first line of the reply must contain the group marker {groupMarker} verbatim (copy it character for character, no changes), followed by "this group is consolidated" and the summary from the second line on. Call no other tools.
 
 You can call several tools in one turn — please finish every tool call for this task in a single response.

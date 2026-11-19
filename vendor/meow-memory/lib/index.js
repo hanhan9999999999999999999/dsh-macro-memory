@@ -2381,9 +2381,24 @@ function crossLevelDupe(db, level, content) {
   }
   return best;
 }
-function crossLevelNote(hit) {
+// [macro-fusion 0.2.92] 短 id 只有 8 位，而 id 开头就是时间戳的 base36——同一批次里连写两条经常撞在一起
+// （实测连写 BASE / NEAR 两条都截成 `0mwo1yus`）。回执 / 清单上端一个**指向两条**的短 id，等于让人拿着它
+// 去 memory_update，而 update 遇到歧义前缀会直接拒绝——读起来却像「这条记忆不见了」。
+// 所以凡是给人拿去改库的短 id，先用它自己在全表确认唯一：不唯一就往下延，直到能唯一定位。
+function uniqueShortId(db, level, id, min = 8) {
+  const full = String(id ?? "");
+  if (full.length <= min) return full;
+  for (let n = min; n < full.length; n++) {
+    const p = full.slice(0, n);
+    const hits = db.p(`SELECT id FROM ${level} WHERE id LIKE ?`).all(`${p}%`);
+    if (hits.length <= 1) return p;
+  }
+  return full;
+}
+function crossLevelNote(hit, db) {
   if (!hit) return "";
-  return `另一层已有几乎一样的条目（${hit.level} ${hit.id.slice(0, 8)}，重复度 ${Math.round(hit.sim * 100)}%）：这条照样写下了，但同一句话存两层，检索时两条会一起冒出来、白占名额。它们若本是一件事，用 memory_update 把其中一条 status 设 archived；若两层各有分工，把措辞写开一点。`;
+  const shortId = db === undefined ? hit.id.slice(0, 8) : uniqueShortId(db, hit.level, hit.id);
+  return `另一层已有几乎一样的条目（${hit.level} ${shortId}，重复度 ${Math.round(hit.sim * 100)}%）：这条照样写下了，但同一句话存两层，检索时两条会一起冒出来、白占名额。它们若本是一件事，用 memory_update 把其中一条 status 设 archived；若两层各有分工，把措辞写开一点。`;
 }
 function foldNearDupes(hits) {
   const kept = [];
@@ -2588,7 +2603,7 @@ function rememberTool(dir) {
         source_session
       });
       markWritten(workspace, source_session ?? "unknown", [row.id], dir);
-      const crossNote = crossLevelNote(crossLevelDupe(db, level, content));
+      const crossNote = crossLevelNote(crossLevelDupe(db, level, content), db);
       return {
         ok: true,
         id: row.id,
@@ -3455,6 +3470,43 @@ function formatRow(r, kwLabel, noneLabel) {
   return `- [${meta.join(" ")}] ${head}
   ${kwLabel} ${kwLine}`;
 }
+// [macro-fusion 0.2.92] dream 是全库唯一「回头看旧条目」的地方，可它的清单里从来没说清
+// 「哪两条其实是同一句话」：0.2.88 的跨层重复只在**写入**时点名，0.2.90 的 repeat 只在**检索**里报。
+// 整理时靠模型自己扫字面，清单几十条必然漏——而漏掉的代价是同一句话永久占两份首轮注入预算。
+// 这里先用写侧同一把尺子（正文词集 Jaccard，门槛 DEDUP_THRESHOLD）把对子算出来，一行一对端上去。
+// 只算本组已有的行（不跨窗口），组内两两比较：行数 ≤ 数十，词集已缓存，代价可忽略。
+// [macro-fusion 0.2.92] 同一批写下的两条 id 前 8 位常常一模一样（时间戳前缀），于是重复对会印成
+// 「0mwo20eo ⇄ 0mwo20eo」——读的人只能理解为「自己和自己重复」。清单里出现的短 id 必须相互可区分：
+// 从 8 位起，只要和清单里任何另一个 id 撞前缀就往下延，直到不同为止。
+function uniqueShortIdsAmong(rows, min = 8) {
+  const ids = rows.map((r) => String(r.id ?? ""));
+  const out = /* @__PURE__ */ new Map();
+  for (const id of ids) {
+    let n = min;
+    while (n < id.length && ids.some((o) => o !== id && o.slice(0, n) === id.slice(0, n))) n++;
+    out.set(id, id.slice(0, n));
+  }
+  return out;
+}
+var DREAM_DUP_MAX = 5;
+function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
+  if (rows.length < 2) return [];
+  const sets = rows.map((r) => new Set(tokenize(String(r.content ?? ""))));
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const a = sets[i];
+    if (a.size === 0) continue;
+    for (let j = i + 1; j < rows.length; j++) {
+      const b = sets[j];
+      if (b.size === 0) continue;
+      const rep = overlapOfSets(a, b);
+      if (rep < threshold) continue;
+      out.push({ a: rows[i], b: rows[j], repeat: Math.round(rep * 1e3) / 1e3 });
+    }
+  }
+  out.sort((x, y) => y.repeat - x.repeat);
+  return out.slice(0, DREAM_DUP_MAX);
+}
 function buildDreamMessage(db, sessionId, T2, rounds, idx) {
   const round = rounds[idx];
   const lbl3 = (key, params) => fillTemplate(keyedValue("labels", key), params);
@@ -3484,7 +3536,15 @@ ${g.rows.map((r) => formatRow(r, kwLabel, noneLabel)).join("\n")}`;
 ${lbl3("dream.topic.empty")}` : `
 
 ${groupsText}`;
-    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock, groupMarker }).split("\n"));
+    // [macro-fusion 0.2.92] 逐字重复对：只在算出来的时候出现，没对子就一个字不加（干净清单不加噪音）。
+    const roundRows = round.groups.flatMap((g) => g.rows);
+    const dupPairs = dreamDupPairs(roundRows);
+    const shortOf = uniqueShortIdsAmong(roundRows);
+    const dupBlock = dupPairs.length === 0 ? "" : `
+${lbl3("dream.dup.title", { n: String(dupPairs.length), threshold: String(Math.round(DEDUP_THRESHOLD * 100)) })}
+${dupPairs.map((p) => `- ${shortOf.get(String(p.a.id))} \u21C4 ${shortOf.get(String(p.b.id))}  ${p.repeat.toFixed(2)} \xB7 ${p.a.level} \u21C4 ${p.b.level}`).join("\n")}
+${lbl3("dream.dup.rule", { threshold: String(Math.round(DEDUP_THRESHOLD * 100)) })}`;
+    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock, groupMarker }).split("\n"));
   }
   return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }

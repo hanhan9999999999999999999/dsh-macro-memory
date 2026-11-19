@@ -28,6 +28,8 @@
 - dream.row.keywordsLabel: 关键词:
 - dream.row.none: （无）
 - dream.topic.empty: （本组暂无已建立的 topic 记忆——回顾对话历史，如有新 topic 请按下方指导 2 创建）
+- dream.dup.title: 【逐字重复对 {n} 对】（下面这两条正文的逐字重复度 ≥{threshold}%，与 memory_remember 判「重复」是同一把尺子）：
+- dream.dup.rule: 处置：这多半是同一句话分别存进了两层——保留信息更全、层级更合适的那一条，另一条用 memory_update 把 status 设 archived。反过来，只是「相似度高」而没列在这里的，不要当重复处理：memory_search 的 similarity（cosine）高、repeat 低，说的是「同一话题」，不是「同一句」。
 - project.unlabeled: 未标记
 - project.header: 【项目：{name}】
 - project.empty: 【项目：{name}】该项目暂无记忆条目。
