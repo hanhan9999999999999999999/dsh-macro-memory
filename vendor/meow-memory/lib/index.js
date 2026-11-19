@@ -2331,6 +2331,39 @@ function similarity(a, b) {
   return inter / (sa.size + sb.size - inter);
 }
 var DEDUP_THRESHOLD = 0.8;
+// [macro-fusion 0.2.88] 「同一句话存两层」：写去重只在同一层里比（db.list(level)），所以同一句
+// 既写 fact 又写 lesson 会真的落下两份——实测两条分数一模一样（1.280 / 1.280）、检索时并排端出来，
+// 白占一个 k 名额、同一段字要让模型读两遍。层不同不等于内容不同，这里补两处：
+//   ① 写的时候扫一遍别的层，撞上了就照样写（层各有分工是合法的），但回执点名「另一层已有」；
+//   ② 检索的时候把内容几乎一样的条目折叠掉（只折「逐字级重复」，改写过的不会误折），
+//      折了几条写进尾注，并给 dedupe: false 看全量的出路（教训 63：收窄必须自带出口）。
+function crossLevelDupe(db, level, content) {
+  let best = null;
+  for (const lv of LEVELS) {
+    if (lv === level) continue;
+    for (const r of db.list(lv, { status: "active" })) {
+      const sim = similarity(r.content, content);
+      if (sim >= DEDUP_THRESHOLD && (!best || sim > best.sim)) best = { id: r.id, level: lv, sim };
+    }
+  }
+  return best;
+}
+function crossLevelNote(hit) {
+  if (!hit) return "";
+  return `另一层已有几乎一样的条目（${hit.level} ${hit.id.slice(0, 8)}，重复度 ${Math.round(hit.sim * 100)}%）：这条照样写下了，但同一句话存两层，检索时两条会一起冒出来、白占名额。它们若本是一件事，用 memory_update 把其中一条 status 设 archived；若两层各有分工，把措辞写开一点。`;
+}
+function foldNearDupes(hits) {
+  const kept = [];
+  let folded = 0;
+  for (const h of hits) {
+    if (kept.some((k) => similarity(k.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD)) {
+      folded++;
+      continue;
+    }
+    kept.push(h);
+  }
+  return { kept, folded };
+}
 // [macro-fusion 0.2.87] 「合并」以前是「用这次的参数把旧条目整条覆盖一遍」：关键词被整个换掉
 // （旧的一条不剩，检索就漏）、归属被搬到另一个项目（回执不提）、更短的新内容把旧细节吃掉
 // （实测 78 字 → 67 字，尾句「也不许只备份配置文件」直接消失）。三处坏起来都一声不响。
@@ -2522,6 +2555,7 @@ function rememberTool(dir) {
         source_session
       });
       markWritten(workspace, source_session ?? "unknown", [row.id], dir);
+      const crossNote = crossLevelNote(crossLevelDupe(db, level, content));
       return {
         ok: true,
         id: row.id,
@@ -2530,7 +2564,7 @@ function rememberTool(dir) {
         keywords: row.keywords,
         ...row.project ? { project: row.project } : {},
         dropped,
-        note: noteOf("")
+        note: noteOf(crossNote)
       };
     },
     presentCall(args) {
@@ -2572,6 +2606,7 @@ function searchTool(dir) {
         k: { type: "integer", minimum: 1, maximum: 50, default: 10, description: T("memory_search.param.k") },
         content_max: { type: "integer", minimum: 0, maximum: 5e3, default: 300, description: T("memory_search.param.content_max") },
         min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35, description: T("memory_search.param.min_rel") },
+        dedupe: { type: "boolean", default: true, description: T("memory_search.param.dedupe") },
         explain: { type: "boolean", default: false, description: T("memory_search.param.explain") }
       }
     },
@@ -2711,13 +2746,19 @@ function searchTool(dir) {
       const topScore = ranked.length > 0 ? ranked[0].score : 0;
       const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
       const belowFloor = ranked.length - aboveFloor.length;
+      const dedupeOn = parsed.dedupe !== false;
+      const foldedRes = dedupeOn ? foldNearDupes(aboveFloor) : { kept: aboveFloor, folded: 0 };
+      const unique = foldedRes.kept;
+      const dedupeNote = foldedRes.folded > 0
+        ? `另有 ${foldedRes.folded} 条内容几乎一样（重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%）没重复列：多半是同一句既存了 fact 又存了 lesson。要看全量传 dedupe: false。`
+        : "";
       const relNote = belowFloor > 0
         ? `另有 ${belowFloor} 条相关度不到榜首的 ${Math.round(minRel * 100)}%（最高的 ${Math.round(ranked[aboveFloor.length].score * 100) / 100} 分，榜首 ${Math.round(topScore * 100) / 100} 分）没展开：它们多半只沾到一两个词，展开会挤掉真正相关的条目、也让回执变长。要看全量就传 min_rel=0。`
         : "";
       const blindCount = Math.min(5, k);
-      const blind = aboveFloor.slice(0, blindCount);
+      const blind = unique.slice(0, blindCount);
       const fresh = [];
-      for (const h of aboveFloor.slice(blindCount)) {
+      for (const h of unique.slice(blindCount)) {
         if (fresh.length >= k - blindCount) break;
         if (seen.has(h.id)) continue;
         fresh.push(h);
@@ -2731,7 +2772,7 @@ function searchTool(dir) {
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
       const scopeNote = hits.length === 0 && levelValid.length > 0 ? `这次只在 ${levelValid.join(" / ")} 层里查了，零命中：别的层就算有同关键词也看不到——要全层查就去掉 level 参数（默认 fact / lesson / topic / rules）。` : "";
       const plain = hits.length === 0 && !explicitLevels && !statusDead ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules\uFF0Csoul \u4E0E user \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"soul,user"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
-      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote].filter((s) => s.length > 0).join("\n");
+      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote, dedupeNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {

@@ -4464,3 +4464,67 @@ R5.6 一开始写成查「部署 备份」，结果随手记（不含「备份�
 - 只改合并分支：`similarity` / `DEDUP_THRESHOLD = 0.8` / 只在**同一层**比 / `markWritten` / 命中计数全都没动。跨层同内容仍会写两份（`fact` 和 `lesson` 各一条），这是现有设计，本轮只记录不修。
 - `overwrite` 只影响「内容换不换」，不放大到关键词与归属——那两处本来就不该由一次合并决定。
 - 备份：`D:\备份\20261120-022820-macro-fusion-0287-merge`（改动前的文件 + `MANIFEST.txt` 还原办法）。
+
+## 9.94 同一句话既记 fact 又记 lesson，检索时端两遍（0.2.88）
+
+### 9.94.0 一句话
+
+写入时的去重只比**同一层**（`db.list(level, { status: "active" })`），所以同一句话在两层各写一次会真的落下两份；检索时两条分数一模一样并排端出来，白占一个 k 名额、同一段字要让模型读两遍，回执里一个字都不提。
+
+### 9.94.1 现象
+
+实测（`_dup.mjs`，临时脚本已删）。同一句「发布之前必须先把当前树备份到 D:\备份 再动手，出问题先还原备份再排查」先写 `fact`、再写 `lesson`：
+
+- 两次都 `merged = false`、`note = ""`、id 不同（`0mwnwcwy…` / `0mwnwcz…`）——按设计就是「两条」；
+- `memory_search('发布前备份 还原')` 返回**两条、分数完全相同 1.280 / 1.280、内容逐字相同**，尾注只有 BASE_NOTE。
+
+代价不是「数据坏了」，而是**读的人要多读一遍同一段字**，并且这条重复会把 k 名额吃掉一格（真正相关但分数略低的条目被挤出榜单）。层不同不等于内容不同——这是两个插件里最容易踩的一处「合法的重复」。
+
+### 9.94.2 改法：写的时候点名，读的时候折叠
+
+`vendor/meow-memory/lib/index.js`，marker `[macro-fusion 0.2.88]`，三个模块级函数 + 两处调用：
+
+1. **`crossLevelDupe(db, level, content)`**：遍历 `LEVELS`、跳过本层、扫 `db.list(lv, { status: "active" })`，取 `similarity(r.content, content) >= DEDUP_THRESHOLD` 里相似度最高的一条，返回 `{ id, level, sim }`。
+2. **`crossLevelNote(hit)`**：`另一层已有几乎一样的条目（fact 0mwnwfhx，重复度 100%）：这条照样写下了，但同一句话存两层，检索时两条会一起冒出来、白占名额。它们若本是一件事，用 memory_update 把其中一条 status 设 archived；若两层各有分工，把措辞写开一点。`
+3. **`foldNearDupes(hits)`**：按顺序保留，`kept.some((k) => similarity(k.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD)` 就计入 `folded`，返回 `{ kept, folded }`。
+
+调用点：
+
+- `rememberTool` 的 insert 路径：`note: noteOf(crossLevelNote(crossLevelDupe(db, level, content)))`——**照样写下**，不硬拦。层各有分工（事实 vs 教训）是正当用法，拦掉就是替主人做决定。
+- `searchTool`：`const dedupeOn = parsed.dedupe !== false; const foldedRes = dedupeOn ? foldNearDupes(aboveFloor) : { kept: aboveFloor, folded: 0 };`，随后 `blind` / `fresh` 都从 `unique` 切——**折叠不占 k 名额**（如果照旧从 `aboveFloor` 切，折叠就只是「少给一条」，白折）。尾注 `另有 N 条内容几乎一样（重复度 ≥80%）没重复列：多半是同一句既存了 fact 又存了 lesson。要看全量传 dedupe: false。`
+
+三个辅助函数同样放在工具字面量**外面**（`probe-toolsize` 量字面量体积）。
+
+### 9.94.3 为什么折叠只认逐字级重复
+
+`similarity` 是 `tokenize` 的 Jaccard，实测口径：一字不差 1.000、补标点 1.000、同义改写 0.150、版本号不同 0.667、数字不同其余同 0.500、同主题不同角度 0.056。阈值 0.8 因此只折「几乎逐字相同」的那种（同一句话被写进两层），**同义改写的不会被误折**——M6 就是钉这一点的。
+
+### 9.94.4 基准：`tools/probe-dup.mjs`（23 条）
+
+真引擎、合成语料、临时 `DSH_HOME`，进 `check-all` 第 19 支：
+
+- M0 工具齐 / 语料就位
+- M1 同句写两层：第一层不点别人的名、第二层照样写下、库里两层各一份
+- M2 第二层回执点名：「另一层已有（fact xxxxxxxx，重复度 100%）」+ 两条出路（归档 / 把措辞写开）
+- M3 默认参数下检索只列一条、尾注报「另有 1 条内容几乎一样（重复度 ≥80%）」、给 `dedupe: false`
+- M4 阴性对照：`dedupe: false` 回两条（说明 M3 折掉的正是这一条，不是恒砍）
+- M5 折叠保留的是分数最高的那条（M3 保留的分数 = M4 榜首分数）
+- M6 不同措辞的一 fact 一 lesson 两条都列、不误报折叠
+- M7 同层重复仍走合并（新逻辑没把老路弄坏）
+- M8 参数面：`dedupe` 是 boolean 默认 true，三语 `tools.md` 都有 `memory_search.param.dedupe`
+
+### 9.94.5 怎么验
+
+- `node tools/probe-dup.mjs` → 23 条 ALL PASS
+- `node verify.mjs` → 933 条（A88 八条：写侧扫别层 / 点名内容 / 折叠函数与调用顺序 / 折叠报数与出口 / 折叠不占 k（`!includes('const blind = aboveFloor.slice')`）/ 辅助函数在字面量外 / 探针进 STEPS 且带阴性对照）
+- `node tools/check-all.mjs` → 19/19，1,828 条断言，124s
+- `node tools/probe-toolsize.mjs`、`node tools/probe-words.mjs` 全绿
+- `node tools/make-vendor-manifest.mjs` 重跑：`vendor/meow-memory` 44 文件 / 1,723,154 B / `aeb1fbd3acd8da42`（0.2.87 时 1,719,779 B / `43defb15f04df7fe`）
+
+### 9.94.6 边界
+
+- **改了 vendor 运行时代码**：装进 profile 后必须**重启 DSH** 才生效；重启交给主人，这边不动进程。
+- 写侧只点名、不拦：`crossLevelDupe` 不影响写入结果，`merged` / `dropped` / 排序全都没动。
+- 折叠只在 `memory_search` 里生效，不删数据、不改库；`memory_dream`、面板、`findSimilar` 的口径本轮都没动。
+- 已知仍未统一：写入侧 Jaccard 与 `findSimilar()` 的 TF cosine 是两套相似度；`memory_find_similar` 无阈值、候选过滤掉 seen 与本会话新写条目。这两件留到下一轮。
+- 备份：`D:\备份\20261120-024623-macro-fusion-0288-dedupe`（改动前的文件 + `MANIFEST.txt` 还原办法）。

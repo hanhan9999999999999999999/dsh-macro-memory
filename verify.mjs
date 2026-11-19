@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 18 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 19 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5810,10 +5810,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       meowSrc.includes('不在 0–1 里'),
   )
   check(
-    '下限: 排序第一位永远留着（下限再高也不许把结果收空），其余按分数线滤',
+    '下限: 排序第一位永远留着（下限再高也不许把结果收空），且先按分数线滤再折叠（折叠只动尾巴不动榜首）',
     meowSrc.includes(
       'const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;',
-    ) && meowSrc.includes('const blind = aboveFloor.slice(0, blindCount)'),
+    ) && meowSrc.indexOf('const aboveFloor') < meowSrc.indexOf('foldNearDupes(aboveFloor)'),
   )
   check(
     '下限: 被收掉的尾巴要报数（还剩几条、最高几分），并给出 min_rel=0 的出路',
@@ -5883,6 +5883,63 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     checkAllSrc.includes("['tools/probe-merge.mjs'") &&
       mergeSrc.includes('db.update(\'user\', e1.id, { content: SHORT, keywords: [\'上线\'], project: \'乙项目\' })') &&
       mergeSrc.includes('M7 阴性对照'),
+  )
+}
+
+// [macro-fusion 0.2.88] 写去重只在同一层里比（db.list(level)），所以同一句话既记 fact 又记 lesson
+// 会真的落下两份：实测检索时两条分数一模一样（1.280 / 1.280）并排端出来，白占一个 k 名额、
+// 同一段字要让模型读两遍，全程一声不响。这里钉四件事：写的时候点名「另一层已有」、检索时折叠
+// 逐字级重复、折叠必须带 dedupe: false 出口（教训 63）、以及新探针 probe-dup 真的进了 check-all。
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const dupSrc = readFileSync(join(root, 'tools/probe-dup.mjs'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+
+  check(
+    '跨层重复: 写的时候扫别的层（跳过本层），撞上就说出来而不是闷声写两份',
+    meowSrc.includes('function crossLevelDupe(db, level, content) {') &&
+      meowSrc.includes('if (lv === level) continue;') &&
+      meowSrc.includes('if (sim >= DEDUP_THRESHOLD && (!best || sim > best.sim)) best = { id: r.id, level: lv, sim };') &&
+      meowSrc.includes('const crossNote = crossLevelNote(crossLevelDupe(db, level, content));'),
+  )
+  check(
+    '跨层重复: 点名要带层名、短 id、重复度，并给出两条出路（归档 / 把措辞写开）',
+    meowSrc.includes('另一层已有几乎一样的条目（${hit.level} ${hit.id.slice(0, 8)}，重复度 ${Math.round(hit.sim * 100)}%）') &&
+      meowSrc.includes('status 设 archived') &&
+      meowSrc.includes('把措辞写开一点'),
+  )
+  check(
+    '跨层重复: 检索侧折叠逐字级重复，且只折在分数排序之后（保留榜首那条）',
+    meowSrc.includes('function foldNearDupes(hits) {') &&
+      meowSrc.includes('kept.some((k) => similarity(k.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD)') &&
+      meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(aboveFloor) : { kept: aboveFloor, folded: 0 };'),
+  )
+  check(
+    '跨层重复: 折叠报条数、说清常见成因，并给 dedupe: false 出口（收窄必带出口）',
+    meowSrc.includes('另有 ${foldedRes.folded} 条内容几乎一样（重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%）没重复列') &&
+      meowSrc.includes('要看全量传 dedupe: false') &&
+      meowSrc.includes('dedupe: { type: "boolean", default: true, description: T("memory_search.param.dedupe") }'),
+  )
+  check(
+    '跨层重复: 折叠不占 k 名额（blind/fresh 都从 unique 切，不是从折叠前的 aboveFloor 切）',
+    meowSrc.includes('const unique = foldedRes.kept;') &&
+      meowSrc.includes('const blind = unique.slice(0, blindCount);') &&
+      meowSrc.includes('for (const h of unique.slice(blindCount)) {') &&
+      !meowSrc.includes('const blind = aboveFloor.slice(0, blindCount);'),
+  )
+  check(
+    '跨层重复: 两处辅助函数在工具字面量外面（体积预算；且注释说明实测分数）',
+    meowSrc.indexOf('function foldNearDupes(hits) {') < meowSrc.indexOf('function rememberTool(dir) {') &&
+      meowSrc.includes('1.280 / 1.280'),
+  )
+  check(
+    '跨层重复: probe-dup 进了 check-all 的 STEPS，且带阴性对照（dedupe: false 回两条）',
+    checkAllSrc.includes("['tools/probe-dup.mjs'") && dupSrc.includes("dedupe: false") && dupSrc.includes('M4 阴性对照'),
+  )
+  const searchDefSrc = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
+  check(
+    '跨层重复: 融合层三处参数白名单都带 dedupe（不然 macro 侧传下去也被丢掉），schema 也有',
+    (searchDefSrc.match(/'dedupe'\]/g) || []).length >= 3 && /dedupe: \{ type: 'boolean'/.test(searchDefSrc),
   )
 }
 

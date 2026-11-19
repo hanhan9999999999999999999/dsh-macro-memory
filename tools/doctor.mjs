@@ -442,6 +442,11 @@ const PATCHES = [
     file: 'vendor/meow-memory/lib/index.js',
     what: '合并账本：同一条内容再写一次会「合并」，而合并以前是拿这次的参数把旧条目整条盖掉——关键词被整个换掉（检索就漏）、归属被搬到另一个项目（回执不提）、更短的新内容把旧细节吃掉（实测 78 字 → 67 字，尾句直接消失）。现在只做加法：关键词取并集、归属冲突保留旧的并说明、内容变短且非逐字默认不换（overwrite: true 才换），回执逐项报账。基准在 tools/probe-merge.mjs（含旧写法会丢东西的阴性对照）',
   },
+  {
+    marker: '[macro-fusion 0.2.88]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '跨层重复：写去重只在同一层里比（db.list(level)），所以同一句话既记 fact 又记 lesson 会真的落下两份——实测检索时两条分数一模一样（1.280 / 1.280）并排端出来，白占一个 k 名额、同一段字让模型读两遍，全程一声不响。现在①写的时候扫别的层，撞上了照样写（层各有分工是合法的）但回执点名「另一层已有（层名 + 短 id + 重复度）」并给归档/改写两条出路；②检索时 foldNearDupes 折掉逐字级重复（只折 ≥80% 的，改写过的照旧），折几条写进尾注，dedupe: false 看全量。基准在 tools/probe-dup.mjs（含 dedupe:false 回两条的阴性对照）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

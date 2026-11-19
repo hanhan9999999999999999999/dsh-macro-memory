@@ -27,6 +27,7 @@
 - memory_search.param.k: Maximum number of results.
 - memory_search.param.content_max: Truncate each entry's content to this length, 0=full text.
 - memory_search.param.min_rel: Relevance floor (0-1, default 0.35): only expand entries scoring at least this fraction of the top hit; the weaker tail is dropped and its count plus best score are reported. Pass 0 for everything.
+- memory_search.param.dedupe: Near-duplicate folding (default on): entries with nearly identical content (verbatim-level overlap ≥80%) are listed once, keeping the highest-scoring one, and the folded count is reported; the usual cause is the same sentence stored in both fact and lesson. Pass false to list every hit.
 - memory_search.param.explain: Explainable-retrieval switch (default off). With true, each hit carries a per-component score breakdown in explain (bm25 keyword score, importance, recencyWeight Ebbinghaus weight, status) to debug "why wasn't this recalled / why was this recalled"; ordering is unchanged.
 - memory_search.out.note: Conflict note.
 - memory_search.out.hits.id: Full memory id (pass it to memory_read/memory_update/memory_find_similar).

@@ -27,6 +27,7 @@
 - memory_search.param.k: Número máximo de resultados.
 - memory_search.param.content_max: Trunca o content de cada entrada neste comprimento, 0=texto completo.
 - memory_search.param.min_rel: Piso de relevancia (0-1, padrao 0.35): so expande entradas com pontuacao de pelo menos essa fracao do topo; a cauda mais fraca e descartada e o total com a melhor pontuacao e informado. Passe 0 para ver tudo.
+- memory_search.param.dedupe: Dobra de quase-duplicatas (padrao ativo): entradas com conteudo praticamente igual (sobreposicao literal ≥80%) aparecem uma vez so, mantendo a de maior pontuacao, e o total dobrado e informado; o caso tipico e a mesma frase gravada em fact e em lesson. Passe false para listar todas.
 - memory_search.param.explain: Interruptor de recuperação explicável (padrão desativado). Com true, cada hit traz uma decomposição de pontuação em explain (pontuação bm25 de palavras-chave, importance, peso recencyWeight de Ebbinghaus, status), para depurar "por que não foi recuperado / por que foi recuperado"; a ordem não muda.
 - memory_search.out.note: Nota de conflito.
 - memory_search.out.hits.id: id completo da memória (passe-o para memory_read/memory_update/memory_find_similar).

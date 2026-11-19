@@ -56,6 +56,7 @@ const STEPS = [
   ['tools/probe-words.mjs', '口径总账：手册、schema、常量、对外文案说的是不是同一件事'],
   ['tools/probe-recall.mjs', '召回校准：相关度优先、重要度进分数、死条目/层过滤/长句召回'],
   ['tools/probe-merge.mjs', '合并账本：关键词并集、归属不搬、变短默认不换、overwrite 才换'],
+  ['tools/probe-dup.mjs', '跨层重复：写时点名另一层、检索折叠逐字级重复、dedupe:false 看全量'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
