@@ -1707,12 +1707,23 @@ function search(query, docs, opts = {}) {
   });
   const maxRaw = Math.max(...raw);
   const hits = [];
+  // [macro-fusion 0.2.85] importance 以前只用来「豁免时间衰减」，从不进分数：一条 importance=4 的
+  // 铁律和一条 importance=1 的随手记，只要 BM25 差一点点，顺序就由措辞决定而不是重要度决定
+  // （实测：铁律 bm25=0.957 排在随手记 bm25=1.033 后面）。同一个引擎里 keywordHitScore 早就
+  // 有 impW = 1 + (importance-1)*0.25——两个打分器口径不一致。这里对齐同一口径，并且只做加成、
+  // 不做碾压：BM25 代表「说的是不是这件事」，重要度只该在同题竞争里把铁律抬上来，不该让一条
+  // 沾边的 4 分压过高度相关的 1 分（0.15 级的加成永远翻不过 6 倍以上的 bm25 差）。
+  const impOf = (d) => {
+    const v = Math.round(Number(d?.importance));
+    return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
+  };
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0) continue;
     let w = 1;
     if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
       w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
     }
+    const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
     hits.push({
       id: docs[di].id,
       level: docs[di].level,
@@ -1720,8 +1731,8 @@ function search(query, docs, opts = {}) {
       content: docs[di].content,
       importance: docs[di].importance,
       updated_at: docs[di].updated_at,
-      score: raw[di] * w,
-      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, recencyWeight: Math.round(w * 1e3) / 1e3, score: Math.round(raw[di] * w * 1e3) / 1e3 } } : {}
+      score: raw[di] * w * impW,
+      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, recencyWeight: Math.round(w * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * 1e3) / 1e3 } } : {}
     });
   }
   hits.sort((a, b2) => b2.score - a.score);
@@ -2490,6 +2501,14 @@ function rememberTool(dir) {
     }
   };
 }
+// [macro-fusion 0.2.85] 本工厂里改了两处，都跟「排得对」有关，注释统一放这里：
+//   ① 渲染顺序：原来 `sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0))` 按创建时间升序，
+//      把 search() 顶着算出来的相关度整个丢掉——模型读到的第一条永远是最旧那条。旁边 BASE_NOTE
+//      的「如果冲突，以最新的为准」说的是内容取舍，被这一行实现成了排序。现在改成相关度降序为主，
+//      updated_at 只做平手时的次级。
+//   ② 可解释：explain 里补上 importanceWeight（打分侧在 search() 里加），三个因子 bm25 ×
+//      recencyWeight × importanceWeight 缺一个，读者就没法判断「它为什么排前面」。
+// 注释刻意放在字面量外面：tools/probe-toolsize.mjs 是按源码切片量工具字面量的，注释不该算进「膨胀」。
 function searchTool(dir) {
   return {
     name: "memory_search",
@@ -2646,7 +2665,7 @@ function searchTool(dir) {
       const hits = [...blind, ...fresh];
       for (const h of hits) db.bumpHit(h.level, h.id);
       markSearched(workspace, sessionId ?? "unknown", hits.map((h) => h.id), dir);
-      const reordered = [...hits].sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0));
+      const reordered = [...hits].sort((a, b) => (b.score - a.score) || ((b.updated_at ?? 0) - (a.updated_at ?? 0)));
       const BASE_NOTE = "\u5982\u679C\u51B2\u7A81\uFF0C\u4EE5\u6700\u65B0\u7684\u4E3A\u51C6\u3002\u65F6\u95F4\u6233\u8F83\u65E7\u7684\u6761\u76EE\u53EF\u4F5C\u4E3A\u4E8B\u60C5\u53D1\u5C55\u8FC7\u7A0B\u7684\u53C2\u8003\u3002\u5982\u679C\u4F60\u786E\u5B9E\u9700\u8981\u66F4\u591A\u7EC6\u8282\uFF0C\u53EF\u4EE5\u76F4\u63A5\u53BB\u804A\u5929\u8BB0\u5F55\u91CC\u641C\u7D22\u76F8\u5173\u5173\u952E\u8BCD\u3002";
       const explicitLevels = typeof parsed.level === "string" && parsed.level.trim().length > 0;
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
@@ -2672,6 +2691,7 @@ function searchTool(dir) {
               explain: {
                 bm25: h.explain?.bm25 ?? 0,
                 importance: row?.importance ?? 0,
+                importanceWeight: h.explain?.importanceWeight ?? 1,
                 recencyWeight: h.explain?.recencyWeight ?? 1,
                 status: row?.status ?? "active"
               }

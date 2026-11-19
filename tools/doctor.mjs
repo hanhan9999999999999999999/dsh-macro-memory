@@ -427,6 +427,11 @@ const PATCHES = [
     file: 'tools/probe-words.mjs',
     what: '口径总账探针：手册 / schema / 常量 / README / 两份索引说的是不是同一件事（工具数、动作枚举、七个 level、体检六类、注入字符数、死指针），进 check-all 第 14 支，自带 6 条阴性对照',
   },
+  {
+    marker: '[macro-fusion 0.2.85]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '召回校准（两处都在打分/排序里，坏起来一声不响）：① search() 的 importance 以前只豁免时间衰减、从不进分数，现在按 keywordHitScore 同口径 0.25 加成并写进 explain.importanceWeight；② 渲染前按 updated_at 升序把相关度整个丢掉，改成相关度降序、时间只做次级。基准在 tools/probe-recall.mjs（真引擎，含两条阴性对照）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

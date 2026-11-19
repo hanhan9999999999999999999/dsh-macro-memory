@@ -4244,5 +4244,68 @@ export const MANUAL_TOOLS = [
 - 判据只钉「说过的」与「代码里的」是否一致，不评价措辞好不好——文案质量靠人看，不靠探针。
 - 手册里出现的新数字（比如以后再加一个工具）必须同步更新 README 与两份索引，否则这条判据会红：这是有意的，对外承诺本来就该跟着改。
 
+## 9.91 一条记忆只能靠「排得对」被读到（0.2.85）
+
+### 9.91.0 一句话
+
+0.2.84 修的是「说法不一致」，这一轮修的是**引擎自己把相关性算错了两处**：重要度从不进分数、算好的分数又在渲染前被时间顺序整个覆盖。两处都不报错、都有结果、都有分数——用户只会觉得「它怎么又翻出那条没用的」。
+
+### 9.91.1 现象：分数是对的，读到的却是最旧那条
+
+拿合成语料在真引擎上跑（临时脚本，跑完删）：
+
+- 查询「部署」命中两条：一条 `importance=4` 的铁律（`bm25=0.957`）、一条 `importance=1` 的随手记（`bm25=1.033`）。铁律排在后面——**措辞赢了重要度**。
+- 反过来查 `explain`，两条的 `score` 分别是 0.96 与 1.03，也就是说分数算对了，可**输出顺序与分数无关**。
+
+读 `vendor/meow-memory/lib/index.js` 才看清两件事：
+
+1. `search()` 里 `importance` 只出现在一个地方：`docs[di].importance < 3` 时**豁免**时间衰减。它从不参与打分。而同一个文件里的另一个打分器 `keywordHitScore()` 早就有 `impW = 1 + (importance-1)*0.25`——两套打分口径，同一个引擎。
+2. `searchTool` 在渲染前做了 `sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0))`：**按创建时间升序重排**，把 `search()` 顶着算出来的相关度顺序整个丢掉。于是模型读到的第一条永远是最旧的那条。旁边那句 `BASE_NOTE`（「如果冲突，以最新的为准」）说的是**内容取舍规则**，却被这一行实现成了**排序规则**——两件事被混成一件。
+
+### 9.91.2 改法：加成、不碾压；相关度为主、时间只做次级
+
+```js
+// ① 与 keywordHitScore 同一口径（0.25），并且只做加成
+const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
+score: raw[di] * w * impW,
+explain: { bm25, importance, importanceWeight: impW, recencyWeight: w, score }
+
+// ② 相关度降序为主，时间新的在前只做平手次级
+const reordered = [...hits].sort((a, b) => (b.score - a.score) || ((b.updated_at ?? 0) - (a.updated_at ?? 0)));
+```
+
+两条边界写死在注释里，也写进判据：
+
+- **不当碾压**：`0.25` 一级只值 1.75 倍上限，一条高度相关（bm25 差 6 倍以上）的 `importance=1` 条目永远压得住一条沾边的 `importance=4`。BM25 回答「说的是不是这件事」，重要度只回答「这件事对你有多要紧」，后者不该越权。
+- **`explain` 三因子齐**：`score = bm25 × recencyWeight × importanceWeight`。少一个因子，读者就没法判断「它为什么排前面」，排序也就重新变成黑箱。
+
+### 9.91.3 `tools/probe-recall.mjs`：真引擎、真工具、两条阴性对照
+
+探针（check-all 第 17 支，24 条判据）不写自己的打分公式，而是 `registerMemoryTools()` 拿到**真的**七个工具、在临时 `DSH_HOME` 里真写五条合成记忆，再真调 `memory_search`：
+
+| 组 | 判据 |
+| --- | --- |
+| R0 语料 | 五条：层 / 重要度 / 措辞 / 时间全被控住；**随手记比铁律旧**（否则「按时间排」和「按相关度排」分不开） |
+| R1 排序 | 首条是最相关的而不是最旧的；随手记仍在前十条里（没被挤没）；分数单调不增；阴性对照=按 `updated_at` 升序排出来首条会变 |
+| R2 打分 | `explain` 三因子齐；`importance=4` → `importanceWeight=1.75`、`importance=1` → `1`；`score` 能被分项还原；**铁律的 bm25 低于随手记却反超**（证明是重要度赢的，不是措辞）；阴性对照=把 importance 全抹平成 1，引擎自己就把首条翻回随手记 |
+| R3 不碾压 | 强相关只有一条时，沾边的两条 `importance=4` 都进不了结果 |
+| R4 过滤/召回 | 归档条目不再召回；`level=fact` 时 lesson 那条不出现、`level=lesson` 时在；中文长句（不是关键词列表）也能召回 |
+
+两条阴性对照是这一轮的关键：一条判据如果去掉被测改动之后仍然 PASS，它就是注释。抹平 importance 与按时间升序，各自都让同一个查询给出另一个答案——这才说明 R1/R2 有区分力。
+
+### 9.91.4 怎么验的
+
+- `node tools/probe-recall.mjs` → 24 条 ALL PASS（exit 0）；实测铁律 `bm25=1.032`、随手记 `bm25=1.478`，加权后 `1.81 ≥ 1.48`，抹平重要度后首条翻回随手记。
+- `node verify.mjs` → A85 七条（`impW` 与乘法进 `score`、`importanceWeight` 两处都露、`reordered` 是分数降序且旧的升序写法不许残留、探针进 STEPS、探针用真 vendor、两条阴性对照、失败置 exitCode）。
+- `node tools/make-vendor-manifest.mjs` 重跑：`vendor/meow-memory` 44 文件 / 1,713,134 B / `296da68a7b3ab2fc`（改前 1,711,167 B / `d50b1c3c11a27934`）。
+- `node tools/check-all.mjs` → 17 支全绿；`node tools/doctor.mjs` 的补丁账本多一条（`vendor/meow-memory/lib/index.js`）。
+
+### 9.91.5 边界
+
+- **改了 vendor 运行时代码**：`vendor/meow-memory/lib/index.js` 是宿主侧的引擎，装进 profile 之后**必须重启 DSH 才生效**；正在跑的进程里还是旧行为。本轮只做代码、备份与自检，重启交给主人。
+- 排序口径只改「读出来的顺序」，不改 `blind/fresh` 的选条逻辑、不改 `bumpHit` 计入、不改状态/层/时间过滤——检索的**选谁**没动，只改**先读谁**。
+- 备份：`D:\备份\20261120-003714-macro-fusion-0285-recall`（13 文件 / 1,338,149 B）。
+
+
 
 

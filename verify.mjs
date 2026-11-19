@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 16 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 17 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5634,9 +5634,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       probeSrc.includes('ok(missingM.length === 0') &&
       probeSrc.includes('ok(missingN.length === 0'),
   )
+  // 0.2.85：上界从「等于今天实测值」改成留余量（87,326 → 92,000）。
+  // 等于实测值的判据在正当改动上也会红（只加一个 explain 字段就踩线），
+  // 那会教人「红了就往上调」，最后等于没有判据；留 5% 余量才抓得住真正的膨胀。
   check(
-    '脚本: 体积有上限判据，膨胀就红',
-    probeSrc.includes('const BUDGET_BYTES = 87326') && probeSrc.includes('ok(sum <= BUDGET_BYTES'),
+    '脚本: 体积有上限判据（92,000，留 ~5% 余量而不是等于实测值），膨胀就红',
+    probeSrc.includes('const BUDGET_BYTES = 92000') && probeSrc.includes('ok(sum <= BUDGET_BYTES'),
   )
   check(
     '脚本: 失败时置 exitCode 1（check-all 才看得见）',
@@ -5738,6 +5741,56 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '口径: 失败时自己把 exitCode 置非零（不然红也读不出来）',
     wordsSrc.includes('if (failures !== 0) process.exitCode = 1'),
+  )
+}
+
+// ── A85. 召回校准：最相关的排最前，重要度要进分数（0.2.85）──
+// 0.2.85 修的是 meow 引擎里两件「安静的错」：
+//   ① search() 里 importance 只用来豁免时间衰减、从不进分数——一条 importance=4 的铁律
+//      会因为措辞差一点就排到 importance=1 的随手记后面；
+//   ② 渲染前按 updated_at 升序重排，把算出来的相关度整个丢掉——模型读到的第一条永远最旧。
+// 两处都在 vendor 里，坏起来一声不响（照样有结果、照样有分数），所以必须被钉住。
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const recallSrc = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
+
+  check(
+    '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25）',
+    meowSrc.includes('const impW = 1 + (impOf(docs[di]) - 1) * 0.25;') &&
+      meowSrc.includes('score: raw[di] * w * impW,'),
+  )
+  check(
+    '召回: explain 把 importanceWeight 也露出来（三个因子缺一个就没法解释排序）',
+    meowSrc.includes('importanceWeight: Math.round(impW * 1e3) / 1e3') &&
+      meowSrc.includes('importanceWeight: h.explain?.importanceWeight ?? 1'),
+  )
+  check(
+    '召回: 渲染顺序按相关度降序，updated_at 只做平手时的次级',
+    meowSrc.includes('const reordered = [...hits].sort((a, b) => (b.score - a.score) || ((b.updated_at ?? 0) - (a.updated_at ?? 0)));') &&
+      !meowSrc.includes('const reordered = [...hits].sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0));'),
+  )
+  check(
+    '召回: probe-recall 进了 check-all 的 STEPS（校准真的会被跑一遍）',
+    checkAllSrc.includes("['tools/probe-recall.mjs'"),
+  )
+  // 探针必须用真引擎真工具，不许自己复写一份打分公式——复写出来的「判据」验的是抄件。
+  check(
+    '召回: 探针用真 vendor（registerMemoryTools + 真 memory_search），不自己算分',
+    recallSrc.includes('V.registerMemoryTools((t) => T.set(t.name, t),') &&
+      recallSrc.includes("await call('memory_search', { query: '部署'") &&
+      recallSrc.includes('V.search('),
+  )
+  // 阴性对照：同一语料上「抹平重要度」和「按时间升序」都必须给出另一个答案，
+  // 否则那两条判据是恒真的注释（教训 59 / 教训 60 的同一课）。
+  check(
+    '召回: 有阴性对照（抹平 importance 顺序会翻、按时间升序首条会变）',
+    recallSrc.includes("flat[0]?.id === ids.casual") &&
+      recallSrc.includes("byTime[0]?.id !== hitsR1[0]?.id"),
+  )
+  check(
+    '召回: 失败时自己把 exitCode 置非零（不然红也读不出来）',
+    recallSrc.includes('if (failures !== 0) process.exitCode = 1'),
   )
 }
 

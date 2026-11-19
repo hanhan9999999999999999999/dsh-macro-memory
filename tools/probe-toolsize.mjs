@@ -90,7 +90,10 @@ const NEBULA_TOOLS = [
   'nebula_recall', 'nebula_inspect', 'nebula_link', 'nebula_path', 'nebula_stats',
   'nebula_hygiene', 'nebula_bridge', 'nebula_sources', 'nebula_ingest',
 ]
-const BUDGET_BYTES = 87326
+// 上界不是等号：设成「今天的实测值」时，任何一次正当改动都会踩线（0.2.85 只加了
+// importanceWeight 一个字段 + 排序表达式改长，就 87,419 > 87,326）。留 ~5% 余量：
+// 判据要抓的是「悄悄长胖」（有人塞一段长描述、多开十个参数），不是「代码有变化」。
+const BUDGET_BYTES = 92000
 
 let failures = 0
 function ok(cond, label, detail) {

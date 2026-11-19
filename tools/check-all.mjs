@@ -54,6 +54,7 @@ const STEPS = [
   ['tools/probe-toolsize.mjs', '工具清单与体积：17 个原工具一个不少、参数没有膨胀'],
   ['tools/probe-tools.mjs', '工具账本：每个脚本有归属、_root 导出不许白用、只读脚本真跑一遍'],
   ['tools/probe-words.mjs', '口径总账：手册、schema、常量、对外文案说的是不是同一件事'],
+  ['tools/probe-recall.mjs', '召回校准：相关度优先、重要度进分数、死条目/层过滤/长句召回'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
