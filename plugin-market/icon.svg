@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f2b46"/>
+      <stop offset="1" stop-color="#123c5c"/>
+    </linearGradient>
+    <linearGradient id="whale" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fd4ff"/>
+      <stop offset="1" stop-color="#4aa8e0"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- 记忆节点：一条链 + 三个点，代表「分层 + 连线」 -->
+  <g stroke="#2f6d94" stroke-width="2" opacity="0.75">
+    <path d="M40 176 L104 148"/><path d="M104 148 L168 176"/><path d="M168 176 L216 140"/>
+    <path d="M104 148 L128 96"/><path d="M168 176 L128 96"/>
+  </g>
+  <g fill="#2f6d94">
+    <circle cx="40" cy="176" r="5"/><circle cx="216" cy="140" r="5"/>
+  </g>
+  <!-- 鲸身 -->
+  <path d="M128 96 C86 96 58 122 58 152 C58 178 82 196 118 196 C154 196 178 178 178 152 C178 132 160 116 146 112 Z" fill="url(#whale)" opacity="0.95"/>
+  <!-- 尾鳍 -->
+  <path d="M178 152 C196 140 210 138 222 142 C210 150 202 158 198 166 C186 164 180 158 178 152 Z" fill="url(#whale)" opacity="0.95"/>
+  <!-- 眼睛 -->
+  <circle cx="96" cy="150" r="7" fill="#0f2b46"/>
+  <circle cx="94" cy="148" r="2.4" fill="#eaf6ff"/>
+  <!-- 三个高亮点：七层里的三处锚 -->
+  <g fill="#eaf6ff">
+    <circle cx="128" cy="96" r="7"/><circle cx="104" cy="148" r="6"/><circle cx="168" cy="176" r="6"/>
+  </g>
+</svg>

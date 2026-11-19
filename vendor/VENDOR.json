@@ -1,0 +1,23 @@
+{
+  "note": "vendor 账本：这里的源码是从上游拷贝进来的（不是 npm 依赖）。改了就重跑 tools/make-vendor-manifest.mjs；doctor 会核对。",
+  "generatedBy": "tools/make-vendor-manifest.mjs",
+  "hashedBy": "tools/vendor-hash.mjs",
+  "vendors": [
+    {
+      "dir": "vendor/meow-memory",
+      "name": "meow-memory",
+      "version": "0.32.8",
+      "files": 44,
+      "bytes": 1711410,
+      "sha256": "872dacf06bb1ed164dc0da1b9e5c2f025c83835b3da5cdb4bd7ecae83c8038d8"
+    },
+    {
+      "dir": "vendor/dsh-memory-nebula",
+      "name": "dsh-memory-nebula",
+      "version": "1.11.74",
+      "files": 51,
+      "bytes": 1006550,
+      "sha256": "1f1d54c4aff97d3eda33e651656ab748b53b647ec8f9f883217b4ed0bb862f05"
+    }
+  ]
+}

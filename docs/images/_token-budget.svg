@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif">
+  <rect width="1200" height="640" fill="#ffffff"/>
+  <text x="60" y="64" font-size="30" font-weight="700" fill="#101418">每轮固定开销：省在哪</text>
+  <text x="60" y="96" font-size="15" fill="#5b6773">这些字节每一次请求都要重付，不随对话变短</text>
+
+  <!-- schema bars -->
+  <text x="60" y="152" font-size="15" font-weight="700" fill="#101418">工具 schema</text>
+  <text x="1140" y="152" text-anchor="end" font-size="12" fill="#5b6773">实测：tools/probe-host.mjs D2</text>
+
+  <text x="60" y="184" font-size="12.5" fill="#5b6773">融合前 · 17 个工具</text>
+  <rect x="60" y="194" width="900" height="34" rx="6" fill="#e9eef4"/>
+  <rect x="60" y="194" width="900" height="34" rx="6" fill="#b9c7d6"/>
+  <text x="972" y="217" font-size="13" font-weight="700" fill="#3d4b5a">56,759 B</text>
+
+  <text x="60" y="256" font-size="12.5" fill="#1f6b3f">现在 · 8 个工具</text>
+  <rect x="60" y="266" width="900" height="34" rx="6" fill="#eef1f0"/>
+  <rect x="60" y="266" width="137" height="34" rx="6" fill="#4c9d6d"/>
+  <text x="212" y="289" font-size="13" font-weight="700" fill="#1f6b3f">8,655 B</text>
+  <text x="292" y="289" font-size="12.5" fill="#5b6773">−84.7%（约 −1.2 万 token / 轮）</text>
+
+  <!-- injection -->
+  <text x="60" y="352" font-size="15" font-weight="700" fill="#101418">常驻注入</text>
+  <text x="1140" y="352" text-anchor="end" font-size="12" fill="#5b6773">实测：同一支探针 E2（上限 1,300 字符）</text>
+
+  <text x="60" y="384" font-size="12.5" fill="#5b6773">融合前 · meow 3,396 + nebula 689</text>
+  <rect x="60" y="394" width="900" height="34" rx="6" fill="#e9eef4"/>
+  <rect x="60" y="394" width="900" height="34" rx="6" fill="#b9c7d6"/>
+  <text x="972" y="417" font-size="13" font-weight="700" fill="#3d4b5a">4,085 字符</text>
+
+  <text x="60" y="456" font-size="12.5" fill="#1f6b3f">现在 · 1 段 L0</text>
+  <rect x="60" y="466" width="900" height="34" rx="6" fill="#eef1f0"/>
+  <rect x="60" y="466" width="239" height="34" rx="6" fill="#4c9d6d"/>
+  <text x="314" y="489" font-size="13" font-weight="700" fill="#1f6b3f">1,085 字符</text>
+  <text x="396" y="489" font-size="12.5" fill="#5b6773">−73.4%，余量 215</text>
+
+  <!-- summary -->
+  <rect x="60" y="530" width="1080" height="80" rx="12" fill="#f4f8ff" stroke="#c8d9f4" stroke-width="2"/>
+  <text x="86" y="562" font-size="14" font-weight="700" fill="#1b4f9c">三刀：① 17 → 8 个工具（mode 枚举替代同义工具）　② 手册改成按需取（memory_admin guide）　③ 关掉每轮自动邻域注入，改成 graph / bridge 按需拉</text>
+  <text x="86" y="590" font-size="12.5" fill="#5b6773">按 JSON schema ≈ 3.9 B/token 折算，每轮少付约 1.2 万 token；注入体不随对话变化，才谈得上命中 prompt 缓存。</text>
+</svg>

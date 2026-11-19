@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif">
+  <rect width="1200" height="780" fill="#ffffff"/>
+  <text x="60" y="66" font-size="30" font-weight="700" fill="#101418">记忆怎么流动</text>
+  <text x="60" y="100" font-size="16" fill="#5b6773">写入先落主库、再尽力连星图；读取按需拉，不往 prompt 里灌</text>
+
+  <!-- WRITE -->
+  <rect x="60" y="130" width="1080" height="200" rx="14" fill="#f4f8ff" stroke="#c8d9f4" stroke-width="2"/>
+  <text x="86" y="162" font-size="15" font-weight="700" fill="#1b4f9c">① 写入 · memory_remember</text>
+
+  <rect x="86" y="180" width="180" height="60" rx="10" fill="#ffffff" stroke="#9dc0ea"/>
+  <text x="176" y="206" text-anchor="middle" font-size="13" font-weight="700" fill="#12314f">模型调用</text>
+  <text x="176" y="226" text-anchor="middle" font-size="11" fill="#5b6773">content / level / links</text>
+
+  <rect x="296" y="180" width="200" height="60" rx="10" fill="#ffffff" stroke="#9dc0ea"/>
+  <text x="396" y="206" text-anchor="middle" font-size="13" font-weight="700" fill="#12314f">主库写入</text>
+  <text x="396" y="226" text-anchor="middle" font-size="11" fill="#5b6773">.dsh-meow/memory.db 七层</text>
+
+  <rect x="526" y="180" width="220" height="60" rx="10" fill="#ffffff" stroke="#9dc0ea"/>
+  <text x="636" y="206" text-anchor="middle" font-size="13" font-weight="700" fill="#12314f">星图更新</text>
+  <text x="636" y="226" text-anchor="middle" font-size="11" fill="#5b6773">节点 / 边 / 权重</text>
+
+  <rect x="776" y="180" width="300" height="60" rx="10" fill="#fff6f6" stroke="#e8b4b4"/>
+  <text x="926" y="206" text-anchor="middle" font-size="13" font-weight="700" fill="#8a2b2b">连不上 → 排队，不丢</text>
+  <text x="926" y="226" text-anchor="middle" font-size="11" fill="#8a2b2b">pending-links.jsonl · 500 条 · TTL 7 天</text>
+
+  <path d="M266 210 L292 210" stroke="#8aa0b5" stroke-width="3"/><path d="M300 210 L288 204 L288 216 Z" fill="#8aa0b5"/>
+  <path d="M496 210 L522 210" stroke="#8aa0b5" stroke-width="3"/><path d="M530 210 L518 204 L518 216 Z" fill="#8aa0b5"/>
+  <path d="M746 210 L772 210" stroke="#c98a8a" stroke-width="3"/><path d="M780 210 L768 204 L768 216 Z" fill="#c98a8a"/>
+
+  <text x="86" y="272" font-size="12" fill="#5b6773">补连时机：任意一次 search / read / link / admin 顺手做（节流 30s、预算 1.2s、单轮最多 8 条）；星图整体不可用就立刻停手</text>
+  <text x="86" y="298" font-size="12" fill="#5b6773">看得见：memory_admin(action="links") 列出「谁在等谁、等了多久、为什么没连上」</text>
+
+  <!-- READ -->
+  <rect x="60" y="352" width="1080" height="196" rx="14" fill="#f5fbf7" stroke="#c3e0cd" stroke-width="2"/>
+  <text x="86" y="384" font-size="15" font-weight="700" fill="#1f6b3f">② 读取 · memory_search（四种模式，按需拉）</text>
+
+  <rect x="86" y="402" width="232" height="66" rx="10" fill="#ffffff" stroke="#a9d3b9"/>
+  <text x="104" y="426" font-size="13" font-weight="700" fill="#1f6b3f">local</text>
+  <text x="104" y="446" font-size="11.5" fill="#3d6b52">主库关键词检索</text>
+  <text x="104" y="461" font-size="11.5" fill="#3d6b52">importance × 时间衰减</text>
+
+  <rect x="334" y="402" width="232" height="66" rx="10" fill="#ffffff" stroke="#a9d3b9"/>
+  <text x="352" y="426" font-size="13" font-weight="700" fill="#1f6b3f">graph</text>
+  <text x="352" y="446" font-size="11.5" fill="#3d6b52">沿星图关联扩散</text>
+  <text x="352" y="461" font-size="11.5" fill="#3d6b52">（取代原来的每轮自动注入）</text>
+
+  <rect x="582" y="402" width="232" height="66" rx="10" fill="#ffffff" stroke="#a9d3b9"/>
+  <text x="600" y="426" font-size="13" font-weight="700" fill="#1f6b3f">bridge</text>
+  <text x="600" y="446" font-size="11.5" fill="#3d6b52">强相关但还没读过</text>
+  <text x="600" y="461" font-size="11.5" fill="#3d6b52">找桥，别找重复</text>
+
+  <rect x="830" y="402" width="232" height="66" rx="10" fill="#ffffff" stroke="#a9d3b9"/>
+  <text x="848" y="426" font-size="13" font-weight="700" fill="#1f6b3f">similar</text>
+  <text x="848" y="446" font-size="11.5" fill="#3d6b52">给一条记忆找相似</text>
+  <text x="848" y="461" font-size="11.5" fill="#3d6b52">先读再判重</text>
+
+  <text x="86" y="500" font-size="12" fill="#3d6b52">参数给了但在该模式下用不上 → 明说没生效（不让用户误读结果）；命中邻居只回到模型手里，不进 system prompt</text>
+  <text x="86" y="526" font-size="12" fill="#3d6b52">memory_admin(action="guide") 取全文手册：用完即弃，不占固定前缀</text>
+
+  <!-- DREAM -->
+  <rect x="60" y="572" width="1080" height="172" rx="14" fill="#f8f5fd" stroke="#d8c9ef" stroke-width="2"/>
+  <text x="86" y="604" font-size="15" font-weight="700" fill="#4b2c7a">③ 巩固 · memory_dream</text>
+  <text x="86" y="632" font-size="12.5" fill="#5a4a78">把本窗口建立 / 提取过的记忆封存成跨会话记忆，按七层归档，顺手补连线；空转时只巡检，不刷日志。</text>
+
+  <g font-size="12" fill="#3f2f5e">
+    <rect x="86" y="650" width="150" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="161" y="672" text-anchor="middle">soul · AI 自身</text>
+    <rect x="246" y="650" width="176" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="334" y="672" text-anchor="middle">user · 用户与环境</text>
+    <rect x="432" y="650" width="120" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="492" y="672" text-anchor="middle">rules 准则</text>
+    <rect x="562" y="650" width="118" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="621" y="672" text-anchor="middle">fact 事实</text>
+    <rect x="690" y="650" width="126" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="753" y="672" text-anchor="middle">lesson 经验</text>
+    <rect x="826" y="650" width="126" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="889" y="672" text-anchor="middle">topic 来龙</text>
+    <rect x="962" y="650" width="152" height="34" rx="8" fill="#ffffff" stroke="#c9b3e8"/><text x="1038" y="672" text-anchor="middle">project 项目</text>
+  </g>
+  <text x="86" y="722" font-size="12" fill="#5a4a78">project 六个子类：overview / structure / decisions / quotes / ops / todo</text>
+</svg>

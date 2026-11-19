@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif">
+  <rect width="1200" height="720" fill="#ffffff"/>
+  <text x="60" y="66" font-size="30" font-weight="700" fill="#101418">宏记忆 · 三层结构</text>
+  <text x="60" y="100" font-size="16" fill="#5b6773">模型只看见第一层；换引擎不动外壳，换外壳不动数据</text>
+
+  <!-- layer 1 -->
+  <rect x="60" y="130" width="1080" height="176" rx="14" fill="#f4f8ff" stroke="#c8d9f4" stroke-width="2"/>
+  <text x="86" y="164" font-size="15" font-weight="700" fill="#1b4f9c">表面层 · lib/index.js（本插件）</text>
+  <text x="86" y="188" font-size="13" fill="#5b6773">对外只有这一层：工具名、注入文本、面板口径、错误措辞</text>
+
+  <g font-size="13" fill="#12314f">
+    <rect x="86" y="204" width="150" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="161" y="226" text-anchor="middle">memory_remember</text>
+    <rect x="246" y="204" width="150" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="321" y="226" text-anchor="middle">memory_search</text>
+    <rect x="406" y="204" width="120" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="466" y="226" text-anchor="middle">memory_read</text>
+    <rect x="536" y="204" width="132" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="602" y="226" text-anchor="middle">memory_update</text>
+    <rect x="678" y="204" width="140" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="748" y="226" text-anchor="middle">memory_project</text>
+    <rect x="828" y="204" width="120" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="888" y="226" text-anchor="middle">memory_link</text>
+    <rect x="958" y="204" width="156" height="34" rx="8" fill="#ffffff" stroke="#9dc0ea"/>
+    <text x="1036" y="226" text-anchor="middle">dream / admin</text>
+  </g>
+  <text x="86" y="278" font-size="13" fill="#2f6b3a">常驻注入 1,085 字符（1 段，不随对话变化 → prompt 缓存能命中）</text>
+  <text x="640" y="278" font-size="13" fill="#2f6b3a">设置页：写完即生效，无需重启</text>
+
+  <!-- arrow -->
+  <path d="M600 306 L600 348" stroke="#8aa0b5" stroke-width="3"/>
+  <path d="M600 358 L592 344 L608 344 Z" fill="#8aa0b5"/>
+  <text x="616" y="336" font-size="12" fill="#8aa0b5">调得动就调，调不动就说人话</text>
+
+  <!-- layer 2 -->
+  <rect x="60" y="368" width="1080" height="140" rx="14" fill="#fffaf2" stroke="#f0d9b5" stroke-width="2"/>
+  <text x="86" y="402" font-size="15" font-weight="700" fill="#8a5a12">融合层 · lib/macro/</text>
+  <g font-size="13" fill="#4a3608">
+    <rect x="86" y="418" width="330" height="72" rx="10" fill="#ffffff" stroke="#e6cfa6"/>
+    <text x="104" y="444" font-weight="700">bridge</text>
+    <text x="104" y="466" font-size="12">收下引擎的返回值 / 失败；统一成一种人话</text>
+    <text x="104" y="484" font-size="12" fill="#7a6533">引擎没就绪 → 等 toolWaitMs 后明说，而不是假装空</text>
+
+    <rect x="436" y="418" width="330" height="72" rx="10" fill="#ffffff" stroke="#e6cfa6"/>
+    <text x="454" y="444" font-weight="700">linkflow</text>
+    <text x="454" y="466" font-size="12">写记忆时连不上星图：连线进队列，不丢</text>
+    <text x="454" y="484" font-size="12" fill="#7a6533">500 条 / TTL 7 天 / 节流 30s / 单轮最多 8 条</text>
+
+    <rect x="786" y="418" width="328" height="72" rx="10" fill="#ffffff" stroke="#e6cfa6"/>
+    <text x="804" y="444" font-weight="700">brand</text>
+    <text x="804" y="466" font-size="12">名字级改口：旧工具名 → 新工具名</text>
+    <text x="804" y="484" font-size="12" fill="#7a6533">记忆正文一个字不改（原文优先）</text>
+  </g>
+
+  <path d="M600 510 L600 548" stroke="#8aa0b5" stroke-width="3"/>
+  <path d="M600 558 L592 544 L608 544 Z" fill="#8aa0b5"/>
+
+  <!-- layer 3 -->
+  <rect x="60" y="566" width="1080" height="126" rx="14" fill="#f5f7f6" stroke="#c9d6d0" stroke-width="2"/>
+  <text x="86" y="598" font-size="15" font-weight="700" fill="#204b3a">引擎层 · vendor/（两份 MIT 副本，随包走）</text>
+  <g font-size="13" fill="#1e3d31">
+    <rect x="86" y="614" width="500" height="58" rx="10" fill="#ffffff" stroke="#bdd2c8"/>
+    <text x="104" y="638" font-weight="700">meow-memory · 主库（唯一真相）</text>
+    <text x="104" y="660" font-size="12" fill="#4a6b5c">七层 SQLite：soul / user / rules / fact / lesson / topic / project</text>
+
+    <rect x="606" y="614" width="508" height="58" rx="10" fill="#ffffff" stroke="#bdd2c8"/>
+    <text x="624" y="638" font-weight="700">dsh-memory-nebula · 星图（可重建）</text>
+    <text x="624" y="660" font-size="12" fill="#4a6b5c">节点 / 边 / 强弱 / 枢纽；丢了能全量重建，所以写路径以主库为准</text>
+  </g>
+</svg>
