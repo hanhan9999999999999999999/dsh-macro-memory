@@ -4128,4 +4128,74 @@ if (failures !== 0) process.exitCode = 1
 - 只改 `tools/`（探针 + 编排）与 `verify.mjs`，**没碰 vendor、没碰运行时代码**；这轮不需要重启 DSH。
 - 体积数字是「字面量偏高估计」，口径与 0.1.x 基线可比；线上真实投影体积仍以 `tools/probe-host.mjs` D2（8,655 B）为准。
 
+# 9.89 装一个探测器，而不是再修一个脚本（0.2.83）
+
+### 9.89.1 修完一例，立刻撞见第二例
+
+9.88 修好 `tools/probe-toolsize.mjs` 的裸 `root` 之后，顺手把 `tools/` 下没被编排的脚本挨个跑了一遍：
+
+```
+tools/cost-baseline.mjs:8
+const meow = readFileSync(root + '/meow-memory/lib/index.js', 'utf8')
+                          ^
+ReferenceError: root is not defined
+```
+
+一模一样的错，一行不差（只 `import { vendorDir }`，却用 `root`）。所以这不是手滑，是**一整类**：只要一个脚本没被任何东西执行，它就会安静地烂，而且 `node --check` 永远看不见。
+
+同时对全部 26 个 `tools/*.mjs` 做了归类，发现四个「孤儿」（既不在 check-all、也没被任何脚本 import）：`cost-baseline.mjs`、`wire-profile.mjs`、`patch-meow-settings-ns.mjs`、`patch-nebula-noinject.mjs`。它们不是垃圾——三个是手动工具、一个是历史补丁——但**没人知道它们还能不能跑**。
+
+### 9.89.2 账本：把「手动」变成一种显式状态
+
+新增 `tools/manual-tools.mjs`，只导出数据：
+
+```js
+export const MANUAL_TOOLS = [
+  { file: 'tools/cost-baseline.mjs', smoke: true, why: '只读两套引擎源码数静态开销，输出是人读报表' },
+  { file: 'tools/wire-profile.mjs', smoke: true, args: ['--status'], why: '--status 只打印不改盘，--apply 才写' },
+  { file: 'tools/patch-meow-settings-ns.mjs', smoke: true, why: '默认只检锚点不写盘，已打过则跳过（幂等）' },
+  { file: 'tools/patch-nebula-noinject.mjs', smoke: false, why: '按行号切片的一次性补丁，锚点已不存在，再跑必报错' },
+  { file: 'tools/accept-live.mjs', smoke: false, why: '要对着正在运行的 DSH 读运行态，环境依赖' },
+  { file: 'tools/make-vendor-manifest.mjs', smoke: false, why: '会写 vendor/VENDOR.json，只在引擎变动时手动跑' },
+]
+```
+
+两条设计：`smoke: true` 是**可执行承诺**（只读、随时能跑，探针会真跑一遍），`smoke: false` 必须写清为什么不能自动跑且 `why` 不许太短。数据放文件里、判据放探针里——账本不写逻辑，就不会自己长出一套规则。
+
+### 9.89.3 探针：三类归属 + 自由变量 + 冒烟
+
+`tools/probe-tools.mjs`（check-all 第 13 支，16 条判据）干三件事：
+
+1. **归类**：把 `tools/*.mjs` 分成 `check-all STEPS` / `被别的脚本 import` / `账本登记`。三者都不是 → 红并列出文件名。从此新写的脚本不可能悄悄变成幽灵。附带还查：账本里的文件真实存在、账本不许和 STEPS 重叠（记账不能撒谎）、`smoke` 不许「没说」。
+2. **自由变量**：把 `_root.mjs` 的导出（`root` / `vendorDir` / `at`）当白名单——某脚本用到某名字却没在 `from './_root.mjs'` 里导入、又没自己声明同名局部变量 → 红。这就是把 9.88 那个错变成判据。
+3. **冒烟**：账本里 `smoke: true` 的脚本真跑一遍（`spawnSync(node, [file, ...args])`，30 s 超时），非零退出 → 红。
+
+另外对所有脚本跑 `node --check`——它抓不到自由变量，但能抓语法，成本几乎为零。
+
+### 9.89.4 探测器自己也要被验
+
+第一版探针写了三处假红，正好说明「判据也要有阴性对照」：
+
+- `doctor.mjs` 的 `what: '…改取 _root.mjs 的 vendorDir…'` 是**字符串**，被判成「用了 vendorDir 却没导入」；
+- `wire-profile.mjs` 有 `const at = work.indexOf(anchor)`，被判成「白用 at」；
+- 连 `_root.mjs` 自己都被判「用了 root 没导入」（它就是定义处）。
+
+修法：写了个 `maskNonCode()`，把注释、`'…'`、`"…"`、`` `…` `` 的字面量部分全部涂成空格（`${…}` 里仍是代码，保留）；跳过定义处；自己声明同名局部变量的不算。然后**加六条阴性对照**：裸用 `root` 必须被抓、只导入别的名字必须被抓、正常导入不许误报、局部变量不许误报、字符串里的名字不许误报、模板字面量插值按代码算。再加三条归类对照（不存在的脚本→orphan、探针自己→step、账本自己→import）。
+
+假红比漏红更坏：它教人忽略探测器。
+
+### 9.89.5 怎么验的
+
+- `node tools/probe-tools.mjs` → 16 条 ALL PASS；`cost-baseline.mjs` 修后能跑出 693 字符 RULE、17 个工具、注入预算与数据库行数。
+- `node verify.mjs` → A83 八条；总断言 892 → 900。
+- `node tools/check-all.mjs` → 15/15，1,671 条断言。
+- `node tools/doctor.mjs` → 补丁账本多两条（`tools/probe-tools.mjs`、`tools/manual-tools.mjs`）。
+
+### 9.89.6 边界
+
+- 只动 `tools/`、`verify.mjs`、文档与版本号；**不碰 vendor、不需要重启 DSH**。
+- 账本只登记「确实需要手动跑」的脚本；能自动跑的一律进 check-all，不给自己留后门。
+- `patch-nebula-noinject.mjs` 保留但 `smoke: false`：它是历史证据，不是可重放工具。
+
+
 

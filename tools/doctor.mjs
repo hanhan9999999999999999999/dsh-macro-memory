@@ -412,6 +412,16 @@ const PATCHES = [
     file: 'tools/probe-toolsize.mjs',
     what: '修掉裸 root（ReferenceError，脚本 0.2.7x 起就跑不动）：改取 _root.mjs 的 vendorDir，并自己判「17 个原工具一个不少 + 字面量不膨胀」，进 check-all 第 12 支',
   },
+  {
+    marker: '[macro-fusion 0.2.83]',
+    file: 'tools/probe-tools.mjs',
+    what: '工具账本探测器：每个脚本必须有归属（STEPS / 被 import / 手动账本）、_root 导出不许白用、只读手动脚本真跑一遍；自带阴性对照，进 check-all 第 13 支',
+  },
+  {
+    marker: '[macro-fusion 0.2.83]',
+    file: 'tools/manual-tools.mjs',
+    what: '手动脚本账本（6 条，每条带 smoke 与 why）：把「有意的」「忘了的」分开，账本不写逻辑',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

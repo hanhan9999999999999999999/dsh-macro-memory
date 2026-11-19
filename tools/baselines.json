@@ -1,9 +1,9 @@
 {
   "note": "断言数与耗时基线：counts=每支自检脚本的 PASS 条数，ms=上次实测耗时，budgetMs=超时就杀的上限（约 4×ms，最低 30s），实际耗时超过 ms 的 1.5 倍只提醒不判红。故意增减断言、或确认某支本来就该这么慢之后，跑 node tools/check-all.mjs --update-baselines 重记。",
   "generatedBy": "tools/check-all.mjs --update-baselines",
-  "version": "0.2.82",
+  "version": "0.2.83",
   "counts": {
-    "verify.mjs": 892,
+    "verify.mjs": 900,
     "tools/probe-fusion.mjs": 460,
     "tools/probe-graph.mjs": 58,
     "tools/probe-host.mjs": 23,
@@ -13,26 +13,28 @@
     "tools/check-client-bundle.mjs": 0,
     "tools/probe-inject.mjs": 17,
     "tools/check-yaml.mjs": 0,
-    "tools/doctor.mjs": 116,
+    "tools/doctor.mjs": 118,
     "tools/probe-load.mjs": 14,
     "tools/check-market.mjs": 48,
-    "tools/probe-toolsize.mjs": 3
+    "tools/probe-toolsize.mjs": 3,
+    "tools/probe-tools.mjs": 20
   },
   "ms": {
-    "verify.mjs": 1756,
-    "tools/probe-fusion.mjs": 7305,
-    "tools/probe-host.mjs": 947,
-    "tools/probe-client-ui.mjs": 83,
+    "verify.mjs": 1807,
+    "tools/probe-fusion.mjs": 7455,
+    "tools/probe-host.mjs": 944,
+    "tools/probe-client-ui.mjs": 82,
     "tools/coverage-audit.mjs": 88,
     "tools/check-client-bundle.mjs": 60,
-    "tools/probe-inject.mjs": 380,
-    "tools/check-yaml.mjs": 77,
-    "tools/doctor.mjs": 183,
-    "tools/probe-graph.mjs": 85321,
-    "tools/param-audit.mjs": 20662,
-    "tools/probe-load.mjs": 133,
-    "tools/check-market.mjs": 283,
-    "tools/probe-toolsize.mjs": 68
+    "tools/probe-inject.mjs": 417,
+    "tools/check-yaml.mjs": 73,
+    "tools/doctor.mjs": 161,
+    "tools/probe-graph.mjs": 85329,
+    "tools/param-audit.mjs": 20656,
+    "tools/probe-load.mjs": 129,
+    "tools/check-market.mjs": 252,
+    "tools/probe-toolsize.mjs": 70,
+    "tools/probe-tools.mjs": 1618
   },
   "budgetMs": {
     "verify.mjs": 30000,
@@ -48,6 +50,7 @@
     "tools/param-audit.mjs": 83000,
     "tools/probe-load.mjs": 30000,
     "tools/check-market.mjs": 30000,
-    "tools/probe-toolsize.mjs": 30000
+    "tools/probe-toolsize.mjs": 30000,
+    "tools/probe-tools.mjs": 30000
   }
 }

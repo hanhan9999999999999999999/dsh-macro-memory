@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 14 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 15 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5641,6 +5641,55 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '脚本: 失败时置 exitCode 1（check-all 才看得见）',
     probeSrc.includes('if (failures !== 0) process.exitCode = 1'),
+  )
+}
+
+// ── A83. 装一个探测器，而不是再修一个脚本（0.2.83）──
+// 0.2.82 修了 probe-toolsize 的裸 root，紧接着发现 cost-baseline 有一模一样的错。
+// 结论：这不是手滑，是一整类（没被执行的脚本会安静地烂）。所以这一轮装探测器：
+//   tools/manual-tools.mjs 是「手动脚本」的账本，tools/probe-tools.mjs 判「有没有归不了类的脚本」、
+//   判「有没有白用 _root.mjs 的导出」、并把标了 smoke 的只读脚本真跑一遍。
+{
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const probeTools = readFileSync(join(root, 'tools/probe-tools.mjs'), 'utf8')
+  const manualSrc = readFileSync(join(root, 'tools/manual-tools.mjs'), 'utf8')
+  const costSrc = readFileSync(join(root, 'tools/cost-baseline.mjs'), 'utf8')
+
+  check(
+    '账本: 手动脚本账本存在且被探测器 import（数据与判据分开）',
+    manualSrc.includes('export const MANUAL_TOOLS') && probeTools.includes("import { MANUAL_TOOLS } from './manual-tools.mjs'"),
+  )
+  check(
+    '账本: 每条手动脚本都带 smoke 与 why（不许「没说」）',
+    (manualSrc.match(/smoke: (true|false)/g) ?? []).length >= 5 && (manualSrc.match(/why: '/g) ?? []).length >= 5,
+  )
+  check(
+    '账本: probe-tools 进了 check-all 的 STEPS（探测器自己也被执行）',
+    checkAllSrc.includes("['tools/probe-tools.mjs'"),
+  )
+  check(
+    '账本: probe-tools 自己会判「每个脚本都有归属」与「白用 _root 导出」',
+    probeTools.includes('ok(\n  unclassified.length === 0') &&
+      probeTools.includes('function findFreeVars(raw)') &&
+      probeTools.includes("'自由变量：_root.mjs 的导出（'"),
+  )
+  check(
+    '账本: 有阴性对照（拿已知写坏的片段验探测器自己）',
+    probeTools.includes("ok(findFreeVars(\"const a = readFileSync(root + '/x', 'utf8')\").includes('root')") &&
+      probeTools.includes("ok(findFreeVars(\"const at = hay.indexOf(x)") &&
+      probeTools.includes("ok(classify('tools/__nope__.mjs') === 'orphan'"),
+  )
+  check(
+    '账本: 冒烟只跑标了 smoke 的，且真跑（不是读代码猜）',
+    probeTools.includes('for (const m of smokeList)') && probeTools.includes('spawnSync(process.execPath, [join(root, m.file)'),
+  )
+  check(
+    '脚本: cost-baseline 的裸 root 也修了（同一类错的第二例）',
+    costSrc.includes("import { vendorDir } from './_root.mjs'") && !/readFileSync\(root \+/.test(costSrc),
+  )
+  check(
+    '脚本: cost-baseline 进账本且标了 smoke（只读，可随时跑）',
+    /file: 'tools\/cost-baseline\.mjs',\n\s+smoke: true/.test(manualSrc),
   )
 }
 

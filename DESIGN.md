@@ -4573,5 +4573,63 @@ if (failures !== 0) process.exitCode = 1
 
 `node tools/probe-toolsize.mjs` → 三行 PASS + `ALL PASS`、`exit=0`（修前是 `ReferenceError` / `exit=1`）；`verify.mjs` A82 五条（进了 STEPS、取根走 `_root.mjs` 且无裸 `root`、清单判据在、体积判据在、失败置 `exitCode 1`），总断言 887 → 892；`check-all` → **14/14，1,663 条断言，118.2s**；`doctor` → 补丁账本多一条 `[macro-fusion 0.2.82]`，116 条全绿。
 
+## 95. 装探测器，而不是再修一个脚本（0.2.83）
+
+### 95.1 修完一例，立刻撞见第二例
+
+94 章修好 `tools/probe-toolsize.mjs` 的裸 `root` 之后，把 `tools/` 下没被编排的脚本挨个跑了一遍，`tools/cost-baseline.mjs:8` 报出一字不差的同一个错：`ReferenceError: root is not defined`（它也只 `import { vendorDir }`）。
+
+两个独立文件、同一个错、都躺了两个月——这已经不是「手滑」这个量级的解释。正确的结论是：**「没被执行的脚本」是一种状态，凡进入这个状态的东西都会烂**。修掉其中两个，只解决了两个样本。
+
+顺带发现 `tools/*.mjs` 里有四个「孤儿」（既不在 check-all、也没被任何脚本 import）：`cost-baseline.mjs`、`wire-profile.mjs`、`patch-meow-settings-ns.mjs`、`patch-nebula-noinject.mjs`。它们三个是手动工具、一个是历史补丁，都不该删，但**没人知道它们还能不能跑**——这是「有意的」，还是「忘了」，仓库里看不出来。
+
+### 95.2 账本：把「手动」变成一个显式状态
+
+`tools/manual-tools.mjs` 只导出数据，六条，每条两个必填字段：
+
+```js
+{ file: 'tools/cost-baseline.mjs', smoke: true,  why: '只读两套引擎源码数静态开销，输出是人读报表' }
+{ file: 'tools/patch-nebula-noinject.mjs', smoke: false, why: '按行号切片的一次性补丁，锚点已不存在，再跑必报错' }
+```
+
+- `smoke: true` 是**可执行承诺**：只读、随时能跑，探针会真跑一遍。不是「我觉得它没事」，是「它刚刚退出码 0」。
+- `smoke: false` 必须写理由，且理由不许太短（判据卡 12 字）。理由短到「临时」两个字，等于没写。
+- 数据与判据分开：账本不写逻辑，所以它不会自己长出一套规则；探针改判据不用改账本。
+
+这一步的真正作用是**消除「有意的」和「忘了的」之间的模糊**。孤儿脚本以前默认等于「大概没人要」，现在必须有人在账本上签字；没签字又被探针发现 → 红。
+
+### 95.3 三类归属与那个自由变量判据
+
+`tools/probe-tools.mjs`（check-all 第 13 支，16 条判据）只做三件事：
+
+1. **归类**：每个 `tools/*.mjs` 必须是 `STEPS` / `被 import` / `账本` 之一。判据里还有三条反作弊：账本文件必须存在、账本不许和 STEPS 重叠（记账不能撒谎）、`smoke` 不许是「没说」。
+2. **自由变量**：把 `_root.mjs` 的导出名当白名单——脚本用了某名字却没导入、又没自己声明同名局部变量 → 红。这条判据就是 94 那个错，只不过从「这次修好了」升级成「以后不许再犯」。
+3. **冒烟**：`smoke: true` 的真跑（`spawnSync` + 30 s 超时 + 非零退出即红）。
+
+`node --check` 也跑，但只当语法兜底：它抓不到自由变量，别指望它。
+
+### 95.4 教训 59
+
+> 探测器最大的风险不是漏判，是「判了，但从来没人验它判得对」。
+> 一条判据如果自己没有被阴性对照打过，它和注释没有区别。
+
+第一版探针就写了三处假红：`doctor.mjs` 里 `what: '…改取 _root.mjs 的 vendorDir…'` 这段**字符串**被判成「用了 vendorDir 却没导入」；`wire-profile.mjs` 的 `const at = work.indexOf(anchor)` 被判成「白用 at」；连 `_root.mjs` 自己都被判「用了 root 没导入」。三处都是误伤——而误伤的代价是：人开始学会「这条红不用管」，然后真红也一起被忽略。
+
+修法是两层：
+
+- 结构上：`maskNonCode()` 把注释与 `'…'` / `"…"` / `` `…` `` 的字面量部分涂成空格（`${…}` 里还是代码，保留），跳过定义处，自己声明同名局部变量的放过；
+- 制度上：**加阴性对照**——六条已知写坏/已知正常的片段必须分别判「抓」和「不抓」，三条归类对照（不存在的脚本→orphan、探针自己→step、账本自己→import）。判据从此有自己的测试。
+
+这和 92 章镜像索引那条阴性对照是同一条方法论：**判据必须能证明它会红**。区别只是 92 是给别人的校验器做对照，这里给我们自己的探测器做对照。
+
+### 95.5 验收
+
+`probe-tools` → 16 条 ALL PASS（归类 26/26、账本 6 条、语法 26/26、自由变量干净、冒烟 3/3、自指 3 条、对照 9 条）；`cost-baseline` 修后真跑出 693 字符 RULE + 17 个工具 + 注入预算 + 数据库行数；`verify` A83 八条（账本是数据、每条带 smoke/why、探针进 STEPS、探针自带归属与自由变量判据、有阴性对照、冒烟真跑、cost-baseline 已修、cost-baseline 进账本），总断言 892 → 900；`check-all` → **15/15，1,671 条断言**；`doctor` 补丁账本多两条。
+
+### 95.6 边界
+
+只动 `tools/`、`verify.mjs`、文档与版本号：不碰 vendor、不需要重启 DSH。能自动跑的脚本一律进 check-all，账本只收「确实需要人手动跑」的；`patch-nebula-noinject.mjs` 以 `smoke: false` 留存，是历史证据，不是可重放工具。
+
+
 
 

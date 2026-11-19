@@ -1,11 +1,16 @@
 /**
  * 成本基线：数清两套插件「每轮固定开销」的静态部分。
  * 只读源码，不加载插件、不碰运行中的 DSH。
+ *
+ * [macro-fusion 0.2.83] 这里原本用的是没导入的 `root`（只 import 了 vendorDir），
+ * 和 probe-toolsize 一模一样的烂法——`node --check` 看不出来，只有真跑才炸。
+ * 现在取 vendorDir；这属于「手动脚本」账本（tools/manual-tools.mjs），
+ * 由 tools/probe-tools.mjs 真跑一遍冒烟。
  */
 import { vendorDir } from './_root.mjs'
 import { readFileSync } from 'node:fs'
 
-const meow = readFileSync(root + '/meow-memory/lib/index.js', 'utf8')
+const meow = readFileSync(vendorDir + '/meow-memory/lib/index.js', 'utf8')
 const neb = readFileSync(vendorDir + '/dsh-memory-nebula/lib/index.js', 'utf8')
 
 function chars(s) { return [...s].length }
