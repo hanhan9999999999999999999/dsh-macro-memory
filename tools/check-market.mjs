@@ -156,7 +156,10 @@ if (typeof icon === 'string') {
 // ── 7. 时间戳：市场按 Unix 秒展示「更新时间」────────────────────────────────
 const now = Math.floor(Date.now() / 1000)
 check(
-  Number.isInteger(entry.versions[0].publishTimestamp) && entry.versions[0].publishTimestamp <= now + 86400,
+  // 0.2.91：容差从「+24 小时」收到「+5 分钟」。86400 的松量让一个把本地时区多算了 8 小时的
+  // 时间戳（PowerShell `Get-Date -UFormat %s` 就会这么算）照样 PASS，而市场详情页会把
+  // 「更新时间」写成 8 小时后——错的东西不该靠余量过关。
+  Number.isInteger(entry.versions[0].publishTimestamp) && entry.versions[0].publishTimestamp <= now + 300,
   'publishTimestamp 是合理的时间（不是毫秒、不在未来）',
   `${entry.versions[0].publishTimestamp}`,
 )
