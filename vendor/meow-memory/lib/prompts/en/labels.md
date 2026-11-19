@@ -33,6 +33,8 @@
 - dream.dup.crossRound: another round
 - dream.cover.title: [Duplicate write-ups: {n}] (in each pair the whole of the left entry sits inside the right one — verbatim overlap is only a few dozen percent, because one is a short excerpt and the other a long write-up, but they say the same thing; the test is containment ≥{contain}%):
 - dream.cover.rule: What to do: merge them into one — move whatever the excerpt has that the long entry lacks into it, keep the fuller entry, and set the other to status=archived via memory_update. Do not file them as two separate facts just because repeat is low: the same knowledge stored twice is paid for twice in the first-round injection.
+- dream.cover.keep: Recipe: keep the long entry and fold in these {n} words from the excerpt ({words}) — leave them out and the merge loses them.
+- dream.cover.keepNone: Recipe: the excerpt has no words the long entry lacks, so there is nothing to fold in — keep the long entry, set the excerpt to archived, and leave the text as it is.
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.

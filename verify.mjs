@@ -6285,5 +6285,74 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.95] 覆盖度只说「是不是同一件事」，不说「合并会不会漏字」：≥90% 的意思是
+// 短条最多还有 10% 的词没落进长条，只喊「合成一条」，那 10% 多半跟着短条一起被扔掉。
+// 这里钉：处方是模块级纯函数、按词长降序取前 6 个、两个分支都走 labels、缩进接在对子行后面、
+// 三语 label 与六份指引都写了怎么合并与三把尺子的分工、探针 F 段进线。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools/probe-ruler.mjs'), 'utf8')
+  const langs = ['zh', 'en', 'pt-br']
+  const labelOf = (l) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, 'labels.md'), 'utf8')
+  const slotOf = (l, f) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, f), 'utf8')
+  check(
+    'dream 合并处方: 漏词判据是模块级纯函数，词数上限是具名常量 DREAM_MERGE_WORDS（不是魔数）',
+    vSrc.includes('var DREAM_MERGE_WORDS = 6;') &&
+      /function missingWordsOf\(smallSet, bigSet, max = DREAM_MERGE_WORDS\)/.test(vSrc) &&
+      vSrc.includes('for (const w of smallSet) if (!bigSet.has(w)) out.push(w);'),
+  )
+  check(
+    'dream 合并处方: 只数「短条有、长条没有」的词，按词长降序（先念信息量最大的那几个）',
+    vSrc.includes('out.sort((x, y) => y.length - x.length || (x < y ? -1 : x > y ? 1 : 0));') &&
+      vSrc.includes('return { total: out.length, sample: out.slice(0, max) };') &&
+      vSrc.includes('const miss = missingWordsOf(a.size <= b.size ? a : b, a.size <= b.size ? b : a);'),
+  )
+  check(
+    'dream 合并处方: 详写对带着漏词数出行，渲染时两个分支都走 labels（没漏字也要说清是无损的）',
+    vSrc.includes('missing: miss.total, words: miss.sample') &&
+      vSrc.includes('lbl3("dream.cover.keep",') &&
+      vSrc.includes('lbl3("dream.cover.keepNone")') &&
+      vSrc.includes('const recipe = p.missing === 0') &&
+      vSrc.includes(': lbl3("dream.cover.keep", { n: String(p.missing), words: p.words.join("\\u3001") })'),
+  )
+  check(
+    'dream 合并处方: 处方行缩进在对子行下面（`\\n  ${recipe}`），不是另起一个块',
+    vSrc.includes('return `${head}\\n  ${recipe}`;'),
+  )
+  check(
+    'dream 合并处方: 三语 labels 都有 keep / keepNone，占位符按名字填（{n} / {words}，且对准短条与长条）',
+    langs.every((l) => {
+      const s = labelOf(l)
+      const keep = (s.match(/^- dream\.cover\.keep: .*$/m) ?? [''])[0]
+      return (
+        /^- dream\.cover\.keep:/m.test(s) &&
+        /^- dream\.cover\.keepNone:/m.test(s) &&
+        s.includes('{n}') &&
+        s.includes('{words}') &&
+        !/[{}]contain/.test(keep)
+      )
+    }),
+  )
+  check(
+    'dream 合并处方: 三语六份指引都写了处方怎么用，并写清三把尺子各管一段（重复该合并、相似不许合并）',
+    langs.every((l) =>
+      ['dream-atomic.md', 'dream-topic.md'].every(
+        (f) =>
+          /处方|recipe|receita/i.test(slotOf(l, f)) &&
+          /三把尺子|three rulers|três réguas/.test(slotOf(l, f)),
+      ),
+    ),
+  )
+  check(
+    'dream 合并处方: probe-ruler 的 F1–F4 进了线（含无损分支与「不硬凑词」的阴性对照）',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('F1 每个详写对子下面都跟着一行处方') &&
+      rulerSrc.includes('F2 短条里长条没有的词被点名') &&
+      rulerSrc.includes('F3 阴性对照：短条整句都在长条里时') &&
+      rulerSrc.includes('F4 三语指引都写了「怎么合并」与三把尺子的分工'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

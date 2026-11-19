@@ -3529,6 +3529,17 @@ function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
 var DREAM_COVER_MIN = 0.9;
 var DREAM_COVER_MIN_WORDS = 8;
 var DREAM_COVER_RATIO_MAX = 0.75;
+// [macro-fusion 0.2.95] 覆盖度只回答「是不是同一件事」，不回答「合并会不会漏字」。
+// 真正的风险在短条那 10% 没落进长条的词：只让模型「合成一条」，它多半把短条整条扔掉，
+// 那 10% 就跟着没了。所以把短条里长条没有的词算出来，直接写在处方行上（最多念 DREAM_MERGE_WORDS 个）。
+// 一个都没有时也别留白——那正好说明这次合并是无损的，直接保留长条即可。
+var DREAM_MERGE_WORDS = 6;
+function missingWordsOf(smallSet, bigSet, max = DREAM_MERGE_WORDS) {
+  const out = [];
+  for (const w of smallSet) if (!bigSet.has(w)) out.push(w);
+  out.sort((x, y) => y.length - x.length || (x < y ? -1 : x > y ? 1 : 0));
+  return { total: out.length, sample: out.slice(0, max) };
+}
 function coverOfSets(a, b) {
   const small = a.size <= b.size ? a : b;
   const big = a.size <= b.size ? b : a;
@@ -3555,7 +3566,8 @@ function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN) {
       if (overlapOfSets(a, b) >= DEDUP_THRESHOLD) continue;
       const shortRow = a.size <= b.size ? rows[i] : rows[j];
       const longRow = a.size <= b.size ? rows[j] : rows[i];
-      out.push({ a: shortRow, b: longRow, contain: Math.round(cov * 1e3) / 1e3, ratio: Math.round(ratio * 1e3) / 1e3 });
+      const miss = missingWordsOf(a.size <= b.size ? a : b, a.size <= b.size ? b : a);
+      out.push({ a: shortRow, b: longRow, contain: Math.round(cov * 1e3) / 1e3, ratio: Math.round(ratio * 1e3) / 1e3, missing: miss.total, words: miss.sample });
     }
   }
   out.sort((x, y) => y.contain - x.contain);
@@ -3616,7 +3628,12 @@ ${lbl3("dream.cover.title", { n: String(coverPairs.length), contain: String(Math
 ${coverPairs.map((p) => {
       const line = `- ${shortOf.get(String(p.a.id))} \u2282 ${shortOf.get(String(p.b.id))}  ${p.contain.toFixed(2)} \xB7 ${p.a.level} \u21D2 ${p.b.level}`;
       const inThis = roundIds.has(String(p.a.id)) && roundIds.has(String(p.b.id));
-      return inThis ? line : `${line}\uFF08${lbl3("dream.dup.crossRound")}\uFF09`;
+      const head = inThis ? line : `${line}\uFF08${lbl3("dream.dup.crossRound")}\uFF09`;
+      // [macro-fusion 0.2.95] 处方行：短条里长条没有的词，就是合并时可能丢掉的那部分。
+      const recipe = p.missing === 0
+        ? lbl3("dream.cover.keepNone")
+        : lbl3("dream.cover.keep", { n: String(p.missing), words: p.words.join("\u3001") });
+      return `${head}\n  ${recipe}`;
     }).join("\n")}
 ${lbl3("dream.cover.rule", { contain: String(Math.round(DREAM_COVER_MIN * 100)) })}`;
     lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock, groupMarker }).split("\n"));

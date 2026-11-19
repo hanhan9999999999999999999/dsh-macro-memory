@@ -33,6 +33,8 @@
 - dream.dup.crossRound: 另一组
 - dream.cover.title: 【重复详写 {n} 对】（下面每一对里，⊂ 左边那条的整句几乎都落在右边那条里——逐字重复度只有几十个百分点，因为一条是短摘录、一条是长详写，但它们讲的是同一件事，判据是覆盖度 ≥{contain}%）：
 - dream.cover.rule: 处置：合成一条——把短摘录里长那条没有的细节补进长那条，保留信息更全的那条，另一条用 memory_update 把 status 设 archived。别因为 repeat 低就当两件事记着：同一个知识点存两层，首轮注入要多付一份钱。
+- dream.cover.keep: 处方：留着长条，把短条这 {n} 个词补进去（{words}）——漏掉它们，这次合并就丢字了。
+- dream.cover.keepNone: 处方：短条没有长条之外的词，这次合并没有东西要补——留着长条、把短条设 archived 就行，正文不用改写。
 - project.unlabeled: 未标记
 - project.header: 【项目：{name}】
 - project.empty: 【项目：{name}】该项目暂无记忆条目。

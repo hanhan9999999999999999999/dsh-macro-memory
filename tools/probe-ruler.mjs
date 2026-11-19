@@ -345,5 +345,64 @@ check(
   `${coverSlotFiles.filter((f) => /重复详写对|duplicate write-ups|redações duplicadas/.test(f)).length}/${coverSlotFiles.length} 份指引`,
 )
 
+// ── F1–F4：覆盖度只说「是不是同一件事」，处方行才说「会不会漏字」（0.2.95）──────────
+// 覆盖度 ≥90% 的意思是：短条还有最多 10% 的词没落进长条。只喊「合成一条」，那 10% 多半跟着短条
+// 一起被扔掉——所以每一对下面再印一行处方，把短条里长条没有的词逐字数出来（最多 6 个）；
+// 一个都没有时也要说清，那正好证明这次合并是无损的。
+const RECIPE_LINE = /^ {2}(处方|Recipe|Receita)：/m
+const keepWs = join(home, 'ws-recipe-keep')
+mkdirSync(keepWs, { recursive: true })
+const R_SHORT_KEEP = 'sandbox 关了以后 workspace 写入会报 EPERM，得先放行目录 TB7719'
+const R_LONG =
+  '排查记录：主人在 Windows 上跑 dsh 的时候发现 sandbox 关了以后 workspace 写入会报 EPERM，得先放行目录才行；具体表现是 node 进程 fs.writeFile 直接抛错、robocopy 也会失败，最后用 diagnose-windows-sandbox-acl 检查祖先目录 ACL 才定位到问题，结论是沙箱策略与目录权限不一致，不是插件自己的 bug。'
+await call(
+  'memory_remember',
+  { content: R_SHORT_KEEP, level: 'fact', keywords: ['sandbox', 'EPERM', '放行', '目录', '单号'], importance: 1, project: '全局' },
+  execIn(keepWs, 'sess-ruler-keep'),
+)
+await call(
+  'memory_remember',
+  { content: R_LONG, level: 'topic', title: 'sandbox 写入 EPERM 的排查', keywords: ['sandbox', 'EPERM', '排查', 'ACL', '放行'], importance: 1, project: '全局' },
+  execIn(keepWs, 'sess-ruler-keep'),
+)
+const keepText = dreamAll('sess-ruler-keep', keepWs).join('\n---\n')
+const keepPair = keepText.match(/^- (\S+) ⊂ (\S+)  ([0-9.]+) · /m) ?? []
+check(
+  'F1 每个详写对子下面都跟着一行处方（不是只有标题和规矩，模型知道具体该补哪些字）',
+  keepPair.length > 0 && RECIPE_LINE.test(keepText) && !/\{(n|words|short|long)\}/.test(keepText),
+  RECIPE_LINE.test(keepText) ? (keepText.match(/^ {2}(?:处方|Recipe|Receita)：.*/m) ?? [''])[0].slice(0, 60) : '没有处方行',
+)
+check(
+  'F2 短条里长条没有的词被点名（TB7719 只在短条里——这类编号正是合并时最容易丢的东西）',
+  /tb7719/i.test(keepText) && /1 (个词|word|palavra)/.test(keepText),
+  (keepText.match(/^ {2}(?:处方|Recipe|Receita)：.*/m) ?? ['(没有处方行)'])[0].slice(0, 80),
+)
+const noneWs = join(home, 'ws-recipe-none')
+mkdirSync(noneWs, { recursive: true })
+const R_SHORT_NONE = 'sandbox 关了以后 workspace 写入会报 EPERM，得先放行目录'
+await call(
+  'memory_remember',
+  { content: R_SHORT_NONE, level: 'fact', keywords: ['sandbox', 'EPERM', '放行', '目录', '写入'], importance: 1, project: '全局' },
+  execIn(noneWs, 'sess-ruler-none'),
+)
+await call(
+  'memory_remember',
+  { content: R_LONG, level: 'topic', title: 'sandbox 写入 EPERM 的排查', keywords: ['sandbox', 'EPERM', '排查', 'ACL', '放行'], importance: 1, project: '全局' },
+  execIn(noneWs, 'sess-ruler-none'),
+)
+const noneText = dreamAll('sess-ruler-none', noneWs).join('\n---\n')
+check(
+  'F3 阴性对照：短条整句都在长条里时，处方说「没有长条之外的词」，不硬凑几个词出来',
+  /⊂/.test(noneText) && /没有长条之外的词|no words the long entry lacks|nenhuma palavra/.test(noneText) && !/tb7719/i.test(noneText),
+  (noneText.match(/^ {2}(?:处方|Recipe|Receita)：.*/m) ?? ['(没有处方行)'])[0].slice(0, 70),
+)
+check(
+  'F4 三语指引都写了「怎么合并」与三把尺子的分工，labels 都有 keep / keepNone 两键',
+  coverSlotFiles.every((f) => /处方|recipe|receita/i.test(f)) &&
+    coverSlotFiles.every((f) => /三把尺子|three rulers|três réguas/.test(f)) &&
+    labelFiles.every((f) => /^- dream\.cover\.keep:/m.test(f) && /^- dream\.cover\.keepNone:/m.test(f)),
+  `${coverSlotFiles.filter((f) => /三把尺子|three rulers|três réguas/.test(f)).length}/${coverSlotFiles.length} 份指引`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

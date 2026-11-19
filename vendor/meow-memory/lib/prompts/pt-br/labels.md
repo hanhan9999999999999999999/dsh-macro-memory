@@ -33,6 +33,8 @@
 - dream.dup.crossRound: outra rodada
 - dream.cover.title: [Redações duplicadas: {n}] (em cada par o item da esquerda cabe inteiro dentro do da direita — a repetição literal é de poucas dezenas por cento, porque um é um resumo curto e o outro a versão completa, mas dizem a mesma coisa; o critério é cobertura ≥{contain}%):
 - dream.cover.rule: O que fazer: junte em um só — leve para a versão completa o que só o resumo tem, mantenha a entrada mais completa e marque a outra como status=archived via memory_update. Não as trate como dois fatos só porque o repeat é baixo: o mesmo conhecimento guardado duas vezes custa duas vezes na injeção da primeira rodada.
+- dream.cover.keep: Receita: fique com a versão completa e absorva estas {n} palavras do resumo ({words}) — se ficarem de fora, a fusão as perde.
+- dream.cover.keepNone: Receita: o resumo não tem nenhuma palavra que a versão completa não tenha, então não há nada a absorver — mantenha a versão completa, marque o resumo como archived e não reescreva o texto.
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.

@@ -468,6 +468,11 @@ const PATCHES = [
     what: 'dream 拿不到「重复」这把尺子：memory_remember 写的时候算得出逐字重复度（0.2.88 跨层点名、0.2.90 检索里报 repeat），可 dream——全库唯一回头看旧条目的地方——只给清单，哪两条其实是同一句话全靠模型自己扫字面比。现在①collectDreamRounds 选出来的每一组行两两算正文词集 Jaccard（和写侧 DEDUP_THRESHOLD 同一个门槛、同一个 overlapOfSets），≥80% 的对子按重复度降序取前 5 对，在清单末尾单独列一段「【逐字重复对 N 对】」并给处置（保留信息更全的、另一条 status=archived；只是相似度高的不算）；②没有对子时一个字不加（干净清单不加噪音）；③顺手修短 id 撞车：id 开头是 base36 时间戳，同一批连写两条前 8 位常常一模一样（实测 BASE/NEAR 都截成 0mwo20eo），清单与跨层回执原来都印 slice(0,8)，读者拿着它去 memory_update 会撞上 MemoryDb.update 的歧义拒绝、报成「未找到该记忆」——现在清单内用 uniqueShortIdsAmong 保证互不撞前缀，回执用 uniqueShortId 按层确认唯一。基准在 tools/probe-ruler.mjs 的 D 段（含「成员正好是那一对」「单条目不出块」两条阴性对照）',
   },
   {
+    marker: '[macro-fusion 0.2.95]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '覆盖度只回答「是不是同一件事」，不回答「合并会不会漏字」：≥90% 的意思是短条最多还有 10% 的词没落进长条，而指引只喊「合成一条」，模型多半把短条整条扔掉，那 10% 就跟着没了。现在每一个重复详写对下面多印一行处方：短条里长条没有的词按词长降序（最多 DREAM_MERGE_WORDS = 6 个）逐字点出来，告诉模型合并时要把它们补进长条；一个都没有时不留白，直接说「短条没有长条之外的词，这次合并没有东西要补」，把「这次合并是无损的」也变成可核对的结论。三语 labels 的 dream.cover.keep / dream.cover.keepNone 提供文案，三语六份 dream 指引同时写清「怎么合并」与三把尺子的分工——逐字重复 ≥80%（同一句话两个副本）与覆盖度 ≥90%（摘要 + 全文）属于「重复」，该合并归档；体检的「相似 N」与 memory_search 的 mode="similar"（稀有词签名）属于「相似」，同一话题的两句不同的话不许合并，最多互相补一句指针。基准在 tools/probe-ruler.mjs 的 F1–F4 段（含无损分支与「不硬凑词」的阴性对照）',
+  },
+  {
     marker: '[macro-fusion 0.2.94]',
     file: 'vendor/meow-memory/lib/index.js',
     what: '逐字重复度这把尺子天生抓不到「一条短摘录 + 一条长详写」：实测 15 词对 92 词只有 0.16，对 32 词也只有 0.47，全都落在 80% 门槛外面，可它们说的是同一件事，只是叠成了「摘要 + 全文」。写侧 DEDUP_THRESHOLD 与 dream 的重复对都只认 Jaccard，于是同一个知识点永久存两层、首轮注入多付一份钱。现在 dream 清单另开一块「重复详写对」：判据换成覆盖度（分母取小集合，短的那条几乎整句都在长的那条里），配两道闸——短的那条至少 8 个不同的词（拦住一个短语碰巧撞进长文；这条不能用长度比挡，最常见的形态就是 15 词 ⇄ 92 词、比值 0.16）、长度比 ≤0.75（拦住两条差不多长、本就该各说各的）；与 ≥80% 的重复对互斥，同一对不印两遍。处置写的是「合成一条、保留信息更全的那条、另一条 archived」，三语 labels 的 dream.cover.title / dream.cover.rule 提供文案，三语六份指引都说清「repeat 低也可能是同一件事」。基准在 tools/probe-ruler.mjs 的 E1–E5 段（含方向、阴性对照、与逐字重复块互斥）',
