@@ -182,12 +182,12 @@ git clone <THIS_REPO> dsh-macro-memory
 ## 质量：怎么证明它没坏
 
 ```bash
-node tools/check-all.mjs          # 12 支自检，1,594 条断言，118s
+node tools/check-all.mjs          # 13 支自检，1,633 条断言，135s
 node verify.mjs                   # 单支：宿主契约 + 浏览器装配
 node tools/doctor.mjs             # 体检：两棵树字节一致、加载面、注入长度、队列、账本
 ```
 
-- **12 支自检 / 1,594 条断言**，全部可执行，覆盖：宿主装配契约、真 vendor 端到端联动（含星图缺席降级）、真 meow 库 + 真 nebula 引擎的节点/边/生命周期、真 cordis + 真 ToolsService + 真 SystemPrompt、浏览器侧 UI 注册、17 个原工具 → 8 个统一工具的参数级覆盖审计、注入体、加载器判据、组合产物、YAML 接线、体检。
+- **13 支自检 / 1,633 条断言**，全部可执行，覆盖：宿主装配契约、真 vendor 端到端联动（含星图缺席降级）、真 meow 库 + 真 nebula 引擎的节点/边/生命周期、真 cordis + 真 ToolsService + 真 SystemPrompt、浏览器侧 UI 注册、17 个原工具 → 8 个统一工具的参数级覆盖审计、注入体、加载器判据、组合产物、YAML 接线、市场索引、体检。
 - **断言数基线**：`tools/baselines.json` 记每支的 PASS 条数——少了判红（有人删了东西），多了只提醒。
 - **耗时预算**：每支 4×实测且不低于 30s，超时 SIGKILL；比基线慢 1.5 倍只提醒不判红（慢不等于坏）。
 - **vendor 账本**：`vendor/VENDOR.json` 记两棵 vendor 树的文件数/字节/整树指纹，改过没重记就 FAIL；另有 25 条「我们故意打的补丁还在位」的内容断言。
@@ -213,9 +213,10 @@ lib/
 vendor/
   meow-memory/        主库内核（MIT，见第三方声明）
   dsh-memory-nebula/  星图内核（MIT）
-tools/                自检与探针（12 支 + 账本/体检）
+tools/                自检与探针（13 支 + 账本/体检）
 plugin-market/        市场索引（格式 1）
-docs/                 内部开发日志、图片
+DESIGN.md             设计取舍与教训（内部）
+docs/                 INTERNAL.md 逐轮开发日志、images/ 配图
 ```
 
 ## 第三方声明与来源
@@ -245,7 +246,7 @@ docs/                 内部开发日志、图片
 - Per-turn fixed cost: ~14–16K → **~2.2K tokens**.
 - Nothing was dropped: every original tool is reachable through the unified surface (audited by `tools/coverage-audit.mjs` and `tools/param-audit.mjs`).
 - Writes land in the main store first; graph links that cannot be written are **queued, not lost** (500 entries, 7-day TTL, auto-flushed).
-- 12 self-check scripts / 1,594 assertions / `node tools/check-all.mjs`.
+- 13 self-check scripts / 1,633 assertions / `node tools/check-all.mjs`.
 
 Bundled third-party code is MIT: `meow-memory` © 2026 Phant0Meow ([source](https://github.com/Phant0Meow/dsh-meow-memory)), `dsh-memory-nebula` © 2026 the authors. See `THIRD-PARTY-NOTICES.md` for the exact list of modifications.
 
