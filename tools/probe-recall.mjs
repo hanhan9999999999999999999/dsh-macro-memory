@@ -164,6 +164,36 @@ check('R4 level=lesson 时铁律在', hitsLesson.some((h) => h.id === ids.iron),
 const hitsLong = (await call('memory_search', { query: '部署之前是不是应该先备份一下', k: 10 })).hits
 check('R4 中文长句（不是关键词列表）也能召回铁律', hitsLong.some((h) => h.id === ids.iron), `${hitsLong.length} 条`)
 
+// ── R5 相关度下限（min_rel）：排得对之后，别把尾巴也端出来 ────────────────
+// [macro-fusion 0.2.86] 语料刻意在 R1–R4 之后才写：前面几组量的是打分与排序，
+// 多两条只沾一个词的条目会动 idf，把 R2 的 bm25 比较搅乱——测什么就只给它看什么。
+const TAIL = [
+  { key: 'tail1', content: '备份文件放在 D 盘，按日期命名，一个月清一次。', keywords: ['备份', '目录', '归档'] },
+  { key: 'tail2', content: '日志目录涨得很快，记得定期轮转。', keywords: ['日志', '轮转'] },
+]
+for (const t of TAIL) {
+  const r = await call('memory_remember', { content: t.content, project: '召回探针', keywords: t.keywords, importance: 1, level: 'fact' })
+  ids[t.key] = r.id
+}
+const r5Default = await call('memory_search', { query: '部署 备份', k: 10, explain: true })
+const hitsR5 = r5Default.hits
+const noteR5 = String(r5Default.note ?? '')
+const relOf = (h) => (hitsR5[0]?.score ? Math.round((h.score / hitsR5[0].score) * 100) / 100 : 0)
+check('R5 默认按 0.35 收窄：只沾「备份」一个词的 tail1 没展开', !hitsR5.some((h) => h.id === ids.tail1), hitsR5.map((h) => `${h.id.slice(0, 6)}@${relOf(h)}`).join(' '))
+check('R5 收窄要说出来：note 报了条数并给了 min_rel=0 的出口', /另有 \d+ 条/.test(noteR5) && noteR5.includes('min_rel=0'), noteR5.replace(/\n/g, ' / ').slice(0, 120))
+const r5All = await call('memory_search', { query: '部署 备份', k: 10, min_rel: 0 })
+const hitsAll = r5All.hits
+check('R5 阴性对照：min_rel=0 同一查询把 tail1 放回来（收窄真在起效，不是本来就没有）', hitsAll.some((h) => h.id === ids.tail1), `${hitsAll.length} 条 vs 默认 ${hitsR5.length} 条`)
+check('R5 min_rel=0 时条数确实变多', hitsAll.length > hitsR5.length, `${hitsAll.length} > ${hitsR5.length}`)
+const r5Tight = await call('memory_search', { query: '部署 备份', k: 10, min_rel: 0.99 })
+check('R5 收得再紧也至少留榜首一条（不是把结果收成空）', r5Tight.hits.length === 1 && r5Tight.hits[0]?.id === ids.iron, `${r5Tight.hits.length} 条`)
+// 「部署」这一个词上，铁律与随手记的相对位置是 1.81 : 1.48（rel 0.82），两条都该留着；
+// 上面那句查询带「备份」，随手记本来就没沾这个词，拿它当「误伤」的反例会把判据写错。
+const hitsR5pure = (await call('memory_search', { query: '部署', k: 10, explain: true })).hits
+check('R5 强相关的一组不被误伤（查询「部署」时铁律与随手记都在，收窄只砍沾一个词的尾巴）', hitsR5pure.some((h) => h.id === ids.iron) && hitsR5pure.some((h) => h.id === ids.casual), hitsR5pure.map((h) => `${h.level}@${h.score}`).join(' '))
+const r5Bad = await call('memory_search', { query: '部署 备份', k: 10, min_rel: 5 })
+check('R5 min_rel 给越界值：夹回 1 并说明（不当作「查不到」）', /不在 0–1 里/.test(String(r5Bad.note ?? '')) && r5Bad.hits.length >= 1, String(r5Bad.note ?? '').split('\n').filter((l) => l.includes('min_rel')).join(' ').slice(0, 90))
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

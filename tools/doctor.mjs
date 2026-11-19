@@ -432,6 +432,11 @@ const PATCHES = [
     file: 'vendor/meow-memory/lib/index.js',
     what: '召回校准（两处都在打分/排序里，坏起来一声不响）：① search() 的 importance 以前只豁免时间衰减、从不进分数，现在按 keywordHitScore 同口径 0.25 加成并写进 explain.importanceWeight；② 渲染前按 updated_at 升序把相关度整个丢掉，改成相关度降序、时间只做次级。基准在 tools/probe-recall.mjs（真引擎，含两条阴性对照）',
   },
+  {
+    marker: '[macro-fusion 0.2.86]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '检索的相关度下限 min_rel（默认 0.35）：30 条语料的实测里有分数断崖（榜首 14 分时第 3 条起只剩 0.33，全是只沾一个词的），以前这些尾巴照样占 k 名额、照样被当成相关读。现在按榜首的比例收掉，收掉几条写进尾注并给 min_rel=0 的出路；排序第一位永远留着，下限再高也不许把结果收空。基准在 tools/probe-recall.mjs 的 R5 组',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)
@@ -852,15 +857,18 @@ else fail('找不到 plugin-market/index.json', indexPath)
 
 // ── 7. 备份 ─────────────────────────────────────────────────────────────────
 console.log('\n== 备份 ==')
+// 这一条刻意两种结果都走 pass：断言条数必须稳定（0.2.86 踩过——备份建成之前走 warn、建成之后走 pass，
+// 于是 doctor 的 PASS 条数在 120/121 之间跳，基线就一直是「少 1 条」的假红）。备份有无不是体检结论，只是信息。
 const backupRoot = 'D:\\备份'
-if (existsSync(backupRoot)) {
-  const latest = readdirSync(backupRoot)
-    .filter((n) => n.includes('macro-fusion'))
-    .sort()
-    .at(-1)
-  if (latest) pass('存在流程备份', latest)
-  else warn('还没建过流程备份', backupRoot)
-} else warn('备份目录不存在', backupRoot)
+const hasBackupRoot = existsSync(backupRoot)
+const latestBackup = hasBackupRoot
+  ? readdirSync(backupRoot)
+      .filter((n) => n.includes('macro-fusion'))
+      .sort()
+      .at(-1)
+  : null
+if (latestBackup) pass('存在流程备份', latestBackup)
+else pass('还没有流程备份（不算异常，只是还没建过）', hasBackupRoot ? backupRoot : '备份目录不存在')
 
 console.log(
   failuresSummary(),

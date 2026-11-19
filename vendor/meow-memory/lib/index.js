@@ -2509,6 +2509,13 @@ function rememberTool(dir) {
 //   ② 可解释：explain 里补上 importanceWeight（打分侧在 search() 里加），三个因子 bm25 ×
 //      recencyWeight × importanceWeight 缺一个，读者就没法判断「它为什么排前面」。
 // 注释刻意放在字面量外面：tools/probe-toolsize.mjs 是按源码切片量工具字面量的，注释不该算进「膨胀」。
+// [macro-fusion 0.2.86] 相关度下限 min_rel（默认 0.35）：
+// 实测 30 条语料下，查询「数据库连接池 上限」返回 5 条，第 3 条起分数只有榜首的 33%/33%/31%
+// （内容是「数据库备份每天凌晨三点」这种只沾到「数据库」一个词的条目）。这类尾巴有三个代价：
+// 模型要读、要用 k 个名额、还会把「沾边」误当「相关」。这里按「分数 < 榜首 × min_rel」收掉，
+// 至少留 1 条（榜首永远在），并在回执里报出被收掉的条数与最高分——收窄要可追溯，
+// 不是悄悄少给几条（0.2.85 刚把「排得对」修好，这里补的是「排得对之后别把尾巴也端出来」）。
+// 参数 min_rel=0 可以关掉，用于「我要看全量」的场合。
 function searchTool(dir) {
   return {
     name: "memory_search",
@@ -2525,6 +2532,7 @@ function searchTool(dir) {
         days: { type: "integer", minimum: 1, maximum: 3650, description: T("memory_search.param.days") },
         k: { type: "integer", minimum: 1, maximum: 50, default: 10, description: T("memory_search.param.k") },
         content_max: { type: "integer", minimum: 0, maximum: 5e3, default: 300, description: T("memory_search.param.content_max") },
+        min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35, description: T("memory_search.param.min_rel") },
         explain: { type: "boolean", default: false, description: T("memory_search.param.explain") }
       }
     },
@@ -2617,6 +2625,12 @@ function searchTool(dir) {
       const cmGiven = parsed.content_max !== void 0 && parsed.content_max !== null && String(parsed.content_max).trim().length > 0;
       const contentMax = cmRaw !== void 0 ? Math.max(0, Math.min(5e3, Math.round(cmRaw))) : 300;
       const cmClamped = cmGiven && (cmRaw === void 0 || cmRaw < 0 || cmRaw > 5e3);
+      // [macro-fusion 0.2.86] 相关度下限（详见 searchTool 上方说明）：0.35 = 只展开分数不低于榜首
+      // 35% 的条目。给 0 就关掉，给越界值夹住并说明。
+      const relRaw = coerceNumber(parsed.min_rel);
+      const relGiven = parsed.min_rel !== void 0 && parsed.min_rel !== null && String(parsed.min_rel).trim().length > 0;
+      const minRel = relRaw !== void 0 ? Math.max(0, Math.min(1, relRaw)) : 0.35;
+      const relClamped = relGiven && (relRaw === void 0 || relRaw < 0 || relRaw > 1);
       // [macro-fusion 0.2.51] 层名过滤原来是静默的：拼错 / 复数 / 一个都不认识 → 过滤后数组变空
       // → 零命中，回执只说「以最新的为准」，读者会把它读成「记忆里没有」。这里把「哪些层名没对上」留住。
       const levelAsked = typeof parsed.level === "string" && parsed.level.trim() ? parsed.level.split(",").map((s) => s.trim()).filter((s) => s.length > 0) : [];
@@ -2633,6 +2647,7 @@ function searchTool(dir) {
       const daysNote = daysGiven && days === null ? `days 给的是「${String(parsed.days)}」，不是正数，这个「最近 N 天」的过滤没生效——等于查了全部时段。` : "";
       const kNote = kClamped ? `k 给的是「${String(parsed.k)}」，超出 1–50，这次按 ${k} 条处理。` : "";
       const cmNote = cmClamped ? `content_max 给的是「${String(parsed.content_max)}」，超出 0–5000，这次按 ${contentMax} 处理。` : "";
+      const relClampNote = relClamped ? `min_rel 给的是「${String(parsed.min_rel)}」，不在 0–1 里，这次按 ${minRel} 处理。` : "";
       const rows = statusDead ? [] : levels.flatMap((lv) => {
         if (statusList.includes("all")) return db.list(lv);
         if (statusList.length === 1 && statusList[0] !== "active") return db.list(lv, { status: statusList[0] });
@@ -2654,10 +2669,16 @@ function searchTool(dir) {
         // #91：衰减按最后使用时间
       }));
       const ranked = search(query, docs, { k: docs.length, explain });
+      const topScore = ranked.length > 0 ? ranked[0].score : 0;
+      const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
+      const belowFloor = ranked.length - aboveFloor.length;
+      const relNote = belowFloor > 0
+        ? `另有 ${belowFloor} 条相关度不到榜首的 ${Math.round(minRel * 100)}%（最高的 ${Math.round(ranked[aboveFloor.length].score * 100) / 100} 分，榜首 ${Math.round(topScore * 100) / 100} 分）没展开：它们多半只沾到一两个词，展开会挤掉真正相关的条目、也让回执变长。要看全量就传 min_rel=0。`
+        : "";
       const blindCount = Math.min(5, k);
-      const blind = ranked.slice(0, blindCount);
+      const blind = aboveFloor.slice(0, blindCount);
       const fresh = [];
-      for (const h of ranked.slice(blindCount)) {
+      for (const h of aboveFloor.slice(blindCount)) {
         if (fresh.length >= k - blindCount) break;
         if (seen.has(h.id)) continue;
         fresh.push(h);
@@ -2671,7 +2692,7 @@ function searchTool(dir) {
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
       const scopeNote = hits.length === 0 && levelValid.length > 0 ? `这次只在 ${levelValid.join(" / ")} 层里查了，零命中：别的层就算有同关键词也看不到——要全层查就去掉 level 参数（默认 fact / lesson / topic / rules）。` : "";
       const plain = hits.length === 0 && !explicitLevels && !statusDead ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules\uFF0Csoul \u4E0E user \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"soul,user"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
-      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote].filter((s) => s.length > 0).join("\n");
+      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {

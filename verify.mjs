@@ -2747,7 +2747,7 @@ function makeHostCtx() {
     /\$\{levelAsked\.join\("、"\)\}」不在七层里/.test(meowIndex48) &&
       /\$\{levelBad\.join\("、"\)\}（不在七层里）/.test(meowIndex48) &&
       /const scopeNote = hits\.length === 0 && levelValid\.length > 0/.test(meowIndex48) &&
-      /const note = \[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndex48),
+      /const note = \[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndex48),
     'note 拼装',
   )
   // 老话在那行模板串里是 \uXXXX 转义的，断言前先还原（0.2.48 的教训：别把中文写成转义再去 includes）。
@@ -3326,7 +3326,7 @@ function makeHostCtx() {
   )
   check(
     'search: 四条参数提示并进 note，且顺序在老的层名/范围提示之后',
-    /\[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote\]/.test(meow56),
+    /const note = \[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meow56),
     'note',
   )
   check(
@@ -5791,6 +5791,46 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '召回: 失败时自己把 exitCode 置非零（不然红也读不出来）',
     recallSrc.includes('if (failures !== 0) process.exitCode = 1'),
+  )
+}
+
+// ── A86. 检索的相关度下限：尾巴要收、但不能把结果收空（0.2.86）──
+// 30 条语料实测的分数断崖：榜首 14.08 分时，第 3 条起只有 0.33——那些是「只沾一个词」的条目，
+// 照样占 k 名额、照样被当成相关读。所以给 memory_search 加 min_rel（默认 0.35）。
+// 这里钉三件事：下限真的在滤、排序第一位永远不被滤掉、收掉的东西要说出来并且能关掉。
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const searchSrc = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
+  const recallSrc = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
+
+  check(
+    '下限: memory_search 有 min_rel（默认 0.35、限 0–1、夹边界时说清按多少算）',
+    meowSrc.includes('min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35') &&
+      meowSrc.includes('const minRel = relRaw !== void 0') &&
+      meowSrc.includes('const relClamped = relGiven && (relRaw === void 0 || relRaw < 0 || relRaw > 1)') &&
+      meowSrc.includes('不在 0–1 里'),
+  )
+  check(
+    '下限: 排序第一位永远留着（下限再高也不许把结果收空），其余按分数线滤',
+    meowSrc.includes(
+      'const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;',
+    ) && meowSrc.includes('const blind = aboveFloor.slice(0, blindCount)'),
+  )
+  check(
+    '下限: 被收掉的尾巴要报数（还剩几条、最高几分），并给出 min_rel=0 的出路',
+    meowSrc.includes('const belowFloor = ranked.length - aboveFloor.length') &&
+      meowSrc.includes('要看全量就传 min_rel=0'),
+  )
+  check(
+    '下限: 融合层三处参数白名单都带 min_rel（不然 macro 侧传下去也被丢掉），schema 也有',
+    (searchSrc.match(/'min_rel'/g) || []).length >= 3 && /min_rel: \{ type: 'number'/.test(searchSrc),
+  )
+  check(
+    '下限: probe-recall 有 R5 组，含「关掉下限尾巴回来」的阴性对照与越界夹回',
+    recallSrc.includes("key: 'tail1'") &&
+      recallSrc.includes('min_rel: 0') &&
+      recallSrc.includes('min_rel: 5') &&
+      recallSrc.includes('另有 '),
   )
 }
 

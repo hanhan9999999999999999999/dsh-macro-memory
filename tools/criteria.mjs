@@ -493,7 +493,7 @@ export function contractChecklist({
     },
     {
       id: 'vendor-search-param',
-      label: '检索参数（状态 / 时段 / 条数 / 截断）给错了各说各的，不冒充「本次零命中」',
+      label: '检索参数（状态 / 时段 / 条数 / 截断 / 相关度下限）给错了各说各的，不冒充「本次零命中」',
       ok:
         meowIndexSrc.includes('const STATUS_VALUES = ["active", "stale", "archived"]') &&
         /const statusDead = statusAsked\.length > 0 && statusList\.length === 0/.test(meowIndexSrc) &&
@@ -503,7 +503,14 @@ export function contractChecklist({
         meowIndexSrc.includes('k 给的是') &&
         meowIndexSrc.includes('content_max 给的是') &&
         /const rows = statusDead \? \[\] : levels\.flatMap/.test(meowIndexSrc) &&
-        /\[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote\]/.test(meowIndexSrc),
+        // 拼装清单：七个变量都在、顺序不变；允许后面继续加（0.2.86 加了 relNote / relClampNote）——
+        // 原来逐字钉整行，正当加一条提示就会红，等于逼人「红了就改判据」。
+        /\[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndexSrc) &&
+        meowIndexSrc.includes('const minRel = relRaw !== void 0') &&
+        meowIndexSrc.includes('const aboveFloor = minRel > 0 && topScore > 0') &&
+        meowIndexSrc.includes('要看全量就传 min_rel=0') &&
+        /const relClamped = relGiven && \(relRaw === void 0 \|\| relRaw < 0 \|\| relRaw > 1\)/.test(meowIndexSrc) &&
+        /i === 0 \|\| h\.score >= topScore \* minRel/.test(meowIndexSrc),
       detail: meowIndexSrc.includes('状态值没对上')
         ? 'ok'
         : 'meow 又被换回去了：status 拼错时一行都查不到，零命中却按「默认检索范围」解释；days / k / content_max 被静默纠正',
@@ -1140,7 +1147,7 @@ export function readAnswerKind(text) { return 'ok' }`,
     nebCoreSrc:
       "'找不到这两条记忆：' '不能把一条记忆和它自己配成一对：'\nexport const HUB_CAP = 40\nexport function hubSlots(value, def = 12)\nreturn Math.min(HUB_CAP, n)\n.slice(0, hubSlots(opts.hubs))\nasync overviewAsync(opts = {})",
     meowIndexSrc:
-      '相似检索没算成：库里就只有这一条可比的记忆。\n这才是「记忆里没有相似的东西」。\nnote: { type: "string" }\nif (hits.length === 0) {\n          return [{\n这个名字在库里一条都对不上\n在别的层还有 3 条记忆\n这次是真没有\n这不是「这个项目没有记忆」\nif (text === null) {\n        // [macro-fusion 0.2.47]\n没有需要整理的记忆（盘点过：没有未封存的记忆轮次）\n已经有一个 dream 在跑（或上一轮还在待补收尾）\n这次没启动成功：整理任务的消息没送进会话\n这不是「没有需要整理的记忆」。\nreturn say("sendFailed")\nif (trace.reason === "claimed") {\n这次什么都没改：一个能写进库的字段都没有。\n这是「部分生效」，不是全部。\n更新失败：没有这个 id\n这不是「已经更新好了」。\nconst changed = Object.keys(patch)\nconst dropped = []\nnote: { type: "string" }\n这不是「按你说的层写好了」\n这几个参数没生效：goal（只有 topic 层有目标句，这条是 fact）。\n这是「合并」，不是「新写一条」。\n不在七层里\nconst levelBad = \nconst noteOf = (extra) =>\n这次一条都没查：你给的层名「lessons」不在七层里（fact / lesson / topic / rules / project / soul / user）。\n这不是「记忆里没有」，是层名没对上。\n这几个层名没生效：lessons（不在七层里）\n这次只在 fact 层里查了，零命中\nconst levelBad = levelAsked.filter((s) => !LEVELS.includes(s))\nconst levelValid = levelAsked.filter((s) => LEVELS.includes(s))\n这个短 id 不止一条记忆：命中了 2 条\n这个工作区里一条都没有\n不是我替你挑第一条\nconst matches = typeof db.findByIdAll === "function"\nif (matches.length > 1) {\nambiguous: { type: "boolean" }\n相似检索这次一条都没比：这个短 id 命中了 2 条（fact 0m1「x」）。不是我替你挑第一条——基准挑错，比出来的相似度全是错的。\n相似检索没起点——这个工作区里一条都没有\nif (matches.length > 1) {\n        const shown = matches.slice(0, 5)\n记忆 memory_find_similar: 相似检索这次一条都没比\nconst STATUS_VALUES = ["active", "stale", "archived"]\nconst statusDead = statusAsked.length > 0 && statusList.length === 0\n状态值没对上\n这几个状态值没生效\ndays 给的是\nk 给的是\ncontent_max 给的是\nconst rows = statusDead ? [] : levels.flatMap\n[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote]',
+      '相似检索没算成：库里就只有这一条可比的记忆。\n这才是「记忆里没有相似的东西」。\nnote: { type: "string" }\nif (hits.length === 0) {\n          return [{\n这个名字在库里一条都对不上\n在别的层还有 3 条记忆\n这次是真没有\n这不是「这个项目没有记忆」\nif (text === null) {\n        // [macro-fusion 0.2.47]\n没有需要整理的记忆（盘点过：没有未封存的记忆轮次）\n已经有一个 dream 在跑（或上一轮还在待补收尾）\n这次没启动成功：整理任务的消息没送进会话\n这不是「没有需要整理的记忆」。\nreturn say("sendFailed")\nif (trace.reason === "claimed") {\n这次什么都没改：一个能写进库的字段都没有。\n这是「部分生效」，不是全部。\n更新失败：没有这个 id\n这不是「已经更新好了」。\nconst changed = Object.keys(patch)\nconst dropped = []\nnote: { type: "string" }\n这不是「按你说的层写好了」\n这几个参数没生效：goal（只有 topic 层有目标句，这条是 fact）。\n这是「合并」，不是「新写一条」。\n不在七层里\nconst levelBad = \nconst noteOf = (extra) =>\n这次一条都没查：你给的层名「lessons」不在七层里（fact / lesson / topic / rules / project / soul / user）。\n这不是「记忆里没有」，是层名没对上。\n这几个层名没生效：lessons（不在七层里）\n这次只在 fact 层里查了，零命中\nconst levelBad = levelAsked.filter((s) => !LEVELS.includes(s))\nconst levelValid = levelAsked.filter((s) => LEVELS.includes(s))\n这个短 id 不止一条记忆：命中了 2 条\n这个工作区里一条都没有\n不是我替你挑第一条\nconst matches = typeof db.findByIdAll === "function"\nif (matches.length > 1) {\nambiguous: { type: "boolean" }\n相似检索这次一条都没比：这个短 id 命中了 2 条（fact 0m1「x」）。不是我替你挑第一条——基准挑错，比出来的相似度全是错的。\n相似检索没起点——这个工作区里一条都没有\nif (matches.length > 1) {\n        const shown = matches.slice(0, 5)\n记忆 memory_find_similar: 相似检索这次一条都没比\nconst STATUS_VALUES = ["active", "stale", "archived"]\nconst statusDead = statusAsked.length > 0 && statusList.length === 0\n状态值没对上\n这几个状态值没生效\ndays 给的是\nk 给的是\ncontent_max 给的是\nconst rows = statusDead ? [] : levels.flatMap\nconst note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote].filter((s) => s.length > 0).join("\\n")\nconst minRel = relRaw !== void 0\nconst aboveFloor = minRel > 0 && topScore > 0\n要看全量就传 min_rel=0\nconst relClamped = relGiven && (relRaw === void 0 || relRaw < 0 || relRaw > 1)\ni === 0 || h.score >= topScore * minRel',
   }
   const baseline = contractChecklist(good).filter((c) => !c.ok).map((c) => c.id)
   const mutations = {

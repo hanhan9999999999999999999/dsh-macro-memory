@@ -25,6 +25,7 @@
 - memory_search.param.days: 只看最近 N 天创建的条目（按创建时间）。
 - memory_search.param.k: 返回条数上限。
 - memory_search.param.content_max: 每条内容截断长度，0=全文。
+- memory_search.param.min_rel: 相关度下限（0–1，默认 0.35）：只展开分数不低于榜首这个比例的条目，更低的尾巴收掉，并在回执里报出被收掉的条数与最高分；传 0 = 看全量。
 - memory_search.param.explain: 可解释检索开关（默认关）。开=true 时每条命中附带分项得分 explain（bm25 关键词分、importance、recencyWeight 艾宾浩斯权重、status），用于排查"为什么没召回/为什么召回它"，不改排序。
 - memory_search.out.note: 冲突提示。
 - memory_search.out.hits.id: 完整记忆 id（可传给 memory_read/memory_update/memory_find_similar）。

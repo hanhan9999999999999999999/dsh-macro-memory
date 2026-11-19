@@ -4306,6 +4306,102 @@ const reordered = [...hits].sort((a, b) => (b.score - a.score) || ((b.updated_at
 - 排序口径只改「读出来的顺序」，不改 `blind/fresh` 的选条逻辑、不改 `bumpHit` 计入、不改状态/层/时间过滤——检索的**选谁**没动，只改**先读谁**。
 - 备份：`D:\备份\20261120-003714-macro-fusion-0285-recall`（13 文件 / 1,338,149 B）。
 
+## 9.92 分数算对了，还得决定「多弱就别端上来」（0.2.86）
+
+### 9.92.0 一句话
+
+0.2.85 修的是「谁排前面」，这一轮修的是排序之后的另一半：**顺序对了，尾巴一条没少**。榜首 14 分的时候第 3 条起只有 0.33 分——那些「只沾一个词」的条目照样进上下文、照样占 `k` 名额、照样被读成相关。这一轮给 `memory_search` 加了一个参数：相关度下限 `min_rel`（默认 0.35）。
+
+### 9.92.1 现象：断崖不在尾巴，在第二名和第三名之间
+
+30 条合成语料（6 个话题 × 5 条：部署 / 数据库 / 面板 / 星图 / 测试 / 发布）在真引擎上跑，把分数换算成「相对榜首的比例」：
+
+| 查询 | 命中 | 相对分数（降序） |
+| --- | --- | --- |
+| `数据库连接池 上限` | 5 | 1.000 / 0.572 / **0.334** / **0.334** / **0.309** |
+| `发布 索引 版本` | 5 | 1.000 / 0.572 / **0.363** / **0.292** / **0.233** |
+| `星图 延迟` | 5 | 1.000 / 0.507 / **0.298** / **0.298** / **0.289** |
+| `部署` | 5 | 1.000 / 0.572 / 0.572 / 0.556 / 0.545 |
+
+（榜首的绝对分分别是 14.08 / 8.0 / 4.66 / 2.1——绝对分不可比，因为 BM25 带 idf，所以判据只能按比例定。）
+
+第 2 条通常是同话题的另一个角度（0.5 上下，该留）；**第 3 条起是「数据库备份 / 迁移 / 慢查询」这种只共享一个词的条目**（0.33 上下，不该留）。断崖落在 0.5 与 0.35 之间。
+
+顺带把一条被否掉的方案记下来：**不做「按相似度折叠」**。真 `tokenize` 复算 Jaccard（`similarity` 在 vendor 里没导出）：一字不差 1.000、只补标点 1.000、同义改写 0.150、同主题不同角度 0.056、摘要 vs 原文 0.107。写时去重阈值是 `DEDUP_THRESHOLD = 0.8`，也就是它几乎只抓逐字重复，同义改写一点不折；拿它做检索折叠既省不下东西又会误伤，放弃，只做分数线。
+
+### 9.92.2 改法：相对比例、第一位保底、收掉要说出来
+
+```js
+// 参数：min_rel（0–1，默认 0.35；给 0 = 看全量）
+const minRel = relRaw !== void 0 ? Math.max(0, Math.min(1, relRaw)) : 0.35;
+
+// 过滤：第一名永远在，其余按「榜首 × min_rel」这条线
+const topScore = ranked.length > 0 ? ranked[0].score : 0;
+const aboveFloor =
+  minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
+const belowFloor = ranked.length - aboveFloor.length;
+```
+
+三条边界都写进注释与判据：
+
+- **第一位保底**：`i === 0` 让下限再高（0.99）也至少留一条。下限的用途是「别把弱相关端上来」，不是「一条都不给」——把「没有强相关」实现成零命中，就又回到了「零命中冒充『记忆里没有』」那个老坑。
+- **收掉要说出来**：`另有 N 条相关度不到榜首的 35%（最高的 X 分，榜首 Y 分）没展开…要看全量就传 min_rel=0。` 静默收窄等于替用户决定「这些不重要」，而它连自己收掉了什么都不知道。
+- **越界夹回并说清**：给 `5` 或 `-1` 时按 `1` / `0` 处理，并在尾注里写「不在 0–1 里，这次按 X 处理」，不当作「查不到」。
+
+### 9.92.3 参数面一共五处（漏一处就静默失效）
+
+| 位置 | 文件 |
+| --- | --- |
+| vendor 工具 schema | `vendor/meow-memory/lib/index.js`（`memory_search` 的 `parameters`） |
+| macro 本地白名单 ×3 | `lib/macro/defs/search.js`（`fallbackArgs` / `localArgs` / graph 回退的 `localArgs`）——`pick()` 是白名单，少一个键就悄悄丢掉 |
+| macro 工具 schema | `lib/macro/defs/search.js` 的 `parameters` |
+| 三语文案 | `vendor/meow-memory/lib/prompts/{zh,en,pt-br}/tools.md` 各一行 |
+
+### 9.92.4 `probe-recall` 的 R5 组：七条，两条阴性对照
+
+语料补了两条「只沾一个词」的条目（`tail1`「备份文件放在 D 盘…」、`tail2`「日志目录涨得很快…」，都是 `fact / importance=1`）。**它们必须写在 R1–R4 之后**：先加两条新文档会改 idf，把 R2 里「铁律 bm25 低于随手记却反超」的算术搅乱。
+
+| 判据 | 内容 |
+| --- | --- |
+| R5.1 | 默认 0.35 时 `tail1` 不出现 |
+| R5.2 | 尾注报出条数（`/另有 \d+ 条/`）并给出 `min_rel=0` |
+| R5.3 | **阴性对照**：同一查询传 `min_rel: 0`，`tail1` 回到结果里 |
+| R5.4 | `min_rel: 0` 的条数确实比默认多 |
+| R5.5 | `min_rel: 0.99` 仍留 1 条，且就是那条铁律 |
+| R5.6 | 查「部署」时铁律与随手记都在（相对分 0.82，不该被误伤） |
+| R5.7 | `min_rel: 5` → 尾注含「不在 0–1 里」，且仍有结果 |
+
+R5.6 一开始写成查「部署 备份」，结果随手记（不含「备份」）本来就低于 0.35，判据假红；换成单查「部署」（实测 `lesson@2.1 / fact@1.72`）才验的是「不误伤」而不是「下限在生效」。
+
+### 9.92.5 全绿路上：判据把「正当新增」也钉成了红（26 条红）
+
+加 `relNote` 之后 `node verify.mjs` 一次红 26 条，根因只有一处：`tools/criteria.mjs` 的 `vendor-search-param` 判据把 note 拼装**整行逐字**钉住——`/\[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote\]/`。多拼一个 `relNote` 就红，然后所有「且整张清单仍全绿（四十五条）」的断言跟着一起红。
+
+放宽成「七个变量都在、顺序不变、后面可以接着加」：
+
+```js
+/\[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/
+```
+
+三处（`tools/criteria.mjs` 一处、`verify.mjs` L2746 与 L3328 各一处）。同时把下限的五件事并进同一条契约判据（`const minRel`、`const aboveFloor`、`min_rel=0` 出口、`relClamped`、`i === 0 ||`），label 改成「检索参数（状态 / 时段 / 条数 / 截断 / 相关度下限）给错了各说各的」。判据条数**仍然 45**，不新增 id——新增一条会让 verify 里十几处「四十五条」全部联动。
+
+放宽之后还剩 14 条红，而且全带同一个 detail：`样板红 vendor-search-param / 打不红 无`。那是 `selfTestContract()` 的 `good` 样板里也抄着同一行 `[plain, … cmNote]`，判据变严之后样板自己就不达标（baseline 非空）——样板补上 0.2.86 的六个标记才真正回绿。教训 62 就是从这来的。
+
+### 9.92.6 怎么验的
+
+- `node tools/probe-recall.mjs` → 30 条 ALL PASS（exit 0）。
+- `node verify.mjs` → 918 条 ALL PASS（913 → 918，A86 五条：`min_rel` 参数与夹边界、第一位保底 + 按线过滤、尾注报数 + `min_rel=0` 出路、三处白名单 + schema、探针 R5 组）。
+- `node tools/probe-toolsize.mjs` → 88,918 B ≤ 92,000 B（工具字面量里多了 `min_rel` 一行，仍在 5% 余量内）。
+- `node tools/probe-words.mjs` → ALL PASS（三语文案各多一行，字符数口径仍自洽）。
+- `node tools/make-vendor-manifest.mjs` 重跑：`vendor/meow-memory` 44 文件 / 1,716,149 B / `ca708376bf2b55a7`（0.2.85 时 1,713,158 B / `5bdd13b38d913560`）。
+- `node tools/check-all.mjs` → 17/17，1,763 条断言，120.4s；`doctor` 120 条；`check-market` 48 条。
+
+### 9.92.7 边界
+
+- **改了 vendor 运行时代码**：`vendor/meow-memory/lib/index.js` 是宿主侧引擎，装进 profile 之后**必须重启 DSH 才生效**；正在跑的进程里还是旧行为。
+- 只改「端上来几条」：选谁（层 / 状态 / 天数 / 归档过滤）、`blind`/`fresh` 分段、`bumpHit` 计入都没动。传 `min_rel: 0` 完全回到 0.2.85 的行为。
+- 备份：`D:\备份\20261120-012720-macro-fusion-0286-min-rel`（16 文件 / 850,319 B，从 `a37af1d` 导出的改动前状态；还原办法见该目录 `MANIFEST.txt`）。
+
 
 
 

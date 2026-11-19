@@ -25,6 +25,7 @@
 - memory_search.param.days: Only entries created in the last N days (by creation time).
 - memory_search.param.k: Maximum number of results.
 - memory_search.param.content_max: Truncate each entry's content to this length, 0=full text.
+- memory_search.param.min_rel: Relevance floor (0-1, default 0.35): only expand entries scoring at least this fraction of the top hit; the weaker tail is dropped and its count plus best score are reported. Pass 0 for everything.
 - memory_search.param.explain: Explainable-retrieval switch (default off). With true, each hit carries a per-component score breakdown in explain (bm25 keyword score, importance, recencyWeight Ebbinghaus weight, status) to debug "why wasn't this recalled / why was this recalled"; ordering is unchanged.
 - memory_search.out.note: Conflict note.
 - memory_search.out.hits.id: Full memory id (pass it to memory_read/memory_update/memory_find_similar).
