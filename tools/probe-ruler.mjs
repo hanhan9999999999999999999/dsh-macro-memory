@@ -249,5 +249,44 @@ check(
   slotFiles.every((f) => /≥80%/.test(f) && /archived/.test(f)),
 )
 
+// ── D8/D9：跨轮次的同一句话（0.2.93）─────────────────────────────────────
+// atomic 与 topic 是两次独立的消息。0.2.92 只在「本轮的行」里两两比，于是同一句话一条记成 fact、
+// 一条记成 topic 时永远碰不到一起——写侧 crossLevelDupe 早就能抓，dream 又漏一次。
+const dreamAll = (sid, ws) => {
+  const db = V.getDb(ws, '.dsh-meow')
+  const rounds = V.collectDreamRounds(db, sid, ws, '.dsh-meow', 0)
+  return rounds.map((_, i) => V.buildDreamMessage(db, sid, Date.now(), rounds, i).content.map((x) => x.text).join('\n'))
+}
+const crossWs = join(home, 'ws-cross')
+mkdirSync(crossWs, { recursive: true })
+// 坑：execOf 把 cwd 写死成主 workspace，跨窗口那几条要按自己目录写，否则 dream 在 crossWs 里什么都看不到
+const execIn = (cwd, id) => ({ agent: { session: { header: { cwd, id } } } })
+const CROSS = '跨轮次的同一句话：这条在 fact 与 topic 里各存了一份，正文逐字相同，处置应当只做一次。'
+await call('memory_remember', { content: CROSS, level: 'fact', keywords: ['跨轮次', '同一句话', 'fact', 'topic', '重复', '处置'], importance: 1, project: '全局' }, execIn(crossWs, 'sess-ruler-cross'))
+await call('memory_remember', { content: CROSS, level: 'topic', title: '跨轮次重复', keywords: ['跨轮次', '同一句话', 'fact', 'topic', '重复', '处置'], importance: 1, project: '全局' }, execIn(crossWs, 'sess-ruler-cross'))
+await call('memory_remember', { content: '完全无关的一条：讲的是探针工作目录怎么清理，和上面那句没有共同词。', level: 'fact', keywords: ['探针', '目录', '清理', '无关'], importance: 1, project: '全局' }, execIn(crossWs, 'sess-ruler-cross'))
+const crossTexts = dreamAll('sess-ruler-cross', crossWs)
+const allCrossText = crossTexts.join('\n---\n')
+const crossDupeLine = crossTexts.map((t) => (t.match(/^- (\S+) ⇄ (\S+)  ([0-9.]+) · (\S+) ⇄ (\S+)/m) ?? [])[0] ?? '').filter(Boolean)
+const pairLineCount = crossTexts.reduce((n, t) => n + (t.match(/^- \S+ ⇄ \S+  [0-9.]+ · /gm) ?? []).length, 0)
+check(
+  'D8 跨轮次（fact ⇄ topic）的同一句话也被点名，且整轮只印一次（不在两轮消息里各印一遍）',
+  crossDupeLine.length > 0 && pairLineCount === 1 && /fact ⇄ topic/.test(allCrossText) && /（另一组）/.test(allCrossText),
+  `对子行 ${pairLineCount} 条 / ${crossDupeLine[0] ?? '没这一行'}`,
+)
+check(
+  'D9 阴性对照：同一个窗口里无关的那条没被凑成对子（只按正文词集算，不靠项目/层级硬配）',
+  !/清理/.test(crossDupeLine.join(' ')) && crossTexts.every((t) => (t.match(/^- \S+ ⇄ \S+  [0-9.]+ · /gm) ?? []).length <= 1),
+  crossDupeLine[0] ?? '没有对子',
+)
+
+const crossSlotFiles = ['zh', 'en', 'pt-br'].flatMap((l) => ['dream-atomic.md', 'dream-topic.md'].map((f) => readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, f), 'utf8')))
+check(
+  'D10 三语指引都说明了「（另一组）」怎么处置（不然跨轮次对子等于没说）',
+  crossSlotFiles.every((f) => /另组|另一组|another round|outra rodada/.test(f)) &&
+    labelFiles.every((f) => /^- dream\.dup\.crossRound:/m.test(f)),
+  `${crossSlotFiles.filter((f) => /另组|另一组|another round|outra rodada/.test(f)).length}/${crossSlotFiles.length} 份指引`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

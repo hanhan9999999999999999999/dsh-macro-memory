@@ -4819,3 +4819,73 @@ node verify.mjs              # A92 八条
     真正需要这把尺子的 dream 一直没拿到。功能齐全不等于口径统一——
     每加一个量，都要问一句：还有谁该看这个数，却没在看？
 ```
+
+## 9.99 dream 分成两次看，同一句话就永远碰不上（0.2.93）
+
+### 9.99.0 一句话
+
+0.2.92 让 dream 能自己算「哪两条是同一句话」了，可它只在**本轮的那几行**里两两比。
+而 `collectDreamRounds` 把整理范围切成**两次独立的消息**：`atomic`（project / fact / lesson / rules / soul / user，
+按 project 分组）一次，`topic` 一次。于是同一句话一条记成 fact、一条记成 topic 时，两条从来不在同一轮里——
+重复对永远算不出来。写侧的 `crossLevelDupe` 扫全部层、早就能抓；dream 是第二个「尺子只在写入方向装好」的地方。
+
+### 9.99.1 现在怎么算
+
+`buildDreamMessage` 拿到的 `rounds` 是整个整理范围，所以对子改成在**全部行**上算：
+
+```js
+const allRows = rounds.filter((r) => Array.isArray(r.groups)).flatMap((r) => r.groups.flatMap((g) => g.rows));
+const roundIds = new Set(roundRows.map((r) => String(r.id ?? "")));
+const dupPairs = dreamDupPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);
+const shortOf = uniqueShortIdsAmong(allRows);
+```
+
+`dreamPairOwner(rounds, pair)` 返回「这一对在轮次里**先出现**的那一轮」下标。只由那一轮负责展示：
+
+- 同一对**只印一次**——两轮各印一遍等于白烧一份 token，还会让模型以为有两对；
+- 配对的那条不在本轮时，行尾标出「（另一组）」，文案走 `labels` 的 `dream.dup.crossRound`；
+- 短 id 的唯一性也改成在 `allRows` 范围内判，跨界印出来也不会是同名。
+
+实测（fact 与 topic 正文逐字相同）：
+
+```
+【逐字重复对 1 对】（下面这两条正文的逐字重复度 ≥80%，与 memory_remember 判「重复」是同一把尺子）：
+- 0mwo37jb ⇄ 0mwo37jc  1.00 · fact ⇄ topic（另一组）
+```
+
+同一个窗口里那条**无关**的 fact 不会因为同项目、同层被凑进来（只按正文词集算）。
+
+### 9.99.2 三语指引也要跟上
+
+跨轮次对子有一个陷阱：模型在 atomic 那轮看到一个只有半边的对子，很容易想「另一条不在清单里，先不管」。
+所以三语 `dream-atomic.md` / `dream-topic.md` 都补了一句：标着「（另一组）」说明配对的另一条在另一轮整理里，
+照样按同一处置办，同一对只处置一次——看不见对方不等于没这回事。
+
+### 9.99.3 怎么验
+
+```
+node tools/probe-ruler.mjs   # D8–D10（新增 3 条）
+node verify.mjs              # A93 六条
+```
+
+- D8 fact ⇄ topic 被点名、整轮只印一次（`pairLineCount === 1`）、带「（另一组）」
+- D9 阴性对照：同窗口无关的那条没被凑成对子
+- D10 三语六份指引都写了「（另一组）」怎么处置，三语 `labels` 都有 `dream.dup.crossRound`
+- A93 六条：在 `allRows` 上算 / `dreamPairOwner` 是纯函数 / 行尾文案走 `lbl3` / 三语 label / 三语指引 / probe 进线
+
+### 9.99.4 现场数字
+
+- `probe-ruler`：19 → 22 条（+3 = D8/D9/D10）
+- `verify`：960 → 966（+6 A93，另改写 A92 两条字面量）
+- `vendor/meow-memory/lib/index.js` 263,334 → 264,364 B（必须重跑 `make-vendor-manifest`）
+- 文案：三语 `labels.md` 各 +1 键（`dream.dup.crossRound`），三语 `dream-atomic.md` / `dream-topic.md` 各 +1 句
+
+### 9.99.5 教训
+
+```
+70. 分片是省 token 的手段，但分片会让判据只看到自己那一片。
+    dream 把整理切成 atomic / topic 两次，是为了清单短、模型不晕；
+    代价是「跨片的同一句话」永远不进同一个视野。凡是按片喂给模型做判断的地方，
+    都要先问：这个判断需要的两个东西，会不会被分到两个片里？
+    该在片边界之前算完的，就别留到片里算。
+```

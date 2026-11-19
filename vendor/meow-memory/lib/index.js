@@ -3488,6 +3488,17 @@ function uniqueShortIdsAmong(rows, min = 8) {
   }
   return out;
 }
+// [macro-fusion 0.2.93] 一对重复该由哪一轮负责说：返回轮次下标（先出现的那一轮），没有则 -1。
+// 这样跨 atomic / topic 的对子只印一次，而不是在两轮消息里各印一遍。
+function dreamPairOwner(rounds, pair) {
+  const ids = /* @__PURE__ */ new Set([String(pair.a.id ?? ""), String(pair.b.id ?? "")]);
+  for (let i = 0; i < rounds.length; i++) {
+    for (const g of rounds[i].groups ?? []) {
+      for (const r of g.rows) if (ids.has(String(r.id ?? ""))) return i;
+    }
+  }
+  return -1;
+}
 var DREAM_DUP_MAX = 5;
 function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
   if (rows.length < 2) return [];
@@ -3537,12 +3548,22 @@ ${lbl3("dream.topic.empty")}` : `
 
 ${groupsText}`;
     // [macro-fusion 0.2.92] 逐字重复对：只在算出来的时候出现，没对子就一个字不加（干净清单不加噪音）。
+    // [macro-fusion 0.2.93] 0.2.92 只在**本组**里两两比：atomic 与 topic 是两次独立的消息，同一句话
+    // 一条记成 fact、一条记成 topic 时两者永远碰不到一起——写侧 crossLevelDupe 早就能抓（它扫全部层），
+    // dream 又漏一次。现在整个 dream 范围的行一起算对子，只由「在轮次里先出现的那一轮」负责展示：
+    // 同一对只印一次（两轮都印一遍等于白烧一份 token，还会让模型以为有两对）。
     const roundRows = round.groups.flatMap((g) => g.rows);
-    const dupPairs = dreamDupPairs(roundRows);
-    const shortOf = uniqueShortIdsAmong(roundRows);
+    const allRows = rounds.filter((r) => Array.isArray(r.groups)).flatMap((r) => r.groups.flatMap((g) => g.rows));
+    const roundIds = new Set(roundRows.map((r) => String(r.id ?? "")));
+    const dupPairs = dreamDupPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);
+    const shortOf = uniqueShortIdsAmong(allRows);
     const dupBlock = dupPairs.length === 0 ? "" : `
 ${lbl3("dream.dup.title", { n: String(dupPairs.length), threshold: String(Math.round(DEDUP_THRESHOLD * 100)) })}
-${dupPairs.map((p) => `- ${shortOf.get(String(p.a.id))} \u21C4 ${shortOf.get(String(p.b.id))}  ${p.repeat.toFixed(2)} \xB7 ${p.a.level} \u21C4 ${p.b.level}`).join("\n")}
+${dupPairs.map((p) => {
+      const pairLine = `- ${shortOf.get(String(p.a.id))} \u21C4 ${shortOf.get(String(p.b.id))}  ${p.repeat.toFixed(2)} \xB7 ${p.a.level} \u21C4 ${p.b.level}`;
+      const inThisRound = roundIds.has(String(p.a.id)) && roundIds.has(String(p.b.id));
+      return inThisRound ? pairLine : `${pairLine}\uFF08${lbl3("dream.dup.crossRound")}\uFF09`;
+    }).join("\n")}
 ${lbl3("dream.dup.rule", { threshold: String(Math.round(DEDUP_THRESHOLD * 100)) })}`;
     lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock, groupMarker }).split("\n"));
   }

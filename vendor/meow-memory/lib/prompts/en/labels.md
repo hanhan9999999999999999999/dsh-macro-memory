@@ -30,6 +30,7 @@
 - dream.topic.empty: (no topic memories in this group yet — look back over the conversation, and if there is a new topic, create it following guideline 2 below)
 - dream.dup.title: [Verbatim duplicate pairs: {n}] (the two entries below overlap by ≥{threshold}% character-level, the same ruler memory_remember uses to call something a duplicate):
 - dream.dup.rule: What to do: this is usually one sentence stored in two layers — keep the one with more information and the more fitting level, and set the other to status=archived via memory_update. Conversely, entries that merely look alike but are NOT listed here are not duplicates: a high similarity (cosine) with a low repeat means "same topic", not "same sentence".
+- dream.dup.crossRound: another round
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.

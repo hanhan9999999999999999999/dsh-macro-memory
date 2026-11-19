@@ -30,6 +30,7 @@
 - dream.topic.empty: (ainda não há memórias de topic neste grupo — reveja a conversa e, se houver um novo topic, crie-o seguindo a diretriz 2 abaixo)
 - dream.dup.title: [Pares duplicados literalmente: {n}] (as duas entradas abaixo coincidem em ≥{threshold}% no texto, a mesma régua que memory_remember usa para chamar algo de duplicado):
 - dream.dup.rule: O que fazer: normalmente é a mesma frase guardada em duas camadas — mantenha a que tem mais informação e a camada mais adequada, e marque a outra como status=archived via memory_update. Por outro lado, entradas que só parecem iguais e NÃO estão listadas aqui não são duplicadas: similaridade (cosine) alta com repeat baixo significa "mesmo assunto", não "mesma frase".
+- dream.dup.crossRound: outra rodada
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.

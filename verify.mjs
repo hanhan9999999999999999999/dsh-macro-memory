@@ -6131,8 +6131,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'dream 重复: 清单里真的用上了（算 / 渲染 / 并进 list 三处缺一不可）',
-    vSrc.includes('const dupPairs = dreamDupPairs(roundRows);') &&
-      vSrc.includes('const shortOf = uniqueShortIdsAmong(roundRows);') &&
+    vSrc.includes('const dupPairs = dreamDupPairs(allRows)') &&
+      vSrc.includes('const shortOf = uniqueShortIdsAmong(allRows);') &&
       vSrc.includes('list: listBlock + dupBlock'),
   )
   check(
@@ -6175,6 +6175,53 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       rulerSrc.includes('D4 重复对的成员正好是 BASE 与 NEAR') &&
       rulerSrc.includes('D5 阴性对照：只有一条的窗口没有') &&
       rulerSrc.includes('D7 三语的整理指引都写了这一条'),
+  )
+}
+
+// [macro-fusion 0.2.93] 0.2.92 的重复对只在「本轮的行」里比，而 atomic 与 topic 是两次独立的消息：
+// 同一句话一条记 fact、一条记 topic 时永远碰不到一起——写侧 crossLevelDupe 扫全部层能抓，dream 又漏一次。
+// 这里钉四件事：对子在整窗口范围算、只由先出现的那一轮展示、跨轮次要标出来、三语指引都说清怎么处置。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools/probe-ruler.mjs'), 'utf8')
+  const langs = ['zh', 'en', 'pt-br']
+  const labelOf = (l) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, 'labels.md'), 'utf8')
+  const slotOf = (l, f) => readFileSync(join(root, 'vendor/meow-memory/lib/prompts', l, f), 'utf8')
+
+  check(
+    'dream 跨轮次: 对子在整窗口的行上算（allRows 覆盖 atomic + topic，不再是 roundRows 自说自话）',
+    vSrc.includes('const allRows = rounds.filter((r) => Array.isArray(r.groups)).flatMap((r) => r.groups.flatMap((g) => g.rows));') &&
+      vSrc.includes('const dupPairs = dreamDupPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);') &&
+      vSrc.includes('const shortOf = uniqueShortIdsAmong(allRows);'),
+  )
+  check(
+    'dream 跨轮次: 归属轮次由纯函数 dreamPairOwner 决定（先出现的那一轮负责说，同一对只印一次）',
+    vSrc.includes('function dreamPairOwner(rounds, pair)') &&
+      vSrc.includes('for (const g of rounds[i].groups ?? []) {') &&
+      /function dreamPairOwner\(rounds, pair\) \{[\s\S]{0,400}?return -1;/.test(vSrc),
+  )
+  check(
+    'dream 跨轮次: 跨轮次的对子行标出「（另一组）」，文案走 labels 不写死中文',
+    vSrc.includes('const inThisRound = roundIds.has(String(p.a.id)) && roundIds.has(String(p.b.id));') &&
+      vSrc.includes('? pairLine : `${pairLine}\\uFF08${lbl3("dream.dup.crossRound")}\\uFF09`'),
+  )
+  check(
+    'dream 跨轮次: 三语 labels 都有 dream.dup.crossRound（新文案不许只写中文）',
+    langs.every((l) => /^- dream\.dup\.crossRound: \S/m.test(labelOf(l))),
+  )
+  check(
+    'dream 跨轮次: 三语六份整理指引都说清了「（另一组）」怎么处置（看不见对方也得办）',
+    langs.every((l) =>
+      ['dream-atomic.md', 'dream-topic.md'].every((f) => /another round|outra rodada|另一组/.test(slotOf(l, f))),
+    ),
+  )
+  check(
+    'dream 跨轮次: probe-ruler 的 D8/D9/D10 进了线（含「整轮只印一次」与「无关那条不配对」）',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('D8 跨轮次（fact ⇄ topic）的同一句话也被点名') &&
+      rulerSrc.includes('D9 阴性对照：同一个窗口里无关的那条没被凑成对子') &&
+      rulerSrc.includes('D10 三语指引都说明了「（另一组）」怎么处置'),
   )
 }
 
