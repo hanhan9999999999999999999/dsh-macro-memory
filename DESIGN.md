@@ -4508,4 +4508,70 @@ function settingsDiag(line) {
 
 `node --check` 语法过；`verify.mjs` A81 五条（开关在、字面量唯一、dump 有 guard、上限在、打开仍写）；`make-vendor-manifest` 重记指纹 `d50b1c3c11a27934`；`doctor` 补丁账本多一条 `[macro-fusion 0.2.81]`。
 
+## 94. 不跑的脚本会烂（0.2.82）
+
+### 94.1 一行自由变量，三个月没人发现
+
+`tools/probe-toolsize.mjs` 是 0.1.x 写的「数两套引擎工具 schema 字面量体积」脚本。这一轮顺手跑了一次：
+
+```
+const a = scan(root + '/meow-memory/lib/index.js', 'meow-memory')
+                ^
+ReferenceError: root is not defined
+```
+
+`root` 从来没被导入——文件头只有 `import { vendorDir } from './_root.mjs'`。也就是说从 `_root.mjs` 落地那次起（0.2.1x），这个脚本就已经死了。
+
+要紧的是：**`node --check` 抓不到它**。语法完全合法，错在运行期的自由变量解析。所以「所有脚本都过了 --check」这种体检给不出任何保证，它保证的是这批文件能被解析，不是这批文件能跑。
+
+### 94.2 它为什么能坏这么久
+
+三个覆盖点同时缺席：
+
+1. 它不在 `check-all` 的 `STEPS` 里（14 支里没它）；
+2. 没有任何断言读它的输出（`verify.mjs` 里搜不到 `probe-toolsize`）；
+3. 它不在 doctor 的补丁账本里（账本只登记我们改过的 vendor 文件，工具脚本不在其中）。
+
+于是仓库里有一条**永远不会被执行、也不会被检查**的路径。它不产生红，也不产生任何信号——这正是 93.1 那类「不报错的欠账」的极端形态：0.2.81 那条是「一直在跑但没人断言」，这条是「压根没人跑」。
+
+### 94.3 修法：让它自己出判决，然后进 check-all
+
+只把 `root` 换成 `vendorDir` 是修一行；真正的修法是把「跑」这件事变成结构性的：
+
+```js
+const MEOW_TOOLS = ['memory_remember', 'memory_search', 'memory_find_similar', 'memory_read',
+                    'memory_update', 'memory_project', 'memory_home', 'memory_dream']
+const NEBULA_TOOLS = ['nebula_recall', 'nebula_inspect', 'nebula_link', 'nebula_path', 'nebula_stats',
+                      'nebula_hygiene', 'nebula_bridge', 'nebula_sources', 'nebula_ingest']
+const BUDGET_BYTES = 87326
+
+ok(missingM.length === 0, '清单：meow 的 8 个原工具一个不少', '8/8')
+ok(missingN.length === 0, '清单：星图的 9 个原工具一个不少', '9/9')
+ok(sum <= BUDGET_BYTES, '体积：17 个工具字面量合计没有膨胀', sum + ' B ≤ ' + BUDGET_BYTES + ' B')
+if (failures !== 0) process.exitCode = 1
+```
+
+三点设计：
+
+1. **清单判据是硬需求的可执行版**。「meow 原有功能绝对不能砍」这句话在这里第一次变成断言：任何一个 `memory_*` / `nebula_*` 从 vendor 源码里消失，这一支就红。这比读文档、比人工检查都可靠。
+2. **体积判据是上界而不是等号**。87,326 B 是当前实测值，`sum <= BUDGET_BYTES`：只许变瘦，不许悄悄长回去。
+3. **它自己置 `exitCode`**，所以 `check-all` 不需要为它写特例——判据、出口、计数三件事都在脚本里。
+
+插在 `param-audit` 之后成为第 12 支；`verify.mjs` 的「STEPS 一共几支」判据从 13 改成 14——这条判据的意义正在于此：**新增一支就必须同步改数，改不动就说明有人绕过了编排。**
+
+### 94.4 教训 58
+
+> 一条没有任何人执行的路径，等于不存在；但它占着「我有这个能力」的位置，所以比不存在更坏。
+> 校验手段要问一句：它能不能发现「这段代码根本跑不起来」？语法检查不能。
+
+推论两条：
+
+- **脚本的生死线是「被编排」**。探针写出来只是半成品，进了 `check-all`（或至少有一条断言读它的输出）才算完成。
+- **判据要贴着产品承诺写**。「不能砍原有功能」这种话，如果没有一条断言直接检查 17 个工具名，它就只是一句口号；有这条断言之后，砍掉任何一个工具都会在 2 分钟内变红。
+
+### 94.5 验收
+
+`node tools/probe-toolsize.mjs` → 三行 PASS + `ALL PASS`、`exit=0`（修前是 `ReferenceError` / `exit=1`）；`verify.mjs` A82 五条（进了 STEPS、取根走 `_root.mjs` 且无裸 `root`、清单判据在、体积判据在、失败置 `exitCode 1`），总断言 887 → 892；`check-all` → **14/14，1,663 条断言，118.2s**；`doctor` → 补丁账本多一条 `[macro-fusion 0.2.82]`，116 条全绿。
+
+
 

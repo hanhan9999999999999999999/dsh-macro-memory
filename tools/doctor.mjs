@@ -407,6 +407,11 @@ const PATCHES = [
     file: 'vendor/meow-memory/lib/index.js',
     what: '设置链路诊断默认不出声：DSH_MEMORY_SETTINGS_DIAG=1 才写 settings-diag.log，且有 256 KiB 上限（原先每调一次 describe 就追加几十行）',
   },
+  {
+    marker: '[macro-fusion 0.2.82]',
+    file: 'tools/probe-toolsize.mjs',
+    what: '修掉裸 root（ReferenceError，脚本 0.2.7x 起就跑不动）：改取 _root.mjs 的 vendorDir，并自己判「17 个原工具一个不少 + 字面量不膨胀」，进 check-all 第 12 支',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

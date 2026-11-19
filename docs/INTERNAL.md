@@ -4076,3 +4076,56 @@ function settingsDiag(line) {
 - **用户机器上已有的 `settings-diag.log` 不自动删**（它是用户目录里的文件，删不删由主人决定；关掉之后不再增长，可以手删）。
 - 需要重启 DSH 才生效（`vendor/meow-memory/lib/index.js` 是宿主侧代码）。
 
+# 9.88 不跑的脚本会烂（0.2.82）
+
+### 9.88.1 现象
+
+`tools/probe-toolsize.mjs` 是 0.1.x 时期写的「数两套引擎工具 schema 字面量体积」脚本，0.2 之后**一次都没再跑过**。这一轮顺手跑了一次，第一行就死：
+
+```
+const a = scan(root + '/meow-memory/lib/index.js', 'meow-memory')
+                ^
+ReferenceError: root is not defined
+```
+
+`root` 从来没被导入——文件头只 `import { vendorDir } from './_root.mjs'`。而 `node --check` **抓不到这个错**：语法完全合法，错在运行期的自由变量解析。所以「加了 --check 就安全了」是假的。
+
+### 9.88.2 为什么它能坏这么久
+
+三件事同时成立：① 它不在 `check-all` 的 `STEPS` 里；② 没有任何断言读它的输出；③ 它不是 doctor 补丁账本里的条目（账本只登记我们改过的 vendor 文件）。于是它在仓库里躺了三个月，没人知道它跑不动。
+
+这和 9.87 那条是同一类病：**能力的可断言性决定它会不会腐烂**。区别只是 9.87 是「一直在跑但没人断言」，这里是「压根没人跑」。
+
+### 9.88.3 改法（不是修一行了事）
+
+```js
+const a = scan(vendorDir + '/meow-memory/lib/index.js', 'meow-memory')   // 取根走 _root.mjs
+
+const MEOW_TOOLS = ['memory_remember', 'memory_search', 'memory_find_similar', 'memory_read',
+                    'memory_update', 'memory_project', 'memory_home', 'memory_dream']
+const NEBULA_TOOLS = ['nebula_recall', …, 'nebula_ingest']
+const BUDGET_BYTES = 87326
+ok(missingM.length === 0, '清单：meow 的 8 个原工具一个不少', '8/8')
+ok(missingN.length === 0, '清单：星图的 9 个原工具一个不少', '9/9')
+ok(sum <= BUDGET_BYTES, '体积：17 个工具字面量合计没有膨胀', sum + ' B ≤ ' + BUDGET_BYTES + ' B')
+if (failures !== 0) process.exitCode = 1
+```
+
+- 它现在**自己出判决**（`PASS`/`FAIL` + 失败置 `exitCode 1`），所以能直接进 `check-all`。
+- 清单判据是「meow 原工具绝不能砍」这条硬要求的**可执行版**：任何一个 `memory_*` / `nebula_*` 从 vendor 源码里消失就红。
+- 体积判据是上界 87,326 B（当前实测值），只许变瘦不许长回去。
+- 它被插到 `param-audit` 之后，成为 `check-all` 第 12 支；`verify.mjs` 的「STEPS 支数」判据同步从 13 改成 14。
+
+### 9.88.4 怎么验的
+
+- `node tools/probe-toolsize.mjs` → 三行 `PASS` + `ALL PASS`，`exit=0`；修之前是 `ReferenceError` / `exit=1`。
+- `node verify.mjs` → 新增 A82 五条（进了 STEPS、取根走 `_root.mjs` 且无裸 `root`、清单判据在、体积判据在、失败置 `exitCode 1`）；总断言 887 → 892。
+- `node tools/check-all.mjs` → **14/14，1,663 条断言，118.2s**。
+- `node tools/doctor.mjs` → 补丁账本多一条 `[macro-fusion 0.2.82]`（116 条全绿）。
+
+### 9.88.5 边界
+
+- 只改 `tools/`（探针 + 编排）与 `verify.mjs`，**没碰 vendor、没碰运行时代码**；这轮不需要重启 DSH。
+- 体积数字是「字面量偏高估计」，口径与 0.1.x 基线可比；线上真实投影体积仍以 `tools/probe-host.mjs` D2（8,655 B）为准。
+
+

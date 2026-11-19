@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 13 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 14 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5610,6 +5610,37 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '诊断: 开关打开时仍然照常写（不是把功能删了，是默认不出声）',
     meowSrc.includes('function settingsDiag(line) {\n  if (!SETTINGS_DIAG_ON) return;'),
+  )
+}
+
+// ── A82. 不跑的脚本会烂（0.2.82）：probe-toolsize 从死到进 check-all，并自己出判决 ──
+// 它 0.2.7x 起就 ReferenceError（用了没导入的 `root`），因为没人跑、也没断言盯着，坏了很久没人知道。
+// 语法检查（node --check）抓不到这种错，只有真跑一次才算数 → 所以必须进 check-all。
+{
+  const probeSrc = readFileSync(join(root, 'tools/probe-toolsize.mjs'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  check(
+    '脚本: probe-toolsize 进了 check-all 的 STEPS（不跑的脚本一定会烂）',
+    checkAllSrc.includes("['tools/probe-toolsize.mjs'"),
+  )
+  check(
+    '脚本: 它取根走 _root.mjs 的 vendorDir，没有裸 root',
+    probeSrc.includes("import { vendorDir } from './_root.mjs'") && !/scan\(root\b|\broot \+ '\//.test(probeSrc),
+  )
+  check(
+    '脚本: 它自己会判「17 个原工具一个不少」（meow 8 + 星图 9）',
+    /const MEOW_TOOLS = \[[\s\S]{0,400}?\]/.test(probeSrc) &&
+      (probeSrc.match(/'(memory|nebula)_[a-z_]+'/g) ?? []).length >= 17 &&
+      probeSrc.includes('ok(missingM.length === 0') &&
+      probeSrc.includes('ok(missingN.length === 0'),
+  )
+  check(
+    '脚本: 体积有上限判据，膨胀就红',
+    probeSrc.includes('const BUDGET_BYTES = 87326') && probeSrc.includes('ok(sum <= BUDGET_BYTES'),
+  )
+  check(
+    '脚本: 失败时置 exitCode 1（check-all 才看得见）',
+    probeSrc.includes('if (failures !== 0) process.exitCode = 1'),
   )
 }
 
