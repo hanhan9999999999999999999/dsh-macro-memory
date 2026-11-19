@@ -35,6 +35,8 @@
 - dream.cover.rule: O que fazer: junte em um só — leve para a versão completa o que só o resumo tem, mantenha a entrada mais completa e marque a outra como status=archived via memory_update. Não as trate como dois fatos só porque o repeat é baixo: o mesmo conhecimento guardado duas vezes custa duas vezes na injeção da primeira rodada.
 - dream.cover.keep: Receita: fique com a versão completa e absorva estas {n} palavras do resumo ({words}) — se ficarem de fora, a fusão as perde.
 - dream.cover.keepNone: Receita: o resumo não tem nenhuma palavra que a versão completa não tenha, então não há nada a absorver — mantenha a versão completa, marque o resumo como archived e não reescreva o texto.
+- dream.plan: [esta rodada vê {rounds} rodadas / {rows} entradas · {dup} pares repetidos ao pé da letra · {cover} pares de redações duplicadas] — os números saem da própria lista; no fim, os mesmos números vão para o registro do dream.
+- dream.plan.missing: Nesses pares de redações duplicadas, {missing} palavras vivem só no resumo, então precisam ser absorvidas na fusão (cada par as nomeia na linha de receita).
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.

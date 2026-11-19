@@ -404,5 +404,118 @@ check(
   `${coverSlotFiles.filter((f) => /三把尺子|three rulers|três réguas/.test(f)).length}/${coverSlotFiles.length} 份指引`,
 )
 
+// ── G1–G6：整理完要留痕——回执先说这一轮看到什么，收尾把同一份数字落库（0.2.96）──────────
+// dream 以前「做完了什么都不说」：claim 只防重复整理，logDream 只记 done + 轮数，主人在面板与回执里都
+// 看不到这一轮翻了多少条、撞上几对、有几对合并会丢字。这里守的是：摘要里的数字必须和清单里真正印出来
+// 的块逐项相等（同源，不是另估一份）；没有字要补时不许硬凑那句缺词提示。
+const planWs = keepWs
+const planSid = 'sess-ruler-keep'
+const planDb = V.getDb(planWs, '.dsh-meow')
+const planRounds = V.collectDreamRounds(planDb, planSid, planWs, '.dsh-meow', 0)
+const planDigest = V.dreamPlanDigest(planRounds)
+const planText = dreamAll(planSid, planWs).join('\n---\n')
+const printedCover = (planText.match(/^- \S+ ⊂ \S+  [0-9.]+ · /gm) ?? []).length
+const printedDup = (planText.match(/^- \S+ ⇄ \S+  [0-9.]+ · /gm) ?? []).length
+const printedMissing = (planText.match(/这 (\d+) 个词|these (\d+) words|estas (\d+) palavras/g) ?? []).reduce(
+  (n, m) => n + Number(m.replace(/\D+/g, '')),
+  0,
+)
+check(
+  'G1 摘要里的对子数与清单里真正印出来的块逐项相等（同一份清单，不是另估一份）',
+  planDigest.cover === printedCover && planDigest.dup === printedDup && planDigest.cover === 1 && planDigest.dup === 0,
+  `摘要 cover=${planDigest.cover} dup=${planDigest.dup} / 印出来 ⊂${printedCover} ⇄${printedDup}`,
+)
+check(
+  'G2 摘要的缺词数与处方行点名的词数一致，且条目数就是这一轮选中的行数（rows=2：短摘录 + 长详写）',
+  planDigest.missing === printedMissing && planDigest.missing === 1 && planDigest.rows === 2 && planDigest.rounds >= 1,
+  `missing=${planDigest.missing} / 处方点名 ${printedMissing} · rows=${planDigest.rows} rounds=${planDigest.rounds}`,
+)
+const receiptZh = V.dreamReceipt(planDigest)
+check(
+  'G3 回执先念规模：四个数字全在，没有留未填的占位符',
+  receiptZh.includes(`${planDigest.rounds} 轮`) &&
+    receiptZh.includes(`${planDigest.rows} 条`) &&
+    receiptZh.includes(`${planDigest.dup} 对`) &&
+    receiptZh.includes(`${planDigest.cover} 对`) &&
+    !/[{}]/.test(receiptZh),
+  receiptZh.split('\n')[0].slice(0, 90),
+)
+// 阴性对照：这条窗口只有一条记忆，没有任何对子——摘要全 0，回执不许硬凑「有几个词只活在短条里」那一句
+const soloDigest = V.dreamPlanDigest(V.collectDreamRounds(V.getDb(soloWs, '.dsh-meow'), 'sess-ruler-solo', soloWs, '.dsh-meow', 0))
+const soloReceipt = V.dreamReceipt(soloDigest)
+check(
+  'G4 阴性对照：干净窗口的摘要全 0，且回执不提缺词（该安静的安静）',
+  soloDigest.dup === 0 && soloDigest.cover === 0 && soloDigest.missing === 0 && !/只活在短条里|live only in the excerpt/.test(soloReceipt) && soloReceipt.length > 0,
+  `dup=${soloDigest.dup} cover=${soloDigest.cover} missing=${soloDigest.missing}`,
+)
+// 开工那一步真的走一遍：摘要要在 claim 之后算出来、回进 trace（dreamTool 与 /dream 都是拿 trace.digest
+// 说话的，不是各自再算一份），同时落进 dream_meta，收尾才有东西可写进 dream_log
+const planToolWs = join(home, 'ws-plan-tool')
+mkdirSync(planToolWs, { recursive: true })
+const planExec = execIn(planToolWs, 'sess-ruler-plan-tool')
+await call('memory_remember', { content: R_SHORT_KEEP, level: 'fact', keywords: ['sandbox', 'EPERM', '放行', '目录', '单号'], importance: 1, project: '全局' }, planExec)
+await call('memory_remember', { content: R_LONG, level: 'topic', title: 'sandbox 写入 EPERM 的排查', keywords: ['sandbox', 'EPERM', '排查', 'ACL', '放行'], importance: 1, project: '全局' }, planExec)
+const trace96 = { reason: '' }
+V.startWindowDream({}, planExec.agent, planToolWs, '.dsh-meow', undefined, 0, trace96)
+const storedDigest = V.getDb(planToolWs, '.dsh-meow').getDreamMeta('dreamdigest:sess-ruler-plan-tool')
+const toolReceipt = V.dreamReceipt(trace96.digest)
+check(
+  'G5 开工时摘要真的算好、回进 trace、且落进 dream_meta（工具面与 /dream 念的就是它，不是各自重算）',
+  trace96.digest !== undefined &&
+    trace96.digest.cover === 1 &&
+    trace96.digest.missing === 1 &&
+    typeof storedDigest === 'string' &&
+    JSON.parse(storedDigest).cover === 1 &&
+    /这一轮看到：\d+ 轮 \/ \d+ 条 · 逐字重复 \d+ 对 · 重复详写 1 对/.test(toolReceipt) &&
+    /共 1 个词只活在短条里/.test(toolReceipt),
+  `trace.cover=${trace96.digest?.cover} missing=${trace96.digest?.missing} meta=${storedDigest === undefined ? '缺' : '在'}`,
+)
+check(
+  'G6 三语 labels 都有 dream.plan 与 dream.plan.missing 两键（回执不许只有中文）',
+  labelFiles.every((f) => /^- dream\.plan:/m.test(f) && /^- dream\.plan\.missing:/m.test(f)),
+  `${labelFiles.filter((f) => /^- dream\.plan:/m.test(f)).length}/${labelFiles.length} 份 labels`,
+)
+// 收尾真的留痕：走完两轮 dream（followup 能收消息），dream_log 的最后一行要带同一份摘要，meta 要清掉。
+// 这条是 0.2.96 的正题——「整理完什么都不留」正是它要修的东西。
+const logWs = join(home, 'ws-plan-log')
+mkdirSync(logWs, { recursive: true })
+const logAgent = { ...execIn(logWs, 'sess-ruler-plan-log').agent, followup() {} }
+await call('memory_remember', { content: R_SHORT_KEEP, level: 'fact', keywords: ['sandbox', 'EPERM', '放行', '目录', '单号'], importance: 1, project: '全局' }, { agent: logAgent })
+await call('memory_remember', { content: R_LONG, level: 'topic', title: 'sandbox 写入 EPERM 的排查', keywords: ['sandbox', 'EPERM', '排查', 'ACL', '放行'], importance: 1, project: '全局' }, { agent: logAgent })
+const logDb = V.getDb(logWs, '.dsh-meow')
+V.startWindowDream({}, logAgent, logWs, '.dsh-meow', undefined, 0)
+V.advanceDream(logAgent, '.dsh-meow', undefined, 0)
+V.advanceDream(logAgent, '.dsh-meow', undefined, 0)
+const lastLog = logDb.db.prepare('SELECT summary, changes FROM dream_log ORDER BY run_at DESC LIMIT 1').get()
+const lastChanges = JSON.parse(String(lastLog?.changes ?? '{}'))
+check(
+  'G7 收尾把同一份摘要写进 dream_log（changes.plan 有 rows/dup/cover/missing，summary 里也念一遍）',
+  String(lastLog?.summary ?? '').includes('groups=') &&
+    String(lastLog?.summary ?? '').includes('plan rows=2 dup=0 cover=1 missing=1') &&
+    lastChanges.plan?.cover === 1 &&
+    lastChanges.plan?.missing === 1 &&
+    lastChanges.plan?.rows === 2,
+  String(lastLog?.summary ?? '(没这一行)').slice(0, 96),
+)
+check(
+  'G8 念完就把 meta 删掉（下一轮不许读到上一轮的旧账），但 stamped 这个老字段还在',
+  V.getDb(logWs, '.dsh-meow').getDreamMeta('dreamdigest:sess-ruler-plan-log') === undefined && typeof lastChanges.stamped === 'number',
+  `meta=${V.getDb(logWs, '.dsh-meow').getDreamMeta('dreamdigest:sess-ruler-plan-log') === undefined ? '已清' : '还在'} stamped=${lastChanges.stamped}`,
+)
+// 半路被中止也要留痕（abort 与 done 走同一个 finalize，这条守的是它没被改成只记 done 分支）
+const abortWs = join(home, 'ws-plan-abort')
+mkdirSync(abortWs, { recursive: true })
+const abortAgent = { ...execIn(abortWs, 'sess-ruler-plan-abort').agent, followup() {} }
+await call('memory_remember', { content: R_SHORT_KEEP, level: 'fact', keywords: ['sandbox', 'EPERM', '放行', '目录', '单号'], importance: 1, project: '全局' }, { agent: abortAgent })
+await call('memory_remember', { content: R_LONG, level: 'topic', title: 'sandbox 写入 EPERM 的排查', keywords: ['sandbox', 'EPERM', '排查', 'ACL', '放行'], importance: 1, project: '全局' }, { agent: abortAgent })
+V.startWindowDream({}, abortAgent, abortWs, '.dsh-meow', undefined, 0)
+V.abortDream(abortAgent, '.dsh-meow', undefined)
+const abortLog = V.getDb(abortWs, '.dsh-meow').db.prepare('SELECT summary FROM dream_log ORDER BY run_at DESC LIMIT 1').get()
+check(
+  'G9 中止（aborted）也带摘要落库——不是只有顺利收尾才留痕',
+  String(abortLog?.summary ?? '').includes('aborted') && String(abortLog?.summary ?? '').includes('plan rows=2 dup=0 cover=1 missing=1'),
+  String(abortLog?.summary ?? '(没这一行)').slice(0, 96),
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

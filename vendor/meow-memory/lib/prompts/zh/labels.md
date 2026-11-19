@@ -35,6 +35,8 @@
 - dream.cover.rule: 处置：合成一条——把短摘录里长那条没有的细节补进长那条，保留信息更全的那条，另一条用 memory_update 把 status 设 archived。别因为 repeat 低就当两件事记着：同一个知识点存两层，首轮注入要多付一份钱。
 - dream.cover.keep: 处方：留着长条，把短条这 {n} 个词补进去（{words}）——漏掉它们，这次合并就丢字了。
 - dream.cover.keepNone: 处方：短条没有长条之外的词，这次合并没有东西要补——留着长条、把短条设 archived 就行，正文不用改写。
+- dream.plan: 【这一轮看到：{rounds} 轮 / {rows} 条 · 逐字重复 {dup} 对 · 重复详写 {cover} 对】——数字是从清单本身算出来的，收尾时同一份数字会写进整理留痕。
+- dream.plan.missing: 这些详写对里共 {missing} 个词只活在短条里，合并时必须补进去（每一对下面都有处方行点名）。
 - project.unlabeled: 未标记
 - project.header: 【项目：{name}】
 - project.empty: 【项目：{name}】该项目暂无记忆条目。

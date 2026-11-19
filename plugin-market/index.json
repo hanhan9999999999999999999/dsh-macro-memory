@@ -89,14 +89,14 @@
           "self-tested"
         ],
         "sortKeys": {
-          "updated": 1795128903
+          "updated": 1795131303
         },
-        "publishTimestamp": 1795128903
+        "publishTimestamp": 1795131303
       },
       "versions": [
         {
-          "version": "0.2.95",
-          "publishTimestamp": 1795128903,
+          "version": "0.2.96",
+          "publishTimestamp": 1795131303,
           "source": {
             "type": "git",
             "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",

@@ -143,6 +143,11 @@ else {
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
   {
+    marker: '[macro-fusion 0.2.96]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: 'dream 整理完不留痕：claimDream 只防重复整理、logDream 只记「done + 轮数+封存数」，主人在面板与回执里都看不到这一轮翻了多少条、撞上几对、有几对合并会丢字——模型自己也无从预判规模。现在①新增 dreamPlanDigest：用后面真正印块的那两个判据函数（dreamDupPairs / dreamCoverPairs，不另立口径）把清单算成 {rounds, groups, rows, dup, cover, missing, projects}；②起 dream 时存进 dream_meta 的 dreamdigest:<sid>，回执（memory_dream 与 /dream 同源）先用三语 labels 的 dream.plan 念一遍规模，真有字要补时再加一句 dream.plan.missing；③收尾（done/aborted/中断恢复都走 finalizeDream）把同一份摘要写进 dream_log.changes.plan 与 summary 的 plan rows=/dup=/cover=/missing=，念完删 meta，不留下一轮读的旧账；④顺带把「同一批行算三遍词集」收成 rowTokenSet 按 id+updated_at 记忆，三个消费者共用一张词表。基准在 tools/probe-ruler.mjs 的 G 段（含「数字与真印出来的块逐项相等」「干净清单不加 missing 那句」两条阴性对照）',
+  },
+  {
     file: 'vendor/dsh-memory-nebula/lib/host/recall.js',
     marker: '[macro-fusion 0.2.9]',
     what: '归档/删除的记忆不进检索结果（与 bridge.js statusFactor 同口径）',

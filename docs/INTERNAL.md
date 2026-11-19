@@ -5039,3 +5039,68 @@ function missingWordsOf(smallSet, bigSet, max = DREAM_MERGE_WORDS) {
 1. 凡是「合并 / 归档 / 覆盖」类处置，都要顺手回答「会丢什么」。丢不了就明说丢不了。
 2. 阴性对照要防的是**过度触发**：F3 专门断言「本不该点名时一个词都不许出现」，光有正例的探针只能证明会喊，证明不了不乱喊。
 3. 造验证语料前先弄清 tokenizer 怎么切：CJK 切 bigram、拉丁整词，这两件事决定了「加一句话」和「加一个编号」在覆盖度上差多少倍。
+
+## 9.102 整理完什么都不留：dream 的规模只有它自己知道（0.2.96）
+
+### 9.102.0 现象
+
+`memory_dream` 的回执只有「整理任务已在后台启动」。整理完之后，`dream_log` 里那一行是：
+
+```
+window dream done: sess-xxxx groups=2 stamped=2 T=2026-11-19T…
+```
+
+`claimDream` 只防「同一个窗口重复整理」，`logDream` 只记「收尾原因 + 轮数 + 封存数」。于是
+**这一轮翻了多少条、撞上几对逐字重复、几对重复详写、合并会丢几个词**——全部只活在模型读到的那条
+清单消息里，消息一过就没了。主人回头查「dream 到底动过什么」只有两个数：groups 和 stamped。
+
+对模型也不友好：开工前它只知道「有 N 轮」，不知道这一轮重不重。清单里有没有对子、要不要逐条合并，
+它得读到那一轮才知道。
+
+### 9.102.1 判据与处方
+
+和 0.2.95 同一条纪律：**数字必须是同一份清单算出来的**。所以摘要不另写一套判据，直接调
+`dreamDupPairs` / `dreamCoverPairs`——就是后面真正往消息里印块的那两个函数。两处口径永远一致，
+不会出现「回执说有 2 对、清单里只印了 1 对」这种读者无法核对的话。
+
+`dreamPlanDigest(rounds)` 返回：
+
+| 字段 | 含义 |
+| --- | --- |
+| `rounds` | 这一轮分几段消息（atomic / topic / project-summary） |
+| `groups` | 组数（project 分组） |
+| `rows` | 选中的条目总数 |
+| `dup` | 逐字重复对（≥80%，与写侧 DEDUP_THRESHOLD 同一把尺子） |
+| `cover` | 重复详写对（覆盖度 ≥90%） |
+| `missing` | 这些详写对里「只活在短条」的词总数 |
+| `projects` | 项目总结段涵盖几个项目 |
+
+### 9.102.2 三个出口
+
+1. **回执**：`memory_dream` 与 `/dream` 同一份（都从 `startWindowDream` 的 `trace.digest` 取），
+   三语 labels 的 `dream.plan` 念一句 `【这一轮看到：2 轮 / 2 条 · 逐字重复 0 对 · 重复详写 1 对】`；
+   真有字要补时才加第二句 `dream.plan.missing`（共 N 个词只活在短条里）。`missing === 0` 时一个字不加——
+   空白不是中立，硬凑一句「共 0 个词」只会让读者以为流程坏了。
+2. **落库**：开工时摘要存进 `dream_meta` 的 `dreamdigest:<sid>`；收尾时 `finalizeDream` 把它写进
+   `dream_log.changes.plan`（整份对象）与 `summary` 的 `plan rows=/dup=/cover=/missing=`，
+   然后 `delDreamMeta` 删掉——不删的话下一轮会读到上一轮的旧账。`done` / `aborted` / 中断恢复
+   都走同一个 `finalizeDream`，所以中止也留痕。
+3. **调试日志**：`dream-debug.log` 的 `dream start` / `dream done` 行带同一串 `plan …`。
+
+### 9.102.3 顺序上的坑
+
+摘要必须在 `claimDream` **成功之后**算：被 `claimed` 挡回来的那次，一个整理都不会跑，为一个不会跑的
+清单烧一遍分词纯属浪费（一窗几十条 × 两次 pair 计算）。`sendFailed` 的那一支也照样把摘要念出去——
+「要整理的记忆还在」这句话里，规模正是它还在的证据。
+
+### 9.102.4 顺手的效率修正
+
+同一批行的词集原来要被算三遍（逐字重复对、重复详写对、摘要）。`tokenize` 是纯函数，改成
+`rowTokenSet(r)` 按 `id + updated_at` 记一份：改过内容的条目 `updated_at` 会变，读不到陈旧词集；
+表超过 4096 条整表清空（dream 一轮只有几十行，这个上限纯属防守）。
+
+### 9.102.5 没做的事（写清楚，免得以为漏了）
+
+面板还没读这条路。理由：`.dsh-meow` 的账本在 meow 手里，融合层的面板动作都走 `$DSH_HOME` 下的文件，
+硬接一个 sqlite 句柄等于把账本抄一份到面板侧，两处口径迟早会漂。下一步应当走已有的事件通道
+（`/meow-memory/dream-events` 的 `DreamStateBroadcast`）把 `plan` 带出去，而不是让面板自己去查库。

@@ -35,6 +35,8 @@
 - dream.cover.rule: What to do: merge them into one — move whatever the excerpt has that the long entry lacks into it, keep the fuller entry, and set the other to status=archived via memory_update. Do not file them as two separate facts just because repeat is low: the same knowledge stored twice is paid for twice in the first-round injection.
 - dream.cover.keep: Recipe: keep the long entry and fold in these {n} words from the excerpt ({words}) — leave them out and the merge loses them.
 - dream.cover.keepNone: Recipe: the excerpt has no words the long entry lacks, so there is nothing to fold in — keep the long entry, set the excerpt to archived, and leave the text as it is.
+- dream.plan: [this run sees {rounds} rounds / {rows} entries · {dup} verbatim-duplicate pairs · {cover} duplicate write-up pairs] — these numbers are counted from the checklist itself; the same numbers go into the dream log at the end.
+- dream.plan.missing: Across those write-up pairs {missing} words live only in the excerpt, so they must be folded in when merging (each pair names them on its recipe line).
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.

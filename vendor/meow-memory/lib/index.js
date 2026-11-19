@@ -3499,10 +3499,23 @@ function dreamPairOwner(rounds, pair) {
   }
   return -1;
 }
+// [macro-fusion 0.2.96] 同一批行的词集要算三遍（逐字重复对、重复详写对、计划摘要），tokenize 是纯函数：
+// 按「id + updated_at」记一份，三个消费者共用一张词表。改过内容的条目 updated_at 会变，读不到陈旧词集；
+// 超过 4096 条整表清空（dream 一轮只有几十行，这个上限纯属防守）。
+var dreamTokenMemo = new Map();
+function rowTokenSet(r) {
+  const key = `${String(r.id ?? "")}\u0000${String(r.updated_at ?? "")}`;
+  const hit = dreamTokenMemo.get(key);
+  if (hit !== void 0) return hit;
+  const set = new Set(tokenize(String(r.content ?? "")));
+  if (dreamTokenMemo.size > 4096) dreamTokenMemo.clear();
+  dreamTokenMemo.set(key, set);
+  return set;
+}
 var DREAM_DUP_MAX = 5;
 function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
   if (rows.length < 2) return [];
-  const sets = rows.map((r) => new Set(tokenize(String(r.content ?? ""))));
+  const sets = rows.map(rowTokenSet);
   const out = [];
   for (let i = 0; i < rows.length; i++) {
     const a = sets[i];
@@ -3550,7 +3563,7 @@ function coverOfSets(a, b) {
 }
 function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN) {
   if (rows.length < 2) return [];
-  const sets = rows.map((r) => new Set(tokenize(String(r.content ?? ""))));
+  const sets = rows.map(rowTokenSet);
   const out = [];
   for (let i = 0; i < rows.length; i++) {
     const a = sets[i];
@@ -3572,6 +3585,38 @@ function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN) {
   }
   out.sort((x, y) => y.contain - x.contain);
   return out.slice(0, DREAM_DUP_MAX);
+}
+// [macro-fusion 0.2.96] dream 整理完什么都不留：claimDream 只防重复整理，logDream 只记「done + 轮数」，
+// 主人在面板与回执里都看不到「这一轮翻了多少条、撞上几对、有几对合并会丢字」。模型自己也无从预判规模。
+// 这段把清单本身算成一串数字——用的是后面真正印块的那两个函数，不另立口径——① 起 dream 时随回执说给模型听，
+// ② 收尾时随 dream_log.changes 落库，事后能对账；③ 中断/失败也留着上一条摘要，不必重算。
+function dreamPlanDigest(rounds) {
+  const rowsOf = (r) => (Array.isArray(r.groups) ? r.groups.flatMap((g) => (Array.isArray(g.rows) ? g.rows : [])) : []);
+  const allRows = rounds.flatMap(rowsOf);
+  const covers = dreamCoverPairs(allRows);
+  return {
+    rounds: rounds.length,
+    groups: rounds.reduce((n, r) => n + (Array.isArray(r.groups) ? r.groups.length : 0), 0),
+    rows: allRows.length,
+    dup: dreamDupPairs(allRows).length,
+    cover: covers.length,
+    missing: covers.reduce((n, p) => n + (Number(p.missing) || 0), 0),
+    projects: rounds.reduce((n, r) => n + (Array.isArray(r.projects) ? r.projects.length : 0), 0)
+  };
+}
+// 回执那句话：四个数字全部来自上面那份摘要，一个也不手写；只有真有字要补时才加第二句。
+function dreamReceipt(digest) {
+  if (digest === void 0 || digest === null || typeof digest !== "object") return "";
+  const lbl4 = (key, params) => fillTemplate(keyedValue("labels", key), params);
+  const head = lbl4("dream.plan", {
+    rounds: String(digest.rounds),
+    rows: String(digest.rows),
+    dup: String(digest.dup),
+    cover: String(digest.cover)
+  });
+  const miss = Number(digest.missing) > 0 ? lbl4("dream.plan.missing", { missing: String(digest.missing) }) : "";
+  return miss === "" ? head : `${head}
+${miss}`;
 }
 function buildDreamMessage(db, sessionId, T2, rounds, idx) {
   const round = rounds[idx];
@@ -3741,6 +3786,11 @@ function startWindowDream(ctx, agent, workspace, dir = ".dsh-meow", onDreamState
   const T2 = win && win.last_event_time > 0 ? win.last_event_time : Date.now();
   if (!db.claimDream(sessionId, newDreamOwner(), T2, DREAM_LEASE_MS)) return say("claimed");
   db.setDreamMeta(`dreamplan:${sessionId}`, JSON.stringify(rounds));
+  // [macro-fusion 0.2.96] 先把这轮的规模算成一份摘要：回执要念给模型听，落库要留给事后对账。
+  // 只在真的 claim 成功之后算——被 claimed 挡回来的那次不该为一个不会跑的整理烧一遍分词。
+  const digest = dreamPlanDigest(rounds);
+  db.setDreamMeta(`dreamdigest:${sessionId}`, JSON.stringify(digest));
+  if (trace !== void 0 && trace !== null) trace.digest = digest;
   onDreamState?.(sessionId, "dreaming");
   const msg = buildDreamMessage(db, sessionId, T2, rounds, 0);
   if (!sendMemoryTurn(agent, msg, workspace, dir, `dream start sid=${shortSessionId(sessionId)}`)) {
@@ -3749,7 +3799,7 @@ function startWindowDream(ctx, agent, workspace, dir = ".dsh-meow", onDreamState
   }
   if (trace !== void 0 && trace !== null) trace.reason = "started";
   armDreamHeartbeat(sessionId, workspace, dir);
-  dreamLog(workspace, dir, `dream start pid=${process.pid} session=${shortSessionId(sessionId)} rounds=${rounds.length} T=${T2}`);
+  dreamLog(workspace, dir, `dream start pid=${process.pid} session=${shortSessionId(sessionId)} rounds=${rounds.length} plan rows=${digest.rows} dup=${digest.dup} cover=${digest.cover} missing=${digest.missing} T=${T2}`);
   return true;
 }
 function advanceDream(agent, dir = ".dsh-meow", onDreamState, rulesReviewDays = DEFAULT_RULES_REVIEW_DAYS) {
@@ -3785,13 +3835,25 @@ function finalizeDream(db, sessionId, workspace, dir, T2, reason, groupsCount, o
   try {
     const stamped = db.stampDream(sessionId, T2);
     db.finishDream(sessionId, Date.now());
+    // [macro-fusion 0.2.96] 把开工时算好的计划摘要一起落库：以后查 dream_log 能看到这一轮翻了几条、
+    // 几对逐字重复、几对重复详写、合并会丢几个词，而不是只有「done + groups」。念完就删 meta，免得下一轮
+    // 读到上一轮的旧账（中断/abort 的路径也会落到这里，照样留痕）。
+    let plan;
+    try {
+      const rawPlan = db.getDreamMeta(`dreamdigest:${sessionId}`);
+      if (rawPlan !== void 0) plan = JSON.parse(rawPlan);
+      db.delDreamMeta(`dreamdigest:${sessionId}`);
+    } catch {
+      plan = void 0;
+    }
+    const planNote = plan === void 0 ? "" : ` plan rows=${plan.rows} dup=${plan.dup} cover=${plan.cover} missing=${plan.missing}`;
     db.logDream(
-      `window dream ${reason}: ${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped} T=${new Date(T2).toISOString()}`,
+      `window dream ${reason}: ${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}${planNote} T=${new Date(T2).toISOString()}`,
       // #108：changes 落真实计数（此前两处调用硬编码 {before:undefined,after:undefined}
       // → JSON {}，查库的人会误读成"什么都没改"）。stamped=本轮封存/完结条目数。
-      { stamped, groups: groupsCount }
+      plan === void 0 ? { stamped, groups: groupsCount } : { stamped, groups: groupsCount, plan }
     );
-    dreamLog(workspace, dir, `dream ${reason} session=${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}`);
+    dreamLog(workspace, dir, `dream ${reason} session=${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}${planNote}`);
     onDreamState?.(sessionId, "dreamed");
   } catch (e) {
     dreamLog(workspace, dir, `dream ${reason} finish error: ${String(e)}`);
@@ -3844,7 +3906,10 @@ function dreamTool(ctx, dir = ".dsh-meow", onDreamState, rulesReviewDays = DEFAU
       // 而 false 有四种来路。现在按 trace 说清是哪一种——尤其「消息没送出去」不能冒充「没东西可整理」。
       const trace48 = { reason: "" };
       const ok = startWindowDream(ctx, exec.agent, workspace, dir, onDreamState, rrd, trace48);
-      if (ok) return { ok, note: "\u6574\u7406\u4EFB\u52A1\u5DF2\u5728\u540E\u53F0\u542F\u52A8\uFF0C\u4F1A\u8BDD\u6D41\u4E2D\u7684\u4EFB\u52A1\u6C14\u6CE1\u4F1A\u663E\u793A\u8FDB\u5EA6\u4E0E\u5B8C\u6210\u72B6\u6001\u3002" };
+      // [macro-fusion 0.2.96] 回执里先说这一轮要看到什么（轮数/条数/逐字重复对/重复详写对/要补的词），
+      // 再说什么状态。数字来自 dreamPlanDigest——和清单里真正印出来的块同源，不是另估一份。
+      const receipt48 = dreamReceipt(trace48.digest);
+      if (ok) return { ok, note: [receipt48, "\u6574\u7406\u4EFB\u52A1\u5DF2\u5728\u540E\u53F0\u542F\u52A8\uFF0C\u4F1A\u8BDD\u6D41\u4E2D\u7684\u4EFB\u52A1\u6C14\u6CE1\u4F1A\u663E\u793A\u8FDB\u5EA6\u4E0E\u5B8C\u6210\u72B6\u6001\u3002"].filter((x) => x !== "").join("\n") };
       if (trace48.reason === "noRounds") {
         return { ok, note: "本窗口没有需要整理的记忆（盘点过：没有未封存的记忆轮次）——这一次是真没有，不是 dream 坏了。" };
       }
@@ -3852,7 +3917,7 @@ function dreamTool(ctx, dir = ".dsh-meow", onDreamState, rulesReviewDays = DEFAU
         return { ok, note: "本窗口确实有记忆要整理，但已经有一个 dream 在跑（或上一轮还在待补收尾）——这次没启动，等它收尾后再触发就行。" };
       }
       if (trace48.reason === "sendFailed") {
-        return { ok, note: "这次没启动成功：整理任务的消息没送进会话（会话正忙或被中断）。要整理的记忆还在，稍后再触发一次就行——这不是「没有需要整理的记忆」。" };
+        return { ok, note: [receipt48, "这次没启动成功：整理任务的消息没送进会话（会话正忙或被中断）。要整理的记忆还在，稍后再触发一次就行——这不是「没有需要整理的记忆」。"].filter((x) => x !== "").join("\n") };
       }
       if (trace48.reason === "noSessionId") {
         return { ok, note: "这次没启动成功：拿不到这个窗口的标识，所以没法开工（这不是「没有需要整理的记忆」）。" };
@@ -3892,12 +3957,14 @@ function dreamCommandDefinition(ctx, dir = ".dsh-meow", onDreamState, rulesRevie
       // [macro-fusion 0.2.48] 命令面和工具面同一套原因，别让 /dream 还把「没送出去」说成「没有需要整理的记忆」。
       const traceCmd48 = { reason: "" };
       const ok = startWindowDream(ctx, agent, workspace, dir, onDreamState, rrd, traceCmd48);
-      if (ok) return { kind: "success", text: "\u{1F9E0} dream \u5DF2\u89E6\u53D1\uFF1A\u6574\u7406\u4EFB\u52A1\u5DF2\u5728\u540E\u53F0\u8FD0\u884C\uFF0C\u4F1A\u8BDD\u6D41\u4E2D\u7684\u4EFB\u52A1\u6C14\u6CE1\u4F1A\u663E\u793A\u8FDB\u5EA6\u4E0E\u5B8C\u6210\u72B6\u6001\u3002" };
+      // [macro-fusion 0.2.96] 命令面与工具面同一份摘要：/dream 的屏幕上也要先说这一轮看到什么。
+      const receiptCmd96 = dreamReceipt(traceCmd48.digest);
+      if (ok) return { kind: "success", text: [receiptCmd96, "\u{1F9E0} dream \u5DF2\u89E6\u53D1\uFF1A\u6574\u7406\u4EFB\u52A1\u5DF2\u5728\u540E\u53F0\u8FD0\u884C\uFF0C\u4F1A\u8BDD\u6D41\u4E2D\u7684\u4EFB\u52A1\u6C14\u6CE1\u4F1A\u663E\u793A\u8FDB\u5EA6\u4E0E\u5B8C\u6210\u72B6\u6001\u3002"].filter((x) => x !== "").join("\n") };
       if (traceCmd48.reason === "claimed") {
         return { kind: "error", text: "本窗口已经有一个 dream 在跑（或待补收尾），未重复启动。" };
       }
       if (traceCmd48.reason === "sendFailed") {
-        return { kind: "error", text: "/dream 这次没启动成功：整理任务的消息没送进会话（会话正忙或被中断）。要整理的记忆还在，稍后再试一次。" };
+        return { kind: "error", text: [receiptCmd96, "/dream 这次没启动成功：整理任务的消息没送进会话（会话正忙或被中断）。要整理的记忆还在，稍后再试一次。"].filter((x) => x !== "").join("\n") };
       }
       if (traceCmd48.reason === "noSessionId") {
         return { kind: "error", text: "/dream 这次没启动成功：拿不到这个窗口的标识，所以没法开工（这不是「没有需要整理的记忆」）。" };
@@ -6171,6 +6238,8 @@ export {
   consecutiveToolSteps,
   disableWorkspaceTrust,
   dreamCommandDefinition,
+  dreamPlanDigest,
+  dreamReceipt,
   dreamSweepOnce,
   dreamSweepTick,
   dshHomeDir,
