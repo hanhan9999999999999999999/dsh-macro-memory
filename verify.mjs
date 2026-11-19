@@ -4335,8 +4335,10 @@ function makeHostCtx() {
     'defs/admin.js',
   )
   check(
-    'pst: call / graph / local 三条分发都带上尾注',
-    adminSrc68.split('note: stray').length - 1 === 2 && adminSrc68.includes('[out.note, stray].filter(Boolean).join('),
+    'pst: call / graph / local 三条分发都带上尾注（graph 那条还要并上体检口径那句，0.2.91）',
+    adminSrc68.split('note: stray').length - 1 === 1 &&
+      adminSrc68.includes("note: [ruler, stray].filter(Boolean).join(' · ')") &&
+      adminSrc68.includes('[out.note, stray].filter(Boolean).join('),
     `note: stray × ${adminSrc68.split('note: stray').length - 1}`,
   )
   check(
@@ -6056,6 +6058,53 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       rulerSrc.includes('U2 写侧回执的「重复度 N%」与相似检索的 repeat 是同一个数') &&
       rulerSrc.includes('U3 回执点名「看着像、其实不是同一句」') &&
       rulerSrc.includes('U8 repeat 用 tokenize 复算与工具一致'),
+  )
+}
+
+// [macro-fusion 0.2.91] 星图体检的「相似 N」是**稀有词签名**估出来的（24 词、df≥2、门槛 0.86），
+// 库小的时候签名退化成「两边共有的词」，同一对内容会被报成「相似 1」。而工具里的「逐字重复度」
+// 是全文词集 Jaccard，与写侧 80% 合并判据同源。实测同一对内容：面板 1 / 工具 0.42 / 写侧不判重复。
+// 融合层拿不到正文、无法重算第二把尺子，所以这里钉的是「把两把尺子摆到抬头里」这件事本身：
+// 只在真列出对子时说、说清这是什么量、指路去看 repeat、与 nebula 的实现常量对得上。
+{
+  const adminSrc = readFileSync(join(root, 'lib/macro/defs/admin.js'), 'utf8')
+  const graphSrc = readFileSync(join(root, 'vendor/dsh-memory-nebula/lib/host/graph.js'), 'utf8')
+  const probeSrc = readFileSync(join(root, 'tools/probe-graph.mjs'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+
+  check(
+    '体检口径: 校准句是模块级导出函数（可单测），且只有 hygiene 分支才掺',
+    adminSrc.includes('export function hygieneRulerNote(body, args)') &&
+      adminSrc.includes("const ruler = action === 'hygiene' ? hygieneRulerNote(text, args) : ''") &&
+      (adminSrc.match(/hygieneRulerNote\(/g) || []).length >= 2,
+  )
+  check(
+    '体检口径: 校准句是**并进**尾注，不顶掉原有的「没排上来」提示',
+    adminSrc.includes("note: [ruler, stray].filter(Boolean).join(' · ')"),
+  )
+  check(
+    '体检口径: 文案说清三件事——这是稀有词签名 / 与逐字重复度不是一把尺子 / 判重复去看 repeat ≥0.80',
+    adminSrc.includes('稀有词签名估算') &&
+      adminSrc.includes('不是同一把尺子') &&
+      adminSrc.includes('memory_search 的 repeat（≥0.80 写侧就判重复）') &&
+      adminSrc.includes('每条约留最稀有的 24 个词'),
+  )
+  check(
+    '体检口径: 文案里的 24 词 / 门槛 0.86 与 nebula 的实现对得上（说的是真的，不是写死的形容）',
+    graphSrc.includes('const SIG_N = 24') && /hyJaccardAtLeast\([^;]*?,\s*0\.86\)/.test(graphSrc),
+  )
+  check(
+    '体检口径: 没有对子 / 只看别的类别时一句都不掺（不制造噪音）',
+    adminSrc.includes("if (asked !== '' && asked !== 'dup') return ''") &&
+      adminSrc.includes("if (!text.includes('（相似 ')) return ''"),
+  )
+  check(
+    '体检口径: probe-graph 的 H 段七条进了线，且带两条阴性对照（写侧不判重复 / kind=stale 不掺）',
+    checkAllSrc.includes("['tools/probe-graph.mjs'") &&
+      probeSrc.includes('H1 两条核心不同的都写下了') &&
+      probeSrc.includes('H2 写侧没把这两条判成重复') &&
+      probeSrc.includes('H6 同一对在工具里逐字只有四成') &&
+      probeSrc.includes('H7 只看别的类别时不掺这句话（不制造噪音）'),
   )
 }
 

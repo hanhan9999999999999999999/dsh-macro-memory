@@ -781,7 +781,8 @@ export function contractChecklist({
         adminSrcP.includes('不读${it}，这次一点没参与') &&
         adminSrcP.includes('别读成「结果已经按${it}收窄过」') &&
         adminSrcP.includes('const stray = strayNote(action, spec, args)') &&
-        adminSrcP.split('note: stray').length - 1 === 2 &&
+        adminSrcP.split('note: stray').length - 1 === 1 &&
+        adminSrcP.includes("note: [ruler, stray].filter(Boolean).join(' · ')") &&
         adminSrcP.includes('[out.note, stray].filter(Boolean).join(') &&
         adminSrcP.includes('return extra.length > 0 ? '),
       detail: adminSrcP.includes('strayNote')
@@ -1090,7 +1091,9 @@ export function readAnswerKind(text) { return 'ok' }`,
         '别读成「结果已经按${it}收窄过」',
         'const stray = strayNote(action, spec, args)',
         'note: stray',
-        'note: stray',
+        // 0.2.91：graph 那条尾注并上体检口径那句（两条各说各的，谁也不能顶掉谁）
+        "const ruler = action === 'hygiene' ? hygieneRulerNote(text, args) : ''",
+        "note: [ruler, stray].filter(Boolean).join(' · ')",
         '[out.note, stray].filter(Boolean).join(',
         'return extra.length > 0 ? ',
         'export function cardDetail(args) {',

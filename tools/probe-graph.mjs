@@ -201,6 +201,63 @@ check('G2 拿到第一条的完整 id', typeof firstId === 'string' && firstId.l
   check('G3 队列没有欠账', !text(await run('memory_admin', { action: 'links' })).includes('待补连线：1'), '')
 }
 
+// H: 体检的「相似」和工具的「逐字重复度」是两把尺子（0.2.91）
+// 语料：同一条前言 + 两个完全不同的核心。全文逐字四成左右，而星图的稀有词签名会顶到 1。
+// 这一组存在的理由：面板说「相似 1」、工具说「逐字 0.42」，用户照着面板归档就是删掉一件独立的事。
+{
+  const P = '发版之前必须先把当前树备份到 D 盘，出问题先还原备份再排查。'
+  const A = `${P}另外记住：数据库迁移之前要先跑一次 dry-run，确认回滚脚本可用。`
+  const B = `${P}另外记住：前端配色统一用深蓝配米白，别再用灰色卡片。`
+  const wa = text(
+    await run('memory_remember', {
+      content: A,
+      project: '口径探针',
+      keywords: ['口径', '重复', '体检', '签名', '幂等'],
+      importance: 2,
+      level: 'fact',
+    }),
+  )
+  const wb = text(
+    await run('memory_remember', {
+      content: B,
+      project: '口径探针',
+      keywords: ['口径', '重复', '签名', '门槛', '幂等'],
+      importance: 2,
+      level: 'lesson',
+    }),
+  )
+  check('H1 两条核心不同的都写下了', wa.includes('已写入') && wb.includes('已写入'), '')
+  check('H2 写侧没把这两条判成重复（全文逐字远低于 80%）', !wb.includes('另一层已有几乎一样的条目'), wb.split('\n').slice(-1)[0].slice(0, 32))
+  await waitFor((l, n) => n(l, '记忆') >= 3, '3 条记忆')
+
+  const dbH = new DatabaseSync(join(ws, '.dsh-meow', 'memory.db'))
+  const aId = dbH.prepare("SELECT id FROM fact WHERE content LIKE '%dry-run%' ORDER BY created_at DESC LIMIT 1").get()?.id
+  const bId = dbH.prepare("SELECT id FROM lesson WHERE content LIKE '%前端配色%' ORDER BY created_at DESC LIMIT 1").get()?.id
+  dbH.close()
+
+  const full = text(await run('memory_admin', { action: 'hygiene', kind: 'dup' }))
+  const headH = full.split('\n')[0]
+  const sim = Number((full.match(/（相似 ([\d.]+)）/) || [])[1])
+  check(
+    'H3 体检把这一对列成疑似重复（按 id 找，不靠条数）',
+    full.includes('疑似重复') && full.includes(String(aId).slice(0, 8)) && full.includes(String(bId).slice(0, 8)),
+    full.split('\n').find((l) => l.startsWith('疑似重复')) ?? '',
+  )
+  check('H4 体检的「相似」在小编里顶到接近 1（签名退化成共有词）', Number.isFinite(sim) && sim >= 0.85, String(sim))
+  check('H5 抬头点明是稀有词签名，不是逐字重复度', headH.includes('稀有词签名') && headH.includes('逐字重复度'), headH.slice(-40))
+
+  const near = text(await run('memory_search', { mode: 'similar', id: aId, k: 5 }))
+  const rep = Number((near.match(/逐字 ([\d.]+)/) || [])[1])
+  check(
+    'H6 同一对在工具里逐字只有四成，与面板的「相似」差 ≥0.4',
+    Number.isFinite(rep) && rep > 0 && rep < 0.5 && sim - rep >= 0.4,
+    `面板 ${sim} / 工具 ${rep}`,
+  )
+
+  const stale = text(await run('memory_admin', { action: 'hygiene', kind: 'stale' }))
+  check('H7 只看别的类别时不掺这句话（不制造噪音）', !stale.includes('稀有词签名'), stale.split('\n')[0].slice(0, 30))
+}
+
 // GB: 星图概况的 hubs 参数（0.2.71）——给多少列多少
 // 0.2.75: 尾注只报读者能数到的三个数（这段列了几条 / 有连接的共几条 / 上限几条），
 // 不许再把「全图减这一撮」说成「还有 N 个枢纽没列」
@@ -221,8 +278,8 @@ check('G2 拿到第一条的完整 id', typeof firstId === 'string' && firstId.l
   const orphN = Number((sub.match(/孤立记忆 (\d+) 条/) || [])[1])
   const tailLine = bodyLines.find((l) => l.includes('条记忆彼此有连接')) || ''
   check(
-    'GB3 有连接的记忆不够列时不出尾注（不截断就别说「没排上来」）',
-    Number.isFinite(nodesN) && Number.isFinite(orphN) && nodesN - orphN <= 1 && tailLine === '',
+    'GB3 有连接的记忆多于要列的条数时才出尾注（不截断就别说「没排上来」）',
+    Number.isFinite(nodesN) && Number.isFinite(orphN) && (nodesN - orphN <= 1 ? tailLine === '' : tailLine.includes('没排上来')),
     `节点 ${nodesN} 孤立 ${orphN} 尾注 ${tailLine || '（无）'}`,
   )
   check('GB4 仍不许出现「还有 N 条没列」那种假账', !/还有 \d+ 条没列/.test(oneLine), '')
