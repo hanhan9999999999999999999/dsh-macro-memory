@@ -2896,7 +2896,16 @@ function findSimilarTool(dir) {
       const cmRaw = coerceNumber(parsed.content_max);
       const contentMax = cmRaw !== void 0 ? Math.max(0, Math.min(5e3, Math.round(cmRaw))) : 200;
       const rows = LEVELS.flatMap((lv) => lv === "soul" || lv === "user" ? [] : db.listSearchable(lv));
-      const candidates = rows.filter((r) => r.id !== found.row.id && !seen.has(r.id) && r.source_session !== sessionId);
+      // [macro-fusion 0.2.89] 两处口径修正（实测见 tools/probe-similar.mjs）：
+      // ① 原来这里还有 `r.source_session !== sessionId` —— 同一次会话里刚写的条目整批不算候选。
+      //    可「我刚写了这几条，看看谁跟谁像」正是这个工具最自然的用法：三条相关记忆写下去，
+      //    回执是「可比的候选一条都没有……等下一次会话再问」，等于把工具在自己最该用的时刻关掉。
+      //    真正要防的是「重复端」（这一轮已经列给读者看过的），那是 seen 的活，不让会话身份兼职。
+      // ② 基准原来只拿 found.row.content 去比，候选取的却是 docText（title + 正文 + keywords）。
+      //    同一把尺子两边量的字不一样：keywords 写在候选身上算分，写在基准身上被整块丢掉——
+      //    实测「只沾基准 keywords」的候选在正文口径下 0.000 分（完全看不见），
+      //    基准也走 docText 才 0.241。基准短、信息在 keywords 的条目（本库的常态）就这么漏邻居。
+      const candidates = rows.filter((r) => r.id !== found.row.id && !seen.has(r.id));
       const docs = candidates.map((r) => ({
         id: r.id,
         level: r.level,
@@ -2909,22 +2918,28 @@ function findSimilarTool(dir) {
         last_accessed_at: r.last_accessed_at
         // #91：衰减按最后使用时间
       }));
-      const hits = findSimilar(found.row.content, docs, k);
+      const hits = findSimilar(docText(found.row), docs, k);
       markSearched(workspace, sessionId ?? "unknown", hits.map((h) => h.id), dir);
+      // [macro-fusion 0.2.89] 本会话刚写的条目现在也会成为候选（见上面的口径注释），
+      // 那就得说清楚哪几条是「刚才你写的」——否则读者会把它们当成库里积累下来的旧账，
+      // 误判「这条结论早就有依据了」。
+      const freshHits = hits.filter((h) => rows.some((r) => r.id === h.id && r.source_session === sessionId));
       // [macro-fusion 0.2.46] 空结果原来什么都不说：render 返回空数组，
       // 融合层就只能把 {"hits": []} 原样端出去——既没解释也没凭据。
       // 四种情况共用这个「空」：基准内容没有可比较的词 / 库里只有这一条 /
       // 候选都被过滤（本会话新写 + 这一轮已看过） / 真算过但词汇零重叠。
       let note = "";
       if (hits.length === 0) {
-        const noTarget = tfVector(tokenize(found.row.content)).size === 0;
+        const noTarget = tfVector(tokenize(docText(found.row))).size === 0;
         note = noTarget
-          ? "相似检索没算成：这条记忆没有可用于比较的词（内容全是符号/数字/停用词）。这不是「记忆里没有相似的东西」。"
+          ? "相似检索没算成：这条记忆没有可用于比较的词（标题 / 正文 / 关键词全是符号、数字或停用词）。这不是「记忆里没有相似的东西」。"
           : rows.length <= 1
             ? "相似检索没算成：库里就只有这一条可比的记忆，没有别的条目可以比较。这不是「记忆里没有相似的东西」。"
             : candidates.length === 0
-              ? `相似检索没算成：可比的候选一条都没有（库里 ${rows.length} 条，本会话新写的和这一轮已看过的都被排除了）。这不是「记忆里没有相似的东西」——换一条基准，或等下一次会话再问。`
+              ? `相似检索没算成：可比的候选一条都没有（库里 ${rows.length} 条，这一轮已经端给你看过的都排除了）。这不是「记忆里没有相似的东西」——换一条基准，或者把 k 给大一点再问。`
               : `这次真算过了：${candidates.length} 条候选里没有一条和它有共同词汇（相似度全是 0）。这才是「记忆里没有相似的东西」。`;
+      } else if (freshHits.length > 0) {
+        note = `命中里有 ${freshHits.length} 条是本会话刚写的（${freshHits.map((h) => h.level).join(" / ")}）——它们是刚才那几条，不是库里积累下来的旧账；别把「我自己刚记的」当成「已有依据」。`;
       }
       return {
         hits: hits.map((h) => ({

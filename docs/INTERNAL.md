@@ -4528,3 +4528,65 @@ R5.6 一开始写成查「部署 备份」，结果随手记（不含「备份�
 - 折叠只在 `memory_search` 里生效，不删数据、不改库；`memory_dream`、面板、`findSimilar` 的口径本轮都没动。
 - 已知仍未统一：写入侧 Jaccard 与 `findSimilar()` 的 TF cosine 是两套相似度；`memory_find_similar` 无阈值、候选过滤掉 seen 与本会话新写条目。这两件留到下一轮。
 - 备份：`D:\备份\20261120-024623-macro-fusion-0288-dedupe`（改动前的文件 + `MANIFEST.txt` 还原办法）。
+
+## 9.95 相似检索：基准量正文，候量标题+正文+关键词（0.2.89）
+
+### 9.95.0 一句话
+
+`memory_find_similar` 一边用 `found.row.content` 去比、一边把候选取成 `docText`（title + 正文 + keywords），同一把尺子两边量的字不一样；同时候选过滤里挂着 `r.source_session !== sessionId`，把「本会话刚写的」整批排掉——而「我刚记了三条，谁跟谁像」正是它最该用的时刻。两处都不报错，只是安静地给出 0 命中或偏低的分数。
+
+### 9.95.1 实测（两条都是可复现的）
+
+同一会话连写三条相关记忆，立刻 `memory_find_similar`：
+
+- 命中 **0 条**，note 是「可比的候选一条都没有（库里 3 条，本会话新写的和这一轮已看过的都被排除了）……换一条基准，或等下一次会话再问」——工具在自己的最佳使用场景里自我关闭。
+- 换个会话再问：1 条，0.295。
+
+口径错位（同一份语料，只改基准取哪段文字）：
+
+| 基准取 | 只沾基准 keywords 的候选 | 沾正文那条 |
+| --- | --- | --- |
+| `found.row.content` | **0.000**（被 `if (s <= 0) continue;` 直接丢掉） | 0.795 |
+| `docText(found.row)` | 0.228 / 0.241 | 0.574 |
+
+关键词是**索引**，不是噪音：候选的 keywords 参与打分，基准的 keywords 却完全不参与——这等于一边允许用标签找相似、一边不给基准贴标签。分数整体缩放但排序不变的观察（0.795→0.574）说明修完之后**排序口径没变坏**，只是把「本该得分的候选」捞了回来。
+
+### 9.95.2 三处改动
+
+1. **一把尺子**：`const hits = findSimilar(docText(found.row), docs, k);`（原来是 `found.row.content`）。`noTarget` 的兜底同样换成 `tokenize(docText(found.row))`。
+2. **会话身份不再兼职去重**：`const candidates = rows.filter((r) => r.id !== found.row.id && !seen.has(r.id));`——去掉 `r.source_session !== sessionId`。「别把同一条重复端」是 `seen` 的活，它已经在做；会话身份做这件事会把整批新写的排除。
+3. **点名「这是你刚记的」**：`const freshHits = hits.filter((h) => rows.some((r) => r.id === h.id && r.source_session === sessionId));`，非空时尾注写「命中里有 N 条是本会话刚写的（fact / lesson）——它们是刚才那几条，不是库里积累下来的旧账；别把「我自己刚记的」当成「已有依据」」。放开候选的代价是可能拿自己的新笔记当依据，这句话就是代价的对价。
+
+空结果的文案同步改成实际情况：`这一轮已经端给你看过的都排除了` / `换一条基准，或者把 k 给大一点再问`，不再暗示「库里没有」。
+
+### 9.95.3 三语 tools.md
+
+`memory_find_similar.description` 三语全部重写（zh 5,751→5,814 / en 11,904→12,119 / pt-br 12,991→13,205 字符）：bigram 余弦的口径改成「标题 + 正文 + 关键词一起算，基准和候选用的是同一段文字」；候选说明改成「包括本会话刚写的」，只保留「这一轮已经给看过的仍排除」；删掉旧句「同样只检索其他会话建立的记忆」。
+
+### 9.95.4 判据
+
+`tools/probe-similar.mjs`（M0–M10，17 条 ALL PASS）：
+
+- M1 同会话写三条后立刻比 → 有命中，且点名 fresh；阴性对照断言 note **不含**「等下一次会话」。
+- M2 只沾基准 keywords 的候选 `similarity` = 0.228；同一句正文换 keywords → 分数不同（证明 keywords 真的进打分）。
+- M3 基准自己不出现在结果里；M4 这一轮端过的第二次仍排除（第一次 2 条、第二次 0 条、交集为空），且空不是「库里没有」。
+- M5 换会话 → 仍 2 条，且**不**点名 fresh（阴性对照）。
+- M6 `k: 1` 只回 1 条；M7 短 id 撞车仍抛「相似检索这次一条都没比」；M8 不存在的 id 仍抛「相似检索没起点」；M9 分数落在 0–1 且降序；M10 三语文案在位。
+
+两个探针坑：① 语料 `SAME_WORDS` 初版「凌晨两点到四点之间不要动库房的门。」与基准的 Jaccard ≥0.8，被 `memory_remember` 合并成一条 → M1 只剩 1 条命中；换成「两点到四点之间我一般在睡觉」才隔离。② M4 初版断言 note 含「端过」，但候选里还剩一条 0 分噪音（note 走的是另一条分支）→ 改成断言「两次 hits 交集为空 + note 不含『库里就只有这一条』」。
+
+另：M10 最初用正则字面量 `/only looks at memories created in other sessions/` 判英文文案，被 `probe-tools` 的自由变量检查抓到（它剥注释和字符串字面量，**不剥正则**，里面的 `at` 被当成裸变量）→ 改成 `en.includes('…')`。同类坑第二次：判据里别把英文短语塞进正则。
+
+### 9.95.5 怎么验
+
+- `node tools/probe-similar.mjs` → 17 条 ALL PASS
+- `node verify.mjs` → 939 条（A89 六条：一把尺子 / 候选不再按会话排 / fresh 点名 / 空结果新口径且旧文案消失 / 三语文案 / 探针进 STEPS + 两条阴性对照）
+- `node tools/check-all.mjs` → 20/20，1,852 条断言，125s
+- `node tools/make-vendor-manifest.mjs` 重跑：`vendor/meow-memory` 44 文件 / 1,725,569 B / `cd8648ab8c8db91d`（0.2.88 时 1,723,154 B / `aeb1fbd3acd8da42`）
+
+### 9.95.6 边界
+
+- **改了 vendor 运行时代码**：装进 profile 后必须**重启 DSH** 才生效；重启交给主人，这边不动进程。
+- 只是「让候选进得来、尺子对齐」，没加阈值、没改 `findSimilar` 的算法（仍是 tf 向量的余弦），也没动 `memory_search` 的折叠。
+- 已知仍未统一：写入侧 Jaccard（`similarity`）与 `findSimilar()` 的 TF cosine 是两套相似度；本轮只保证「同一工具内部两侧一致」。
+- 备份：`D:\备份\20261120-<ts>-macro-fusion-0289-similar`（改动前文件 + `MANIFEST.txt` 还原办法）。

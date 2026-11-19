@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 19 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 20 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -5940,6 +5940,58 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '跨层重复: 融合层三处参数白名单都带 dedupe（不然 macro 侧传下去也被丢掉），schema 也有',
     (searchDefSrc.match(/'dedupe'\]/g) || []).length >= 3 && /dedupe: \{ type: 'boolean'/.test(searchDefSrc),
+  )
+}
+
+
+// [macro-fusion 0.2.89] 相似检索的两处口径错位：① 候选把「本会话新写的」整批排掉——可「我刚写了
+// 这几条，谁跟谁像」正是它最自然的用法，实测三条相关记忆写完回执是「可比的候选一条都没有……等
+// 下一次会话再问」；② 基准只拿正文去比、候选取的是 title + 正文 + keywords——同一把尺子两边量的
+// 字不一样，实测「只沾基准 keywords」的候选在正文口径下 0.000 分（被 s<=0 直接丢掉），基准也走
+// docText 才 0.228。这里钉五件事：一把尺子、会话不再兼职去重、端过的仍然排除、刚写的要点名、探针进线。
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const simSrc = readFileSync(join(root, 'tools/probe-similar.mjs'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+  const zhSrc = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/zh/tools.md'), 'utf8')
+  const enSrc = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/en/tools.md'), 'utf8')
+  const ptSrc = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/pt-br/tools.md'), 'utf8')
+
+  check(
+    '相似检索: 基准和候选量的是同一段文字（基准也走 docText，不再只取正文）',
+    meowSrc.includes('const hits = findSimilar(docText(found.row), docs, k);') &&
+      !meowSrc.includes('const hits = findSimilar(found.row.content, docs, k);') &&
+      meowSrc.includes('function docText(d) {'),
+  )
+  check(
+    '相似检索: 候选不再按会话身份整批排掉（seen 仍然排除——「别重复端」是 seen 的活）',
+    meowSrc.includes('const candidates = rows.filter((r) => r.id !== found.row.id && !seen.has(r.id));') &&
+      !meowSrc.includes('r.source_session !== sessionId);'),
+  )
+  check(
+    '相似检索: 本会话刚写的命中要点名（别把「我刚记的」当成「已有依据」）',
+    meowSrc.includes('const freshHits = hits.filter((h) => rows.some((r) => r.id === h.id && r.source_session === sessionId));') &&
+      meowSrc.includes('命中里有 ${freshHits.length} 条是本会话刚写的'),
+  )
+  check(
+    '相似检索: 空结果的解释跟着改口径（不再说「本会话新写的」被排除，也不再叫人等下一次会话）',
+    meowSrc.includes('这一轮已经端给你看过的都排除了') &&
+      !/本会话新写的和这一轮已看过的都被排除了/.test(meowSrc) &&
+      !/或等下一次会话再问/.test(meowSrc),
+  )
+  check(
+    '相似检索: 三语文案写明「同一段文字 / 同一把尺子」，且不再写「只检索其他会话建立的记忆」',
+    /基准和候选用的是同一段文字/.test(zhSrc) &&
+      /one ruler for both sides/.test(enSrc) &&
+      /a mesma régua para os dois lados/.test(ptSrc) &&
+      !/同样只检索其他会话建立的记忆/.test(zhSrc),
+  )
+  check(
+    '相似检索: probe-similar 进了 check-all 的 STEPS，且带阴性对照（正文口径 0.000 / 换会话不再点名）',
+    checkAllSrc.includes("['tools/probe-similar.mjs'") &&
+      simSrc.includes('M2 基准自己的 keywords 真的参与了比较') &&
+      simSrc.includes('M5 阴性对照') &&
+      simSrc.includes('M4 这一轮已经端过的照样排除'),
   )
 }
 

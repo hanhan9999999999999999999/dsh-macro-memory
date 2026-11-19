@@ -38,7 +38,7 @@
 
 ### memory_find_similar
 
-- memory_find_similar.description: 按记忆 id 查找内容相似的条目（bigram 词频向量余弦）——用于查重、找冲突、判断某条记忆是否已有近似记录。 同样只检索其他会话建立的记忆，本会话已见（注入/检索过）的自动排除。
+- memory_find_similar.description: 按记忆 id 查找内容相似的条目（bigram 词频向量余弦，标题 + 正文 + 关键词一起算，基准和候选用的是同一段文字）——用于查重、找冲突、判断某条记忆是否已有近似记录。候选里包含本会话刚写的条目（刚写完就问「谁跟它像」正是它最常见的用法）；这一轮已经端给你看过（注入/检索过）的照样自动排除，别重复端。
 - memory_find_similar.param.id: 基准记忆 id（memory_read/search 结果里的完整 id 或前 12 位）。
 - memory_find_similar.param.k: 返回条数。
 - memory_find_similar.param.content_max: 每条内容截断长度，0=全文。

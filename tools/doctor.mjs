@@ -447,6 +447,11 @@ const PATCHES = [
     file: 'vendor/meow-memory/lib/index.js',
     what: '跨层重复：写去重只在同一层里比（db.list(level)），所以同一句话既记 fact 又记 lesson 会真的落下两份——实测检索时两条分数一模一样（1.280 / 1.280）并排端出来，白占一个 k 名额、同一段字让模型读两遍，全程一声不响。现在①写的时候扫别的层，撞上了照样写（层各有分工是合法的）但回执点名「另一层已有（层名 + 短 id + 重复度）」并给归档/改写两条出路；②检索时 foldNearDupes 折掉逐字级重复（只折 ≥80% 的，改写过的照旧），折几条写进尾注，dedupe: false 看全量。基准在 tools/probe-dup.mjs（含 dedupe:false 回两条的阴性对照）',
   },
+  {
+    marker: '[macro-fusion 0.2.89]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '相似检索（memory_find_similar）两处口径错位：① 候选过滤原来带 r.source_session !== sessionId，把「本会话刚写的」整批排掉——可「我刚写了这几条，谁跟谁像」正是它最自然的用法，实测三条相关记忆写完，回执是「可比的候选一条都没有……等下一次会话再问」，等于把工具在自己最该用的时刻关掉；② 基准只拿 found.row.content 去比、候选取的却是 docText（title + 正文 + keywords），同一把尺子两边量的字不一样：实测只沾基准 keywords 的候选在正文口径下 0.000 分（被 s<=0 直接丢掉），基准也走 docText 才 0.228。现在两侧都走 docText，会话身份不再兼职做去重（seen 仍然排除——「别重复端」是 seen 的活），命中里若有本会话刚写的会在尾注点名「不是库里积累的旧账」。基准在 tools/probe-similar.mjs（含换会话不再点名、正文口径零命中的阴性对照）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

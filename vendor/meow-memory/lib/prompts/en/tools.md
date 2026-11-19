@@ -38,7 +38,7 @@
 
 ### memory_find_similar
 
-- memory_find_similar.description: Find entries similar to a given memory id (cosine over term-frequency vectors) — for spotting duplicates, finding conflicts, and checking whether something close to this entry already exists. Like search, it only looks at memories created in other sessions; anything already seen in this session (injected or searched) is excluded automatically.
+- memory_find_similar.description: Find entries similar to a given memory id (cosine over term-frequency vectors, computed over title + content + keywords on both the baseline and the candidates — one ruler for both sides) — for spotting duplicates, finding conflicts, and checking whether something close to this entry already exists. Candidates include entries written in the current session (asking "what does this resemble" right after writing it is the common case); anything already shown to you in this round (injected or searched) is still excluded, to avoid showing the same text twice.
 - memory_find_similar.param.id: The reference memory id (the full id from memory_read/search results, or its first 12 characters).
 - memory_find_similar.param.k: Number of results.
 - memory_find_similar.param.content_max: Truncate each entry's content to this length, 0=full text.

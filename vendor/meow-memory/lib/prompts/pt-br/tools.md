@@ -38,7 +38,7 @@
 
 ### memory_find_similar
 
-- memory_find_similar.description: Encontra entradas semelhantes a um dado id de memória (cosseno sobre vetores de frequência de termos) — para detectar duplicatas, encontrar conflitos e verificar se já existe algo próximo desta entrada. Como a busca, ela olha apenas memórias criadas em outras sessões; tudo que já foi visto nesta sessão (injetado ou pesquisado) é excluído automaticamente.
+- memory_find_similar.description: Encontra entradas semelhantes a um dado id de memória (cosseno sobre vetores de frequência de termos, calculado sobre título + conteúdo + palavras-chave tanto na base quanto nos candidatos — a mesma régua para os dois lados) — para detectar duplicatas, encontrar conflitos e verificar se já existe algo próximo desta entrada. Os candidatos incluem entradas escritas nesta mesma sessão (perguntar "a que isto se parece" logo depois de escrever é o caso comum); o que já foi mostrado nesta rodada (injetado ou pesquisado) continua excluído, para não repetir o mesmo texto.
 - memory_find_similar.param.id: O id de memória de referência (o id completo dos resultados de memory_read/search, ou seus 12 primeiros caracteres).
 - memory_find_similar.param.k: Número de resultados.
 - memory_find_similar.param.content_max: Trunca o content de cada entrada neste comprimento, 0=texto completo.
