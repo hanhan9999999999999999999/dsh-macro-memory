@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 17 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 18 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -2633,9 +2633,8 @@ function makeHostCtx() {
     '五种过滤原因',
   )
   check(
-    'remember: 合并时明说原内容被替换、并进了哪一条',
+    'remember: 合并时明说并进了哪一条、这是「合并」不是「新写一条」',
     meowIndex47.includes('这条并进了已有条目') &&
-      meowIndex47.includes('原条目的内容被替换成这次写的内容') &&
       meowIndex47.includes('这是「合并」，不是「新写一条」'),
     'merge 分支',
   )
@@ -5831,6 +5830,59 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       recallSrc.includes('min_rel: 0') &&
       recallSrc.includes('min_rel: 5') &&
       recallSrc.includes('另有 '),
+  )
+}
+
+// [macro-fusion 0.2.87] 「合并」以前是「拿这次的参数把旧条目整条盖掉」：关键词被整个换掉（检索就漏）、
+// 归属被搬到另一个项目（回执不提）、更短的新内容把旧细节吃掉（实测 78 字 → 67 字，尾句消失）。
+// 现在合并只做加法。这里钉四件事：并集而不是覆盖、归属冲突不动且说明、变短默认不换但有 overwrite 出口、
+// 以及新探针 probe-merge 真的进了 check-all。
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const mergeSrc = readFileSync(join(root, 'tools/probe-merge.mjs'), 'utf8')
+  const macroRemember = readFileSync(join(root, 'lib/macro/defs/remember.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools/check-all.mjs'), 'utf8')
+
+  check(
+    '合并: 关键词取并集（旧的一条不删，新的并进来），不再整条替换',
+    meowSrc.includes('for (const k of [...kwOld, ...asked.keywords]) {') &&
+      meowSrc.includes('const patch = { importance: impNext, keywords: kwUnion };') &&
+      !meowSrc.includes('patch.keywords = keywords;'),
+  )
+  check(
+    '合并: 归属冲突时不搬（保留旧 project）并把冲突说出来',
+    meowSrc.includes('const projKept = projOld.length > 0 && asked.project !== projOld;') &&
+      meowSrc.includes('if (!projKept && asked.project) patch.project = asked.project;') &&
+      meowSrc.includes('归属没改：这条原属'),
+  )
+  check(
+    '合并: 内容变短且非逐字默认不换，overwrite: true 才换（保护不是不能更新）',
+    meowSrc.includes('const shrink = asked.content.length < oldContent.length && sim < 0.98;') &&
+      meowSrc.includes('const holdContent = shrink && !asked.overwrite;') &&
+      meowSrc.includes('if (!holdContent) patch.content = asked.content;') &&
+      meowSrc.includes('确实要换成短的，传 overwrite: true') &&
+      meowSrc.includes('overwrite: { type: "boolean", default: false, description: T("memory_remember.param.overwrite") }'),
+  )
+  check(
+    '合并: 回执逐项报账（关键词条数 / importance 结论 / 内容换没换），不是只说一句「已合并」',
+    meowSrc.includes('关键词并进了 ${kwAdded.length} 条') &&
+      meowSrc.includes('importance 从 ${impOld} 提到 ${impNext}') &&
+      meowSrc.includes('内容没换：旧 ${oldContent.length} 字、这次 ${asked.content.length} 字'),
+  )
+  check(
+    '合并: 账本逻辑在工具字面量外面（applyMerge 定义在 rememberTool 之前，体积预算别被说明书吃掉）',
+    meowSrc.includes('function applyMerge(db, level, merged, asked) {') &&
+      meowSrc.indexOf('function applyMerge(db, level, merged, asked) {') < meowSrc.indexOf('function rememberTool(dir) {'),
+  )
+  check(
+    '合并: 融合层把 overwrite 传下去（不传就等于接口写了不生效），schema 也有',
+    macroRemember.includes("'corrected', 'keywords', 'overwrite'") && /overwrite: \{\n\s+type: 'boolean'/.test(macroRemember),
+  )
+  check(
+    '合并: probe-merge 进了 check-all 的 STEPS，且带阴性对照（旧写法确实会丢东西）',
+    checkAllSrc.includes("['tools/probe-merge.mjs'") &&
+      mergeSrc.includes('db.update(\'user\', e1.id, { content: SHORT, keywords: [\'上线\'], project: \'乙项目\' })') &&
+      mergeSrc.includes('M7 阴性对照'),
   )
 }
 

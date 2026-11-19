@@ -4402,6 +4402,65 @@ R5.6 一开始写成查「部署 备份」，结果随手记（不含「备份�
 - 只改「端上来几条」：选谁（层 / 状态 / 天数 / 归档过滤）、`blind`/`fresh` 分段、`bumpHit` 计入都没动。传 `min_rel: 0` 完全回到 0.2.85 的行为。
 - 备份：`D:\备份\20261120-012720-macro-fusion-0286-min-rel`（16 文件 / 850,319 B，从 `a37af1d` 导出的改动前状态；还原办法见该目录 `MANIFEST.txt`）。
 
+## 9.93 合并说「并进了」，实际是把旧条目盖了一遍（0.2.87）
 
+### 9.93.0 一句话
 
+`memory_remember` 撞到重复内容会「合并」，而合并的实现是 `db.update(level, id, patch)`——`patch` 里带着 `content` 和 `keywords`。于是「合并」= 用这次写的参数把旧条目整条覆盖，三处东西静默消失：旧关键词、旧归属、旧内容里的细节。
 
+### 9.93.1 现象
+
+实测（`_merge.mjs`，临时脚本已删）：
+
+| 场景 | 旧行为 | 代价 |
+| --- | --- | --- |
+| 旧条目 keywords = `[部署, 备份, 铁律]`，这次只给 `[上线]` | 存下来是 `[上线]` | 旧关键词一个不剩，按「部署」「铁律」检索再也找不到这条 |
+| 旧条目 project = `甲项目`，这次传 `乙项目` | 归属变成 `乙项目` | 内容明明还是甲项目的，回执一个字不提 |
+| 旧内容 78 字（尾句「也不许只备份配置文件」），这次写 67 字的省略版（重复度 85%） | 内容被换成 67 字 | 细节被吃掉，回执只说「内容被替换」 |
+
+三处坏起来都**一声不响**：`ok: true`、`merged: true`、没有 dropped、没有 note 警告。而回执原文是「原条目的内容被替换成这次写的内容，importance 取两者较大值」——它承认了「替换内容」，但没提关键词和归属也被替换了。
+
+### 9.93.2 改法：合并只做加法
+
+新增 `applyMerge(db, level, merged, asked)`（`vendor/meow-memory/lib/index.js`，marker `[macro-fusion 0.2.87]`），四条规则：
+
+1. **关键词取并集**：`[...kwOld, ...keywords]` 去重，旧的一条不删，回执报「并进了几条、现在共几条」。
+2. **归属不搬**：`projKept = projOld.length > 0 && asked.project !== projOld` → 保留旧 project，回执写明「这条原属 X，这次给的是 Y——合并不会搬走归属，要换归属请先归档再重写」（`memory_update` 不改归属，这是现有事实）。
+3. **内容变短且非逐字默认不换**：`shrink = asked.content.length < oldContent.length && sim < 0.98`；`holdContent = shrink && !overwrite`。逐字相同（sim ≥ 0.98）照旧写，只是「更省略的版本」不许偷偷顶掉细节。
+4. **`overwrite: true` 才是「我确实要压缩」**：没有这个出口，保护就变成「更新不了」——一个只防不许改的默认值比旧的覆盖更糟。
+
+回执逐项报账：`关键词并进了 N 条（…），现在共 M 条，旧的一条没删；importance 保持 4；内容没换：旧 78 字、这次 67 字，不是逐字同一句，直接替换会把旧细节吃掉；确实要换成短的，传 overwrite: true；归属没改：…`
+
+`applyMerge` 刻意放在 `rememberTool()` 字面量**外面**：`tools/probe-toolsize.mjs` 按源码切片量 17 个工具字面量的体积，这段带说明文字的逻辑写在字面量里会让体积从 88,453 B 一路涨到 91,600 B（预算 92,000 B），下次正当改动就踩线。
+
+### 9.93.3 基准：`tools/probe-merge.mjs`（25 条）
+
+真引擎、合成语料、临时 `DSH_HOME`，进 `check-all` 第 18 支：
+
+- M0 工具齐 / 语料长短关系 / 首次写入是「新写」
+- M1 同义再写走到合并分支；关键词并集（旧的 `[部署,备份,铁律]` 与新的 `[上线]` 都在）
+- M2 归属不搬 + 回执给出「先归档再重写」的正路
+- M3 变短非逐字：旧内容原样在、尾句细节还在、回执报长度并给 `overwrite: true`
+- M4 `overwrite: true` 真的换（逃生口不是摆设）
+- M5 更长的内容照旧替换（保护只对变短生效，不误挡正常更新）
+- M6 `importance` 取大、`corrected` 保留、回执承认这是「合并」
+- M7 阴性对照：同一语料上按旧写法 `db.update(…, { content: SHORT, keywords: ['上线'] })` 之后确实只剩 1 个关键词、内容被截短——判据抓得到差异
+- M8 参数面：schema 里 `overwrite` 是 boolean 默认 false，三语 `tools.md` 都有 `memory_remember.param.overwrite`（缺了 `T()` 直接抛）
+
+**探针自己也踩了一次**：M7 起初用 `fact` 层，而 M3 的语料也在 `fact` 层且内容相同 → 两次写入被合并成同一条，M7 变成「自己和自己比」，判据恒真。改到 `user` 层才分开。教训：**阴性对照的语料必须和被测语料在存储上真的隔离**，靠「内容不同」不够，合并/去重本身就是按内容判的。
+
+### 9.93.4 怎么验
+
+- `node tools/probe-merge.mjs` → 25 条 ALL PASS
+- `node verify.mjs` → 925 条（A87 六条：并集 / 归属不搬 / 变短默认不换 + overwrite / 回执报账 / `applyMerge` 在字面量外 / 融合层传 `overwrite` 且 schema 有 / 探针进 STEPS 且带阴性对照）
+- `node tools/probe-toolsize.mjs` → 88,453 B ≤ 92,000 B
+- `node tools/probe-words.mjs` → ALL PASS（三语文案各多一行，字符数口径自洽）
+- `node tools/make-vendor-manifest.mjs` 重跑：`vendor/meow-memory` 44 文件 / 1,719,779 B / `43defb15f04df7fe`（0.2.86 时 1,716,149 B / `ca708376bf2b55a7`）
+- `node tools/check-all.mjs` → 18/18，1,795 条断言，122s
+
+### 9.93.5 边界
+
+- **改了 vendor 运行时代码**：`vendor/meow-memory/lib/index.js` 是宿主侧引擎，装进 profile 后**必须重启 DSH 才生效**；重启交给主人，这边不动进程。
+- 只改合并分支：`similarity` / `DEDUP_THRESHOLD = 0.8` / 只在**同一层**比 / `markWritten` / 命中计数全都没动。跨层同内容仍会写两份（`fact` 和 `lesson` 各一条），这是现有设计，本轮只记录不修。
+- `overwrite` 只影响「内容换不换」，不放大到关键词与归属——那两处本来就不该由一次合并决定。
+- 备份：`D:\备份\20261120-022820-macro-fusion-0287-merge`（改动前的文件 + `MANIFEST.txt` 还原办法）。

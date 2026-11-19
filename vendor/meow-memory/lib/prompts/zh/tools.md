@@ -12,6 +12,7 @@
 - memory_remember.param.importance: 重要性（数字即可，不设上限；软引导 1-4：4=致命红线/健康安全，3=用户强调/全局适用，2=用户决策抽象总结，1=琐碎）。
 - memory_remember.param.corrected: 是否为用户纠正的内容（level=lesson 时）。
 - memory_remember.param.keywords: 手动指定关键词（反思/dream 轮要求提取 8-13 个内容词；不传则自动 bigram 提取）。
+- memory_remember.param.overwrite: 合并时是否允许用这次的内容覆盖旧内容（默认 false）。默认只在「新内容更短且不是逐字同一句」时拒换，因为那会把旧细节吃掉；确实要压缩就传 true。
 - memory_remember.out.keywords: 实际存储的关键词（自动提取；合并后为最新值）。
 - memory_remember.out.project: 实际归属项目（若有）。
 

@@ -12,6 +12,7 @@
 - memory_remember.param.importance: Importância (qualquer número, sem limite superior; orientação suave 1-4: 4=linha vermelha fatal / saúde e segurança, 3=enfatizado pelo usuário / aplicável globalmente, 2=uma decisão do usuário ou uma conclusão abstrata, 1=trivialidade).
 - memory_remember.param.corrected: Se isto é algo que o usuário corrigiu (para level=lesson).
 - memory_remember.param.keywords: Palavras-chave que você escolhe (as rodadas de reflection/dream pedem de 8 a 13 palavras de conteúdo; omita e elas são extraídas automaticamente).
+- memory_remember.param.overwrite: Se uma fusão pode substituir o conteúdo antigo por este (padrão false). Por padrão a fusão recusa trocar por um conteúdo mais curto e não literal porque isso come detalhes antigos; passe true quando quiser mesmo comprimir.
 - memory_remember.out.keywords: As palavras-chave realmente armazenadas (extraídas automaticamente; após uma mesclagem, o valor mais recente).
 - memory_remember.out.project: O projeto realmente registrado (se houver).
 

@@ -12,6 +12,7 @@
 - memory_remember.param.importance: Importance (any number, no upper bound; soft guide 1-4: 4=fatal red line / health and safety, 3=stressed by the user / globally applicable, 2=a user decision or an abstract conclusion, 1=trivia).
 - memory_remember.param.corrected: Whether this is something the user corrected (for level=lesson).
 - memory_remember.param.keywords: Keywords you choose (the reflection/dream rounds ask for 8-13 content words; omit it and they are extracted automatically).
+- memory_remember.param.overwrite: Whether a merge may replace the old content with this one (default false). By default a merge refuses to swap in shorter, non-verbatim content because it eats old detail; pass true when you really mean to compress.
 - memory_remember.out.keywords: The keywords actually stored (auto-extracted; after a merge, the latest value).
 - memory_remember.out.project: The project actually recorded (if any).
 

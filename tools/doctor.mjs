@@ -437,6 +437,11 @@ const PATCHES = [
     file: 'vendor/meow-memory/lib/index.js',
     what: '检索的相关度下限 min_rel（默认 0.35）：30 条语料的实测里有分数断崖（榜首 14 分时第 3 条起只剩 0.33，全是只沾一个词的），以前这些尾巴照样占 k 名额、照样被当成相关读。现在按榜首的比例收掉，收掉几条写进尾注并给 min_rel=0 的出路；排序第一位永远留着，下限再高也不许把结果收空。基准在 tools/probe-recall.mjs 的 R5 组',
   },
+  {
+    marker: '[macro-fusion 0.2.87]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '合并账本：同一条内容再写一次会「合并」，而合并以前是拿这次的参数把旧条目整条盖掉——关键词被整个换掉（检索就漏）、归属被搬到另一个项目（回执不提）、更短的新内容把旧细节吃掉（实测 78 字 → 67 字，尾句直接消失）。现在只做加法：关键词取并集、归属冲突保留旧的并说明、内容变短且非逐字默认不换（overwrite: true 才换），回执逐项报账。基准在 tools/probe-merge.mjs（含旧写法会丢东西的阴性对照）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

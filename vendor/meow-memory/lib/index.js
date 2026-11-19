@@ -2331,6 +2331,52 @@ function similarity(a, b) {
   return inter / (sa.size + sb.size - inter);
 }
 var DEDUP_THRESHOLD = 0.8;
+// [macro-fusion 0.2.87] 「合并」以前是「用这次的参数把旧条目整条覆盖一遍」：关键词被整个换掉
+// （旧的一条不剩，检索就漏）、归属被搬到另一个项目（回执不提）、更短的新内容把旧细节吃掉
+// （实测 78 字 → 67 字，尾句「也不许只备份配置文件」直接消失）。三处坏起来都一声不响。
+// 现在合并只做加法：关键词取并集、归属冲突不动、内容变短且非逐字默认不换（overwrite: true 才换），
+// 回执逐项说清「并了什么、换了什么、为什么没换」。
+// 这段故意放在工具字面量外面：probe-toolsize 按源码切片量字面量体积，说明书式的长句不该算进膨胀。
+function applyMerge(db, level, merged, asked) {
+  const kwOld = Array.isArray(merged.keywords) ? merged.keywords : [];
+  const kwUnion = [];
+  for (const k of [...kwOld, ...asked.keywords]) {
+    const v = String(k ?? "").trim();
+    if (v.length > 0 && !kwUnion.includes(v)) kwUnion.push(v);
+  }
+  const kwAdded = kwUnion.filter((k) => !kwOld.includes(k));
+  const impOld = Number(merged.importance) || 1;
+  const impNext = Math.max(impOld, asked.importance);
+  const oldContent = String(merged.content ?? "");
+  const projOld = typeof merged.project === "string" && merged.project.trim() ? merged.project.trim() : "";
+  const projKept = projOld.length > 0 && asked.project !== projOld;
+  const sim = similarity(oldContent, asked.content);
+  const shrink = asked.content.length < oldContent.length && sim < 0.98;
+  const holdContent = shrink && !asked.overwrite;
+  const patch = { importance: impNext, keywords: kwUnion };
+  if (!holdContent) patch.content = asked.content;
+  if (!projKept && asked.project) patch.project = asked.project;
+  if (asked.subcategory && level === "project") patch.subcategory = asked.subcategory;
+  if (asked.goal && level === "topic") patch.goal = asked.goal;
+  if (level === "lesson" && asked.corrected) patch.corrected = 1;
+  db.update(level, merged.id, patch);
+  const parts = [];
+  parts.push(kwAdded.length > 0
+    ? `关键词并进了 ${kwAdded.length} 条（${kwAdded.join(" / ")}），现在共 ${kwUnion.length} 条，旧的一条没删`
+    : `关键词还是 ${kwUnion.length} 条（这次给的都在里面了）`);
+  parts.push(impNext !== impOld ? `importance 从 ${impOld} 提到 ${impNext}（取较大值）` : `importance 保持 ${impOld}`);
+  if (holdContent) {
+    parts.push(`内容没换：旧 ${oldContent.length} 字、这次 ${asked.content.length} 字，不是逐字同一句，直接替换会把旧细节吃掉；确实要换成短的，传 overwrite: true`);
+  } else if (sim >= 0.98) {
+    parts.push(`内容按这次给的存（与旧条目 ${oldContent.length} 字基本逐字相同）`);
+  } else {
+    parts.push(`内容已替换（${oldContent.length} 字 → ${asked.content.length} 字，重复度 ${Math.round(sim * 100)}%）`);
+  }
+  if (projKept) {
+    parts.push(`归属没改：这条原属「${projOld}」，这次给的是「${asked.project}」——合并不会搬走归属，要换归属请先归档再重写`);
+  }
+  return `这条并进了已有条目 ${merged.id.slice(0, 8)}（内容重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%）：${parts.join("；")}。这是「合并」，不是「新写一条」。`;
+}
 function rememberTool(dir) {
   return {
     name: "memory_remember",
@@ -2352,7 +2398,8 @@ function rememberTool(dir) {
         goal: { type: "string", description: T("memory_remember.param.goal") },
         importance: { type: "integer", default: 1, description: T("memory_remember.param.importance") },
         corrected: { type: "boolean", default: false, description: T("memory_remember.param.corrected") },
-        keywords: { type: "array", items: { type: "string" }, description: T("memory_remember.param.keywords") }
+        keywords: { type: "array", items: { type: "string" }, description: T("memory_remember.param.keywords") },
+        overwrite: { type: "boolean", default: false, description: T("memory_remember.param.overwrite") }
       }
     },
     output: {
@@ -2409,6 +2456,7 @@ function rememberTool(dir) {
       const subcategory = level === "project" && PROJECT_SUBCATEGORIES.includes(subcategoryAsked) ? subcategoryAsked : null;
       const goal = typeof parsed.goal === "string" && parsed.goal.trim() ? parsed.goal.trim() : null;
       const corrected = coerceBoolean(parsed.corrected) ? 1 : 0;
+      const overwrite = coerceBoolean(parsed.overwrite);
       const dropped = [];
       if (levelBad) {
         dropped.push(`level（「${levelAsked}」不在七层里——${LEVELS.join(" / ")}）`);
@@ -2448,16 +2496,7 @@ function rememberTool(dir) {
         }
       }
       if (merged) {
-        const patch = {
-          content,
-          importance: Math.max(merged.importance, importance)
-        };
-        if (project && (level === "project" || level === "fact" || level === "lesson" || level === "topic" || level === "rules")) patch.project = project;
-        if (subcategory && level === "project") patch.subcategory = subcategory;
-        if (goal && level === "topic") patch.goal = goal;
-        if (level === "lesson" && corrected) patch.corrected = 1;
-        patch.keywords = keywords;
-        db.update(level, merged.id, patch);
+        const mergeNote = applyMerge(db, level, merged, { content, project, subcategory, goal, corrected, importance, keywords, overwrite });
         markWritten(workspace, source_session ?? "unknown", [merged.id], dir);
         const after = db.findById(merged.id)?.row;
         return {
@@ -2468,7 +2507,7 @@ function rememberTool(dir) {
           keywords: after?.keywords ?? merged.keywords,
           ...after?.project ? { project: after.project } : {},
           dropped,
-          note: noteOf(`这条并进了已有条目 ${merged.id.slice(0, 8)}（与它的内容重复度 ≥80%）：原条目的内容被替换成这次写的内容，importance 取两者较大值。这是「合并」，不是「新写一条」。`)
+          note: noteOf(mergeNote)
         };
       }
       const row = db.insert({
