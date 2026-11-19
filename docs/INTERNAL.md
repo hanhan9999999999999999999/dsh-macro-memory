@@ -4032,3 +4032,47 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 
 守则：以后改这两份索引，只改 `_gen-cn.mjs`（临时脚本，不入库）或直接同时改两个文件，然后跑 `node tools/check-market.mjs`——两份之间任何一处漂移都会红。
 
+# 9.87 调试仪器不能带上生产（0.2.81）
+
+### 9.87.1 现象：一个日志文件一天长到 108 KB
+
+`D:\dsh-home\storages\meow-memory\settings-diag.log` 在 2026-11-19 这天有 102 行、108,656 B、最后写入时间就是当时。内容是三轮「设置页写不进去」排查时加的仪器：
+
+- `settings.write` / `configEditor.edit` 的原型方法被包了一层，失败就把整段 stack 追加进日志；
+- 每次 `describe()` 被调用都 dump 一份命名空间列表，5 秒后再 dump 一次；
+- 还把所有 `configEditor.entries()` 的 id / state / 运行时是否有 `Config` 全量落盘。
+
+这套东西**默认一直开着**。它不报错、不影响功能，所以从验证角度看永远是绿的——但它在做三件不该带进发布版的事：往用户存储里持续写文件（无上限）、在每个会话里多挂两次 `setTimeout`、以及随时会把 `nsList` 这类内部结构写进磁盘。
+
+### 9.87.2 改法：默认不出声，仍可复现
+
+```js
+var SETTINGS_DIAG_ON = process.env.DSH_MEMORY_SETTINGS_DIAG === "1";
+var SETTINGS_DIAG_MAX_BYTES = 256 * 1024;
+function settingsDiag(line) {
+  if (!SETTINGS_DIAG_ON) return;
+  // mkdir + 超 256 KiB 先清空 + 追加一行
+}
+```
+
+- 8 处直写全部收口到 `settingsDiag()`；`dumpDescribe()` 在关闭时**第一行就 return**（连那个 5 秒定时器里跑的那次也不 dump）。
+- 源码里 `settings-diag.log` 这个字面量现在只出现 **1 次**（在 helper 里），`verify.mjs` 就是拿这个计数当判据——以后谁再手写一处直写，立刻红。
+- 开关打开时行为和原来一样，排查还能复现；只是需要显式给环境变量。
+
+### 9.87.3 为什么不是「删掉」
+
+诊断本身有价值（0.2.18–0.2.20 就是靠它定位到宿主按 entry id 注册 config 的）。删掉等于下次再踩一遍；留着默认关，才是「可复现的仪器」和「生产行为」的正确分隔。
+
+### 9.87.4 怎么验的
+
+- `node --check vendor/meow-memory/lib/index.js` → 语法过。
+- `node verify.mjs` → A81 五条：开关字符串在、`settings-diag.log` 字面量只有 1 处、`dumpDescribe` 首行有 guard、256 KiB 上限在、`settingsDiag` 仍会写。
+- `node tools/make-vendor-manifest.mjs` → `vendor/meow-memory` 指纹变化（44 文件 / 1,711,167 B / `d50b1c3c11a27934`），`vendor/VENDOR.json` 重记。
+- `node tools/doctor.mjs` → 补丁账本多一条 `[macro-fusion 0.2.81]`；两棵树同步后全绿。
+
+### 9.87.5 边界
+
+- **只动 vendor 里这一处仪器**，没有改任何用户可见行为，也没有删 meow 的能力。
+- **用户机器上已有的 `settings-diag.log` 不自动删**（它是用户目录里的文件，删不删由主人决定；关掉之后不再增长，可以手删）。
+- 需要重启 DSH 才生效（`vendor/meow-memory/lib/index.js` 是宿主侧代码）。
+

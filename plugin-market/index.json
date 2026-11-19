@@ -11,26 +11,44 @@
   "metadata": {
     "categories": {
       "memory": {
-        "title": { "en": "Memory", "zh": "记忆" }
+        "title": {
+          "en": "Memory",
+          "zh": "记忆"
+        }
       }
     },
     "labels": {
       "unified-tools": {
-        "title": { "en": "Unified tool surface", "zh": "统一工具面" }
+        "title": {
+          "en": "Unified tool surface",
+          "zh": "统一工具面"
+        }
       },
       "token-saving": {
-        "title": { "en": "Token saving", "zh": "省 token" }
+        "title": {
+          "en": "Token saving",
+          "zh": "省 token"
+        }
       },
       "bundled-engine": {
-        "title": { "en": "Bundled engines", "zh": "内置引擎" }
+        "title": {
+          "en": "Bundled engines",
+          "zh": "内置引擎"
+        }
       },
       "self-tested": {
-        "title": { "en": "Self-tested", "zh": "自带自检" }
+        "title": {
+          "en": "Self-tested",
+          "zh": "自带自检"
+        }
       }
     },
     "sortKeys": {
       "updated": {
-        "title": { "en": "Updated", "zh": "更新时间" },
+        "title": {
+          "en": "Updated",
+          "zh": "更新时间"
+        },
         "order": "desc"
       }
     }
@@ -64,15 +82,20 @@
           "unified-tools",
           "token-saving"
         ],
-        "labels": ["unified-tools", "token-saving", "bundled-engine", "self-tested"],
+        "labels": [
+          "unified-tools",
+          "token-saving",
+          "bundled-engine",
+          "self-tested"
+        ],
         "sortKeys": {
-          "updated": 1795098273
+          "updated": 1795130346
         }
       },
       "versions": [
         {
-          "version": "0.2.80",
-          "publishTimestamp": 1795098273,
+          "version": "0.2.81",
+          "publishTimestamp": 1795130346,
           "source": {
             "type": "git",
             "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",

@@ -4707,6 +4707,27 @@ function installSettingsSectionCompat(settingsCtx, ownerCtx, ns, schema, entry, 
   });
 }
 var SETTINGS_SOURCE_WAIT_MS = 250;
+// [macro-fusion 0.2.81] 设置链路诊断默认关。这段诊断（describe 快照 + write/edit 失败包一层）
+// 是 0.2.18–0.2.20 排查「设置页写不进去」时加的，每调一次 describe 就往 storages 里追加几十行，
+// 一天能长到 100 KB 以上，还挂原型方法。正式行为不该带这个：只有显式给
+// DSH_MEMORY_SETTINGS_DIAG=1 时才写；日志有 256 KiB 上限，超了从尾巴重开。
+var SETTINGS_DIAG_ON = process.env.DSH_MEMORY_SETTINGS_DIAG === "1";
+var SETTINGS_DIAG_MAX_BYTES = 256 * 1024;
+function settingsDiagPath() {
+  return join9(activeHomeDir(), "settings-diag.log");
+}
+function settingsDiag(line) {
+  if (!SETTINGS_DIAG_ON) return;
+  try {
+    const f = settingsDiagPath();
+    mkdirSync6(dirname6(f), { recursive: true });
+    const st = statSync3(f, { throwIfNoEntry: false });
+    if (st !== void 0 && st.size > SETTINGS_DIAG_MAX_BYTES) writeFileSync5(f, "");
+    appendFileSync2(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${String(line)}
+`);
+  } catch {
+  }
+}
 var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
@@ -4813,9 +4834,7 @@ async function applyInner(ctx, config2) {
             if (result instanceof Promise) {
               return result.catch((e) => {
                 try {
-                  const diagFile = join9(activeHomeDir(), "settings-diag.log");
-                  mkdirSync6(dirname6(diagFile), { recursive: true });
-                  appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
+                  settingsDiag(`[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e)}
 `);
                 } catch {
@@ -4841,9 +4860,7 @@ ${e.stack ?? ""}` : String(e)}
               configRaw: o.options?.config ?? null
             };
           });
-          const diagFile2 = join9(activeHomeDir(), "settings-diag.log");
-          mkdirSync6(dirname6(diagFile2), { recursive: true });
-          appendFileSync2(diagFile2, `[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
+          settingsDiag(`[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
 `);
         }
         if (typeof ce.edit === "function" && ce.__editProbe !== true) {
@@ -4853,9 +4870,7 @@ ${e.stack ?? ""}` : String(e)}
           ce.edit = async function(entry, change) {
             const result = await origEdit(entry, change).catch((e) => {
               try {
-                const f = join9(activeHomeDir(), "settings-diag.log");
-                mkdirSync6(dirname6(f), { recursive: true });
-                appendFileSync2(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] edit THREW ns=${String(entry?.options?.id)}: ${e instanceof Error ? `${e.message}
+                settingsDiag(`[${(/* @__PURE__ */ new Date()).toISOString()}] edit THREW ns=${String(entry?.options?.id)}: ${e instanceof Error ? `${e.message}
 ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
 `);
               } catch {
@@ -4863,9 +4878,7 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
               throw e;
             });
             try {
-              const f = join9(activeHomeDir(), "settings-diag.log");
-              mkdirSync6(dirname6(f), { recursive: true });
-              appendFileSync2(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] edit OK ns=${String(entry?.options?.id)}
+              settingsDiag(`[${(/* @__PURE__ */ new Date()).toISOString()}] edit OK ns=${String(entry?.options?.id)}
 `);
             } catch {
             }
@@ -4878,42 +4891,34 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
         const svcAny = settingsCtx.settings;
         if (typeof svcAny.describe === "function") {
           const dumpDescribe = () => {
+            if (!SETTINGS_DIAG_ON) return;
             try {
               const view = svcAny.describe();
-              const diagFile = join9(activeHomeDir(), "settings-diag.log");
-              mkdirSync6(dirname6(diagFile), { recursive: true });
               const info = {
                 isArray: Array.isArray(view),
                 keys: view && typeof view === "object" && !Array.isArray(view) ? Object.keys(view) : null,
                 length: Array.isArray(view) ? view.length : null,
                 nsList: Array.isArray(view) ? view.map((row) => row?.ns) : null
               };
-              appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] describe shape: ${JSON.stringify(info)}
-`);
+              settingsDiag(`describe shape: ${JSON.stringify(info)}`);
               const meowRow = Array.isArray(view) ? view.find((row) => row?.ns === "meow-memory") : void 0;
               if (meowRow !== void 0) {
-                appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] meow view: ${JSON.stringify({
+                settingsDiag(`meow view: ${JSON.stringify({
                   revision: meowRow.revision,
                   value: meowRow.value,
                   base: meowRow.base,
                   user: meowRow.user
-                })}
-`);
+                })}`);
                 const schemaObj = meowRow.schema;
                 const schemaKeys = schemaObj && typeof schemaObj === "object" ? Object.keys(schemaObj) : null;
-                appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] meow schema: ${JSON.stringify({
+                settingsDiag(`meow schema: ${JSON.stringify({
                   schemaKeys,
                   homeDirDeclared: schemaKeys !== null && schemaKeys.includes("homeDir"),
                   schemaFull: JSON.stringify(schemaObj).slice(0, 3e3)
-                })}
-`);
+                })}`);
               }
             } catch (e) {
-              try {
-                appendFileSync2(join9(activeHomeDir(), "settings-diag.log"), `describe dump err: ${String(e)}
-`);
-              } catch {
-              }
+              settingsDiag(`describe dump err: ${String(e)}`);
             }
           };
           dumpDescribe();
@@ -5008,9 +5013,7 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
           parent: entry.parent?.tree?.ctx?.fiber?.entry?.id ?? null,
           hasConfig: entry.fiber?.runtime !== void 0 && "Config" in entry.fiber.runtime
         }));
-        const diagFile = join9(activeHomeDir(), "settings-diag.log");
-        mkdirSync6(dirname6(diagFile), { recursive: true });
-        appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
+        settingsDiag(`[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
 `);
       } catch {
       }
@@ -5028,9 +5031,7 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
         if (result instanceof Promise) {
           return result.catch((e) => {
             try {
-              const diagFile = join9(activeHomeDir(), "settings-diag.log");
-              mkdirSync6(dirname6(diagFile), { recursive: true });
-              appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
+              settingsDiag(`[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e)}
 `);
             } catch {

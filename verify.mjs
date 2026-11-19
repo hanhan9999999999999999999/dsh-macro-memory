@@ -5588,5 +5588,30 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── A81. 调试仪器带上生产（0.2.81）：设置链路诊断默认不出声，日志有上限 ──
+{
+  const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  check(
+    '诊断: 设置链路的日志默认关着，只有显式打开才写',
+    meowSrc.includes('var SETTINGS_DIAG_ON = process.env.DSH_MEMORY_SETTINGS_DIAG === "1";'),
+  )
+  check(
+    '诊断: 除了那个开关所在的 helper，源码里再没有别处直接往 settings-diag.log 写',
+    (meowSrc.match(/settings-diag\.log/g) ?? []).length === 1,
+  )
+  check(
+    '诊断: 关闭时 describe 快照一次都不 dump（连 5 秒后的那次也跳过）',
+    meowSrc.includes('const dumpDescribe = () => {\n            if (!SETTINGS_DIAG_ON) return;'),
+  )
+  check(
+    '诊断: 日志有 256 KiB 上限，超了从尾巴重开（不然一天能长到一百多 KB）',
+    meowSrc.includes('var SETTINGS_DIAG_MAX_BYTES = 256 * 1024;') && meowSrc.includes('st.size > SETTINGS_DIAG_MAX_BYTES'),
+  )
+  check(
+    '诊断: 开关打开时仍然照常写（不是把功能删了，是默认不出声）',
+    meowSrc.includes('function settingsDiag(line) {\n  if (!SETTINGS_DIAG_ON) return;'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

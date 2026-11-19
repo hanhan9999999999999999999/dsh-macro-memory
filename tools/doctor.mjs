@@ -402,6 +402,11 @@ const PATCHES = [
     file: 'vendor/dsh-memory-nebula/lib/host/transcripts.js',
     what: '工具调用画像把我家工具统一归到 plugin:macro-memory，不再分两个插件',
   },
+  {
+    marker: '[macro-fusion 0.2.81]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '设置链路诊断默认不出声：DSH_MEMORY_SETTINGS_DIAG=1 才写 settings-diag.log，且有 256 KiB 上限（原先每调一次 describe 就追加几十行）',
+  },
 ]
 for (const p of PATCHES) {
   const abs = join(root, p.file)

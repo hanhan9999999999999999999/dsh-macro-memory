@@ -89,13 +89,13 @@
           "self-tested"
         ],
         "sortKeys": {
-          "updated": 1795098273
+          "updated": 1795130346
         }
       },
       "versions": [
         {
-          "version": "0.2.80",
-          "publishTimestamp": 1795098273,
+          "version": "0.2.81",
+          "publishTimestamp": 1795130346,
           "source": {
             "type": "git",
             "url": "https://gh-proxy.com/https:/github.com/hanhan9999999999999999999/dsh-macro-memory",

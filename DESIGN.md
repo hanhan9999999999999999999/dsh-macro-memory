@@ -4475,3 +4475,37 @@ msedge --headless=new --disable-gpu --hide-scrollbars \
 3. **外部校验器是规格，正则直觉不是**：反代、镜像、代理地址这类「套一层」的字符串，必须用对方的解析器实测，并且把「错误写法必须被拒」写成阴性对照。
 4. **相对引用要按相对语义比**：`icon` 比原值，不比解析值。
 
+## 93. 调试仪器不能带上生产（0.2.81）
+
+### 93.1 绿着的仪器，也是一种缺陷
+
+`settings-diag.log` 一天长到 108,656 B，最后写入时间就是当天。它来自三轮排查「设置页写不进去」时加的仪器：包一层 `settings.write` / `configEditor.edit`、每次 `describe()` dump 命名空间列表、5 秒后再 dump 一次、把 `configEditor.entries()` 全量落盘。
+
+问题不在它报错——它不报错。问题在**验证体系看不见它**：所有检查都是绿的，因为仪器不改变任何被断言的行为。于是「不报错的副作用」成了长期欠账：持续写用户目录、每个会话多挂定时器、把内部结构写进磁盘。
+
+**教训 57：能被断言的行为才被保护；不能断言的行为会腐烂。** 要么给仪器加断言（默认关闭、有上限、字面量只有一处），要么它必然在某一轮里长歪。
+
+### 93.2 收口成一个出口
+
+```js
+var SETTINGS_DIAG_ON = process.env.DSH_MEMORY_SETTINGS_DIAG === "1";
+var SETTINGS_DIAG_MAX_BYTES = 256 * 1024;
+function settingsDiag(line) {
+  if (!SETTINGS_DIAG_ON) return;
+  // mkdir → 超限先清空 → 追加一行
+}
+```
+
+8 处直写收口到 `settingsDiag()`，`dumpDescribe()` 关闭时第一行 return。让 `settings-diag.log` 这个字面量在源码里只剩 1 次，是这个收口**可断言**的关键：计数就是判据（A81 第二条）。如果继续允许「各处自己拼路径」，任何断言都追不上。
+
+### 93.3 「默认关」比「删掉」好
+
+删掉会丢掉复现能力（0.2.18–0.2.20 正是靠它才发现宿主按 entry id 注册 config 命名空间）。正确做法是**把仪器变成可复现的仪器**：默认不出声，需要时一个环境变量打开，且自己有上限。
+
+这是同一类判断的第三次出现：`debug` 日志、`probe-*` 探针、这次的 settings 诊断——**能随时打开、默认不产生副作用**，才是发布版里该有的形状。
+
+### 93.4 验收
+
+`node --check` 语法过；`verify.mjs` A81 五条（开关在、字面量唯一、dump 有 guard、上限在、打开仍写）；`make-vendor-manifest` 重记指纹 `d50b1c3c11a27934`；`doctor` 补丁账本多一条 `[macro-fusion 0.2.81]`。
+
+
