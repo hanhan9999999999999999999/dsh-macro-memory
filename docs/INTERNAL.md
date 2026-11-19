@@ -3911,3 +3911,101 @@ verify A80 七条：把 vendor 源码里 `PLUGIN_NAME…isMeowSource` 那段抠�
 
 - 只改**我们写出去的** kind。`.dsh/sessions` 里已经存在的老消息不改写（那是用户数据，重写等于伪造历史）；它们照样显示 `plugin:meow-memory`，也照样被认得。
 - `PLUGIN_NAME` 仍是 `"meow-memory"`：日志前缀、`/meow-memory/dreamed-sessions` 这类 HTTP 路由、`data-plugin` 属性都用它，改它会把路由和已存的前端状态一起打散。**显示名和身份名分开**——口径统一改的是显示名。
+
+---
+
+# 9.86 发布准备：门面、图、许可、市场索引（0.2.81）
+
+这一轮不是改功能，是**把这个包交给不认识它的人**：GitHub 首页、DSH 插件市场的详情页、别人的 `node_modules`。三处地方的读者都不是我们，所以标准不是「我们自己看得懂」，而是「一个没读过源码的人能不能在三十秒内判断它是干什么的、凭什么比别的强、敢不敢装」。
+
+### 9.86.1 为什么把 README 拆成两份
+
+原来根的 `README.md` 有 **268,244 B**（3,914 行）——它是这个项目从 0.1.x 到 0.2.80 的逐轮开发日志：每一次事故、每一条判据、每一个被推翻的决定都在里面。作为**工程账本**它值钱；作为**门面**它是灾难：
+
+1. **市场详情页直接渲染仓库根的 `README.md`**（`@deepseek-ai/dsh-plugin-market` 的 `detail-files.ts` 走 `raw.githubusercontent.com/<owner>/repo/<ref>/` + `README_NAMES`）。一份 268 KB 的日志贴上去，第一屏是「0.2.5 修了层名过滤」，没人会往下滚。
+2. 检查器也认死了它：`tools/doctor.mjs` 原来只读根 `README.md`，于是「脚本得在文档里露过面」这条判据逼着门面里塞满 `tools/*.mjs` 的开发细节——**门面被账本污染**。
+
+所以拆：
+
+| 文件 | 读者 | 内容 |
+| --- | --- | --- |
+| `README.md` | 陌生人（GitHub / 市场详情页） | 是什么、比什么强（实测数字）、怎么装、怎么用、许可与第三方声明、English 段 |
+| `docs/INTERNAL.md` | 我们自己 | 原来那份逐轮开发日志，一字未删 |
+| `DESIGN.md` | 我们自己 | 设计取舍与教训（§1–§90） |
+
+`verify.mjs` 里 **85 处**「README 得提到这句话」的断言全部改指向 `docs/INTERNAL.md`（真账本在那边）；`tools/doctor.mjs` 的第 6 段拆成两半：6.1–6.3 管内部日志（脚本出处、版本号），6.4–6.6 管门面（版本号、`lib/client.js` 字节数与 sha 前缀、引用的图都在、`LICENSE`、第三方声明、市场索引存在）。
+
+**教训**：文档也有「谁在读」这个维度。写给人看的和写给自己的，混在一份文件里，两份都做不好。
+
+### 9.86.2 三张图是怎么来的
+
+本机**没有** playwright / puppeteer / electron，GUI 是 `127.0.0.1:50753` 且要 token（`Invoke-WebRequest` 直接 403），截不了界面。做法：手写 SVG（`docs/images/_architecture.svg` / `_memory-flow.svg` / `_token-budget.svg`），再用系统自带的 Edge 无头转 PNG：
+
+```bash
+msedge --headless=new --disable-gpu --hide-scrollbars \
+       --force-device-scale-factor=2 --default-background-color=FFFFFFFF \
+       --window-size=1200,720 --screenshot=docs/images/architecture.png \
+       file:///.../docs/images/_architecture.svg
+```
+
+- `--force-device-scale-factor=2` → 2 倍图，GitHub 上 Retina 屏不糊（2400×1440）。
+- 白底（`--default-background-color=FFFFFFFF`）：GitHub 深色主题下透明底会把深色文字吃掉。
+- 图里的数字**必须是实测值**（8,655 B / 1,085 字符 / 56,759 B / 4,085 字符），不是设计目标——图上写错一个数，门面就成了假话。
+- SVG 源码留在 `docs/images/_*.svg`（下划线开头，像临时文件但其实是可编辑原件，`doctor` 只对 `tools/` 下的脚本做「必须有文档出处」的检查，不受影响）。
+
+### 9.86.3 许可：MIT 的合规不是加个文件
+
+三件事分开做：
+
+1. **根 `LICENSE`**：本仓库自己的 MIT（`Copyright (c) 2026 主人 & 小代码酱`）。
+2. **两份 vendor 的 `LICENSE` 原文不动**：`vendor/meow-memory/LICENSE` 是 `Copyright (c) 2026 Phant0Meow`，一个字都没改。MIT 只要求保留版权与许可声明——**保留的意思是原样保留**，不是「在别处提一句」。
+3. **`THIRD-PARTY-NOTICES.md`**：上游地址（<https://github.com/Phant0Meow/dsh-meow-memory>）、版本、角色，以及**我们对副本做的全部改动**。MIT 不要求公开改动，但「改了别人的代码却不说改了哪里」是欠账——尤其这份副本里有一批「静默失败修成明说」的改动，不说清楚，别人会以为是上游的行为。
+
+改动分两类写：A. 融合接线（注入 `kind`、设置页文案、`PLUGIN_NAME` 不动）；B. 原地修掉的静默失败（0.2.46–0.2.80 逐条）。两棵 vendor 树的可核指纹在 `vendor/VENDOR.json`。
+
+### 9.86.4 市场索引：格式 1 的硬规则
+
+`plugin-market/index.json` 是 DSH 市场读的那份 JSON。读完 `@deepseek-ai/dsh-plugin-market-index` 的校验器（`src/index.ts`，334 行），坑集中在这几条：
+
+| 规则 | 踩法 |
+| --- | --- |
+| `LocalizedText` 是 `string` 或**必须含 `en`** 的对象 | 只写 `{"zh": …}` → `$.title must contain en` |
+| `source.type: 'git'` 的 `url` 必须是 https **规范** URL，且路径至少两段 | 写成 `https://github.com/OWNER` 或用 `git@`、带 `.git` 尾巴以外的不规范形式 → `must name a repository with at least two path segments` / `must be a canonical URL` |
+| `commit` 必须是 **40 位小写 hex** | 写短 SHA、大写、或先占位 `000…0` → 校验器只查格式，**占位能过**，但市场装不上 |
+| `icon` 是相对引用时**相对索引 URL** 解析 | 以为相对包根/仓库根 → 图 404；`icon.png` 实际要落在 `plugin-market/` 里 |
+| 内联 `data:` icon ≤ 32 KiB（base64 解出来的字节） | 大图塞进去 → `must not exceed 32 KiB` |
+| `publishTimestamp` 是 **Unix 秒** | 写毫秒 → 校验器只看区间 `[0, 10^11)`，毫秒也能过，但详情页显示年份错到几万年 |
+| `versions` 非空、不重复、按 SemVer **降序** | 校验器会替你排序，但重复直接拒 |
+| `category` / `labels` / `sortKey` 的 id **必须先在索引里声明** | 直接写 `"category": "memory"` 而 `metadata.categories` 里没有 → `references undeclared id "memory"` |
+
+`tools/check-market.mjs` 的判据（32 条，`check-all` 里的第 11 支）：
+
+1. 真调 `parseMarketIndex`（不是自己手写一套规则），索引 URL 用一个假的 `raw.githubusercontent.com/OWNER/REPO/...` 让它解析相对 icon；
+2. 版本号 = `package.json` 版本；宿主算出来的安装命令是 `git+https://…git#<commit>`；
+3. **commit 不是 40 个 0**（这条是给「还没提交就发索引」设的闸），而且在本仓里**真实存在**、是 `HEAD` 或它的祖先、索引文件已被 git 跟踪；
+4. icon 文件真的在、真的是 PNG/JPEG/WebP、不超过 512 KiB；
+5. `publishTimestamp` 不是毫秒、不在未来；
+6. 仓库根有 `README.md`（详情页读它）与 `LICENSE`。
+
+### 9.86.5 索引里的 commit 为什么先写成占位，再改一次
+
+市场装的是 **commit 钉住的 git 地址**，所以索引里的 SHA 必须是「包含全部代码的那次提交」。而索引文件本身也在仓库里，于是出现鸡生蛋：这次提交的 SHA 在提交前不可能知道。
+
+做法是两步：
+
+1. 第一次提交 `ec719eb`（163 个文件，全部代码 + 门面 + 图 + 许可）；
+2. 把索引里的 `commit` 改成 `ec719eb…`，连同 `.gitattributes`（`* text=auto eol=lf`，仓库里一律 LF——本项目有大量按字节比对的判据，CRLF 会让它们假红）一起提成第二次提交 `0942987`。
+
+`check-market.mjs` 断言「commit 是 HEAD 或它的祖先」，所以第二步之后仍然成立；而第一步之后如果忘了改，那条「不是全 0」的闸会立刻打红。
+
+### 9.86.6 怎么验的
+
+- `node tools/check-market.mjs` → **32 条 ALL PASS**（真校验器 + 真 git）。
+- `node tools/doctor.mjs` → 文档两段（内部日志 / 门面）分别过；`LICENSE` 是 MIT 原文；第三方声明三项（`Phant0Meow` / 上游地址 / `MIT`）都在；门面引用的 3 张图都在。
+- `node tools/check-all.mjs` → 13 支（新增 `tools/check-market.mjs`）。
+
+### 9.86.7 边界（发布这一轮没做的事）
+
+- **没有推送**：本机没有 `gh`，`git config --global user.name/user.email` 都是空的。仓库在本地已提交，`origin` 等主人给地址与凭据。
+- **索引里的 `OWNER/REPO` 是占位**：换真实仓库后，`plugin-market/index.json` 的 `homepage` / `repository.url` / `source.url` 三处、以及门面里的索引 URL 一起改。
+- **没给 npm 发布**：市场支持 `source.type: 'npm'`，但这份包的价值有一半在 `vendor/`，走 git 源最直接。

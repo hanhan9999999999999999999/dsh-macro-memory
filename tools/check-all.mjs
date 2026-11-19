@@ -54,6 +54,7 @@ const STEPS = [
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
+  ['tools/check-market.mjs', '市场索引：宿主校验器真读一遍 + commit 是真提交'],
   ['tools/probe-load.mjs', 'DSH 自己的加载器判据说能不能加载（含装配后的条目）'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]

@@ -4315,3 +4315,126 @@ verify A79 十三条走真机制不 mock 语义：自造 `root = { get: () => sn
 verify A80 七条：用 `new Function` 把 vendor `index.js` 里 `var PLUGIN_NAME … isMeowSource` 那一段源码**抠出来真跑**，喂新 kind / 老 kind / 更老的 `{kind:'plugin',plugin:'meow-memory'}` / 别人家的 `plugin:hindsight` / `null`，五种结果都要对；客户端包里断言同一份定义还在（它是另一个构建产物，最容易被忘）；`transcripts.js` 断言三条映射都指向 `plugin:macro-memory` 且两个旧名字不再出现；三句文案用「非 ASCII 转 `\uXXXX` 再 `includes`」比对。
 
 最后这条是这一节的技术要点：**源码里的中文是转义存的**（`\u5b8f\u8bb0\u5fc6`），直接 `includes('宏记忆')` 永远搜不到——写测试的人会以为文案改好了，其实只是测试没测。本项目里这条坑出现过不止一次，凡是断言中文文案的，先过 `esc()`。
+
+---
+
+## 91. 门面与账本（0.2.81）
+
+0.2.81 不改一行运行时逻辑。它要解决的问题是：**这个东西怎么交给一个不认识它的人**。三个读者同时出现——GitHub 首页的陌生人、DSH 插件市场详情页、别人 `node_modules` 里的副本——而他们有同一个特点：**不会读源码，也不会读我们的开发日志**。
+
+### 91.1 一份文件不能同时做门面与账本
+
+0.2.80 收尾时根 `README.md` 是 **268,244 B / 3,914 行**。它是这个项目从 0.1.x 到 0.2.80 的逐轮账本：每一场事故、每一条判据、每个被推翻的决定（包括 0.2.79 那次「第一版就是错的」）。作为账本它值钱。
+
+作为门面它是灾难，而且不是「不够好看」这种程度的问题：
+
+1. **市场详情页直接渲染仓库根的 `README.md`。** `@deepseek-ai/dsh-plugin-market` 的 `detail-files.ts` 用 `README_NAMES` 在 `raw.githubusercontent.com/<owner>/repo/<ref>/` 下找 README 并原样呈现。268 KB 贴上去，第一屏是「0.2.5 修了层名过滤」——陌生人不会往下滚，也不需要往下滚，他要的是「这玩意比我现在用的强在哪」。
+2. **同一份文件里的两套语气互相干扰。** 给外人看要断言式（「省 84.7%，实测」），给自己看要过程式（「这个数字之前算错过一次，因为……」）。混在一起，前者被稀释，后者被截断。
+
+所以拆三份，各有各的读者：
+
+| 文件 | 读者 | 判断标准 |
+| --- | --- | --- |
+| `README.md` | 陌生人（GitHub / 市场详情页） | 三十秒内能判断：是什么、强在哪、敢不敢装 |
+| `docs/INTERNAL.md` | 我们自己 | 能不能照着这份日志复现当时的判断 |
+| `DESIGN.md` | 我们自己（跨轮） | 下次遇到同类问题时，教训还在不在 |
+
+拆分动作本身很便宜（`copyFileSync` + 重写门面），贵的是**让检查器跟着分开看**——见下一节。
+
+### 91.2 检查器只认一份 README，会反过来污染门面
+
+`tools/doctor.mjs` 原本只有一条路径：`join(root, 'README.md')`。它管三件事：脚本都得在文档里露过面、文档提到的脚本都得存在、文档得写当前版本号。合理——但它把「文档」和「根 README」画了等号。
+
+于是出现一个反压：**门面里必须塞满 `tools/*.mjs` 的清单**，否则 5.2「每个脚本都必须在 README 露过面」打红。而门面正是最不该出现这些的地方。
+
+改法是给检查器一个**优先路径 + 回退路径**：
+
+```js
+const internalPath = existsSync(join(root, 'docs', 'INTERNAL.md'))
+  ? join(root, 'docs', 'INTERNAL.md')
+  : join(root, 'README.md')
+```
+
+回退不是偷懒：别人 fork 出去、或者把包拉进 `node_modules` 时，`docs/` 可能被裁剪；那时候退回根 README 至少还能查到版本号，而不是整段跳过。**判据要能在残缺的副本里降级运行，而不是要么全对要么全崩。**
+
+`verify.mjs` 那边更贵：**85 处**「README 必须提到这句话」的断言。它们测的东西其实不是 README，是「文档里写着这件事」——一个隐含契约。全部改成指向 `docs/INTERNAL.md`（44 处 `join(root, 'README.md')` + 41 处 read 助手的字符串），改完 `verify.mjs` 里 `README.md` 出现次数为 **0**。
+
+**教训 54**：判断「文档里有没有写」的测试，测的是**文档路径**这个隐含契约。这个契约一变，几十条断言一起红，且红得毫无信息量（它们不是发现了 bug，是发现了搬家）。所以路径只能有一个出处——和根目录那些 `tools/_root.mjs` 一样的道理，只是这次对象是文档。
+
+### 91.3 图里的数字不能是设计目标
+
+要附图，本机没有 playwright / puppeteer / electron，GUI 在 `127.0.0.1:50753` 且要 token（直接 `Invoke-WebRequest` 是 403），截不了界面。做法：手写 SVG，用系统自带 Edge 无头转 PNG。
+
+```bash
+msedge --headless=new --disable-gpu --hide-scrollbars \
+       --force-device-scale-factor=2 --default-background-color=FFFFFFFF \
+       --window-size=1200,720 --screenshot=docs/images/architecture.png \
+       file:///.../docs/images/_architecture.svg
+```
+
+三个参数都不是装饰：`--force-device-scale-factor=2` 出 2 倍图（GitHub 上 Retina 不糊），`--default-background-color=FFFFFFFF` 给白底（深色主题下透明底会把深色字吃掉），`--hide-scrollbars` 防止 1px 的布局抖动把右边裁掉。
+
+真正要紧的是**图上的数字**：8,655 B / 1,085 字符 / 56,759 B / 4,085 字符——四个数分别来自 `tools/probe-host.mjs` 的 D2（8 工具 schema 合计）与 E2（注入字符数），以及 0.2.x 融合前的历史基线。**它们必须是实测值。**图是最容易被当成「大概意思」的东西，而一旦图上出现一个整数，读者就会当它是测量结果；写错一个数，整份门面就从「实测」降级成「宣传」。
+
+同理，图的可编辑原件（`docs/images/_*.svg`）留在仓库里。用「导出 png 就删源文件」的方式做图，等于把「这张图怎么来的」这件事一起删了。
+
+### 91.4 MIT 合规：保留原文，不是「在别处提一句」
+
+这份包里有别人的代码（`vendor/meow-memory` 是 Phant0Meow 的 MIT 项目，`vendor/dsh-memory-nebula` 是更早的自有代码）。合规分三层做：
+
+1. **根 `LICENSE`** —— 本仓库自己的 MIT。
+2. **两份 `vendor/*/LICENSE` 原文一个字不动。** MIT 要求「保留版权声明与许可声明」，保留的意思是**原样保留在副本里**。把上游版权挪到自己的 NOTICES 里、删掉 vendor 里的 LICENSE，形式上「提到了」，实质上违反条款。
+3. **`THIRD-PARTY-NOTICES.md`** —— 上游地址、版本、角色，以及**我们对副本做的全部改动**。MIT 不要求公开改动，所以这一层是我们自己加的账：这份副本里有一批「把静默失败改成明说」的改动（0.2.46–0.2.80 逐条），不说清楚，使用者会把我们的行为当成上游的行为，出问题时去上游报 bug。
+
+改动分两类写，因为它们的性质不同：**A 类融合接线**（注入 `kind`、设置页三语文案、`PLUGIN_NAME` 不动）是我们加的接口；**B 类原地修掉的静默失败**是我们改的行为。前者必须写清楚（别人接这个包时要能预判），后者更要写清楚（它改变的是别人已经依赖的行为）。
+
+### 91.5 别人的校验器才是规格
+
+市场索引 `plugin-market/index.json` 遵循 format 1。只看 `src/types.ts` 会以为规则是「字段齐、类型对」，真正会拒绝你的那些条件都在 `src/index.ts` 的校验逻辑里。实际踩到的：
+
+| 规则 | 为什么容易错 |
+| --- | --- |
+| `LocalizedText` 对象**必须含 `en`** | 只写 `zh` 类型完全合法，运行时才拒 |
+| `source.url` 要 https **规范** URL 且路径 ≥2 段 | `https://github.com/OWNER` 看着像网址，少一段就被拒 |
+| `commit` 是 **40 位小写 hex** | 短 SHA、大写、占位都能「看起来像」，格式闸只认长度与字符集 |
+| `icon` 相对引用**相对索引 URL** 解析 | 直觉是相对包根/仓库根；实际 404 才知道 |
+| 内联 icon ≤ **32 KiB**（base64 解码后） | 看代码是 `data:` 前缀检查，实际还量字节 |
+| `publishTimestamp` 是 **Unix 秒** | 毫秒也能过 `[0, 10^11)` 区间，但详情页年份错到几万年 |
+| `versions` 按 SemVer 降序、不重复 | 校验器会排序，但重复直接拒 |
+| `category` / `labels` / `sortKey` 的 id 必须**先声明** | 引用完整性错误，报错文本是 `references undeclared id` |
+
+**教训 55**：类型定义写的是「形状」，校验器写的是「规格」。凡是要给别人的系统喂数据，规格以它的校验器为准——读 `types.ts` 只能让你写出「能编译」的东西。
+
+`tools/check-market.mjs` 因此不自己复述规则，而是**真 import 宿主的 `parseMarketIndex`** 跑一遍（真 import 而不是复制粘贴一份规则：复制的规则会随上游漂移，而且漂移时你是绿的那种漂）。另外四条是校验器管不到、但市场会因此装不上的：
+
+- commit **不是 40 个 0**（给「还没提交就发索引」设的闸）；
+- commit 在本仓**真实存在**、是 `HEAD` 或它的祖先（防止钉到一个未来的/别的分支的 SHA）；
+- 索引文件已被 git 跟踪（防止「本地有、推上去没有」）；
+- icon 文件真的存在、真的是 PNG/JPEG/WebP、≤512 KiB。
+
+### 91.6 索引里的 commit：一个必须固化的鸡生蛋
+
+市场装的是 **commit 钉住的 git 地址**（`git+https://…git#<sha>`），所以索引里的 SHA 必须是「包含全部代码的那次提交」。索引本身也在仓库里——这次提交的 SHA 在提交之前不可能知道。
+
+固定解法，两步：
+
+1. 第一次提交 `ec719eb…`：163 个文件，全部代码 + 门面 + 图 + 许可，索引里的 commit 先写真实的第一个 SHA 是不可能的，所以第一版占位/或先不钉；
+2. 把索引里的 `commit` 改成 `ec719eb…`，连同 `.gitattributes` 一起提成第二次提交 `0942987…`。
+
+第二次提交不改变代码，只改「指向哪次代码」。因为 `check-market` 断言的是「commit 是 HEAD 或祖先」，第二步之后仍然成立；而如果第一步之后忘了改，那条「不是全 0 / 必须真实存在」的闸会立刻打红。
+
+**教训**：凡是「把自己的版本标识写进自己的内容里」的工程（锁文件、校验和、发布清单、CI 徽章），都需要这样一套「自引用提交」的固定套路，外加一条**守卫断言**。没有守卫时，这类占位符会安安静静地活到线上。
+
+`.gitattributes` 里的 `* text=auto eol=lf` 是同一个思路的另一面：这个仓库有大量**按字节**比对的判据（`lib/client.js` 的 163,239 B、sha256 前缀、两棵树的 VENDOR 指纹），Windows 上默认 CRLF 会让克隆下来的副本假红一片。**判据越精确，环境越要钉死。**
+
+### 91.7 这一轮的验收
+
+- `node tools/check-market.mjs` → 32 条 ALL PASS（真校验器 + 真 git）。
+- `node tools/doctor.mjs` → 内部日志与门面两段各自过；根 `LICENSE` 是 MIT 原文；第三方声明三项（作者名 / 上游地址 / `MIT`）都在；门面引用的 3 张图都在。
+- `node tools/check-all.mjs` → 13 支（新增第 11 支 `tools/check-market.mjs`）。
+
+### 91.8 边界
+
+- **没有推送。** 本机没有 `gh`，`git config --global user.name/user.email` 都是空的；本地已提交，`origin` 要等真实仓库地址与凭据。提交 identity 目前是占位（`dsh-macro-memory <owner@users.noreply.github.com>`），换真值需要 `--amend` 两次历史。
+- **索引里的 `OWNER/REPO` 是占位。** 换真实仓库时要一起改四处：`plugin-market/index.json` 的 `homepage`、`repository.url`、`versions[0].source.url`，以及门面里的索引 URL。
+- **没发 npm。** 市场支持 `source.type: 'npm'`，但这份包的价值有一半在 `vendor/`（两份引擎副本随包走），走 git 源最直接。

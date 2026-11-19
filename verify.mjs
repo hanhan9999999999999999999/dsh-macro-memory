@@ -280,7 +280,8 @@ function makeHostCtx() {
       docSrc.includes('root === PROFILE ? treeSync(PROFILE, VENDOR) : treeSync(root, PROFILE)'),
   )
   // README 声称与实物一致性由 doctor 自己核，verify 只守「它确实在核」这件事
-  check('体检: 核 README 声称', docSrc.includes('README 提到的脚本都存在') && docSrc.includes('字节数是最新的'))
+  // 0.2.81 起文档拆成两份：账本（docs/INTERNAL.md）与门面（README.md），doctor 两段各核一半
+  check('体检: 核文档声称', docSrc.includes('内部日志提到的脚本都存在') && docSrc.includes('字节数是最新的'))
 }
 
 // ── A6. 真引擎探针存在，且没被降级成 stub（0.2.8）───────────────────────────
@@ -907,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 12 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 13 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
