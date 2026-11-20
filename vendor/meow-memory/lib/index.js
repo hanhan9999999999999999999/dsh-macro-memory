@@ -741,13 +741,18 @@ var MemoryDb = class {
       const rid = Number(this.p(`SELECT rowid AS rid FROM ${table} WHERE id = ?`).get(e.id)?.rid);
       if (!Number.isFinite(rid)) continue;
       const slim = (rows) =>
-        rows.map((r) => ({ id: String(r.id ?? ""), level: table, content: String(r.content ?? "").slice(0, CTX_CHARS) }));
+        rows.map((r) => ({
+          id: String(r.id ?? ""),
+          level: table,
+          content: String(r.content ?? "").slice(0, CTX_CHARS),
+          day: stampDay(r.updated_at),
+        }));
       // status 收紧到 active：把已作废的邻居拼进上下文，等于让一段被推翻的话重新开口。
       const before = slim(
-        this.p(`SELECT id, content FROM ${table} WHERE rowid < ? AND rowid >= ? AND status = 'active' ORDER BY rowid DESC`).all(rid, rid - n),
+        this.p(`SELECT id, content, updated_at FROM ${table} WHERE rowid < ? AND rowid >= ? AND status = 'active' ORDER BY rowid DESC`).all(rid, rid - n),
       );
       const after = slim(
-        this.p(`SELECT id, content FROM ${table} WHERE rowid > ? AND rowid <= ? AND status = 'active' ORDER BY rowid`).all(rid, rid + n),
+        this.p(`SELECT id, content, updated_at FROM ${table} WHERE rowid > ? AND rowid <= ? AND status = 'active' ORDER BY rowid`).all(rid, rid + n),
       );
       if (before.length > 0 || after.length > 0) out.set(String(e.id), { before, after });
     }
@@ -2892,6 +2897,16 @@ function dayOfKeywords(keywords) {
   }
   return "";
 }
+/** 写入时间 → 本机日期 YYYY-MM-DD。关键词里没有日期时兜底：
+ *  相对时间（「5 分钟前」「2 年前」）回答不了「那天是几号」。 */
+function stampDay(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (v) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 function searchTool(dir) {
   return {
     name: "memory_search",
@@ -2967,10 +2982,10 @@ function searchTool(dir) {
           const day = h.day ? ` \u00B7 ${h.day}` : "";
           lines.push(`[${proj}] [${String(h.id ?? "")}] [${rel}${day}] \u5173\u4E8E\uFF1A${about}`);
           const ctx = h.context ?? null;
-          if (ctx !== null) for (const it of ctx.before ?? []) lines.push(`  \u2191 ${String(it?.content ?? "")}`);
+          if (ctx !== null) for (const it of ctx.before ?? []) lines.push(`  \u2191 ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`);
           const body = String(h.content ?? "");
           if (body.length > 0) lines.push(`  ${body}${h.truncated === true ? `\uFF08\u5DF2\u622A\u65AD\u5230 ${cm} \u5B57\uFF0C\u5168\u6587\u7528 memory_read\uFF09` : ""}`);
-          if (ctx !== null) for (const it of ctx.after ?? []) lines.push(`  \u2193 ${String(it?.content ?? "")}`);
+          if (ctx !== null) for (const it of ctx.after ?? []) lines.push(`  \u2193 ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`);
           const ex = h.explain;
           if (ex !== void 0) {
             lines.push(`  bm25=${String(ex.bm25 ?? 0)} importance=${String(ex.importance ?? 0)} recencyWeight=${String(ex.recencyWeight ?? 1)} status=${String(ex.status ?? "active")} score=${String(h.score ?? 0)}`);
@@ -3100,7 +3115,7 @@ function searchTool(dir) {
             title: h.title ?? "",
             content: contentMax > 0 ? h.content.slice(0, contentMax) : h.content,
             ...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {},
-            day: dayOfKeywords(row?.keywords),
+            day: dayOfKeywords(row?.keywords) || stampDay(row?.updated_at),
             ...ctxMap !== null && ctxMap.has(String(h.id)) ? { context: ctxMap.get(String(h.id)) } : {},
             keywords: row?.keywords ?? [],
             project: row?.project ?? "",

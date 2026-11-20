@@ -6211,7 +6211,7 @@ check(
     JSON.stringify([win?.before?.length, win?.after?.length]),
   )
   const ctText = CT.get('memory_search').output.render({ context: 1 }, ctOn).map((t) => t.text).join('\n')
-  check('CT1 回执里 ↑ 印前、↓ 印后', ctText.includes('\u2191 Alice') && ctText.includes('\u2193 Alice'), ctText.split('\n').slice(1, 4).join(' / '))
+  check('CT1 回执里 ↑ 印前、↓ 印后（各自带写入日期）', /\u2191 \d{4}-\d{2}-\d{2} Alice/.test(ctText) && /\u2193 \d{4}-\d{2}-\d{2} Alice/.test(ctText), ctText.split('\n').slice(1, 4).join(' / '))
   // 跨层不串味：相邻写一条 lesson，fact 的邻居里不许出现它
   await ctRun('memory_remember', { content: '教训：七点太早，下次改九点。', project: '上下文探针', keywords: ['鲸鱼', '教训'], importance: 2, level: 'lesson' })
   const ctCross = await ctRun('memory_search', { query: '几点集合', k: 1, context: 3, level: 'fact' })
@@ -6251,7 +6251,7 @@ check(
   const withCtx = text(await run('memory_search', { query: '几点集合', k: 1, context: 1, project: P }))
   check(
     'CT5 融合层：context=1 穿到 meow，回执带 ↑ 前 / ↓ 后',
-    withCtx.includes('\u2191 融合探针：Alice 说明天去看鲸鱼。') && withCtx.includes('\u2193 融合探针：Alice 说七点码头见。'),
+    /\u2191 \d{4}-\d{2}-\d{2} 融合探针：Alice 说明天去看鲸鱼。/.test(withCtx) && /\u2193 \d{4}-\d{2}-\d{2} 融合探针：Alice 说七点码头见。/.test(withCtx),
     withCtx.split('\n').slice(-3).join(' / '),
   )
 

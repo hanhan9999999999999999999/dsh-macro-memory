@@ -8362,7 +8362,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     meowSrc121.includes('truncated: { type: "boolean"') &&
       meowSrc121.includes('day: { type: "string"') &&
       meowSrc121.includes('...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {}') &&
-      meowSrc121.includes('day: dayOfKeywords(row?.keywords),'),
+      meowSrc121.includes('day: dayOfKeywords(row?.keywords) || stampDay(row?.updated_at),'),
   )
   check(
     '检索自答·探针进线：SR0–SR6（含阴性对照与「空旋钮」那条硬断言）',
@@ -8485,8 +8485,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'CT 上下文窗口: 回执 ↑ 印前、↓ 印后',
-    meowSrc123.includes('\\u2191 ${String(it?.content ?? "")}') &&
-      meowSrc123.includes('\\u2193 ${String(it?.content ?? "")}'),
+    meowSrc123.includes('\\u2191 ${it?.day ? String(it.day) + " " : ""}') &&
+      meowSrc123.includes('\\u2193 ${it?.day ? String(it.day) + " " : ""}'),
   )
   {
     const ctxHome = mkdtempSync(join(tmpdir(), 'macro-ctx-'))
@@ -8568,6 +8568,27 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'CT 融合层: 版本与文档一起走（9.128 / 134）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.128 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 134 '),
+  )
+}
+
+
+// ── 日期进回执（0.2.125）：相对时间回答不了「那天是几号」 ────────────────────
+{
+  const meowSrc125 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  check(
+    'DW 日期: stampDay 存在且 day 有关键词回退（关键词没日期也有日子）',
+    meowSrc125.includes('function stampDay(ms) {') &&
+      meowSrc125.includes('day: dayOfKeywords(row?.keywords) || stampDay(row?.updated_at),'),
+  )
+  check(
+    'DW 日期: 邻居窗口带 updated_at 并落 day（↑↓ 行才有日期可印）',
+    meowSrc125.includes('SELECT id, content, updated_at FROM ${table} WHERE rowid < ?') &&
+      meowSrc125.includes('day: stampDay(r.updated_at),'),
+  )
+  check(
+    'DW 日期: 版本与文档一起走（9.129 / 135）',
+    readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.129 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 135 '),
   )
 }
 
