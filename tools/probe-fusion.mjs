@@ -863,6 +863,77 @@ try {
     kindSeal.split('\n').slice(0, 2).join(' | '),
   )
 
+  // D54–D57（0.2.108）：层走向。总条数只说「库重了多少」，说不出「哪一层在膨胀」——
+  // fact 一直涨、topic 一直掉，总数可能是 0，而库的结构在烂。层走向就是这句话的证据。
+  const lvWs = mkdtempSync(join(tmpdir(), 'macro-probe-levels-'))
+  const lvDb = Meow.getDb(lvWs, '.dsh-meow')
+  const lvCtx = { agent: { session: { header: { cwd: lvWs } } } }
+  const lvIns = lvDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const lvScale = (byLevel) => ({ active: Object.values(byLevel).reduce((a, b) => a + b, 0), byLevel })
+  const lvPlan = (end, start) => ({
+    rounds: 1,
+    rows: 2,
+    dup: 0,
+    cover: 0,
+    missing: 0,
+    store: start === undefined ? lvScale({ fact: 2, lesson: 1 }) : start,
+    ...(end === null ? {} : { storeEnd: end }),
+  })
+  const lvBase = Date.now() - 600000
+  lvIns.run(lvBase, 'window dream done: v1 groups=1 stamped=1 T=2026-11-20T04:10:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(lvScale({ fact: 2, lesson: 1 }), lvScale({ fact: 2, lesson: 1 })) }), '')
+  lvIns.run(lvBase + 1000, 'window dream done: v2 groups=1 stamped=1 T=2026-11-20T04:11:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(lvScale({ fact: 3, lesson: 1, topic: 1 })) }), '')
+  lvIns.run(lvBase + 2000, 'window dream done: v3 groups=1 stamped=1 T=2026-11-20T04:12:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(lvScale({ fact: 3, lesson: 1, topic: 2 })) }), '')
+  lvIns.run(
+    lvBase + 3000,
+    'window dream aborted: v4 groups=0/2 stamped=1 T=2026-11-20T04:13:00.000Z',
+    JSON.stringify({ stamped: 1, groups: 0, kind: { kind: 'aborted', groupsDone: 0, groupsTotal: 2 }, plan: lvPlan(lvScale({ fact: 9 })) }),
+    '',
+  )
+  lvIns.run(lvBase + 4000, 'window dream done: v5 groups=1 stamped=1 T=2026-11-20T04:14:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(null) }), '')
+  const lvPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, lvCtx))
+  const lvLine = lvPanel.split('\n').find((l) => l.startsWith('层走向')) ?? '(无)'
+  check(
+    'D54 层走向按每一轮收尾的 byLevel 摊开：topic 0 → 1 → 2（+2）· fact 2 → 3 → 3（+1）· lesson 没变（总数看不出哪层在膨胀）',
+    lvLine.includes('层走向：最近 3 次收尾（最早→最新）') &&
+      lvLine.includes('topic 0 → 1 → 2（+2）') &&
+      lvLine.includes('fact 2 → 3 → 3（+1）') &&
+      lvLine.includes('lesson 1 → 1 → 1（没变）') &&
+      lvLine.includes('涨得最多的是 topic（+2）'),
+    lvLine,
+  )
+  check(
+    'D55 排除了谁要说清：半轮 1 次、缺收尾层数 1 次都不进走向，并交代「只数 active / 缺层就是 0 条」',
+    lvLine.includes('1 次没跑完（中途放弃 / 待补记 / 已封存），不进这条走向') &&
+      lvLine.includes('1 次没有收尾层数（0.2.106 之前的账没有这一格），不进这条走向') &&
+      lvLine.includes("只数 status='active'") &&
+      lvLine.includes('那一轮那层 0 条在用'),
+    lvLine,
+  )
+  const lvOneWs = mkdtempSync(join(tmpdir(), 'macro-probe-levels-one-'))
+  const lvOneDb = Meow.getDb(lvOneWs, '.dsh-meow')
+  lvOneDb.db
+    .prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+    .run(Date.now() - 1000, 'window dream done: o1 groups=1 stamped=1 T=2026-11-20T04:20:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(lvScale({ fact: 1 })) }), '')
+  const lvOnePanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, { agent: { session: { header: { cwd: lvOneWs } } } }))
+  check(
+    'D56 只有一轮不出层走向：一次是快照，不是走向（硬算等于编）',
+    !lvOnePanel.includes('层走向'),
+    lvOnePanel.split('\n').slice(0, 3).join(' | '),
+  )
+  const lvFlatWs = mkdtempSync(join(tmpdir(), 'macro-probe-levels-flat-'))
+  const lvFlatDb = Meow.getDb(lvFlatWs, '.dsh-meow')
+  const lvFlatIns = lvFlatDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const lvFlatPlan = lvScale({ fact: 2, lesson: 1 })
+  lvFlatIns.run(Date.now() - 2000, 'window dream done: f1 groups=1 stamped=1 T=2026-11-20T04:30:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(lvFlatPlan) }), '')
+  lvFlatIns.run(Date.now() - 1000, 'window dream done: f2 groups=1 stamped=1 T=2026-11-20T04:31:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: lvPlan(lvFlatPlan) }), '')
+  const lvFlatPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, { agent: { session: { header: { cwd: lvFlatWs } } } }))
+  const lvFlatLine = lvFlatPanel.split('\n').find((l) => l.startsWith('层走向')) ?? '(无)'
+  check(
+    'D57 每层都没变就说没变：不硬凑一句「涨得最多」（噪声不许讲成走势）',
+    lvFlatLine.includes('每一层的条数都没变') && !lvFlatLine.includes('涨得最多') && !lvFlatLine.includes('掉得最多'),
+    lvFlatLine,
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {

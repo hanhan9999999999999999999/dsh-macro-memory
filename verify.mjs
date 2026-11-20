@@ -7209,5 +7209,85 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.108] 层走向：总条数的净变化只说「库重了多少」，说不出「哪一层在膨胀」。
+// fact 一直涨、topic 一直掉，总数可能是 0，而库的结构在烂——这一版把每一轮收尾时的层数摊成走向。
+{
+  const vSrc108 = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc108 = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const pkg108 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc108 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc108 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc108 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    '层走向: 写侧的尺子只数 active 且零层不落进 byLevel（缺层=0 这条读法全靠它）',
+    vSrc108.includes("SELECT COUNT(*) AS n FROM ${level} WHERE status = 'active'") &&
+      vSrc108.includes('if (n > 0) byLevel[level] = n;') &&
+      vSrc108.includes('  dreamStoreScale,'),
+  )
+  check(
+    '层走向: 只认收尾层数 storeEnd.byLevel，不许拿开工层数冒充收尾（0.2.103~0.2.105 只有开工数）',
+    panelSrc108.includes('function levelSeriesOf(plan) {') &&
+      panelSrc108.includes('const raw = plan?.storeEnd') &&
+      panelSrc108.includes('if (raw.byLevel === undefined || raw.byLevel === null || typeof raw.byLevel !== \'object\') return null') &&
+      panelSrc108.includes('const store = storeOf({ store: raw })') &&
+      panelSrc108.includes('return store === null ? null : store.byLevel'),
+  )
+  check(
+    '层走向: 半轮与缺收尾数分开计数（半轮带 storeEnd 才算 half，否则算 noEnd），两者都不进走向',
+    panelSrc108.includes('function levelTrendLine(rows) {') &&
+      panelSrc108.includes('if (levelSeriesOf(row.changes?.plan) !== null) half += 1') &&
+      panelSrc108.includes('if (levels === null) {') &&
+      panelSrc108.includes('noEnd += 1') &&
+      panelSrc108.includes('if (kept.length < 2) return \'\''),
+  )
+  check(
+    '层走向: 按变化幅度排序、只列 4 层、多的说「还有 N 层没列」（不装没有）',
+    panelSrc108.includes('cells.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.last - a.last)') &&
+      panelSrc108.includes('const shown = cells.slice(0, 4)') &&
+      panelSrc108.includes('if (rest > 0) caveats.push(`还有 ${rest} 层没列`)'),
+  )
+  check(
+    '层走向: 每格念「a → b → c（+N / -N / 没变）」，结论分涨/掉/都没变三支，没涨就不编涨的',
+    panelSrc108.includes("const word = c.delta > 0 ? `+${c.delta}` : c.delta < 0 ? `${c.delta}` : '没变'") &&
+      panelSrc108.includes('parts.push(\'每一层的条数都没变\')') &&
+      panelSrc108.includes('parts.push(`涨得最多的是 ${up.name}（+${up.delta}）`)') &&
+      panelSrc108.includes('parts.push(`掉得最多的是 ${down.name}（${down.delta}）`)'),
+  )
+  check(
+    '层走向: 排除项逐条念（半轮 / 缺收尾数），并交代「只数 active、缺层就是那轮那层 0 条」',
+    panelSrc108.includes('次没跑完（中途放弃 / 待补记 / 已封存），不进这条走向') &&
+      panelSrc108.includes('次没有收尾层数（0.2.106 之前的账没有这一格），不进这条走向') &&
+      panelSrc108.includes("只数 status='active'；这一轮写了 byLevel 而里面没有那一层，就是那一轮那层 0 条在用"),
+  )
+  check(
+    '层走向: 只在第 1 页出（说的就是最近这几条），并在口径里交代数据来路',
+    panelSrc108.includes('const levels = levelTrendLine(rows)') &&
+      panelSrc108.includes("scopeParts.push('层走向按每一轮收尾时的 storeEnd.byLevel 数，只有 0.2.106 之后的账有这一格')") &&
+      (() => {
+        const seg = panelSrc108.slice(panelSrc108.indexOf('const levels = levelTrendLine(rows)'))
+        return seg.indexOf('} else {') > 0
+      })(),
+  )
+  check(
+    '层走向: 探针进线（probe-ruler L25/L26 验写侧尺子、probe-fusion D54–D57 验面板与两条阴性对照）',
+    rulerSrc108.includes('L25 层规模只数 status=active 且零层不写') &&
+      rulerSrc108.includes('L26 归档立刻从层规模里掉出去') &&
+      fusionSrc108.includes('D54 层走向按每一轮收尾的 byLevel 摊开') &&
+      fusionSrc108.includes('D55 排除了谁要说清') &&
+      fusionSrc108.includes('D56 只有一轮不出层走向') &&
+      fusionSrc108.includes('D57 每层都没变就说没变'),
+  )
+  check(
+    '层走向: 版本不早于 0.2.108（两处一致），文档 9.114 / 120 在位',
+    (() => {
+      const v = pkg108.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 108)
+      return atLeast && idxSrc108.includes(`export const version = '${pkg108.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.114') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 120'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

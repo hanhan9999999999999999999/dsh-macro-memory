@@ -1058,5 +1058,45 @@ check(
   `kind=${JSON.stringify(qGiveRow?.changes?.kind)}`,
 )
 
+// Q 段（0.2.108）：层走向要按层数，所以先把写侧的层口径钉死——
+// 它数的是 status='active'，而且零层不写进 byLevel（读侧的「缺层 = 那一轮那层 0 条」全靠这条）。
+const qScale = qAgent(mkdtempSync(join(tmpdir(), 'ruler-level-scale-')), 'sess-ruler-level-scale')
+// 两条 fact 的内容与关键词都刻意错开：写侧有去重，长得像的两条会被合成一条，
+// 探针就验不出「同一层里两条是两条」了。
+await call(
+  'memory_remember',
+  { content: '层规模探针甲：占住事实层第一个格子，用来验证按层计数时它算一条。', level: 'fact', keywords: ['probe', 'level', 'alpha', 'ledger', 'bylevel', 'drift', 'store', 'scale', 'trend'], importance: 1, project: '全局' },
+  { agent: qScale.agent },
+)
+await call(
+  'memory_remember',
+  { content: '另一条完全不相干的事实：层走向只关心每层有几条在用，不在乎这些条目讲的是什么故事，所以这条写点别的。', level: 'fact', keywords: ['probe', 'level', 'beta', 'snapshot', 'counter', 'store', 'ledger', 'trend', 'drift'], importance: 1, project: '全局' },
+  { agent: qScale.agent },
+)
+await call(
+  'memory_remember',
+  { content: '层走向探针三：教训层只有一条，用来验证跨层不像跨项目那样串味。', level: 'lesson', keywords: ['probe', 'level', 'lesson', 'bylevel', 'drift', 'scale', 'ledger', 'trend'], importance: 1, project: '全局', corrected: true },
+  { agent: qScale.agent },
+)
+const qScaleDb = V.getDb(qScale.ws, '.dsh-meow')
+const qScale1 = V.dreamStoreScale(qScaleDb)
+check(
+  'L25 层规模只数 status=active 且零层不写：fact 2 / lesson 1，没有写过的层不出现（缺层 = 0，不是「没记」）',
+  qScale1.active === 3 &&
+    qScale1.byLevel.fact === 2 &&
+    qScale1.byLevel.lesson === 1 &&
+    qScale1.byLevel.topic === undefined &&
+    qScale1.byLevel.soul === undefined,
+  `scale=${JSON.stringify(qScale1)}`,
+)
+const qScaleFact = qScaleDb.db.prepare("SELECT id FROM fact WHERE status = 'active' LIMIT 1").get()
+qScaleDb.update('fact', String(qScaleFact?.id), { status: 'archived' })
+const qScale2 = V.dreamStoreScale(qScaleDb)
+check(
+  'L26 归档立刻从层规模里掉出去：active 3 → 2，fact 2 → 1（按状态数，不是按行数）',
+  qScale2.active === 2 && qScale2.byLevel.fact === 1 && qScale2.byLevel.lesson === 1,
+  `scale=${JSON.stringify(qScale2)}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
