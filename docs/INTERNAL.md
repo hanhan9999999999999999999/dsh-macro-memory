@@ -5568,3 +5568,159 @@ db.setDreamMeta(`dreamdigest:${sessionId}`, JSON.stringify(digest));
 - 不存更多统计（命中数、关键词数、平均重要度）：一次整理能携带的信息是有限的，`changes` 越厚，`json_extract` 与人工对账都越慢。
 - 不做跨工作区汇总：每个工作区一个库、一本账，混起来会把「这个窗口的库」讲成「所有窗口的库」。
 - 不把库规模印进 `rowLine`：一行账已经有五段，库规模属于「展开才要看」的信息，列表面板保持一行一屏。
+
+## 9.110 「第几近」会挪，回指不了；「引用」不挪，能当名字（0.2.104）
+
+### 9.110.0 现象
+
+账本翻页、按第几近展开、按项目筛账都做好了，还是有一件事做不到：**回指某一轮**。
+
+- 上一次整理时看到「第 2 近」这条账有问题，隔天想再翻开看 —— 期间又跑了两轮 dream，它现在是第 4 近，`id=2` 打开的是别人。
+- 会话已经结束了，想在别的会话里说「上一轮那个计划再给我看一眼」—— 没有能说出口的名字，只能说「大概三天前、那次翻了 7 条的那一轮」，靠猜。
+- 面板上的编号是**位置**，不是**身份**。位置每天都会变，身份不该变。
+
+`readDreamRecord` 里原本还明写着一句「不暴露 rowid —— 对外的句柄只有一种口径」，那是 0.2.100 的决定：**少一个口径，就少一种读错的方式**。这一版**有意反转它**，理由见 9.110.4 与 DESIGN 116。
+
+### 9.110.1 为什么 dream_log.id 就是那个「不变的名字」
+
+```sql
+CREATE TABLE IF NOT EXISTS dream_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_at INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  changes TEXT,
+  note TEXT
+);
+```
+
+`INTEGER PRIMARY KEY AUTOINCREMENT` 有三条性质正好是「引用」需要的：
+
+| 性质 | 对「回指」的意义 |
+| --- | --- |
+| 单调递增、由 SQLite 分配 | 不需要额外的 uuid 列，也没有并发抢号的问题 |
+| 只增不减 | 新账永远不会拿到一个已经发过的号 |
+| 删了也不复用（AUTOINCREMENT 才有，纯 rowid 会复用） | 那一行就算被手工删了，这个号也不会转手给别人 —— 「打开失败」不会被读成「打开了另一条」 |
+
+所以对外把这个号写成 `r<N>`：`r4` 永远指同一轮整理，账本再长一百轮也不挪。
+
+### 9.110.2 写侧：三个函数，一个尺子
+
+**取一条账**（`vendor/meow-memory/lib/index.js`，`close()` 之前）：
+
+```js
+dreamById(id) {
+  const asked = Math.trunc(Number(id));
+  const key = Number.isFinite(asked) && asked > 0 ? asked : 0;
+  if (key === 0) return null;
+  const row = this.db.prepare("SELECT id, run_at, summary, changes, note FROM dream_log WHERE id = ?").get(key);
+  if (!row) return null;
+  let changes = null;
+  try {
+    changes = JSON.parse(String(row.changes ?? ""));
+  } catch {
+    changes = null;
+  }
+  return { id: Number(row.id) || 0, runAt: Number(row.run_at) || 0, summary: String(row.summary ?? ""), changes, note: String(row.note ?? "") };
+}
+```
+
+两个细节是有意的：`key === 0` 直接 `null`，**不去 `SELECT ... LIMIT 1` 凑一条**（猜出来的引用比没有引用更坏）；`changes` 解析失败记 `null` 但**行照出** —— 账本原文坏了不该让「这一轮整理过」这件事消失。
+
+**它现在排第几近**：
+
+```js
+dreamRankOf(id) {
+  // ... 取 run_at
+  const before = this.db
+    .prepare("SELECT COUNT(*) AS n FROM dream_log WHERE run_at > ? OR (run_at = ? AND id > ?)")
+    .get(at, at, self);
+  return (Number(before?.n) || 0) + 1;
+}
+```
+
+这条 `WHERE` 必须和 `recentDreamsPage` 的 `ORDER BY run_at DESC, rowid DESC` 是**同一把尺子**：同一毫秒写进去的两条账，靠 `id` 破平。要是两边排序不同，就会出现「引用和编号指向不同的行」——那比没有引用更糟。
+
+**按引用读一条**（模块级，`vendor/meow-memory/lib/index.js:3601` 起）：
+
+```js
+function readDreamRecordByRef(workspace, dir = ".dsh-meow", ref = 0) {
+  // no-workspace / no-db / read-failed 四态与 readDreamRecord 同款
+  const row = db.dreamById(key);
+  if (!row) return { row: null, prev: null, rank: 0, path, missing: "no-row", total };
+  const rank = db.dreamRankOf(key);
+  const rows = rank > 0 ? db.recentDreamsPage(2, rank - 1) : [];
+  return { row: row ?? rows[0] ?? null, prev: rows[1] ?? null, rank, path, missing: "", total };
+}
+```
+
+`prev` 是「比它更早的那一条」（`compareLine` 用它算差额），靠 `recentDreamsPage(2, rank - 1)` 的第二个元素拿 —— 不另写一条 SQL，免得又出现两把尺子。
+
+### 9.110.3 面板与 admin：两个号并存，各说各的用途
+
+`lib/macro/dreamledger.js`：
+
+| 函数 | 作用 | 关键规矩 |
+| --- | --- | --- |
+| `refOfRow(row)` | `id>0` → `r${id}`，否则 `''` | 老账行也要拼，否则最早那几轮永远回指不了 |
+| `refIdOf(raw)` | `/^[rR](\d{1,9})$/` → 数字，否则 0 | 「数字」「#3」「乱写」全返回 0，落到「第几近」那条路上由那边打回 |
+
+`rowLine` 的两个分支（有 plan / 0.2.96 之前的老账）**末尾都拼** ` · 引用 r<N>`；这是列表唯一的「名字」。
+
+`readDreamPanel` 开头的分流：
+
+```js
+const wantRef = refIdOf(id)
+const askedId = Math.trunc(Number(String(id ?? '').replace(/^#/, '')))
+const wantId = wantRef > 0 ? 0 : Number.isFinite(askedId) && askedId > 0 ? askedId : 0
+```
+
+`if (wantRef > 0)` 这一段必须排在「按第几近展开」**之前**：`r4` 里的 `4` 不能被当成第 4 近（正好会指到另一条账上，而且不报错 —— 最坏的一种错）。
+
+| 场景 | 面板怎么说 |
+| --- | --- |
+| 引用不存在 | 「账本里没有引用 rX 的那一条（一共 N 条）——引用是账本行的固定号，只增不减，从来不会把老号发给新账。所以要么这个号压根没写过，要么那一行已经不在了（库被重建 / 手工删过）。要按位置找，就翻 page 看 #k；要按内容找，就用摘要里的字眼去搜。」 |
+| 展开成功 | 正文是 `expandPanel` 原文，尾部另起一段：「引用 rX：这个号跟着这一行走，账本再长几轮也不挪（删了也不会被别人占用）；它现在排第 K 近——「#k」会随新账往下挪，回指请用引用。」 |
+| 成功口径 | 「按引用 rX 展开（现在第 K 近），共 N 条；原文照账本念，不重算这一轮清单」；带 `project` 时补「；引用不受项目筛选影响」 |
+| 引用+项目段不属于它 | 照念这一条，并说「这一条不属于项目段「Beta」——它记的是「Alpha」。展开还是照账念，只是别把它当成筛选结果。」 |
+| 按第几近展开（老路） | 口径补一句「；引用 rX，要回指就用 id=rX」——省一次翻列表 |
+
+列表页**只在第 1 页**印一次提示（每页都印等于拿 token 换噪音）：
+
+```
+引用：每行末尾的 r<N> 是这一行的固定号——要回指某一轮就写 id=r<N>；#k 只是它此刻排第几，新账一来就挪。
+```
+
+admin（`lib/macro/defs/admin.js`）的 `idOf(raw)` 认两种写法：`r<N>` 原样返回 `` `r${n}` ``（`r0` 抛「id 引用要从 r1 起（r0 不存在）」），否则走原数字路；脏值抛「只认两种写法：「3」/「#3」这种「第几近」编号（1 = 最新，和列表里的 #k 一致），或「r128」这种账本引用（每行末尾那个号，新账来了也不挪）」。schema 的 `id` 描述同步写清两支的分工。
+
+### 9.110.4 为什么值得反转 0.2.100 的「不暴露 rowid」
+
+0.2.100 那条口径解决的是「**不要用库内部的东西当 API**」：`rowid` 是 SQLite 的实现细节，暴露出去等于把存储层焊进调用约定。这个担心是对的，但当时漏了一点：**没有稳定引用，账本就只能「看最近几条」而不能「回指」**。可追溯性要求的是后者。
+
+反转的边界收得很窄，所以是可控的：
+
+1. **只暴露 `id` 这一个字段**，不暴露 rowid、不暴露 `changes` 的内部结构、不让人写 SQL。
+2. **对外写成 `r<N>`，不是裸数字**：一眼能分开「第几近」和「账本引用」，两种写法不会被混淆成同一个参数值。
+3. **口径仍然是两套、各管一件事**：`#k` 管「这一页的第几近」，`r<N>` 管「这是哪一轮」。面板上两句话并排印，不合并成一个。
+4. **`no-row` 是单独的一态**：引用失效时明说「这个号不会发给新账」，而不是悄悄退回空账本。
+
+一句话：**位置是给人翻的，引用是给话说的**。两者不能合成一个，也不能只留一个。
+
+### 9.110.5 探针
+
+`tools/probe-ruler.mjs`（写侧，真 writer）：
+
+- **L12** 记住 `r1` → 再写一条 → 同一行的第几近 1→2，`dreamById` 取回的 `runAt` 一字不差。
+- **L13** `readDreamRecordByRef` 的 `row.id` 就是那个引用、`rank=2`、`total=2`；不存在的引用 `missing='no-row'`、`row=null`。
+- **L14** `ref=0` 一律 `no-row`，不拿最新那条凑。
+
+`tools/probe-fusion.mjs`（面板层，走 `memory_admin` 真工具）：
+
+- **D40** 列表每行都带 `· 引用 r<N>` 并印一次提示；`page=2` 没有提示行但行上仍有号。
+- **D41** 先拿 `r4`，再写一条新账 → 同一条账现在排第 3 近，正文首行是 `#3 … 引用 r4`、备注仍是「新格式」，口径写「按引用 r4 展开（现在第 3 近）」。
+- **D42** 引用 + 项目段：属于就直说属于；不存在的引用明说「不会发给新账」并给按位置 / 按内容两条路。
+
+### 9.110.6 没做
+
+- 不做「按引用改账/删账」：引用是只读的锚，能改就不再是锚。
+- 不把引用写进 `summary` 文本：账本原文照旧，引用由 `id` 现算，省一次迁移。
+- 不给引用加前缀校验失败就报错的强约束（用户手打 `r4` 大小写、前后空格都宽容）；`r0` 是唯一例外，因为 `r0` 永远不存在。

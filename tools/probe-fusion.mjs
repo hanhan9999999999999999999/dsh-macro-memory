@@ -407,7 +407,7 @@ try {
   }
   check(
     'D25 id 给脏了当面打回（不静默退回整本账）',
-    dirtyId.includes('只认「3」或「#3」') && dirtyId.includes('这次没有展开任何一条'),
+    dirtyId.includes('只认两种写法') && dirtyId.includes('r128') && dirtyId.includes('这次没有展开任何一条'),
     dirtyId.split('\n')[0],
   )
   let dirtyPage = ''
@@ -608,6 +608,67 @@ try {
     'D39 趋势行带上库规模区间（最早→最新），并说清只有几次有数',
     digTrend.includes('库 开工时 2 → 3 条（多了 1 条）') && digTrend.includes('库规模只有 2 次有数'),
     digTrend,
+  )
+
+  // [macro-fusion 0.2.104] 账本行的稳定引用：列表每行末尾印 r<N>，回指用它；「第几近」照旧按位置算。
+  // 这一段的关键动作是「先拿到引用，再让账本往前走一格」，验证引用没挪、编号挪了。
+  const digListed = Meow.readDreamLedger(digWs, '.dsh-meow', 10, 0)
+  const digDigestId = digListed.rows[1].id
+  const digRef = `r${digDigestId}`
+  const digPanelList = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, digCtx))
+  check(
+    'D40 列表每行都带账本引用 r<N>（引用是行自己的号，不是位置），并说一次「回指就用它」',
+    digPanelList.includes(`· 引用 r${digListed.rows[0].id}`) &&
+      digPanelList.includes(`· 引用 ${digRef}`) &&
+      digPanelList.includes('引用：每行末尾的 r<N> 是这一行的固定号'),
+    digPanelList.split('\n').filter((l) => l.startsWith('#')).slice(0, 2).join(' | '),
+  )
+  const digPanelPage2 = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 2, page: 2 }, digCtx))
+  check(
+    'D40 引用提示只在第 1 页说一次（每页都印等于拿 token 换噪音），但行上的 r<N> 每页都在',
+    !digPanelPage2.includes('引用：每行末尾的 r<N> 是这一行的固定号') && digPanelPage2.includes('· 引用 r'),
+    digPanelPage2.split('\n')[0],
+  )
+  // 又跑一轮：全新的一条排到最前面，digest 那一条从 #2 挪到 #3——引用还必须是同一个号。
+  digDb.logDream('window dream done: sess-after-ref stamped=true', { stamped: true, groups: 2, plan: digPlan }, '后来的一轮')
+  // 面板返回的是「【抬头】口径\n正文」一整串：按行断言得先剥抬头，别拿整串 startsWith。
+  const digRefRes = await tools.get('memory_admin').execute({ action: 'dream', id: digRef }, digCtx)
+  const digRefText = String(digRefRes?.body ?? digRefRes)
+  const digRefLines = digRefText.split('\n')
+  const digRefBody = digRefLines.slice(1).join('\n')
+  const digRefNote = digRefLines[0].replace(/^【[^】]*】/, '')
+  check(
+    'D41 又跑了一轮之后按引用展开：还指着同一条账（备注仍是「新格式」），只是它现在排第 3 近',
+    digRefBody.includes('备注：新格式') &&
+      digRefBody.includes(`引用 ${digRef}`) &&
+      digRefBody.includes('它现在排第 3 近') &&
+      digRefBody.startsWith('#3 '),
+    digRefBody.split('\n')[0],
+  )
+  check(
+    'D41 按引用展开的口径写明「按引用 …（现在第 K 近）」，并交代原文照账念',
+    digRefNote.includes(`按引用 ${digRef} 展开（现在第 3 近）`) && digRefNote.includes('原文照账本念'),
+    digRefNote,
+  )
+  const digRefAlphaRes = await tools.get('memory_admin').execute({ action: 'dream', id: digRef, project: 'Alpha' }, digCtx)
+  const digRefAlphaText = String(digRefAlphaRes?.body ?? digRefAlphaRes)
+  const digRefAlphaLines = digRefAlphaText.split('\n')
+  const digRefAlphaBody = digRefAlphaLines.slice(1).join('\n')
+  const digRefAlphaNote = digRefAlphaLines[0].replace(/^【[^】]*】/, '')
+  check(
+    'D42 引用 + 项目段：这条属于 Alpha 就直说属于（引用照念，不拿筛选把它藏起来）',
+    digRefAlphaBody.includes('这一条属于项目段「Alpha」') &&
+      digRefAlphaBody.includes(`引用 ${digRef}`) &&
+      digRefAlphaNote.includes('引用不受项目筛选影响'),
+    digRefAlphaBody.split('\n').filter((l) => l.includes('项目段「Alpha」')).join(' | '),
+  )
+  const digRefGone = text(await tools.get('memory_admin').execute({ action: 'dream', id: `r${digDigestId + 900}` }, digCtx))
+  check(
+    'D42 引用不存在：明说这个号不会发给新账（不是「账本是空的」），并给出按位置/按内容两条替代路',
+    digRefGone.includes(`账本里没有引用 r${digDigestId + 900} 的那一条（一共 6 条）`) &&
+      digRefGone.includes('翻 page 看 #k') &&
+      digRefGone.includes('用摘要里的字眼去搜'),
+    digRefGone.split('\n')[0],
   )
 
   if (process.env.PROBE_LINK === '1' && id) {

@@ -844,6 +844,38 @@ var MemoryDb = class {
       total: Number(seen?.n) || 0,
     };
   }
+  /** [macro-fusion 0.2.104] 账本行的稳定引用：id 是 dream_log.id（INTEGER PRIMARY KEY AUTOINCREMENT），
+   *  只增不减、删了也不复用——「第几近」会随新账往下挪，这个号不挪，所以对外要有一个叫得住的名字。
+   *  返回 {id, runAt, summary, changes, note}，没有这一行就 null（别拿「读不到」冒充「不存在」）。 */
+  dreamById(id) {
+    const asked = Math.trunc(Number(id));
+    const key = Number.isFinite(asked) && asked > 0 ? asked : 0;
+    if (key === 0) return null;
+    const row = this.db.prepare("SELECT id, run_at, summary, changes, note FROM dream_log WHERE id = ?").get(key);
+    if (!row) return null;
+    let changes = null;
+    try {
+      changes = JSON.parse(String(row.changes ?? ""));
+    } catch {
+      changes = null;
+    }
+    return { id: Number(row.id) || 0, runAt: Number(row.run_at) || 0, summary: String(row.summary ?? ""), changes, note: String(row.note ?? "") };
+  }
+  /** [macro-fusion 0.2.104] 这一行现在排第几近（1 = 最新）。排序与 recentDreamsPage 必须同一把尺子
+   *  （run_at DESC, id DESC），否则「引用」和「第几近」会指向不同的行。没有这一行返回 0。 */
+  dreamRankOf(id) {
+    const asked = Math.trunc(Number(id));
+    const key = Number.isFinite(asked) && asked > 0 ? asked : 0;
+    if (key === 0) return 0;
+    const row = this.db.prepare("SELECT id, run_at FROM dream_log WHERE id = ?").get(key);
+    if (!row) return 0;
+    const at = Number(row.run_at) || 0;
+    const self = Number(row.id) || 0;
+    const before = this.db
+      .prepare("SELECT COUNT(*) AS n FROM dream_log WHERE run_at > ? OR (run_at = ? AND id > ?)")
+      .get(at, at, self);
+    return (Number(before?.n) || 0) + 1;
+  }
   close() {
     try {
       this.db.close();
@@ -3560,6 +3592,28 @@ function readDreamRecord(workspace, dir = ".dsh-meow", rank = 1) {
     return { row: rows[0] ?? null, prev: rows[1] ?? null, path, missing: "", total };
   } catch (e) {
     return { row: null, prev: null, path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0 };
+  }
+}
+
+/** [macro-fusion 0.2.104] 按稳定引用读一条账：ref 是 r<N> 里的 N（dream_log.id）。
+ *  与 readDreamRecord（按第几近）分工：那个编号会随新账往下挪，这个不会——同样一条账，
+ *  引用是「它自己」，第几近是「它此刻排第几」。missing 在四态之外同样多一个 'no-row'。 */
+function readDreamRecordByRef(workspace, dir = ".dsh-meow", ref = 0) {
+  if (typeof workspace !== "string" || workspace.length === 0) return { row: null, prev: null, rank: 0, path: "", missing: "no-workspace", total: 0 };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { row: null, prev: null, rank: 0, path, missing: "no-db", total: 0 };
+  const asked = Math.trunc(Number(ref));
+  const key = Number.isFinite(asked) && asked > 0 ? asked : 0;
+  try {
+    const db = getDb(workspace, dir);
+    const total = db.dreamCount();
+    const row = db.dreamById(key);
+    if (!row) return { row: null, prev: null, rank: 0, path, missing: "no-row", total };
+    const rank = db.dreamRankOf(key);
+    const rows = rank > 0 ? db.recentDreamsPage(2, rank - 1) : [];
+    return { row: row ?? rows[0] ?? null, prev: rows[1] ?? null, rank, path, missing: "", total };
+  } catch (e) {
+    return { row: null, prev: null, rank: 0, path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0 };
   }
 }
 
@@ -6503,6 +6557,7 @@ export {
   readDreamLedger,
   readDreamProjects,
   readDreamRecord,
+  readDreamRecordByRef,
   readLiveDream,
   dreamSweepOnce,
   dreamSweepTick,

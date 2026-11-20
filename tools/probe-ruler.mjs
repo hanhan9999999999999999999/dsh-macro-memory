@@ -842,5 +842,53 @@ check(
   `trace=${JSON.stringify(scaleTrace.digest?.store)} meta=${JSON.stringify(scaleStored.store)}`,
 )
 
+// N 段（0.2.104）：账本行的稳定引用——「第几近」会随新账往下挪，dream_log.id 不挪。
+// 这一段的核心动作是「先记住引用，再让账本往前走一格」，然后验证引用还指着同一条、编号已经变了。
+const refWs = mkdtempSync(join(tmpdir(), 'ruler-ref-'))
+const refDb = V.getDb(refWs, '.dsh-meow')
+const refPlan = (project, dup) => ({
+  rounds: 1,
+  rows: 2,
+  dup,
+  cover: 0,
+  missing: 0,
+  projects: [project],
+  projectCount: 1,
+  pairs: [],
+  store: { active: 1, byLevel: { fact: 1 } },
+})
+refDb.logDream('收尾：第一条账', { plan: refPlan('Alpha', 1), stamped: true }, '')
+const refPage = refDb.recentDreamsPage(5, 0)
+const refId = refPage[0].id
+const refRunAt = refPage[0].runAt
+const rankBefore = refDb.dreamRankOf(refId)
+refDb.logDream('收尾：第二条账', { plan: refPlan('Beta', 2), stamped: true }, '')
+const rankAfter = refDb.dreamRankOf(refId)
+const refRow = refDb.dreamById(refId)
+check(
+  'L12 引用不挪、编号会挪：同一行记下 r<N> 之后又跑一轮，它的第几近从 1 变 2，而 dreamById 取回的仍是同一条（runAt 一致）',
+  refId > 0 && rankBefore === 1 && rankAfter === 2 && refRow !== null && refRow.runAt === refRunAt,
+  `id=${refId} before=${rankBefore} after=${rankAfter} runAt=${refRunAt}/${refRow?.runAt}`,
+)
+const refRead = V.readDreamRecordByRef(refWs, '.dsh-meow', refId)
+const refMiss = V.readDreamRecordByRef(refWs, '.dsh-meow', 999999)
+check(
+  'L13 按引用读一条：row.id 就是那个引用、rank 是它此刻的第几近；引用不存在时 missing=no-row（不拿「读不到」冒充「账本空」）',
+  refRead.missing === '' &&
+    refRead.row?.id === refId &&
+    refRead.rank === 2 &&
+    refRead.total === 2 &&
+    refMiss.missing === 'no-row' &&
+    refMiss.total === 2 &&
+    refMiss.row === null,
+  `read=${refRead.missing}/${refRead.row?.id}/rank=${refRead.rank} miss=${refMiss.missing}/${refMiss.total}`,
+)
+const refZero = V.readDreamRecordByRef(refWs, '.dsh-meow', 0)
+check(
+  'L14 引用 0 / 非数字不猜行：一律 no-row，不去取「最新那条」凑一个结果（猜出来的引用比没有引用更坏）',
+  refZero.missing === 'no-row' && refZero.row === null,
+  `missing=${refZero.missing}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -6504,7 +6504,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'dream 参数: schema 里 page / id 有独立说明（参数说明也是产品的一部分）',
-    adminSrc.includes('action=dream 翻到第几页') && adminSrc.includes('action=dream 展开第几近的一条'),
+    adminSrc.includes('action=dream 翻到第几页') && adminSrc.includes('action=dream 展开一条账'),
   )
   check(
     'dream 翻页: 探针进线（probe-ruler J1–J6、probe-fusion D20–D25）',
@@ -6804,6 +6804,119 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.109') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 115'),
+  )
+}
+
+// [macro-fusion 0.2.104] 「第几近」会随新账往下挪，回指不了：#3 今天指这一轮，跑完下一轮就换人。
+// dream_log.id 是 AUTOINCREMENT，只增不减、删了也不复用，所以 r<N> 是这一行自己的名字。
+// 这是有意反转 0.2.100「不暴露 rowid」那条口径——理由写在 DESIGN 116 里。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const adminSrc = readFileSync(join(root, 'lib', 'macro', 'defs', 'admin.js'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc104 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc104 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'dream 引用: 写侧按 id 取一条账，读不到返回 null（不拿「读不到」冒充「不存在」）',
+    vSrc.includes('dreamById(id) {') &&
+      vSrc.includes('SELECT id, run_at, summary, changes, note FROM dream_log WHERE id = ?') &&
+      vSrc.includes('if (key === 0) return null;') &&
+      vSrc.includes('if (!row) return null;') &&
+      vSrc.includes('return { id: Number(row.id) || 0, runAt: Number(row.run_at) || 0,'),
+  )
+  check(
+    'dream 引用: 「第几近」和账本列表必须同一把尺子（run_at 相同再比 id），否则引用和编号会指向不同的行',
+    (() => {
+      const seg = vSrc.slice(vSrc.indexOf('dreamRankOf(id) {'), vSrc.indexOf('close() {'))
+      const page = vSrc.slice(vSrc.indexOf('recentDreamsPage('), vSrc.indexOf('recentDreamsPage(') + 1200)
+      return (
+        seg.includes('SELECT COUNT(*) AS n FROM dream_log WHERE run_at > ? OR (run_at = ? AND id > ?)') &&
+        page.includes('ORDER BY run_at DESC, rowid DESC') &&
+        seg.includes('return (Number(before?.n) || 0) + 1;')
+      )
+    })(),
+  )
+  check(
+    'dream 引用: readDreamRecordByRef 四态之外多一个 no-row，成功时把 rank 与 prev 一起带出来',
+    vSrc.includes('function readDreamRecordByRef(workspace, dir = ".dsh-meow", ref = 0)') &&
+      vSrc.includes('if (!row) return { row: null, prev: null, rank: 0, path, missing: "no-row", total };') &&
+      vSrc.includes('return { row: row ?? rows[0] ?? null, prev: rows[1] ?? null, rank, path, missing: "", total };') &&
+      vSrc.includes('  readDreamRecordByRef,'),
+  )
+  check(
+    'dream 引用: 面板认 r<N> 这种写法，列表每行都拼上自己的号（老账行也拼，否则最早的几轮永远回指不了）',
+    panelSrc.includes('function refOfRow(row)') &&
+      panelSrc.includes('function refIdOf(raw)') &&
+      panelSrc.includes('const tailRef = ref === \'\' ? \'\' : ` · 引用 ${ref}`') &&
+      panelSrc.includes('这条记录比 0.2.96 早，当时还没写规模数字${tailRef}') &&
+      panelSrc.includes('` · 引用 ${ref}`'),
+  )
+  check(
+    'dream 引用: 按引用展开排在「按第几近」之前，且两种写法分开讲（引用不挪、编号会挪）',
+    (() => {
+      const a = panelSrc.indexOf('if (wantRef > 0) {')
+      const b = panelSrc.indexOf('if (wantId > 0) {')
+      const c = panelSrc.indexOf('const wantId = wantRef > 0 ? 0 :')
+      return a > 0 && b > a && c > 0 && c < a
+    })(),
+  )
+  check(
+    'dream 引用: 引用不存在时明说这个号不会发给新账，并给按位置 / 按内容两条替代路',
+    panelSrc.includes('账本里没有引用 r${wantRef} 的那一条（一共 ${rec.total} 条）') &&
+      panelSrc.includes('从来不会把老号发给新账') &&
+      panelSrc.includes('要按位置找，就翻 page 看 #k；要按内容找，就用摘要里的字眼去搜。'),
+  )
+  check(
+    'dream 引用: 展开时把「它现在排第几近」和「引用」摆在一起，并说清引用不受项目筛选影响',
+    panelSrc.includes('引用 r${wantRef}：这个号跟着这一行走，账本再长几轮也不挪') &&
+      panelSrc.includes('它现在排第 ${rankNow} 近——「#k」会随新账往下挪，回指请用引用。') &&
+      panelSrc.includes('按引用 r${wantRef} 展开${rankNow > 0 ? `（现在第 ${rankNow} 近）` : \'\'}，共 ${rec.total} 条') &&
+      panelSrc.includes("(wantProject === '' ? '' : '；引用不受项目筛选影响')"),
+  )
+  check(
+    'dream 引用: 第几近那条路也顺手给出引用（省一次翻列表），编号口径不变',
+    panelSrc.includes('`展开第 ${wantId} 条（共 ${rec.total} 条${rowRef === \'\' ? \'\' : `；引用 ${rowRef}，要回指就用 id=${rowRef}`}）'),
+  )
+  check(
+    'dream 引用: 提示行只在第 1 页说一次（每页都印等于拿 token 换噪音）',
+    (() => {
+      const idx = panelSrc.indexOf('引用：每行末尾的 r<N> 是这一行的固定号')
+      if (idx < 0) return false
+      // 提示行必须落在「第 1 页」那段里（wantPage === 1 的那一支），且由「有没有引用」守着。
+      const page1 = panelSrc.lastIndexOf('if (wantPage === 1) {', idx)
+      const blockEnd = panelSrc.indexOf('if (total > want) {', idx)
+      const near = panelSrc.slice(Math.max(0, idx - 400), idx)
+      return page1 > 0 && blockEnd > idx && near.includes("if (rows.some((r) => refOfRow(r) !== '')) {")
+    })(),
+  )
+  check(
+    'dream 引用: admin 的 id 两种写法都认，r0 与乱写各自当面打回',
+    adminSrc.includes('const byRef = /^[rR](\\d{1,9})$/.exec(text)') &&
+      adminSrc.includes('id 引用要从 r1 起（r0 不存在）') &&
+      adminSrc.includes('只认两种写法：「3」/「#3」这种「第几近」编号') &&
+      adminSrc.includes('「r128」这种账本引用（每行末尾那个号，新账来了也不挪）') &&
+      adminSrc.includes('"r128" 是账本引用（每行末尾那个号，不挪，回指某一轮用它）'),
+  )
+  check(
+    'dream 引用: 探针进线（probe-ruler L12–L14 验写侧不挪、probe-fusion D40–D42 验面板真念）',
+    rulerSrc104.includes('L12 引用不挪、编号会挪') &&
+      rulerSrc104.includes('L13 按引用读一条') &&
+      rulerSrc104.includes('L14 引用 0 / 非数字不猜行') &&
+      fusionSrc104.includes('D40 列表每行都带账本引用 r<N>') &&
+      fusionSrc104.includes('D41 又跑了一轮之后按引用展开') &&
+      fusionSrc104.includes('D42 引用不存在'),
+  )
+  check(
+    'dream 引用: 版本不早于 0.2.104（两处一致），文档 9.110 / 116 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 104)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.110') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 116'),
   )
 }
 
