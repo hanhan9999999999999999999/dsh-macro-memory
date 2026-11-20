@@ -6697,7 +6697,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'dream 面板: 展开顺序是「项目段 → 对子 → 比更早一条 → 原文」（对子不被 1200 字截断挤掉）',
     (() => {
-      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank, seen)'), panelSrc.indexOf('function compareLine('))
+      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank, seen, settled)'), panelSrc.indexOf('function compareLine('))
       const a = seg.indexOf('lines.push(pairsBlock(row))')
       const b = seg.indexOf('const cmp = compareLine(row, prev, rank + 1)')
       const c = seg.indexOf('const raw = row.changes === null')
@@ -6781,7 +6781,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'dream 规模: 展开顺序是「项目段 → 对子 → 库规模 → 比更早一条 → 原文」',
     (() => {
-      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank, seen)'), panelSrc.indexOf('function compareLine('))
+      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank, seen, settled)'), panelSrc.indexOf('function compareLine('))
       const a = seg.indexOf('lines.push(pairsBlock(row))')
       const b = seg.indexOf('const storeLine = storeBlock(row)')
       const c = seg.indexOf('const cmp = compareLine(row, prev, rank + 1)')
@@ -7002,7 +7002,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'dream 日期筛: 展开一条时说清它在不在区间里，但编号/引用口径不变（和项目筛同一条分寸）',
     panelSrc.includes('function rangeNoteOf(row, range) {') &&
       panelSrc.includes('这一条不在 ${range.label} 这段时间里（它写在 ${stamp(at)}）') &&
-      panelSrc.includes('[expandPanel(rec, wantId, conflictSeenOf(workspace, dir, wantId)), rangeNoteOf(rec.row, range), filterNote]') &&
+      panelSrc.includes('[expandPanel(rec, wantId, conflictSeenOf(workspace, dir, wantId), settledById), rangeNoteOf(rec.row, range), filterNote]') &&
       panelSrc.includes('日期筛选也不影响引用'),
   )
   check(
@@ -7872,7 +7872,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '冲突: 面板插在重复对之后（先看该不该合并，再看该不该统一说法），走向两块不加冲突（那是两件事）',
     (() => {
-      const at = ledgerSrc114.indexOf('const conflictText = conflictsBlock(row, seen)')
+      const at = ledgerSrc114.indexOf('const conflictText = conflictsBlock(row, seen, settled)')
       const pairAt = ledgerSrc114.indexOf('lines.push(pairsBlock(row))')
       if (!(at > 0 && pairAt > 0 && at > pairAt)) return false
       const bodyOf = (name) => {
@@ -7978,7 +7978,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     '跨轮: 摊开面板时把「更早那几轮的账」查一遍（按第几近与按引用两条路都传，晚一条都不许漏）',
-    ledgerSrc115.includes('function expandPanel(rec, rank, seen)') &&
+    ledgerSrc115.includes('function expandPanel(rec, rank, seen, settled)') &&
       ledgerSrc115.includes('conflictSeenOf(workspace, dir, rankNow)') &&
       ledgerSrc115.includes('conflictSeenOf(workspace, dir, wantId)'),
   )
@@ -7999,6 +7999,109 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.121') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 127'),
+  )
+}
+
+// [macro-fusion 0.2.116] 冲突的去向：上一轮报的对，这一轮不报了，到底是处置了、
+// 条目被归档删了，还是正文改了导致关键词错开？三种在面板上长得一样，以前只能瞎猜。
+{
+  const idxSrc116 = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const ledgerSrc116 = readFileSync(join(root, 'lib/macro/dreamledger.js'), 'utf8')
+  const fusionSrc116 = readFileSync(join(root, 'tools/probe-fusion.mjs'), 'utf8')
+  const rulerSrc116 = readFileSync(join(root, 'tools/probe-ruler.mjs'), 'utf8')
+  check(
+    '冲突去向: 写侧有个只读的「按 id 取现状」口子（给上一轮那几条的现状，才谈得上去向）',
+    idxSrc116.includes('function readRowsByIds(workspace, dir = ".dsh-meow", ids = []) {') &&
+      idxSrc116.includes('if (asked.length === 0) return { rows: [], missing: "bad-arg", path: memoryDbPath(workspace, dir) };') &&
+      idxSrc116.includes('const cap = asked.slice(0, 20);') &&
+      idxSrc116.includes('typeof db.findByIdAll === "function" ? db.findByIdAll(id) : []') &&
+      idxSrc116.includes('sessionLevel: m.level'),
+  )
+  check(
+    '冲突去向: 读口在导出清单里（面板要能用），文档首行标了 0.2.116 的 marker',
+    idxSrc116.includes('\n  readRowsByIds,\n') &&
+      idxSrc116.includes('[macro-fusion 0.2.116]'),
+  )
+  check(
+    '冲突去向: 一次最多摊 3 对（SETTLED_MAX），多的写「还有 N 对没列」',
+    ledgerSrc116.includes('const SETTLED_MAX = 3') &&
+      ledgerSrc116.includes("lines.push(`  · 还有 ${settled.hidden} 对没列（一次只摊前 ${SETTLED_MAX} 对）。`)") &&
+      ledgerSrc116.includes('out.hidden = Math.max(0, gone.length - SETTLED_MAX)'),
+  )
+  check(
+    '冲突去向: 一条的现状分五种说法（查不到 / 短 id 撞了 / 已归档 / 已标 stale / 正文改过 / 没动过），不合并成「动过」',
+    ledgerSrc116.includes('function rowFateOf(id, byShort, prevAt) {') &&
+      ledgerSrc116.includes('`${id} 查不到了（归档或删除）`') &&
+      ledgerSrc116.includes('`${id} 命中 ${list.length} 条（短 id 前几位撞了，判断不了）`') &&
+      ledgerSrc116.includes("if (r.status === 'archived') return `${id} 已归档`") &&
+      ledgerSrc116.includes("if (r.status === 'stale') return `${id} 已标 stale`") &&
+      ledgerSrc116.includes('`${id} 正文改过（${stamp(at)}）`') &&
+      ledgerSrc116.includes('return `${id} 没动过`') &&
+      ledgerSrc116.includes('if (list.length > 1)'),
+  )
+  check(
+    '冲突去向: 只跟上一轮比（读 2 条取 rows[0]），第一轮没有可比的不硬编（rank > 0 才做）',
+    ledgerSrc116.includes('function conflictSettledOf(workspace, dir, rank, plan) {') &&
+      ledgerSrc116.includes('if (!(rank > 0)) return undefined') &&
+      ledgerSrc116.includes('Meow.readDreamRecords(workspace, dir, 2, rank)') &&
+      ledgerSrc116.includes('const prev = got.rows[0]') &&
+      ledgerSrc116.includes('const prevAt = Number(prev.runAt) || 0'),
+  )
+  check(
+    '冲突去向: 只摊「这一轮不再报」的键（用 conflictKeyOf 归一，a/b 顺序无关），还在报的不进这一块',
+    ledgerSrc116.includes('const gone = prevPairs.filter((p) => {') &&
+      ledgerSrc116.includes('if (gone.length === 0) return out') &&
+      ledgerSrc116.includes('return { key: conflictKeyOf(p), text: `${rowFateOf(a, byShort, prevAt)}；${rowFateOf(b, byShort, prevAt)}` }'),
+  )
+  check(
+    '冲突去向: 现状读不出来就说读不出来（blind），不外推成「没动过」',
+    ledgerSrc116.includes('out.blind = true') &&
+      ledgerSrc116.includes('的现状读不出来') &&
+      ledgerSrc116.includes('这几对的现状读不出来——只报「不再报」这个事实，去向不猜。'),
+  )
+  check(
+    '冲突去向: 三种尾巴分得开——都没动过 ≠ 动过 ≠ 读不到（前两种最容易被误读成「解决了」）',
+    ledgerSrc116.includes('两条都还在、也都没动过——它这一轮没被报，多半是关键词 / 数字刚好错开，不是处置。') &&
+      ledgerSrc116.includes('上面只是「后来动过什么」，不等于这一对真解决了：要确认就打开那两条看正文。') &&
+      ledgerSrc116.includes('const changed = /已归档|已标 stale|正文改过|查不到了|命中 \\d+ 条|读不出来/') &&
+      ledgerSrc116.includes('} else if (gone.every((g) => !changed.test(String(g.text)))) {'),
+  )
+  check(
+    '冲突去向: 上一轮没报过、或老账没这一格——一个字都不写（不占版面）',
+    ledgerSrc116.includes('if (settled === undefined || settled === null) return') &&
+      ledgerSrc116.includes('if (total === 0) return') &&
+      ledgerSrc116.includes('if (gone.length === 0) return `${head}，这一轮还都在报。`'),
+  )
+  check(
+    '冲突去向: 三个分支都挂去向块（这一轮 0 对时，去向是唯一线索），展开两路都传 settled',
+    ledgerSrc116.includes('function conflictsBlock(row, seen, settled) {') &&
+      ledgerSrc116.includes('const settledText = settledBlock(settled)') &&
+      ledgerSrc116.includes('const withTail = (text) => (settledText === \'\' ? text : `${text}\\n${settledText}`)') &&
+      ledgerSrc116.includes('conflictSettledOf(workspace, dir, rankNow, rec.row?.changes?.plan)') &&
+      ledgerSrc116.includes('conflictSettledOf(workspace, dir, wantId, rec.row?.changes?.plan)') &&
+      ledgerSrc116.includes('function expandPanel(rec, rank, seen, settled) {'),
+  )
+  check(
+    '冲突去向·探针进线：D94–D100（已归档 / 正文改过 / 都没动过 / 都查不到 / 还在报 / 上一轮没报 / 引用路径）',
+    fusionSrc116.includes('D94 上一轮报过、这一轮不报') &&
+      fusionSrc116.includes('D95 上一轮之后正文被改过') &&
+      fusionSrc116.includes('D96 两条都没动过') &&
+      fusionSrc116.includes('D97 两条都查不到了') &&
+      fusionSrc116.includes('D98 这一轮还在报') &&
+      fusionSrc116.includes('D99 上一轮本来就没报过对') &&
+      fusionSrc116.includes('D100 按引用展开也带去向') &&
+      !rulerSrc116.includes('D94'),
+  )
+  check(
+    '冲突去向: 版本与文档一起走（9.122 / 128）',
+    (() => {
+      const pkg116 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const v = pkg116.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 116)
+      return atLeast && readFileSync(join(root, 'lib/index.js'), 'utf8').includes(`export const version = '${pkg116.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.122') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 128'),
   )
 }
 

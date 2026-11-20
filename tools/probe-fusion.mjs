@@ -1191,6 +1191,92 @@ try {
     ctOldest.split('\n').filter((l) => l.startsWith('疑似冲突') || l.includes('这一轮新报')).join(' | '),
   )
 
+  // [macro-fusion 0.2.116] 上一轮报的对这一轮不见了，得说清是处置了还是只是错开了。
+  // 四种去向：已归档 / 正文改过 / 查不到了 / 两条都没动过（这条最容易被误读成「解决了」）。
+  const stPlan = (list) => ({
+    rounds: 1, groups: 1, rows: 2, dup: 0, cover: 0, missing: 0, projects: 0,
+    conflicts: list.length, conflictPairs: list,
+  })
+  const stRow = (id, content, keywords, status, updatedAt) => ({
+    id, level: 'fact', content, keywords, status, updated_at: updatedAt, created_at: 1600000000000,
+    importance: 2, project: null, title: null,
+  })
+  const stPair = (a, b) => ({
+    kind: 'conflict', a, b, levelA: 'fact', levelB: 'fact',
+    shared: ['dsh', '路径'], sharedTotal: 2, onlyA: ['0.1'], onlyB: ['0.2.115'],
+    newer: 'b', newerAt: 1760000600000,
+  })
+  const stScene = (tag, rows, prevPairs, nowPairs) => {
+    const ws = mkdtempSync(join(tmpdir(), `macro-probe-settled-${tag}-`))
+    const db = Meow.getDb(ws, '.dsh-meow')
+    for (const r of rows) db.insert(r)
+    db.logDream('window dream done: sess-settled-prev stamped=true', { stamped: true, groups: 1, plan: stPlan(prevPairs) }, '上一轮')
+    db.logDream('window dream done: sess-settled-now stamped=true', { stamped: true, groups: 1, plan: stPlan(nowPairs) }, '这一轮')
+    return { ws, db, ctx: { agent: { session: { header: { cwd: ws } } } } }
+  }
+  const stA = stRow('aaaa1111-0000-4000-8000-0000000000a1', 'DSH 在 C 盘 0.1', ['DSH', '路径'], 'active', 1600000000000)
+  const stB = stRow('bbbb2222-0000-4000-8000-0000000000b2', 'DSH 在 D 盘 0.2.115', ['DSH', '路径'], 'active', 1600000000000)
+  const stC = stRow('cccc3333-0000-4000-8000-0000000000c3', '旧结论（已被取代：D 盘）', ['DSH', '路径'], 'archived', 1600000000000)
+
+  const stMixed = stScene('mixed', [stA, stC], [stPair('aaaa1111', 'cccc3333')], [])
+  const stMixedText = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, stMixed.ctx))
+  check(
+    'D94 上一轮报过、这一轮不报：说清去向（已归档），并点出这一轮 0 对',
+    stMixedText.includes('上一轮（第 2 轮）报了 1 对，这一轮不再报的有 1 对：') &&
+      stMixedText.includes('cccc3333 已归档') &&
+      stMixedText.includes('这一轮没有「同一主题却写了不同数字」的条目') &&
+      stMixedText.includes('上面只是「后来动过什么」，不等于这一对真解决了'),
+    stMixedText.split('\n').filter((l) => l.includes('上一轮') || l.includes('⇄') || l.includes('上面只是')).join(' | '),
+  )
+
+  const stMoved = stScene('moved', [stA, stB], [stPair('aaaa1111', 'bbbb2222')], [])
+  stMoved.db.update('fact', 'aaaa1111-0000-4000-8000-0000000000a1', { content: 'DSH 已搬到 D 盘 0.2.115（已确认）' })
+  const stMovedText = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, stMoved.ctx))
+  check(
+    'D95 上一轮之后正文被改过：写「正文改过」并带时间，不笼统说「动过」',
+    /aaaa1111 正文改过（\d{2}-\d{2} \d{2}:\d{2}）/.test(stMovedText) &&
+      stMovedText.includes('不等于这一对真解决了'),
+    stMovedText.split('\n').filter((l) => l.includes('⇄')).join(' | '),
+  )
+
+  const stStill = stScene('still', [stA, stB], [stPair('aaaa1111', 'bbbb2222')], [])
+  const stStillText = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, stStill.ctx))
+  check(
+    'D96 两条都没动过：明说「多半是关键词 / 数字刚好错开，不是处置」，不给假安心',
+    stStillText.includes('两条都还在、也都没动过') && stStillText.includes('不是处置'),
+    stStillText.split('\n').filter((l) => l.includes('⇄') || l.includes('两条都还在')).join(' | '),
+  )
+
+  const stGone = stScene('gone', [stA], [stPair('eeee9999', 'ffff8888')], [])
+  const stGoneText = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, stGone.ctx))
+  check(
+    'D97 两条都查不到了：说「查不到了（归档或删除）」，不编成「已处置」',
+    stGoneText.includes('eeee9999 查不到了（归档或删除）') && stGoneText.includes('ffff8888 查不到了'),
+    stGoneText.split('\n').filter((l) => l.includes('⇄')).join(' | '),
+  )
+
+  const stKeep = stScene('keep', [stA, stB], [stPair('aaaa1111', 'bbbb2222')], [stPair('aaaa1111', 'bbbb2222')])
+  const stKeepText = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, stKeep.ctx))
+  check(
+    'D98 这一轮还在报：只说「还都在报」，不列去向也不催',
+    stKeepText.includes('上一轮（第 2 轮）报了 1 对，这一轮还都在报。') && !stKeepText.includes('不再报的有'),
+    stKeepText.split('\n').filter((l) => l.includes('上一轮')).join(' | '),
+  )
+  const stNone = stScene('none', [stA], [], [])
+  const stNoneText = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, stNone.ctx))
+  check(
+    'D99 上一轮本来就没报过对：一个字都不加（不写「还都在报」，也不写「0 对不再报」）',
+    !stNoneText.includes('上一轮（第'),
+    stNoneText.split('\n').filter((l) => l.includes('上一轮')).join(' | ') || '（没有这一块）',
+  )
+
+  const stRefText = text(await tools.get('memory_admin').execute({ action: 'dream', id: 'r2' }, stMixed.ctx))
+  check(
+    'D100 按引用展开也带去向：两条路径同一套说法，不出现「列表有、引用没有」',
+    stRefText.includes('上一轮（第 2 轮）报了 1 对') && stRefText.includes('cccc3333 已归档'),
+    stRefText.split('\n').filter((l) => l.includes('上一轮') || l.includes('⇄')).join(' | '),
+  )
+
   // D58–D61（0.2.109）：回执成本 + budget。六个维度里「效率」以前没有数——
   // 有条数、有耗时，没有「这次检索占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
   const { createUnifiedTools: costTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)

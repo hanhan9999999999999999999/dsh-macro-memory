@@ -3698,6 +3698,31 @@ function readDreamRecords(workspace, dir = ".dsh-meow", limit = 5, offset = 0) {
   }
 }
 
+/** [macro-fusion 0.2.116] 按 id 取几条记忆的现状（跨七层）。
+ *  为什么读侧需要这个：面板要说清「上一轮报的那一对，这一轮怎么不见了」，只能看这两条**现在**长什么样
+ *  （还在不在、status 是什么、updated_at 之后动过没有）；重跑一遍冲突检测不算数——那是用今天的库去猜昨天的判断。
+ *  返回 { rows, missing, path }：`rows` 是 fromRow 后的真行（含 level / status / updated_at），
+ *  一个 id 在七层里可能命中多条（短 id 前缀），全部带出、由调用方自己判歧义；`missing` 只在参数写坏时非空。 */
+function readRowsByIds(workspace, dir = ".dsh-meow", ids = []) {
+  if (typeof workspace !== "string" || workspace.length === 0) return { rows: [], missing: "no-workspace", path: "" };
+  const asked = Array.isArray(ids) ? ids.map((x) => String(x ?? "").trim()).filter((x) => x !== "") : [];
+  if (asked.length === 0) return { rows: [], missing: "bad-arg", path: memoryDbPath(workspace, dir) };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { rows: [], missing: "no-db", path };
+  const cap = asked.slice(0, 20);
+  try {
+    const db = getDb(workspace, dir);
+    const rows = [];
+    for (const id of cap) {
+      const matches = typeof db.findByIdAll === "function" ? db.findByIdAll(id) : [];
+      for (const m of Array.isArray(matches) ? matches : []) rows.push({ ...m.row, sessionLevel: m.level });
+    }
+    return { rows, missing: "", path };
+  } catch (e) {
+    return { rows: [], missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, path };
+  }
+}
+
 var LEVEL_ORDER = { project: 0, topic: 1, fact: 2, lesson: 3, rules: 4, soul: 5, user: 6 };function formatTime(t) {
   return new Date(t).toISOString().slice(0, 16).replace("T", " ");
 }
@@ -6853,6 +6878,7 @@ export {
   readDreamRecord,
   readDreamRecordByRef,
   readDreamRecords,
+  readRowsByIds,
   readDreamSpan,
   readLiveDream,
   dreamSweepOnce,

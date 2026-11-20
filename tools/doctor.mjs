@@ -142,6 +142,12 @@ else {
 // 只会让行为退回上游（例如归档的记忆又出现在检索结果里）。补丁必须能被机器找回来。
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
+  // [macro-fusion 0.2.116] 冲突的去向：不报了，是处置了还是错开了
+  {
+    marker: '[macro-fusion 0.2.116]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: "冲突这一条线到 0.2.115 只走到「这一对报过几次」，还有个反向的洞：上一轮报的那一对，这一轮从账上消失了——面板上它只有一种表情（不在），底下却是三件相反的事。这一版补「去向」。\n\n①  三种消失必须分开：真处置了（取新说法、关键词不再撞）/ 条目被归档或删除（连比都没得比）/ 只是错开了（改了正文、闸门刚好不响，结论其实没统一）。第三种最危险，因为它跟第一种长得一模一样。\n\n②  判据只能是「看那两条现在长什么样」，不能重算：记忆可更新，「现在不冲突」与「以前被处置过」是两件事——把数字改一致是处置，把关键词删掉让检测错开也是「现在不冲突」。`conflictSettledOf(workspace, dir, rank, plan)` 先用 `Meow.readDreamRecords(workspace, dir, 2, rank)` 取上一轮（`rows[0]`，同一把 `run_at DESC, rowid DESC` 尺子），`rank > 0` 才做；用 `conflictKeyOf` 归一后比出 `gone`（上一轮有、这一轮 `plan.conflictPairs` 没有）；再用 `Meow.readRowsByIds` 读现状。\n\n③  写侧开一个纯读口 `readRowsByIds(workspace, dir = \".dsh-meow\", ids = [])`（导出 `{ rows, missing, path }`）：ids 去空去 trim、空数组 → `missing: \"bad-arg\"`、`slice(0, 20)` 封顶；`db.findByIdAll(id)` 取跨层命中并带 `sessionLevel`；`missing` 另有 `no-workspace` / `no-db` / `read-failed: …`。读侧不自己造轮子——与 0.2.115 的 `readDreamRecords` 同一条路数。\n\n④  五种现状，不许合并成「动过」：查不到行 → 「查不到了（归档或删除）」；命中多行 → 「命中 N 条（短 id 前几位撞了，判断不了）」；`archived` → 「已归档」；`stale` → 「已标 stale」（完结与作废分开）；`updated_at > 上一轮 runAt` → 「正文改过（MM-DD HH:mm）」（改过不等于改对）；其余 → 「没动过」（阴性要显式）。\n\n⑤  三种尾巴必须分开写：盲读 → 「这几对的现状读不出来——只报「不再报」这个事实，去向不猜」；一条明细都不命中 `changed` 正则 → 「两条都还在、也都没动过——它这一轮没被报，多半是关键词 / 数字刚好错开，不是处置」；其余 → 「上面只是「后来动过什么」，不等于这一对真解决了：要确认就打开那两条看正文」。留白会被读成「解决了」，所以「没动过」必须显式说出来。\n\n⑥  抬头两种：全部还在报 → `上一轮（第 N 轮）报了 M 对，这一轮还都在报。`；有 gone → `上一轮（第 N 轮）报了 M 对，这一轮不再报的有 K 对：`，明细每行 `  · a ⇄ b：<现状>；<现状>`，一次最多摊 `SETTLED_MAX = 3` 对，多的写「还有 N 对没列（一次只摊前 3 对）」。\n\n⑦  `conflictsBlock(row, seen, settled)` 里 `withTail` 把去向块拼在三个分支的末尾——这一轮 0 对时（`stored.length === 0`）去向是唯一线索，最不能漏；上一轮没报过 / 老账没这一格则一个字都不写。\n\n⑧  `expandPanel(rec, rank, seen, settled)` 两条展开路径都传：按第几近 `conflictSettledOf(workspace, dir, rankNow, rec.row?.changes?.plan)`、按引用 `conflictSettledOf(workspace, dir, wantId, rec.row?.changes?.plan)`；只传一路会让同一账两套说法。\n\n⑨  探针：probe-fusion D94–D100（已归档 / 正文改过 / 都没动过 / 都查不到 / 还在报 / 上一轮没报 / 按引用也带去向），570 → 577；verify 新块 12 条，1,161 → 1,173；三处老断言只改锚点（`expandPanel(rec, rank, seen, settled)` 三处、`conflictsBlock(row, seen, settled)` 一处）。\n\n⑩  文档：INTERNAL 9.122（病 / 判据 / 五种现状表 / 三种尾巴 / 接线 / 验证 / 没做的事），DESIGN 128（三种消失 / 判据为什么只能看现状 / 「没动过」必须显式 / 一次只摊三对）。没做：处置动作本身仍不落表（只能从现状推）、不跨库溯源、不判断改对没有、不对上一轮的对子做模糊匹配。",
+  },
   // [macro-fusion 0.2.115] 冲突跨轮追踪：报过的和刚发现的必须分得开
   {
     marker: '[macro-fusion 0.2.115]',
