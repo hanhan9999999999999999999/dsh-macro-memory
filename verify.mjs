@@ -509,7 +509,7 @@ function makeHostCtx() {
   const vendor = read(join('vendor', 'meow-memory', 'lib', 'index.js'))
   check('门牌: prompt.js 导出 NAV_TEXT', /export const NAV_TEXT = `/.test(prompt))
   check('门牌: 门牌里点名两条命令与两个面板', prompt.includes('/dream') && prompt.includes('/meow-trust') && prompt.includes('设置里的「宏记忆」') && prompt.includes('「宏记忆 · 星图」'))
-  check('门牌: L0 注入也点了三个面', /三个面都在/.test(prompt))
+  check('门牌: L0 注入也点了三个面', /三面都在：工具 \/ 命令/.test(prompt))
   check('门牌: guide 先讲门牌再接 vendor 原文', /\$\{NAV_TEXT\}\\n\\n---\\n\\n\$\{buildFullGuide\(bridge\)\}/.test(admin))
   // 交叉核对：手册里的命令名必须真是 vendor 注册的名字，否则手册在说谎
   check('门牌: 命令名与 vendor 注册名一致', vendor.includes('name: "dream"') && vendor.includes('name: "meow-trust"'))
@@ -3846,8 +3846,9 @@ function makeHostCtx() {
   check(
     'nb: 读记忆走 countParam，不再用「不是有限数就 return」把三种情况压成一种',
     readDefSrc62b.includes("countParam('neighbors', args.neighbors, { min: 0, max: 40, def: 12 })") &&
-      /if \(nb\.value <= 0\) return nb\.note\.length > 0/.test(readDefSrc62b) &&
-      /neighbors: nb\.value/.test(readDefSrc62b) &&
+      // [macro-fusion 0.2.112] 0 条那条提前返回多了 budget.note；星图只看阶梯给的 count。
+      /if \(nb\.value <= 0\) return \[said, nb\.note, budget\.note\]/.test(readDefSrc62b) &&
+      /neighbors: count,? \}/.test(readDefSrc62b) &&
       !/const want = args\.neighbors === undefined/.test(readDefSrc62b) &&
       !/!Number\.isFinite\(want\)/.test(readDefSrc62b),
     'defs/read.js',
@@ -3855,7 +3856,7 @@ function makeHostCtx() {
   check(
     'nb: 说明接在回执末尾（有邻居段就接在段后），不顶掉正文',
     /const section = neighborSection\(inspect\.text\)/.test(readDefSrc62b) &&
-      /\[said, section, gap, nb\.note\]\.filter\(Boolean\)\.join\('\\n\\n'\)/.test(readDefSrc62b) &&
+      /\[said, section, gap\]\.filter\(Boolean\)\.join\('\\n\\n'\)/.test(readDefSrc62b) &&
       !/const base = section \?/.test(readDefSrc62b),
     'note 拼接',
   )
@@ -5120,7 +5121,7 @@ function makeHostCtx() {
     'read: 邻居段没拿到时的话收成一个出口（neighborGapNote），read.js 不再「有段就拼、没段就闭嘴」',
     sharedSrc77.includes("export function neighborGapNote(section, reachable, raw = '') {") &&
       readSrc77.includes('const gap = neighborGapNote(section, inspect.def !== undefined, inspect.text)') &&
-      readSrc77.includes('[said, section, gap, nb.note].filter(Boolean).join') &&
+      readSrc77.includes('[said, section, gap].filter(Boolean).join') &&
       !readSrc77.includes('const base = section ?'),
     'neighborGapNote',
   )
@@ -7482,8 +7483,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       searchSrc110.includes('补邻居先砍字符预算、再砍条数'),
   )
   check(
-    '预算: 手册告诉模型「四路都听」，且手册仍未触顶（余量 ≥ 下限）',
-    prompt110.GUIDE_TEXT.includes('四路都听') &&
+    '预算: 手册告诉模型「五路都吃」（0.2.112 起连读也吃），且手册仍未触顶（余量 ≥ 下限）',
+    prompt110.GUIDE_TEXT.includes('五路都吃（本地/星图/补邻居/相似/读）') &&
       prompt110.clampGuide() === prompt110.GUIDE_TEXT &&
       prompt110.GUIDE_MAX_CHARS - prompt110.GUIDE_TEXT.length >= prompt110.GUIDE_MIN_HEADROOM,
   )
@@ -7607,6 +7608,97 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.117') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 123'),
+  )
+}
+
+// [macro-fusion 0.2.112] 读也吃预算：正文是 caller 要的东西，砍了就成假货——只能砍邻居，
+// 砍到底还装不下就只给骨架 + 指路。以前 read 是唯一明说「体量由 id 决定，没法缩」的一支。
+{
+  const readSrc112 = readFileSync(join(root, 'lib', 'macro', 'defs', 'read.js'), 'utf8')
+  const fusionSrc112 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg112 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc112 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const prompt112 = await import(pathToFileURL(join(root, 'lib', 'macro', 'prompt.js')).href)
+
+  check(
+    '读预算: schema 上真的多了 budget（描述里就说明只砍邻居、正文不截断）',
+    readSrc112.includes('budget: {\n          type: \'integer\',') &&
+      readSrc112.includes('这一读最多花多少 token（估算）。不给=不限额；给了就先砍邻居条数，正文不截断。'),
+  )
+  check(
+    '读预算: 走统一出口 budgetOf（一种解析、四态分开），不限额那条路也要把他给的那个数说出来',
+    readSrc112.includes('const budget = budgetOf(args.budget)') &&
+      readSrc112.split('budgetOf(args.budget)').length - 1 === 1 &&
+      readSrc112.includes('[said, nb.note, budget.note].filter(Boolean).join(\'\\n\\n\')') &&
+      readSrc112.includes('readCostTail([got.text, nb.note, budget.note].filter(Boolean).join(\'\\n\\n\'))'),
+  )
+  check(
+    '读预算: 正文一个字节都不裁——全文路径里没有任何对正文的 slice（只有骨架取首行那一刀）',
+    !readSrc112.includes('said.slice') &&
+      !readSrc112.includes('picked.text.slice') &&
+      !readSrc112.includes('withTail.slice') &&
+      readSrc112.includes('${first.slice(0, SKELETON_HEAD)}…'),
+  )
+  check(
+    '读预算: 正文装不下就只给骨架，并把缺口与三条出路写清（多少字、≥多少、先搜摘要）',
+    readSrc112.includes('if (bodyEst > budget.value) {') &&
+      readSrc112.includes('正文共 ${said.length} 字（≈${fmtTokens(bodyEst)} token），比你给的预算 ${budget} token 大') &&
+      readSrc112.includes('截一半你会把它当成全文') &&
+      readSrc112.includes('把 budget 提到 ≥${bodyEst}') &&
+      readSrc112.includes('memory_search 看摘要挑一条'),
+  )
+  check(
+    '读预算: 骨架自己也可能超预算，那就把「连标题都超了」也说出来（不说就会被当成全文）',
+    readSrc112.includes('const over = estTokens(head) > budget') &&
+      readSrc112.includes('连上面那一行标题都超过你给的预算了；但不写这句，你就会把骨架当成全文。'),
+  )
+  check(
+    '读预算: 砍邻居是阶梯且最多实测三次（先照他要的、再 6/3/1/0，去重且不许超过他要的）',
+    readSrc112.includes('const NEIGHBOR_LADDER = [6, 3, 1, 0]') &&
+      readSrc112.includes('const LADDER_TRIES = 3') &&
+      readSrc112.includes('.filter((n, i, arr) => n <= nb.value && arr.indexOf(n) === i)') &&
+      readSrc112.includes('.slice(0, LADDER_TRIES)'),
+  )
+  check(
+    '读预算: 0 条邻居不去问星图（问它要 0 条本来就是白花一次调用）',
+    readSrc112.includes("if (count <= 0) return { text: said, section: '' }"),
+  )
+  check(
+    '读预算: 砍了就说砍到几条；没砍时那句账要装得进预算才加（不为一句说明挤掉正文）',
+    readSrc112.includes('picked.count === nb.value ? \'\' : `邻居 ${nb.value}→${picked.count} 条才装下`') &&
+      readSrc112.includes('if (cutNote) return withTail') &&
+      readSrc112.includes('return estTokens(withTail) <= budget.value ? withTail : picked.text'),
+  )
+  check(
+    '读预算: 阶梯全落空也不返回半截正文（兜底给正文本身，宁可不缩也不给假货）',
+    readSrc112.includes('if (picked === null) picked = { count: 0, text: said, est: bodyEst }'),
+  )
+  check(
+    '读预算: 手册跟着改口（read 也吃 budget、五路都听）且仍留足余量不被截',
+    prompt112.GUIDE_TEXT.includes('memory_read（id, neighbors=12, budget）连邻居一起读') &&
+      prompt112.GUIDE_TEXT.includes('正文一字不截') &&
+      prompt112.GUIDE_TEXT.includes('五路都吃（本地/星图/补邻居/相似/读）') &&
+      prompt112.GUIDE_MAX_CHARS - prompt112.GUIDE_TEXT.length >= prompt112.GUIDE_MIN_HEADROOM,
+  )
+  check(
+    '读预算: 探针进线（D71–D77 钉住老样子 / 骨架 / 指路 / 砍邻居 / 不砍 / 四态 / 0 条不问星图）',
+    fusionSrc112.includes('D71 读不给预算就是老样子') &&
+      fusionSrc112.includes('D72 正文都装不下就只给骨架') &&
+      fusionSrc112.includes('D73 骨架要报缺口并指路') &&
+      fusionSrc112.includes('D74 正文装得下、邻居装不下') &&
+      fusionSrc112.includes('D75 装得下就一条都不砍') &&
+      fusionSrc112.includes('D76 budget 的四种情形在读上也成立') &&
+      fusionSrc112.includes('D77 neighbors=0 时给预算也不去问星图'),
+  )
+  check(
+    '读预算: 版本不早于 0.2.112（两处一致），文档 9.118 / 124 在位',
+    (() => {
+      const v = pkg112.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 112)
+      return atLeast && idxSrc112.includes(`export const version = '${pkg112.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.118') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 124'),
   )
 }
 

@@ -675,8 +675,11 @@ export function contractChecklist({
         sharedSrcN.includes('少掉的那半条不是你给的条件') &&
         sharedSrcN.includes('结果是被改过的条件算出来的') &&
         readDefSrcN.includes("countParam('neighbors', args.neighbors, { min: 0, max: 40, def: 12 })") &&
-        /if \(nb\.value <= 0\) return nb\.note\.length > 0/.test(readDefSrcN) &&
-        /neighbors: nb\.value/.test(readDefSrcN) &&
+        // [macro-fusion 0.2.112] 读也吃预算后，0 条那条提前返回要连 budget.note 一起带出来；
+        // 「要几条」由阶梯的 count 决定，星图只看 count，不再看 nb.value。
+        /if \(nb\.value <= 0\) return \[said, nb\.note, budget\.note\]/.test(readDefSrcN) &&
+        readDefSrcN.includes("if (count <= 0) return { text: said, section: '' }") &&
+        /neighbors: count,? \}/.test(readDefSrcN) &&
         !/args\.neighbors === undefined \? 12 : Number\(args\.neighbors\)/.test(readDefSrcN) &&
         !/!Number\.isFinite\(want\) \|\| want <= 0/.test(readDefSrcN),
       detail: readDefSrcN.includes('countParam(')
@@ -900,7 +903,8 @@ export function contractChecklist({
         sharedSrcN.includes('星图的回执里没有「连接到的记忆」这一段') &&
         sharedSrcN.includes('这不是「这条记忆没有邻居」') &&
         readDefSrcN.includes('const gap = neighborGapNote(section, inspect.def !== undefined, inspect.text)') &&
-        readDefSrcN.includes('[said, section, gap, nb.note].filter(Boolean).join') &&
+        // [macro-fusion 0.2.112] 三个段先在 withNeighbors 里拼一次，nb.note / budget.note 在出口再拼。
+        readDefSrcN.includes('[said, section, gap].filter(Boolean).join') &&
         !readDefSrcN.includes('const base = section ?'),
       detail: sharedSrcN.includes('neighborGapNote')
         ? 'ok'
@@ -1126,11 +1130,12 @@ export function readAnswerKind(text) { return 'ok' }`,
       ].join('\n'),
       'defs/read.js': [
         "const nb = countParam('neighbors', args.neighbors, { min: 0, max: 40, def: 12 })",
-        'if (nb.value <= 0) return nb.note.length > 0 ? `${said}\\n\\n${nb.note}` : said',
-        '{ id: args.id, neighbors: nb.value }',
+        "if (nb.value <= 0) return [said, nb.note, budget.note].filter(Boolean).join('\\n\\n')",
+        "if (count <= 0) return { text: said, section: '' }",
+        '{ id: args.id, neighbors: count }',
         'const section = neighborSection(inspect.text)',
         'const gap = neighborGapNote(section, inspect.def !== undefined, inspect.text)',
-        "[said, section, gap, nb.note].filter(Boolean).join('\\n\\n')",
+        "[said, section, gap].filter(Boolean).join('\\n\\n')",
       ].join('\n'),
       // 0.2.63：注入上限的唯一出口（prompt.js 的 guideBudget）+ 手册末尾那行现状
       'prompt.js': [

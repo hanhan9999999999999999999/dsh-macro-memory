@@ -1155,6 +1155,99 @@ try {
     costExpand.slice(-150),
   )
 
+  // D71–D76（0.2.112）：读也吃预算。这一支最尴尬——正文是 caller 要的东西，砍了就成假货，
+  // 于是只能砍邻居；砍到底还装不下就只给骨架 + 指路。不许截半截正文冒充全文。
+  const readStore = { calls: [] }
+  function readTool() {
+    const entries = new Map()
+    const add = (name, fn) => entries.set(name, { name, vendor: 'stub', def: { name, execute: fn }, options: {} })
+    add('memory_read', async () => `【fact】长记忆\n\n${'正文一句。'.repeat(300)}`)
+    add('nebula_inspect', async (a) => {
+      readStore.calls.push(a.neighbors)
+      const n = Number(a.neighbors ?? 12)
+      let out = '## 连接到的记忆\n'
+      for (let i = 0; i < n; i += 1) out += `- 邻居${i}（${'关联'.repeat(30)}）\n`
+      return out
+    })
+    const bridge = {
+      has: (n) => entries.has(n),
+      get: (n) => entries.get(n),
+      names: () => [...entries.keys()],
+      awaitTool: async (n) => entries.get(n),
+      async call(name, args) {
+        const e = entries.get(name)
+        if (!e) throw new Error(`stub 没有 ${name}`)
+        const value = await e.def.execute(args)
+        return { entry: e, def: e.def, value, text: typeof value === 'string' ? value : JSON.stringify(value) }
+      },
+      async tryCall(name, args) {
+        try {
+          return await bridge.call(name, args)
+        } catch (err) {
+          return { entry: undefined, def: undefined, value: undefined, text: `${name}未完成：${err.message}` }
+        }
+      },
+      promptDeclarations: () => [],
+    }
+    return costTools({ bridge, config: { toolWaitMs: 10, linkWaitMs: 10 } }).find((t) => t.name === 'memory_read')
+  }
+  const readOne = readTool()
+  const readRun = async (args) => String((await readOne.execute(args, {})) ?? '')
+
+  const readFree = await readRun({ id: 'x' })
+  check(
+    'D71 读不给预算就是老样子：正文 + 邻居 + 成本尾注，不缩也不多说',
+    readFree.includes('正文一句。') && readFree.includes('邻居11') && readFree.includes('成本 ≈'),
+    readFree.slice(-110),
+  )
+  readStore.calls = []
+  const readSkel = await readRun({ id: 'x', budget: 800 })
+  check(
+    'D72 正文都装不下就只给骨架：一个字都不裁给你，而且不去问星图（正文放不下，邻居是白花钱）',
+    !readSkel.includes('正文一句。') &&
+      readSkel.split('\n')[0] === '【fact】长记忆' &&
+      readSkel.includes('截一半你会把它当成全文') &&
+      readStore.calls.length === 0,
+    `星图调用 ${readStore.calls.length} 次 · ${readSkel.slice(-150)}`,
+  )
+  check(
+    'D73 骨架要报缺口并指路：正文多少字、≥多少才看得全、或者先搜摘要挑一条',
+    readSkel.includes('正文共 ') && /把 budget 提到 ≥\d+/.test(readSkel) && readSkel.includes('memory_search 看摘要'),
+    readSkel.split('\n')[2]?.slice(0, 90),
+  )
+  readStore.calls = []
+  const readCut = await readRun({ id: 'x', budget: 2000 })
+  check(
+    'D74 正文装得下、邻居装不下：逐级砍邻居并交代砍到几条（正文一个字节没动）',
+    readCut.includes('正文一句。') &&
+      /邻居 12→\d+ 条才装下/.test(readCut) &&
+      readStore.calls.length > 1 &&
+      readStore.calls[0] === 12,
+    `调用 ${JSON.stringify(readStore.calls)} · ${readCut.slice(-110)}`,
+  )
+  readStore.calls = []
+  const readFit = await readRun({ id: 'x', budget: 4000 })
+  check(
+    'D75 装得下就一条都不砍：只问一次星图，尾注只说装下，不编「收紧了」',
+    readFit.includes('邻居11') && readStore.calls.length === 1 && !readFit.includes('砍到'),
+    `调用 ${JSON.stringify(readStore.calls)} · ${readFit.slice(-90)}`,
+  )
+  const readJunk = await readRun({ id: 'x', budget: 'abc' })
+  const readSmall = await readRun({ id: 'x', budget: 10 })
+  check(
+    'D76 budget 的四种情形在读上也成立：不是数字 / 太小 → 按不限额给，但那句话必须带出来（不许悄悄忽略他给的数）',
+    readJunk.includes('不是数字') && readJunk.includes('正文一句。') &&
+      readSmall.includes('最小可用预算 80') && readSmall.includes('正文一句。'),
+    `junk=${readJunk.slice(-60)} | small=${readSmall.slice(-60)}`,
+  )
+  readStore.calls = []
+  const readZero = await readRun({ id: 'x', budget: 1600, neighbors: 0 })
+  check(
+    'D77 neighbors=0 时给预算也不去问星图：0 条本来就没东西可带',
+    readZero.includes('正文一句。') && readStore.calls.length === 0,
+    `调用 ${readStore.calls.length} 次 · ${readZero.slice(-80)}`,
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {
