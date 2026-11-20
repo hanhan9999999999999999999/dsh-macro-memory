@@ -8381,5 +8381,81 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── 实体先验（0.2.122）：问句里的专有名词要能压过措辞 ────────────────────
+{
+  const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const meowSrc122 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc122 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'ER 实体先验: queryEntities 认专有名词、跳过句首那个「只是大写」的词',
+    meowSrc122.includes('function queryEntities(query)') &&
+      meowSrc122.includes('.matchAll(/\\b([A-Z][a-z]{2,})\\b/g)') &&
+      meowSrc122.includes('if ((m.index ?? 0) === 0) continue;'),
+  )
+  check(
+    'ER 实体先验: 乘性加成 0.8、只在有实体时建集合（无实体问句一个字节都不动）',
+    meowSrc122.includes('const ENT_W = 0.8;') &&
+      meowSrc122.includes('const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;') &&
+      meowSrc122.includes('if (hit > 0) s *= 1 + ENT_W * (hit / entToks.length);'),
+  )
+  check(
+    'ER 实体先验: 实体 token 走同一个 tokenize（口径不同就永远匹配不上）',
+    meowSrc122.includes('queryEntities(query).map((e) => tokenize(e)).filter((t) => t.length === 1).map((t) => t[0])'),
+  )
+  check(
+    'ER 实体先验: entityPrior=false 总闸在位（没有它，「没变化」和「没生效」分不开）',
+    meowSrc122.includes('opts.entityPrior === false') && meowSrc122.includes('entities: entToks.length,'),
+  )
+  {
+    const docs = [
+      { id: 'a', level: 'fact', content: 'Caroline: I am researching adoption agencies.', keywords: [], importance: 1, updated_at: 1, last_accessed_at: 1 },
+      { id: 'b', level: 'fact', content: 'Melanie: research is exhausting, I research all day.', keywords: [], importance: 1, updated_at: 1, last_accessed_at: 1 },
+    ]
+    const on = Meow.search('What did Caroline research?', docs, { k: 2, now: null })
+    const off = Meow.search('What did Caroline research?', docs, { k: 2, now: null, entityPrior: false })
+    check('ER 实体先验·行为: 提到实体的那条排在前面', on[0]?.id === 'a', on.map((h) => h.id).join(','))
+    const onA = on.find((h) => h.id === 'a')
+    const offA = off.find((h) => h.id === 'a')
+    const onB = on.find((h) => h.id === 'b')
+    const offB = off.find((h) => h.id === 'b')
+    check(
+      'ER 实体先验·行为: 关掉先验后实体那条正好回到 1/1.8（加成只来自这条先验，不是别的巧合）',
+      Math.abs(onA.score / offA.score - 1.8) < 0.005,
+      `${onA.score.toFixed(4)} / ${offA.score.toFixed(4)}`,
+    )
+    check(
+      'ER 实体先验·行为: 不含实体的那条分数一位都没动（先验不许外溢到别的文档）',
+      onB.score === offB.score,
+      `${onB.score} vs ${offB.score}`,
+    )
+    const q2 = 'research agencies adoption'
+    const plainOn = Meow.search(q2, docs, { k: 2, now: null })
+    const plainOff = Meow.search(q2, docs, { k: 2, now: null, entityPrior: false })
+    check(
+      'ER 实体先验·阴性对照: 问句没有专有名词时，开与关逐位相同',
+      JSON.stringify(plainOn.map((h) => [h.id, h.score])) === JSON.stringify(plainOff.map((h) => [h.id, h.score])),
+    )
+  }
+  check(
+    'ER 实体先验·探针进线：ER0–ER4（含阴性对照与关闸对照）',
+    probeSrc122.includes('ER0 实体问句抓到 1 个实体') &&
+      probeSrc122.includes('ER1 实体问句：提到实体的那条压过只提到其余词的') &&
+      probeSrc122.includes('ER2 不含实体的那条分数一位都没动') &&
+      probeSrc122.includes('ER3 关掉先验后实体那条正好回到 1/1.8') &&
+      probeSrc122.includes('ER4 阴性对照：问句里没有专有名词时，开与关逐位相同'),
+  )
+  check(
+    'ER 实体先验: 版本与文档一起走（9.126 / 132）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 122)
+      return atLeast && readFileSync(join(root, 'lib', 'index.js'), 'utf8').includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.126') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 132 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

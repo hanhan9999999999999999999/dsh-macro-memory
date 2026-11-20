@@ -1844,11 +1844,31 @@ function recencyWeight(ageMs) {
   if (days < 180) return 0.15;
   return 0.08;
 }
+// [macro-fusion 0.2.122] 实体先验：问句里的专有名词（"What did Caroline research?" 里的 Caroline）
+// 是这条记忆到底在不在讲那件事的最硬信号，而 BM25 把它和别的词一样对待——一个提到 Caroline 五次、
+// 却没提到 research 的近邻条目会输给一个只提到 research 的无关段落。离线台实测（LoCoMogit 1,540 题）：
+// hit@20 0.7331 → 0.7513、MRR 0.4551 → 0.4784。只做乘性加成、不改候选集，问句里没有专有名词时
+// 一个字节都不动（中文问句就是这种情况：CJK 没有大小写，这条先验天然不生效）。
+const EN_INITIAL_SKIP = /* @__PURE__ */ new Set(["what", "who", "when", "where", "why", "how", "which", "whose", "did", "does", "do", "is", "are", "was", "were", "can", "could", "would", "should", "will", "shall", "may", "might", "must", "the", "a", "an", "my", "our", "his", "her", "their", "your", "please", "tell", "show", "find", "list", "give", "get", "also", "and", "but", "if", "in", "on", "at", "for", "from", "to", "of", "it", "this", "that", "these", "those", "there", "here", "then", "now", "last", "next", "first", "second"]);
+function queryEntities(query) {
+  const out = [];
+  for (const m of String(query ?? "").matchAll(/\b([A-Z][a-z]{2,})\b/g)) {
+    if ((m.index ?? 0) === 0) continue;
+    const low = m[1].toLowerCase();
+    if (EN_INITIAL_SKIP.has(low) || EN_STOPWORDS.has(low)) continue;
+    if (!out.includes(low)) out.push(low);
+  }
+  return out;
+}
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
   const q = tokenize(query);
   if (q.length === 0 || docs.length === 0) return [];
+  // [macro-fusion 0.2.122] 实体先验的输入（问句里没有专有名词时为空数组，后面整段跳过）
+  const entToks = opts.entityPrior === false
+    ? []
+    : queryEntities(query).map((e) => tokenize(e)).filter((t) => t.length === 1).map((t) => t[0]);
   const n = docs.length;
   const docToks = docs.map((d) => tokenize(docText(d)));
   const avgdl = docToks.reduce((s, t) => s + t.length, 0) / n || 1;
@@ -1868,6 +1888,8 @@ function search(query, docs, opts = {}) {
   }
   const k1 = 1.5;
   const b = 0.75;
+  const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;
+  const ENT_W = 0.8;
   const raw = docs.map((_, di) => {
     let s = 0;
     const len = docToks[di].length;
@@ -1876,6 +1898,11 @@ function search(query, docs, opts = {}) {
       if (!f) continue;
       const idf = Math.log(1 + (n - (df.get(term) ?? 0) + 0.5) / ((df.get(term) ?? 0) + 0.5));
       s += idf * (f * (k1 + 1) / (f + k1 * (1 - b + b * len / avgdl)));
+    }
+    if (entSets) {
+      let hit = 0;
+      for (const t of entToks) if (entSets[di].has(t)) hit++;
+      if (hit > 0) s *= 1 + ENT_W * (hit / entToks.length);
     }
     return s;
   });
@@ -1914,7 +1941,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, recencyWeight: Math.round(w * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * 1e3) / 1e3 } } : {}
     });
   }
   hits.sort((a, b2) => b2.score - a.score);

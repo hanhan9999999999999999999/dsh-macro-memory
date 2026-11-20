@@ -6156,6 +6156,38 @@ check(
   check('SR6 砍了什么都写在尾注里', tight.includes('预算') && (tight.includes('content_max') || tight.includes('k ')), tailSrc(tight))
 }
 
+// ── ER. 实体先验：问句里的专有名词要能压过措辞（0.2.122）─────────────────────
+{
+  const erDocs = [
+    { id: 'a', level: 'fact', content: 'Caroline: I am researching adoption agencies.', keywords: [], importance: 1, updated_at: 1, last_accessed_at: 1 },
+    { id: 'b', level: 'fact', content: 'Melanie: research is exhausting, I research all day.', keywords: [], importance: 1, updated_at: 1, last_accessed_at: 1 },
+  ]
+  const erQ = 'What did Caroline research?'
+  const on = Meow.search(erQ, erDocs, { k: 2, now: null, explain: true })
+  const off = Meow.search(erQ, erDocs, { k: 2, now: null, entityPrior: false, explain: true })
+  const pick = (hs, id) => hs.find((h) => h.id === id)
+  check('ER0 实体问句抓到 1 个实体（句首那个大写词不算）', on[0]?.explain?.entities === 1, String(on[0]?.explain?.entities))
+  check('ER1 实体问句：提到实体的那条压过只提到其余词的', on[0]?.id === 'a', on.map((h) => h.id).join(','))
+  check(
+    'ER3 关掉先验后实体那条正好回到 1/1.8（加成只来自这条先验，不是别的巧合）',
+    Math.abs(pick(on, 'a').score / pick(off, 'a').score - 1.8) < 0.005,
+    `${pick(on, 'a').score.toFixed(4)} / ${pick(off, 'a').score.toFixed(4)}`,
+  )
+  check(
+    'ER2 不含实体的那条分数一位都没动（先验不许外溢到别的文档）',
+    pick(on, 'b').score === pick(off, 'b').score,
+    `${pick(on, 'b').score} vs ${pick(off, 'b').score}`,
+  )
+  const plainQ = 'research agencies adoption'
+  const plainOn = Meow.search(plainQ, erDocs, { k: 2, now: null })
+  const plainOff = Meow.search(plainQ, erDocs, { k: 2, now: null, entityPrior: false })
+  check(
+    'ER4 阴性对照：问句里没有专有名词时，开与关逐位相同（含分数）',
+    JSON.stringify(plainOn.map((h) => [h.id, h.score])) === JSON.stringify(plainOff.map((h) => [h.id, h.score])),
+    plainOn.map((h) => `${h.id}:${h.score.toFixed(3)}`).join(' '),
+  )
+}
+
 for (const d of disposers) {
   try {
     d()
