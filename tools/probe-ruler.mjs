@@ -804,5 +804,43 @@ check(
   `total=${L8.total}`,
 )
 
+// M 段（0.2.103）：库规模——账本原来只记「翻了几条」，不记「库有多大」。
+// 这一段从真库数起（insert 真行、status 真值），再从真开工流程里读回落库的那一份。
+const scaleWs = mkdtempSync(join(tmpdir(), 'ruler-scale-'))
+const scaleDb = V.getDb(scaleWs, '.dsh-meow')
+scaleDb.insert({ level: 'fact', content: '库规模探针：一条在用事实', keywords: ['probe', 'scale'] })
+scaleDb.insert({ level: 'fact', content: '库规模探针：一条已归档事实', keywords: ['probe', 'scale'], status: 'archived' })
+scaleDb.insert({ level: 'topic', content: '库规模探针：一条在用主题', keywords: ['probe', 'scale'] })
+scaleDb.insert({ level: 'lesson', content: '库规模探针：一条已过时教训', keywords: ['probe', 'scale'], status: 'stale' })
+const L9 = V.dreamStoreScale(scaleDb)
+check(
+  'L9 库规模只数 status=active（归档/过时的账挂在 status 上，不该混进「库有多大」）',
+  L9.active === 2 && L9.byLevel.fact === 1 && L9.byLevel.topic === 1 && L9.byLevel.lesson === undefined,
+  JSON.stringify(L9),
+)
+const emptyScale = V.dreamStoreScale(V.getDb(mkdtempSync(join(tmpdir(), 'ruler-scale-empty-')), '.dsh-meow'))
+check(
+  'L10 空库：active=0 且 byLevel 是空对象（不是 undefined 让人先判空，也不是一排 0 让人以为空层也算数）',
+  emptyScale.active === 0 && typeof emptyScale.byLevel === 'object' && Object.keys(emptyScale.byLevel).length === 0,
+  JSON.stringify(emptyScale),
+)
+// 真开工那一步：store 要跟着 digest 一起落进 dream_meta（面板读的就是这一份），不另算一遍。
+const scaleDreamWs = mkdtempSync(join(tmpdir(), 'ruler-scale-dream-'))
+const scaleExec = execIn(scaleDreamWs, 'sess-ruler-scale-dream')
+await call('memory_remember', { content: '库规模探针：真开工前的一条事实', level: 'fact', keywords: ['probe', 'scale'], importance: 1, project: '全局' }, scaleExec)
+await call('memory_remember', { content: '库规模探针：真开工前的一条主题', level: 'topic', title: '库规模探针', keywords: ['probe', 'scale'], importance: 1, project: '全局' }, scaleExec)
+const scaleTrace = { reason: '' }
+V.startWindowDream({}, scaleExec.agent, scaleDreamWs, '.dsh-meow', undefined, 0, scaleTrace)
+const scaleMeta = V.getDb(scaleDreamWs, '.dsh-meow').getDreamMeta('dreamdigest:sess-ruler-scale-dream')
+const scaleStored = typeof scaleMeta === 'string' ? JSON.parse(scaleMeta) : {}
+check(
+  'L11 真开工：库规模跟着摘要一起进 dream_meta（trace 与落库同一份，不各自数一次）',
+  scaleTrace.digest?.store?.active === 2 &&
+    scaleStored.store?.active === 2 &&
+    scaleStored.store?.byLevel?.fact === 1 &&
+    scaleStored.store?.byLevel?.topic === 1,
+  `trace=${JSON.stringify(scaleTrace.digest?.store)} meta=${JSON.stringify(scaleStored.store)}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

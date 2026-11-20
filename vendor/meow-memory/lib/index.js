@@ -3798,6 +3798,27 @@ function dreamPlanDigest(rounds) {
     pairs: dreamPlanPairs(allRows)
   };
 }
+// [macro-fusion 0.2.103] 账本原来只记「这一轮翻了几条」（清单里的行），不记「库本身有多大」。
+// 翻 20 条是翻，可库是 800 条还是 40 条，读账的人分不出来——整理到底让库变轻还是变重，账上没答案。
+// 口径三件事：①只数 status='active'，归档/stale 的账在 status 上，不该混进「库有多大」；
+// ②取的是**开工那一刻**，不是收尾之后（收尾时模型才动手改库，那之后的结果要等下一轮账才知道）；
+// ③只留非零的层，别在 JSON 里塞一排 0 让读的人以为「空层也算数」。
+function dreamStoreScale(db) {
+  const byLevel = {};
+  let active = 0;
+  for (const level of LEVELS) {
+    let n = 0;
+    try {
+      const row = db.p(`SELECT COUNT(*) AS n FROM ${level} WHERE status = 'active'`).get();
+      n = Number(row?.n) || 0;
+    } catch {
+      n = 0;
+    }
+    if (n > 0) byLevel[level] = n;
+    active += n;
+  }
+  return { active, byLevel };
+}
 // 回执那句话：四个数字全部来自上面那份摘要，一个也不手写；只有真有字要补时才加第二句。
 function dreamReceipt(digest) {
   if (digest === void 0 || digest === null || typeof digest !== "object") return "";
@@ -3983,6 +4004,8 @@ function startWindowDream(ctx, agent, workspace, dir = ".dsh-meow", onDreamState
   // [macro-fusion 0.2.96] 先把这轮的规模算成一份摘要：回执要念给模型听，落库要留给事后对账。
   // 只在真的 claim 成功之后算——被 claimed 挡回来的那次不该为一个不会跑的整理烧一遍分词。
   const digest = dreamPlanDigest(rounds);
+  // [macro-fusion 0.2.103] 库规模只在这一刻取一次：再晚模型就已经动手改库了，取到的就不是「整理前」。
+  digest.store = dreamStoreScale(db);
   db.setDreamMeta(`dreamdigest:${sessionId}`, JSON.stringify(digest));
   if (trace !== void 0 && trace !== null) trace.digest = digest;
   // [macro-fusion 0.2.99] 开始整理时把规模一起广播出去：月亮图标在整理过程中就能说
@@ -6476,6 +6499,7 @@ export {
   dreamCommandDefinition,
   dreamPlanDigest,
   dreamReceipt,
+  dreamStoreScale,
   readDreamLedger,
   readDreamProjects,
   readDreamRecord,

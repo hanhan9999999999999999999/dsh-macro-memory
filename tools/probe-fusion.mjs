@@ -491,6 +491,10 @@ try {
   // 这里一律用真 writer（Meow.dreamPlanDigest）造账，不再手写 changes——0.2.101 就是手写数组把问题盖住了。
   const digWs = mkdtempSync(join(tmpdir(), 'macro-probe-digest-'))
   const digDb = Meow.getDb(digWs, '.dsh-meow')
+  // [macro-fusion 0.2.103] 库规模也得从真库里数：先落两条记忆，再让 dreamStoreScale 去数，
+  // 跟 startWindowDream 里「digest 算完再挂 store」是同一种拼法（不是手写 {active:2}）。
+  digDb.insert({ level: 'fact', content: '探针库里的第一条事实', keywords: ['probe', 'scale'] })
+  digDb.insert({ level: 'lesson', content: '探针库里的第一条教训', keywords: ['probe', 'scale'] })
   const mkRow = (id, level, content) => ({ id, level, content })
   const dupOne = '默认用 pnpm 装依赖 不要混用 npm 和 yarn 锁文件只提交一个'
   const dupTwo = '默认用 pnpm 装依赖 不要混用 npm 和 yarn 锁文件只提交一个副本'
@@ -512,7 +516,11 @@ try {
       projects: [],
     },
   ]
-  const digPlan = Meow.dreamPlanDigest(digRounds)
+  // 最早的一条就带库规模（开工时 2 条），后一条带 3 条——趋势行要能念出「2 → 3」。写在最前面，
+  // 这样它排到队尾，#1~#4 的既有编号一个都不动。
+  digDb.logDream('window dream done: sess-digest-old stamped=true', { stamped: true, groups: 2, plan: { ...Meow.dreamPlanDigest(digRounds), store: Meow.dreamStoreScale(digDb) } }, '更早的一次')
+  digDb.insert({ level: 'topic', content: '探针库里的第一条主题', keywords: ['probe', 'scale'] })
+  const digPlan = { ...Meow.dreamPlanDigest(digRounds), store: Meow.dreamStoreScale(digDb) }
   digDb.logDream('window dream done: sess-noplan stamped=true', { stamped: true, groups: 1 }, '极老记录')
   digDb.logDream('window dream done: sess-legacy stamped=true', { stamped: true, groups: 1, plan: { rounds: 1, groups: 1, rows: 3, dup: 0, cover: 0, missing: 0, projects: 2 } }, '老格式')
   digDb.logDream('window dream done: sess-digest stamped=true', { stamped: true, groups: 2, plan: digPlan }, '新格式')
@@ -561,13 +569,45 @@ try {
   const digFiltered = text(await tools.get('memory_admin').execute({ action: 'dream', project: 'Alpha', limit: 5 }, digCtx))
   check(
     'D36 从写侧到面板一路通：真摘要落库后按项目名筛得到（0.2.101 漏的就是这一环）',
-    digFiltered.includes('按项目段「Alpha」筛：2 条（全账本 4 条）') && digFiltered.includes('#1 ') && !digFiltered.includes('#3 '),
+    digFiltered.includes('按项目段「Alpha」筛：3 条（全账本 5 条）') && digFiltered.includes('#1 ') && !digFiltered.includes('#4 '),
     digFiltered.split('\n')[0],
   )
   check(
     'D36 老账本里的数字不会被当成项目名（分布里没有「2 次的那个 2」）',
     !digFiltered.includes('项目段：Alpha 2 次 · 2 ') && !digFiltered.includes('· 2 0 次'),
     '',
+  )
+  // [macro-fusion 0.2.103] 库规模：账本要能回答「这一轮开工时库有多大」，因为「翻 20 条」在 800 条的
+  // 库和 40 条的库里不是一个意思。写侧真数、面板真念，老账不补 0，没 plan 的账不重复解释。
+  const digScaleLine = digOne.split('\n').find((l) => l.startsWith('库规模：')) ?? ''
+  check(
+    'D37 展开新账念库规模：开工时真条数 + 分层明细（与 dreamStoreScale 数出来的同一份）',
+    digScaleLine === `库规模：开工时 ${digPlan.store.active} 条在用（fact 1 · lesson 1 · topic 1）` && digPlan.store.active === 3,
+    digScaleLine,
+  )
+  check(
+    'D37 库规模排在项目段与对子之后、变化原文之前（先讲这一轮，再讲库，最后摊原文）',
+    digOne.indexOf('库规模：') > digOne.indexOf('对子') &&
+      digOne.indexOf('库规模：') > digOne.indexOf('项目段：') &&
+      (digOne.indexOf('变化原文') === -1 || digOne.indexOf('库规模：') < digOne.indexOf('变化原文')),
+    `对子@${digOne.indexOf('对子')} 项目段@${digOne.indexOf('项目段：')} 库@${digOne.indexOf('库规模：')}`,
+  )
+  const digOldStore = digTwo.split('\n').find((l) => l.startsWith('库规模：')) ?? ''
+  check(
+    'D38 老账（没有 store 这一格）明说没记，且不许念成 0 条',
+    digOldStore.includes('没有记库规模（它写在 0.2.103 之前）') && !digOldStore.includes('0 条在用'),
+    digOldStore,
+  )
+  check(
+    'D38 连 plan 都没有的账不再多念一句库规模（0.2.96 那句已经解释过了，别叠两层老账告示）',
+    !digThree.includes('库规模'),
+    digThree.split('\n').find((l) => l.startsWith('库规模')) ?? '（没有这一行）',
+  )
+  const digTrend = digFiltered.split('\n').find((l) => l.startsWith('趋势：')) ?? ''
+  check(
+    'D39 趋势行带上库规模区间（最早→最新），并说清只有几次有数',
+    digTrend.includes('库 开工时 2 → 3 条（多了 1 条）') && digTrend.includes('库规模只有 2 次有数'),
+    digTrend,
   )
 
   if (process.env.PROBE_LINK === '1' && id) {

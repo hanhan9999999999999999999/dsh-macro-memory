@@ -6725,5 +6725,87 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.103] 账本只记「这一轮翻了几条」，不记「库本身有多大」：翻 20 条，在 800 条的库和
+// 40 条的库里不是一个意思。这一版让开工那一刻的库规摸（只数 active、按层拆开）跟着摘要一起落库，
+// 面板展开与趋势都能念出来；老账不补 0。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc103 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc103 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'dream 规模: 写侧真的去数库（只数 active，按层拆，零层不进 JSON）',
+    vSrc.includes('function dreamStoreScale(db)') &&
+      vSrc.includes('SELECT COUNT(*) AS n FROM ${level} WHERE status = \'active\'') &&
+      vSrc.includes('if (n > 0) byLevel[level] = n;') &&
+      vSrc.includes('return { active, byLevel };') &&
+      vSrc.includes('  dreamStoreScale,'),
+  )
+  check(
+    'dream 规模: 开工那一刻取一次，跟着摘要落进 dream_meta（不是收尾再数——收尾时库已经被改过了）',
+    (() => {
+      const seg = vSrc.slice(vSrc.indexOf('function startWindowDream('), vSrc.indexOf('function advanceDream('))
+      const a = seg.indexOf('const digest = dreamPlanDigest(rounds);')
+      const b = seg.indexOf('digest.store = dreamStoreScale(db);')
+      const c = seg.indexOf('db.setDreamMeta(`dreamdigest:${sessionId}`, JSON.stringify(digest));')
+      const d = seg.indexOf('onDreamState?.(sessionId, "dreaming", { plan: digest });')
+      return a > 0 && b > a && c > b && d > c
+    })(),
+  )
+  check(
+    'dream 规模: 面板三种来路分开讲（没记 / 空库 0 条 / 正常条数）',
+    panelSrc.includes('function storeOf(plan)') &&
+      panelSrc.includes('function storeBlock(row)') &&
+      panelSrc.includes("return '库规模：这条账没有记库规模（它写在 0.2.103 之前）——别把「没记」读成「库是空的」。'") &&
+      panelSrc.includes("if (store.active === 0) return '库规模：开工时库里 0 条在用记忆——这一轮是在空库上整理的。'") &&
+      panelSrc.includes('return `库规模：开工时 ${store.active} 条在用${levels.length === 0 ? \'\' : `（${levels.join(\' · \')}）`}`'),
+  )
+  check(
+    'dream 规模: 没有 plan 的账不再叠一层库规模告示（0.2.96 那句已经解释过）',
+    (() => {
+      const seg = panelSrc.slice(panelSrc.indexOf('function storeBlock(row)'), panelSrc.indexOf('function expandPanel('))
+      return seg.includes('if (plan === undefined || plan === null) return \'\'')
+    })(),
+  )
+  check(
+    'dream 规模: 展开顺序是「项目段 → 对子 → 库规模 → 比更早一条 → 原文」',
+    (() => {
+      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank)'), panelSrc.indexOf('function compareLine('))
+      const a = seg.indexOf('lines.push(pairsBlock(row))')
+      const b = seg.indexOf('const storeLine = storeBlock(row)')
+      const c = seg.indexOf('const cmp = compareLine(row, prev, rank + 1)')
+      return a > 0 && b > a && c > b
+    })(),
+  )
+  check(
+    'dream 规模: 趋势行按「最早→最新」给区间，并且至少两次有数才敢讲（一次是快照不是走势）',
+    panelSrc.includes('const storeRows = ordered.map((r) => storeOf(r.changes?.plan)).filter((s) => s !== null)') &&
+      panelSrc.includes('if (storeRows.length >= 2) {') &&
+      panelSrc.includes('parts.push(`库 开工时 ${first} → ${last} 条（${word}）`)') &&
+      panelSrc.includes('库规模只有 ${storeRows.length} 次有数（更早的账写在 0.2.103 之前，没有这一格）'),
+  )
+  check(
+    'dream 规模: 探针进线（probe-ruler L9–L11 验写侧真数、probe-fusion D37–D39 验面板真念）',
+    rulerSrc103.includes('L9 库规模只数 status=active') &&
+      rulerSrc103.includes('L10 空库：active=0 且 byLevel 是空对象') &&
+      rulerSrc103.includes('L11 真开工：库规模跟着摘要一起进 dream_meta') &&
+      fusionSrc103.includes('D37 展开新账念库规模') &&
+      fusionSrc103.includes('D38 老账（没有 store 这一格）明说没记') &&
+      fusionSrc103.includes('D39 趋势行带上库规模区间'),
+  )
+  check(
+    'dream 规模: 版本不早于 0.2.103（两处一致），文档 9.109 / 115 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 103)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.109') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 115'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
