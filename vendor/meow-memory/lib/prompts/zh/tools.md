@@ -26,7 +26,7 @@
 - memory_search.param.days: 只看最近 N 天创建的条目（按创建时间）。
 - memory_search.param.k: 返回条数上限。
 - memory_search.param.content_max: 每条内容截断长度，0=全文。
-- memory_search.param.context: 相邻上下文开关（默认 0=不取）：给每条命中带上同层前后各 N 条（1–3），用来看清这句话在对话里的位置。会多花 token，只在「这条看不懂它在说什么」时开。
+- memory_search.param.context: 相邻上下文开关（默认 0=不取）：给每条命中带上同层前后各 N 条（1–3）。问「什么时候」「谁先谁后」「之前/之后」，或者要串起两条线索（多跳）时开 1–2——LoCoMo 1,193 题同题对照实测：这类题准确率 +8.0 个百分点（26.9%→34.9%），代价是回执从约 1.4k 字符涨到约 3.5k。默认 0 只给单条，多跳题和时间题最容易「找到了却没看明白」。一次回执最多铺 24 行邻居，铺不下会写一行说明，剩下的用 memory_read 读全文。
 - memory_search.param.min_rel: 相关度下限（0–1，默认 0.35）：只展开分数不低于榜首这个比例的条目，更低的尾巴收掉，并在回执里报出被收掉的条数与最高分；传 0 = 看全量。
 - memory_search.param.dedupe: 同类折叠开关（默认开）：内容几乎一样（逐字级重复，重复度 ≥80%）的条目只列分数最高的一条，折了几条写进尾注——同一句既存了 fact 又存了 lesson 时最常见；传 false = 每条都列。
 - memory_search.param.explain: 可解释检索开关（默认关）。开=true 时每条命中附带分项得分 explain（bm25 关键词分、importance、recencyWeight 艾宾浩斯权重、status），用于排查"为什么没召回/为什么召回它"，不改排序。

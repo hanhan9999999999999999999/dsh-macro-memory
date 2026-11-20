@@ -67,6 +67,26 @@ const FILES_AT_ROOT = [
   // 0.2.81：发布物里有对外承诺的两份文件，两棵树都得有，否则 profile 里跑出来的产物会缺许可声明。
   'LICENSE', 'THIRD-PARTY-NOTICES.md',
 ]
+// [macro-fusion 0.2.127] tools/baselines.json 是 check-all 每次重记的产物：耗时是实测值，
+// 每跑一次都不一样。按字节比会永远漂——--update-baselines 刚写完 vendor 这份，profile 那份
+// 立刻成了旧值，下一轮 doctor 必红，而且红得没道理（源码一个字没动）。
+// 真正必须对齐的是三样：版本、每支脚本的断言数、耗时预算。实测耗时本来就该各自不同。
+const GEN_MEASURED = 'tools/baselines.json'
+function canonicalMeasuredText(text) {
+  try {
+    const b = JSON.parse(String(text).replace(/^\uFEFF/, ''))
+    const pick = (o) => Object.fromEntries(Object.keys(o ?? {}).sort().map((k) => [k, o[k]]))
+    return JSON.stringify({ version: b.version ?? null, counts: pick(b.counts), budgetMs: pick(b.budgetMs) })
+  } catch (err) {
+    return `unreadable:${err?.message ?? err}`
+  }
+}
+const canonicalMeasured = (file) => canonicalMeasuredText(readFileSync(file, 'utf8'))
+function sameContent(aRoot, bRoot, rel) {
+  if (rel === GEN_MEASURED) return canonicalMeasured(join(aRoot, rel)) === canonicalMeasured(join(bRoot, rel))
+  return sha(join(aRoot, rel)) === sha(join(bRoot, rel))
+}
+
 function treeSync(aRoot, bRoot) {
   const list = (r) =>
     walk(join(r, 'lib'))
@@ -82,7 +102,7 @@ function treeSync(aRoot, bRoot) {
   for (const rel of mine) {
     const b = join(bRoot, rel)
     if (!existsSync(b)) drift.push(`${rel}（对方缺）`)
-    else if (sha(join(aRoot, rel)) !== sha(b)) drift.push(`${rel}（内容不同）`)
+    else if (!sameContent(aRoot, bRoot, rel)) drift.push(`${rel}（内容不同）`)
   }
   const extra = theirs.filter((rel) => !existsSync(join(aRoot, rel)))
   return { drift, extra, count: mine.length }
@@ -95,6 +115,20 @@ function treeSync(aRoot, bRoot) {
     for (const d of pair.drift.slice(0, 12)) console.log(`      drift: ${d}`)
     for (const e of pair.extra.slice(0, 12)) console.log(`      extra: ${e}`)
   }
+}
+
+// 自检：这把「按语义比」的尺子自己得准——不然它会把真漂移也放过。
+// 只比字符串（体检脚本必须只读，一个字节都不落盘）。
+{
+  const base = { version: '0.0.1', counts: { 'a.mjs': 3 }, ms: { 'a.mjs': 100 }, budgetMs: { 'a.mjs': 1000 } }
+  const t = (o) => JSON.stringify(o)
+  const same = (x, y) => canonicalMeasuredText(t(x)) === canonicalMeasuredText(t(y))
+  line(same(base, { ...base, ms: { 'a.mjs': 999 }, note: '每跑一次都不同' }) ? 'PASS' : 'FAIL', true,
+    '基线只差实测耗时不报漂移', 'ms 100 vs 999 视为同一份')
+  line(same(base, { ...base, counts: { 'a.mjs': 4 } }) ? 'FAIL' : 'PASS', true,
+    '基线断言数不同照样报漂移', 'counts 3 vs 4')
+  line(same(base, { ...base, version: '0.0.2' }) ? 'FAIL' : 'PASS', true,
+    '基线版本不同照样报漂移', 'version 0.0.1 vs 0.0.2')
 }
 
 // ── 3. 加载面：profile patch + bundles + 客户端产物 ────────────────────────
