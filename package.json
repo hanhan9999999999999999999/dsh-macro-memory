@@ -1,6 +1,6 @@
 {
   "name": "dsh-macro-memory",
-  "version": "0.2.98",
+  "version": "0.2.99",
   "private": false,
   "description": "宏观记忆调控插件：以 meow-memory 的记忆库为主库、dsh-memory-nebula 的星图为索引，融合成一套 8 个 memory_* 统一工具 + 一段最小注入；两个原插件退化为引擎，工具面与注入面由本插件统一接管并互相联动。",
   "type": "module",

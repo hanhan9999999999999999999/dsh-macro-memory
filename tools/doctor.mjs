@@ -143,6 +143,11 @@ else {
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
   {
+    marker: '[macro-fusion 0.2.99]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '整理正在进行时面板只剩空账本：0.2.96–0.2.98 三版都在回答「已经发生过的整理」，dream 正在跑时 SSE 只有 state、面板只能念历史，而 dreamdigest:<sid> 早在 claim 成功那一步就写进了 dream_meta。现在①DreamStateBroadcast.broadcast(sessionId, state, detail) 与 host 侧 signalDreamState 都把 detail 并进事件（加法，老消费方只认 state 照样工作），startWindowDream 在算完 digest 后用 onDreamState?.(sessionId, "dreaming", { plan: digest }) 广播同一份摘要，不另立口径；②collectDreamStates 返回 {dreamed, dreaming, plans}，plans 只对活 lease 解析 dreamdigest，解析失败静默跳过、两个老字段原样；③新增模块级 readLiveDream(workspace, dir)：只认 Date.now() - lease.progress_at <= DREAM_LEASE_MS（看 progress_at 不看 T，心跳会推它），三态 no-workspace / no-db / read-failed 与 readDreamLedger 分开说，规模只从 dreamdigest 读、没有就报「规模还没落 meta」绝不现算；④融合层面板把它排成第一行、不编 #k 序号、不进趋势，空账本时先说进行中再说「账本还是空的」，多会话只念第一条并报「还有 N 个在排队」。基准在 tools/probe-ruler.mjs 的 I0–I5 与 tools/probe-fusion.mjs 的 D18–D19（含「lease 放掉立刻不再报」「只有 lease 没有 digest 不编规模」「没有工作区与没建库分开」三条阴性对照）',
+  },
+  {
     marker: '[macro-fusion 0.2.97]',
     file: 'vendor/meow-memory/lib/index.js',
     what: 'dream 的账本只有写口：0.2.96 起每轮整理都把规模和合并候选写进 dream_log（summary 一行 + changes.plan），但库里没有任何读口——memory_admin 面板上没有一行念它，主人想知道上一轮看到几条、点出几对，只能去翻 sqlite；一个只有写口的账本等于把「可追溯」做成了「看我写过」。现在①新增 MemoryDb.recentDreams(limit=5)：LIMIT 1..50、最新在前、返回 {runAt, summary, changes, note}，changes 解析失败记 null 但该行照列（一行坏账不吞整本账）；②新增模块级 readDreamLedger(workspace, dir, limit)：先分 no-workspace / no-db / read-failed 三种没念出账的来路（「还没建库」与「库在但读不开」不许合成一句），再把库交给 recentDreams；③融合层面板加 memory_admin(action="dream")：逐行念 时间 · 收尾原因 · N 轮/M 条 · 逐字重复/重复详写/缺词/项目段，数字只念 changes.plan，老记录明说「比 0.2.96 早」；④面板不写死 .dsh-meow：lib/index.js 的 meowDirReader() 从引擎配置现读 projectDir，随重挂更新。基准在 tools/probe-ruler.mjs 的 H 段与 tools/probe-fusion.mjs 的 D9–D14（含「空账本、坏账、没有会话工作区都不许凭空报数」三条阴性对照）',

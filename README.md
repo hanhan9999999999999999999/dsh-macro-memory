@@ -2,9 +2,9 @@
 
 > 一个记忆插件，接管全部记忆能力：**8 个工具、一段 1,091 字符的常驻注入**，主库仍是 meow 的七层 SQLite，星图退成可重建的索引。
 >
-> 适用：DeepSeek Harness（DSH）。版本 **0.2.98** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
+> 适用：DeepSeek Harness（DSH）。版本 **0.2.99** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
 
-| 指标 | 融合前（三插件并存） | 现在（0.2.98） | 变化 |
+| 指标 | 融合前（三插件并存） | 现在（0.2.99） | 变化 |
 | --- | --- | --- | --- |
 | 工具 schema 合计 | 17 个工具 / 56,759 B | **8 个工具 / 8,655 B** | **−84.7%** |
 | 常驻注入 | 4,085 字符（meow 3,396 + nebula 689） | **1,091 字符（1 段）** | **−73.3%** |
@@ -192,15 +192,15 @@ git clone <THIS_REPO> dsh-macro-memory
 ## 质量：怎么证明它没坏
 
 ```bash
-node tools/check-all.mjs          # 21 支自检，1,969 条断言，145s
+node tools/check-all.mjs          # 21 支自检，1,989 条断言，147s
 node verify.mjs                   # 单支：宿主契约 + 浏览器装配
 node tools/doctor.mjs             # 体检：两棵树字节一致、加载面、注入长度、队列、账本
 ```
 
-- **21 支自检 / 1,969 条断言**，全部可执行，覆盖：宿主装配契约、真 vendor 端到端联动（含星图缺席降级）、真 meow 库 + 真 nebula 引擎的节点/边/生命周期、真 cordis + 真 ToolsService + 真 SystemPrompt、浏览器侧 UI 注册、17 个原工具 → 8 个统一工具的参数级覆盖审计、17 个原工具的清单与字面量体积、工具账本（每个脚本有归属）、口径总账（手册/schema 常量/对外文案同源）、召回校准（相关度优先 + 重要度进分数 + 相关度下限 min_rel）、合并账本（关键词并集 / 归属不搬 / 变短默认不换 / overwrite 才换）、跨层重复（写时点名另一层 / 检索折叠逐字级重复 / dedupe: false 看全量）、相似检索（基准与候选同一把尺子 / 本会话刚写的也算候选 / 端过的不再端）、两把尺子（相似度 cosine 与逐字重复度 Jaccard 并报 / 与写侧合并判据同源 / 长文嵌一句要点名）、记忆体检口径（「相似 N」是稀有词签名估算、判「同一句存两层」看 repeat、两把尺子靠一句口径说明指路）、dream 重复对（整理清单里点名逐字重复的对子 / 没对子一个字不加 / 短 id 在清单内互不撞前缀）、dream 跨轮次重复（同一句话一条 fact 一条 topic 也点名 / 一对只说一次 / 半边标「另一组」并说清怎么处置）、dream 重复详写（短摘录 + 长详写也算同一件事 / 覆盖度 ≥90% 且短条至少 8 个词 / 与逐字重复块互斥不重复点）、dream 合并处方（每个重复详写对下面点名短条里长条没有的词、最多 6 个 / 无损时明说「没有长条之外的词」/ 三把尺子各管一段：重复合并、相似不许合并）、dream 整理留痕（回执先说这一轮看到几轮几条 / 几对逐字重复 / 几对重复详写 / 几个词要补；收尾把同一份数字写进 dream_log 的 changes.plan 与 summary；念完即清 meta，下一轮读不到旧账）、整理留痕面板（`memory_admin(action="dream")` 照账本念，不现算；没工作区 / 还没建库 / 库读不开 / 账本为空四种来路各说各话；0.2.96 之前的老记录明说「比 0.2.96 早」，不冒充有规模）、整理走向（每条账带 `#k` 序号与「落库 是/否」，末尾一行趋势给最近几次的重复对/缺词合计与「在变多/在变少/持平」；可用记录不到 2 条不出这一行，不到 4 条自带「样本太少别当走势」，老记录跳过时点明几条没参与），都含阴性对照、注入体、加载器判据、组合产物、YAML 接线、市场索引、体检。
+- **21 支自检 / 1,989 条断言**，全部可执行，覆盖：宿主装配契约、真 vendor 端到端联动（含星图缺席降级）、真 meow 库 + 真 nebula 引擎的节点/边/生命周期、真 cordis + 真 ToolsService + 真 SystemPrompt、浏览器侧 UI 注册、17 个原工具 → 8 个统一工具的参数级覆盖审计、17 个原工具的清单与字面量体积、工具账本（每个脚本有归属）、口径总账（手册/schema 常量/对外文案同源）、召回校准（相关度优先 + 重要度进分数 + 相关度下限 min_rel）、合并账本（关键词并集 / 归属不搬 / 变短默认不换 / overwrite 才换）、跨层重复（写时点名另一层 / 检索折叠逐字级重复 / dedupe: false 看全量）、相似检索（基准与候选同一把尺子 / 本会话刚写的也算候选 / 端过的不再端）、两把尺子（相似度 cosine 与逐字重复度 Jaccard 并报 / 与写侧合并判据同源 / 长文嵌一句要点名）、记忆体检口径（「相似 N」是稀有词签名估算、判「同一句存两层」看 repeat、两把尺子靠一句口径说明指路）、dream 重复对（整理清单里点名逐字重复的对子 / 没对子一个字不加 / 短 id 在清单内互不撞前缀）、dream 跨轮次重复（同一句话一条 fact 一条 topic 也点名 / 一对只说一次 / 半边标「另一组」并说清怎么处置）、dream 重复详写（短摘录 + 长详写也算同一件事 / 覆盖度 ≥90% 且短条至少 8 个词 / 与逐字重复块互斥不重复点）、dream 合并处方（每个重复详写对下面点名短条里长条没有的词、最多 6 个 / 无损时明说「没有长条之外的词」/ 三把尺子各管一段：重复合并、相似不许合并）、dream 整理留痕（回执先说这一轮看到几轮几条 / 几对逐字重复 / 几对重复详写 / 几个词要补；收尾把同一份数字写进 dream_log 的 changes.plan 与 summary；念完即清 meta，下一轮读不到旧账）、整理留痕面板（`memory_admin(action="dream")` 照账本念，不现算；没工作区 / 还没建库 / 库读不开 / 账本为空四种来路各说各话；0.2.96 之前的老记录明说「比 0.2.96 早」，不冒充有规模）、整理走向（每条账带 `#k` 序号与「落库 是/否」，末尾一行趋势给最近几次的重复对/缺词合计与「在变多/在变少/持平」；可用记录不到 2 条不出这一行，不到 4 条自带「样本太少别当走势」，老记录跳过时点明几条没参与），都含阴性对照、整理中那一轮（dream 正在跑时面板第一行就报这一轮多大——规模读的是 `dreamdigest`，不是账本；不给这轮编 `#k`、也不进趋势；只有 lease 活着才算「进行中」，lease 一放掉第一行立刻消失；只有 lease 没有摘要就说「规模还没落 meta」，不拿当前清单现算；SSE 的 `dreaming` 事件同时带上这份规模，老消费方只认 `state` 照样工作）、注入体、加载器判据、组合产物、YAML 接线、市场索引、体检。
 - **断言数基线**：`tools/baselines.json` 记每支的 PASS 条数——少了判红（有人删了东西），多了只提醒。
 - **耗时预算**：每支 4×实测且不低于 30s，超时 SIGKILL；比基线慢 1.5 倍只提醒不判红（慢不等于坏）。
-- **vendor 账本**：`vendor/VENDOR.json` 记两棵 vendor 树的文件数/字节/整树指纹，改过没重记就 FAIL；另有 25 条「我们故意打的补丁还在位」的内容断言。
+- **vendor 账本**：`vendor/VENDOR.json` 记两棵 vendor 树的文件数/字节/整树指纹，改过没重记就 FAIL；另有 67 条「我们故意打的补丁还在位」的内容断言。
 - **阴性对照**：每轮都先把判据打红一次再还原，证明判据不是纸做的。
 
 ## 目录结构
@@ -256,7 +256,7 @@ docs/                 INTERNAL.md 逐轮开发日志、images/ 配图
 - Per-turn fixed cost: ~14–16K → **~2.2K tokens**.
 - Nothing was dropped: every original tool is reachable through the unified surface (audited by `tools/coverage-audit.mjs` and `tools/param-audit.mjs`).
 - Writes land in the main store first; graph links that cannot be written are **queued, not lost** (500 entries, 7-day TTL, auto-flushed).
-- 21 self-check scripts / 1,969 assertions / `node tools/check-all.mjs`.
+- 21 self-check scripts / 1,989 assertions / `node tools/check-all.mjs`.
 
 Bundled third-party code is MIT: `meow-memory` © 2026 Phant0Meow ([source](https://github.com/Phant0Meow/dsh-meow-memory)), `dsh-memory-nebula` © 2026 the authors. See `THIRD-PARTY-NOTICES.md` for the exact list of modifications.
 

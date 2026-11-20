@@ -307,6 +307,40 @@ try {
   const trendOldPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, { agent: { session: { header: { cwd: trendOldWs } } } }))
   check('D17 老记录不进趋势，但说清跳过几条', trendOldPanel.includes('1 条记录早于 0.2.96') && trendOldPanel.includes('重复详写 合计 4 对'), trendOldPanel.split('\n').slice(-1)[0])
   check('D17 样本不足时明说别当走势', trendOldPanel.includes('样本太少'), '')
+  // [macro-fusion 0.2.99] 正在整理的那一轮：面板第一行念活 lease + dreamdigest，
+  // 但绝不把它混成账本里的一行；lease 放掉之后立刻不再念。
+  const liveWs = mkdtempSync(join(tmpdir(), 'macro-probe-live-'))
+  const liveDb = Meow.getDb(liveWs, '.dsh-meow')
+  liveDb.logDream('window dream done: sess-live-old groups=1 stamped=true', { stamped: true, groups: 1, plan: { rounds: 2, groups: 1, rows: 2, dup: 0, cover: 0, missing: 0, projects: ['p'] } })
+  liveDb.setDreamMeta('dreamdigest:sess-live', JSON.stringify({ rounds: 4, groups: 4, rows: 6, dup: 1, cover: 3, missing: 2, projects: ['p', 'q'] }))
+  liveDb.claimDream('sess-live', `owner-probe-${process.pid}`, Date.now(), 120000)
+  const livePanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, { agent: { session: { header: { cwd: liveWs } } } }))
+  check(
+    'D18 整理中：第一行念这一轮的规模（来自 dreamdigest，不是账本）',
+    livePanel.includes('整理进行中：4 轮 / 6 条 · 逐字重复 1 对 · 重复详写 3 对 · 缺 2 个词 · 2 个项目段') &&
+      livePanel.indexOf('整理进行中') < livePanel.indexOf('#1 '),
+    livePanel.split('\n').find((l) => l.includes('整理进行中')) ?? livePanel.split('\n')[0],
+  )
+  check(
+    'D18 整理中：不给这轮编序号，账本行仍从 #1 起',
+    /整理进行中/.test(livePanel) && !/^#1 .*整理进行中/.test(livePanel) && livePanel.includes('#1 '),
+    '',
+  )
+  liveDb.releaseDream('sess-live')
+  const liveGone = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, { agent: { session: { header: { cwd: liveWs } } } }))
+  check(
+    'D19 lease 放掉后第一行消失（不把收尾的那轮一直挂着）',
+    !liveGone.includes('整理进行中') && liveGone.includes('#1 '),
+    liveGone.split('\n')[0],
+  )
+  liveDb.claimDream('sess-live', `owner-probe2-${process.pid}`, Date.now(), 120000)
+  liveDb.delDreamMeta('dreamdigest:sess-live')
+  const liveNoPlan = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, { agent: { session: { header: { cwd: liveWs } } } }))
+  check(
+    'D19 只有 lease 没有 digest：说「规模还没落 meta」，不编数字',
+    liveNoPlan.includes('规模还没落 meta') && !/整理进行中：\d+ 轮/.test(liveNoPlan),
+    liveNoPlan.split('\n')[0],
+  )
 
 
   if (process.env.PROBE_LINK === '1' && id) {

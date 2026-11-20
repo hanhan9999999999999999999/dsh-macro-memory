@@ -3820,7 +3820,10 @@ function startWindowDream(ctx, agent, workspace, dir = ".dsh-meow", onDreamState
   const digest = dreamPlanDigest(rounds);
   db.setDreamMeta(`dreamdigest:${sessionId}`, JSON.stringify(digest));
   if (trace !== void 0 && trace !== null) trace.digest = digest;
-  onDreamState?.(sessionId, "dreaming");
+  // [macro-fusion 0.2.99] 开始整理时把规模一起广播出去：月亮图标在整理过程中就能说
+  // 「这一轮看到几条」，而不是等收尾再从 dream_log 里读。第三个参数是加法，
+  // 老消费方（只认 state）忽略它照样工作。
+  onDreamState?.(sessionId, "dreaming", { plan: digest });
   const msg = buildDreamMessage(db, sessionId, T2, rounds, 0);
   if (!sendMemoryTurn(agent, msg, workspace, dir, `dream start sid=${shortSessionId(sessionId)}`)) {
     db.releaseDream(sessionId);
@@ -4644,6 +4647,9 @@ function headerOf(s) {
 function collectDreamStates(sessions, dir = ".dsh-meow") {
   const dreamed = [];
   const dreaming = [];
+  // [macro-fusion 0.2.99] 正在整理的那一轮把规模也带出来（键=会话 id）。
+  // 老调用方只读 dreamed/dreaming 两个数组，多出来的一列不影响它们。
+  const plans = {};
   const opened = /* @__PURE__ */ new Set();
   for (const s of sessions) {
     const { cwd } = headerOf(s);
@@ -4656,6 +4662,13 @@ function collectDreamStates(sessions, dir = ".dsh-meow") {
         const lease = db.getDreamLease(w.session_id);
         if (lease !== null && Date.now() - lease.progress_at <= DREAM_LEASE_MS) {
           dreaming.push(w.session_id);
+          const rawPlan = db.getDreamMeta(`dreamdigest:${w.session_id}`);
+          if (typeof rawPlan === "string" && rawPlan !== "") {
+            try {
+              plans[w.session_id] = JSON.parse(rawPlan);
+            } catch {
+            }
+          }
         } else if (w.last_dream_time !== null && (w.last_event_time ?? 0) <= w.last_dream_time) {
           dreamed.push(w.session_id);
         }
@@ -4663,7 +4676,36 @@ function collectDreamStates(sessions, dir = ".dsh-meow") {
     } catch {
     }
   }
-  return { dreamed, dreaming };
+  return { dreamed, dreaming, plans };
+}
+// [macro-fusion 0.2.99] 面板要念「此刻正在整理的那一轮看到多少条」：账本是事后对账，
+// 这里读的是活的 lease + dreamdigest meta。三态与 readDreamLedger 一样分开说——
+// 「没工作区」「还没建库」「库读不开」都不是「现在没在整理」。
+function readLiveDream(workspace, dir = ".dsh-meow") {
+  const ws = String(workspace ?? "");
+  if (ws === "") return { sessionIds: [], plans: {}, dbPath: "", missing: "no-workspace" };
+  const path = memoryDbPath(ws, dir);
+  if (!existsSync8(path)) return { sessionIds: [], plans: {}, dbPath: path, missing: "no-db" };
+  try {
+    const db = getDb(ws, dir);
+    const sessionIds = [];
+    const plans = {};
+    for (const w of db.listWindows()) {
+      const lease = db.getDreamLease(w.session_id);
+      if (lease === null || Date.now() - lease.progress_at > DREAM_LEASE_MS) continue;
+      sessionIds.push(w.session_id);
+      const rawPlan = db.getDreamMeta(`dreamdigest:${w.session_id}`);
+      if (typeof rawPlan === "string" && rawPlan !== "") {
+        try {
+          plans[w.session_id] = JSON.parse(rawPlan);
+        } catch {
+        }
+      }
+    }
+    return { sessionIds, plans, dbPath: path, missing: "" };
+  } catch (e) {
+    return { sessionIds: [], plans: {}, dbPath: path, missing: `read-failed: ${e?.message ?? e}` };
+  }
 }
 var DreamStateBroadcast = class {
   clients = /* @__PURE__ */ new Set();
@@ -4690,8 +4732,8 @@ var DreamStateBroadcast = class {
    * 'active'=有新活动去月亮、'skip'/'unskip'=用户切换跳过自动 dream 标记
    * （v0.16.0；dream-icon 端按未知状态幂等忽略，dream-skip 端据此同步本地集合）。
    */
-  broadcast(sessionId, state) {
-    this.write(sessionId, state);
+  broadcast(sessionId, state, detail) {
+    this.write(sessionId, state, detail);
   }
   /**
    * 广播一次门控变化（issue #38：state='scope' + field/value 明细）。
@@ -5531,8 +5573,8 @@ ${e.stack ?? ""}` : String(e)}
     if (typeof dispose === "function") toolDisposers.push(dispose);
   }, resolved.projectDir);
   const broadcast = new DreamStateBroadcast(ctx.logger);
-  const signalDreamState = (sessionId, state) => {
-    broadcast.broadcast(sessionId, state);
+  const signalDreamState = (sessionId, state, detail) => {
+    broadcast.broadcast(sessionId, state, detail);
     if (state === "dreamed" && resolved.backup.enabled) {
       const wsB = windowIndex.get(sessionId);
       if (wsB !== void 0) {
@@ -6270,6 +6312,7 @@ export {
   dreamPlanDigest,
   dreamReceipt,
   readDreamLedger,
+  readLiveDream,
   dreamSweepOnce,
   dreamSweepTick,
   dshHomeDir,

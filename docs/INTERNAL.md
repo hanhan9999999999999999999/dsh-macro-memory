@@ -5205,3 +5205,65 @@ window dream done: sess-xxxx groups=2 stamped=2 T=2026-11-19T…
   真需要时下一步是给 `memory_admin(action="dream")` 加一个按 `#k` 取明细的参数——那是新增参数，
   会连带 schema、参数归属表与四条审计断言，值得单独一版做，不在这一版塞进来。
 
+
+## 9.105 整理正在进行时，面板只剩一个空账本（0.2.99）
+
+### 9.105.0 现象
+
+0.2.96 让 dream 每轮把规模写进 `dream_log`（summary 一行 + `changes.plan`），0.2.97 让面板念这本账，0.2.98 让它给出走向。三版都在回答同一个问题：**已经发生过的整理长什么样**。
+
+可主人盯着屏幕的那一刻，dream 往往正在跑：
+
+- 会话里刚触发整理，模型正在按清单逐条合并；
+- 面板打开一看——账本里还没有这一轮（收尾才写 `dream_log`），于是只剩上一轮或「账本还是空的」；
+- 月亮图标在呼吸灯，却一个字都说不出「这一轮到底有多大」。
+
+信息其实早就有了：`startWindowDream` 在 claim 成功的同一步就把 `dreamPlanDigest` 存进了 `dream_meta` 的 `dreamdigest:<sid>`。只是：
+
+1. `dream_log` 只记收尾，进行中的那一轮没有任何读口；
+2. `onDreamState` 只传 `state`（`dreaming` / `dreamed` / `active`），SSE 的 `data` 里没有规模；
+3. `collectDreamStates` 也只回 `dreamed` / `dreaming` 两个 id 数组。
+
+于是「正在发生的事」在三个出口上都是不可读的。
+
+### 9.105.1 判据与读口
+
+新增模块级 `readLiveDream(workspace, dir = ".dsh-meow")`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `sessionIds` | 此刻 lease 还活着（`Date.now() - lease.progress_at <= DREAM_LEASE_MS`）的会话 id，顺序即 `listWindows()` |
+| `plans` | 键=会话 id，值=`dreamdigest:<sid>` 解析出来的 `{rounds, groups, rows, dup, cover, missing, projects}`；没有 meta 就没有这个键 |
+| `dbPath` | 库路径，报错时用来说清是哪一本读不开 |
+| `missing` | `''` / `'no-workspace'` / `'no-db'` / `` `read-failed: ${msg}` `` |
+
+三条判据：
+
+1. **只认活 lease**。lease 过期就不算「现在在整理」——不能把昨天那一轮说成进行时。
+2. **规模只从 `dreamdigest` 读**。没有 digest 就说「规模还没落 meta」，绝不按当前清单现算一遍（现算会和收尾写进账本的那份数字对不上）。
+3. **三态分开**。`no-workspace`（会话头没有 cwd）、`no-db`（这窗口还没建库）、`read-failed`（库在但读不开）都不是「现在没有在整理」；把它们合成一句，是最难查的那种谎。
+
+同时给 `collectDreamStates` 加一列 `plans`（同样是「有活 lease 才有」），`dreamed` / `dreaming` 两个老字段原样保留。
+
+### 9.105.2 三个出口
+
+| 出口 | 改法 |
+| --- | --- |
+| SSE `dream` 事件 | `DreamStateBroadcast.broadcast(sessionId, state, detail)` 把 detail 并进 `data`；`signalDreamState(sessionId, state, detail)` 透传。`dreaming` 事件现在带 `plan`，老消费方只看 `state` 不受影响 |
+| 面板首行 | `readDreamPanel` 先读 `readLiveDream`：有活 lease 就 `lines.unshift(liveText, '')`，并给 scope 加一句「第一行是正在整理的那一轮，规模读的是 dreamdigest，不是账本」 |
+| 空账本 | 账本为空但有活 lease 时，先说进行中那一轮，再说「账本还是空的」——否则主人会以为这一次整理什么都没看到 |
+
+面板那一行**不带 `#k` 序号**：序号属于账本里的历史，这一轮还没写进去。它也不参与趋势（趋势只算 `changes.plan`）。
+
+### 9.105.3 顺序上的坑
+
+1. digest 必须在 `claimDream` 成功之后才算——被 `claimed` 挡回来的那次不该为一个不会跑的整理烧一遍分词（0.2.96 已定），所以广播也放在同一位置。
+2. 判断 lease 死活看 `progress_at` 而不是 `T`：心跳会把 `progress_at` 往前推，`T` 是这一轮的起点，用 `T` 会把长跑的正常整理判成过期。
+3. 面板里 `live` 要在「账本是否为空」之前算，否则空账本分支会提前 return，永远念不到进行中。
+4. 一个工作区可能同时有多个会话在整理（`listWindows` 多行），面板只念第一条的规模，其余用「还有 N 个会话在排队等整理」报数——不静默吞掉。
+
+### 9.105.4 没做的事
+
+- 面板不分页：`limit` 仍然只收紧账本行数，进行中那一行永远在最前。
+- SSE 只加了 `plan` 一个字段：`groups` / `stamped` 属于收尾结果，放进 `dreaming` 事件会让人以为已经落库。
+- 没做「整理进度百分比」：一轮 dream 的轮数是已知的（`rounds`），但每轮耗时不可预知，百分比是编出来的。

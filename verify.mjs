@@ -6354,5 +6354,79 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.99] 账本记的是「整理完之后」，主人盯着的却是「现在这一轮在干什么」：
+// 月亮图标的 SSE 事件原来只有 state，面板也只能念历史。这里钉三件事：
+// ①广播多带一个可选的 detail（加法，老消费方只认 state 照样工作）；
+// ②dream 开始时把同一份 dreamPlanDigest 一起广播出去，不去读第二份口径；
+// ③readLiveDream 用活 lease + dreamdigest 读「进行中」，三态与 readDreamLedger 一样分开说，
+//   并且面板把它排成第一行、不给它编序号（它还不是账本里的一行）。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools', 'check-all.mjs'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  check(
+    'dream 进行中: 广播带可选 detail，老调用方（只传 state）照样工作',
+    vSrc.includes('  broadcast(sessionId, state, detail) {') &&
+      vSrc.includes('    this.write(sessionId, state, detail);') &&
+      vSrc.includes('const signalDreamState = (sessionId, state, detail) => {') &&
+      vSrc.includes('broadcast.broadcast(sessionId, state, detail);'),
+  )
+  check(
+    'dream 进行中: 开始时广播的就是 dreamPlanDigest 那份摘要（不另立口径）',
+    vSrc.includes('onDreamState?.(sessionId, "dreaming", { plan: digest });') &&
+      vSrc.indexOf('const digest = dreamPlanDigest(rounds);') < vSrc.indexOf('onDreamState?.(sessionId, "dreaming", { plan: digest });'),
+  )
+  check(
+    'dream 进行中: readLiveDream 是模块级读口，三态分开（没工作区 / 没建库 / 读不开）',
+    /function readLiveDream\(workspace, dir = "\.dsh-meow"\)/.test(vSrc) &&
+      vSrc.includes('missing: "no-workspace"') &&
+      vSrc.includes('missing: "no-db"') &&
+      vSrc.includes('`read-failed: ${e?.message ?? e}`') &&
+      /^\s{2}readLiveDream,$/m.test(vSrc),
+  )
+  check(
+    'dream 进行中: 只认活 lease（过期的 lease 不算「现在在整理」），规模只从 dreamdigest 读',
+    vSrc.includes('if (lease === null || Date.now() - lease.progress_at > DREAM_LEASE_MS) continue;') &&
+      vSrc.includes('const rawPlan = db.getDreamMeta(`dreamdigest:${w.session_id}`);'),
+  )
+  check(
+    'dream 进行中: collectDreamStates 多出 plans 一列，dreamed/dreaming 两个老字段没动',
+    vSrc.includes('return { dreamed, dreaming, plans };') &&
+      vSrc.includes('const plans = {};') &&
+      vSrc.includes('plans[w.session_id] = JSON.parse(rawPlan);'),
+  )
+  check(
+    'dream 进行中: 面板把它排在第一行、不带序号，并且说清「收尾后会变成账本里的一行」',
+    panelSrc.includes("if (liveText !== '') lines.unshift(liveText, '')") &&
+      panelSrc.includes('收尾之后这里会变成账本里的一行历史') &&
+      panelSrc.includes('规模还没落 meta') &&
+      panelSrc.includes("if (liveText !== '') scopeParts.push('第一行是正在整理的那一轮，规模读的是 dreamdigest，不是账本')"),
+  )
+  check(
+    'dream 进行中: 面板对「没在整理」与「读不出来」不合并（沿用 readLiveDream 的三态）',
+    panelSrc.includes('const live = Meow.readLiveDream(workspace, dir)') && !/live\.missing === 'no-db'/.test(panelSrc),
+  )
+  check(
+    'dream 进行中: 探针进线（probe-ruler I0–I5、probe-fusion D18–D19）',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('I0 建了库但没在整理：一个会话都不报') &&
+      rulerSrc.includes('I2 lease 放掉之后立刻不再报') &&
+      rulerSrc.includes('I3 只有 lease 没有 digest：报会话但 plans 为空（不编规模）') &&
+      fusionSrc.includes('D18 整理中：第一行念这一轮的规模') &&
+      fusionSrc.includes('D19 lease 放掉后第一行消失'),
+  )
+  check(
+    'dream 进行中: 版本 0.2.99 两处一致，文档 9.105 / 111 在位',
+    pkg.version === '0.2.99' &&
+      idxSrc.includes("export const version = '0.2.99'") &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.105') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 111'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

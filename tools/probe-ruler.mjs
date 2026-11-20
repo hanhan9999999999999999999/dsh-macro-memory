@@ -569,5 +569,64 @@ check(
   `0→${zeroRows.length} 条 / 9999→${hugeRows.length} 条`,
 )
 
+// I 段（0.2.99）：正在整理的那一轮——读的是活 lease + dreamdigest meta，不是账本。
+const liveWs = mkdtempSync(join(tmpdir(), 'ruler-live-'))
+const liveDb = V.getDb(liveWs, '.dsh-meow')
+const I0 = V.readLiveDream(liveWs, '.dsh-meow')
+check(
+  'I0 建了库但没在整理：一个会话都不报，不是「读不出来」',
+  I0.missing === '' && I0.sessionIds.length === 0 && Object.keys(I0.plans).length === 0,
+  `missing="${I0.missing}" ids=${I0.sessionIds.length}`,
+)
+
+const liveDigest = { rounds: 2, groups: 2, rows: 3, dup: 1, cover: 1, missing: 2, projects: ['probe'] }
+liveDb.setDreamMeta('dreamdigest:sess-live', JSON.stringify(liveDigest))
+liveDb.claimDream('sess-live', `owner-live-${process.pid}`, Date.now(), 120000)
+const I1 = V.readLiveDream(liveWs, '.dsh-meow')
+check(
+  'I1 有活 lease：报出会话 id，并且把它那份 dreamdigest 一起念出来',
+  I1.sessionIds.length === 1 && I1.sessionIds[0] === 'sess-live' && I1.plans['sess-live']?.rows === 3,
+  `ids=${I1.sessionIds.join(',')} rows=${I1.plans['sess-live']?.rows}`,
+)
+
+// 阴性对照：lease 过期就不算「正在整理」，别把昨天那次说成现在跑的
+liveDb.releaseDream('sess-live')
+const I2 = V.readLiveDream(liveWs, '.dsh-meow')
+check(
+  'I2 lease 放掉之后立刻不再报（不把历史整理当现在进行时）',
+  I2.sessionIds.length === 0,
+  `ids=${I2.sessionIds.length}`,
+)
+
+// 只有 lease、没有 digest：该报会话，但不许凭空编规模
+liveDb.claimDream('sess-noplan', `owner-noplan-${process.pid}`, Date.now(), 120000)
+const I3 = V.readLiveDream(liveWs, '.dsh-meow')
+check(
+  'I3 只有 lease 没有 digest：报会话但 plans 为空（不编规模）',
+  I3.sessionIds.includes('sess-noplan') && I3.plans['sess-noplan'] === undefined,
+  `ids=${I3.sessionIds.join(',')} plan=${String(I3.plans['sess-noplan'])}`,
+)
+
+// 三种来路必须分开：没工作区 / 没库 / 读不开
+const I4a = V.readLiveDream('', '.dsh-meow')
+const I4b = V.readLiveDream(join(tmpdir(), `no-such-ws-${process.pid}`), '.dsh-meow')
+check(
+  'I4 没工作区与没建库分开说（不合成一句「没有在整理」）',
+  I4a.missing === 'no-workspace' && I4b.missing === 'no-db',
+  `a="${I4a.missing}" b="${I4b.missing}"`,
+)
+
+// collectDreamStates 新加的一列：正在整理的那一轮带 plan，老字段一个不少
+liveDb.claimDream('sess-live', `owner-live2-${process.pid}`, Date.now(), 120000)
+const states = V.collectDreamStates([{ id: 'sess-live', cwd: liveWs }], '.dsh-meow')
+check(
+  'I5 collectDreamStates 多一列 plans：老字段 dreamed/dreaming 还在，整理中的会话带 rows',
+  Array.isArray(states.dreamed) &&
+    Array.isArray(states.dreaming) &&
+    states.dreaming.includes('sess-live') &&
+    states.plans['sess-live']?.rows === 3,
+  `dreamed=${states.dreamed.length} dreaming=${states.dreaming.join(',')} plans=${JSON.stringify(states.plans['sess-live'] ?? null)}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
