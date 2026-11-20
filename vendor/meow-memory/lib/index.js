@@ -4165,6 +4165,20 @@ function advanceDream(agent, dir = ".dsh-meow", onDreamState, rulesReviewDays = 
 function finalizeDream(db, sessionId, workspace, dir, T2, reason, groupsCount, onDreamState) {
   stopDreamHeartbeat(sessionId);
   try {
+    // [macro-fusion 0.2.107] 收尾方式落成结构化字段：以前只有 summary 里那个词（done / aborted）
+    // 能分辨这一轮是跑完了还是半路停下，读账的面板只能照抄一个字，连「走了几组、还剩几组」都答不上。
+    // 分母必须在这里读——finishDream 会顺手删掉 dreamplan，晚一步就只剩分子了。
+    let groupsTotal = 0;
+    try {
+      const rawRounds = db.getDreamMeta(`dreamplan:${sessionId}`);
+      if (rawRounds !== void 0) {
+        const parsed = JSON.parse(rawRounds);
+        if (Array.isArray(parsed)) groupsTotal = parsed.length;
+      }
+    } catch {
+      groupsTotal = 0;
+    }
+    const kind = reason === "aborted" ? { kind: "aborted", groupsDone: Math.max(0, groupsCount - 1), groupsTotal } : { kind: "done" };
     const stamped = db.stampDream(sessionId, T2);
     db.finishDream(sessionId, Date.now());
     // [macro-fusion 0.2.96] 把开工时算好的计划摘要一起落库：以后查 dream_log 能看到这一轮翻了几条、
@@ -4190,11 +4204,15 @@ function finalizeDream(db, sessionId, workspace, dir, T2, reason, groupsCount, o
     }
     const storeNote = plan === void 0 || plan.storeEnd === void 0 ? "" : ` store=${plan.store?.active ?? "?"}->${plan.storeEnd.active}`;
     const planNote = plan === void 0 ? "" : ` plan rows=${plan.rows} dup=${plan.dup} cover=${plan.cover} missing=${plan.missing}${storeNote}`;
+    // [macro-fusion 0.2.107] 中断的账把分数也印进 summary：`groups=1/2` 一眼看出走完几组、本来几组，
+    // 不必展开 changes 才知道这一轮本来要处理几组。分子是「已走完」，分母是「本来几组」。
+    const groupsText = reason === "aborted" && groupsTotal > 0 ? `${Math.max(0, groupsCount - 1)}/${groupsTotal}` : `${groupsCount}`;
     db.logDream(
-      `window dream ${reason}: ${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}${planNote} T=${new Date(T2).toISOString()}`,
+      `window dream ${reason}: ${shortSessionId(sessionId)} groups=${groupsText} stamped=${stamped}${planNote} T=${new Date(T2).toISOString()}`,
       // #108：changes 落真实计数（此前两处调用硬编码 {before:undefined,after:undefined}
       // → JSON {}，查库的人会误读成"什么都没改"）。stamped=本轮封存/完结条目数。
-      plan === void 0 ? { stamped, groups: groupsCount } : { stamped, groups: groupsCount, plan }
+      // [macro-fusion 0.2.107] kind 说明这一轮是怎么收的场：done=跑完、aborted=半路停下（带组数）。
+      plan === void 0 ? { stamped, groups: groupsCount, kind } : { stamped, groups: groupsCount, kind, plan }
     );
     dreamLog(workspace, dir, `dream ${reason} session=${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}${planNote}`);
     onDreamState?.(sessionId, "dreamed");
@@ -4321,8 +4339,11 @@ function recoverInterruptedDream(db, sessionId, workspace, dir = ".dsh-meow") {
   const w = db.getWindow(sessionId);
   const T2 = lease ? lease.T : w && w.last_event_time > 0 ? w.last_event_time : Date.now();
   const progressed = lease !== null && lease.group_idx > 0;
+  // [macro-fusion 0.2.107] fails 要活到落账那一行：零进展和被封存这两种收尾都得把失败次数
+  // 写进 changes.kind，否则账本里只剩一句中文，事后问不了「到底崩了几次」。
+  let fails = 0;
   if (!progressed) {
-    const fails = db.recordDreamFailure(sessionId, T2);
+    fails = db.recordDreamFailure(sessionId, T2);
     if (fails < DREAM_MAX_ATTEMPTS) {
       db.releaseDream(sessionId);
       dreamLog(workspace, dir, `dream recovered zero-progress session=${shortSessionId(sessionId)} fails=${fails}/${DREAM_MAX_ATTEMPTS} -> released (retry next sweep)`);
@@ -4333,9 +4354,13 @@ function recoverInterruptedDream(db, sessionId, workspace, dir = ".dsh-meow") {
   }
   const stamped = db.stampDream(sessionId, T2);
   db.finishDream(sessionId, Date.now());
+  // [macro-fusion 0.2.107] 两种收尾分开记：走到过几组 = 被打断后补记（recovered），
+  // 一组都没走完就连续失败到上限 = 这一轮压根没起步（gaveup，带失败次数）。
+  const groupsDone = progressed ? lease.group_idx : 0;
+  const kind = progressed ? { kind: "recovered", groupsDone } : { kind: "gaveup", fails };
   db.logDream(
-    `window dream recovered (interrupted): ${shortSessionId(sessionId)} stamped=${stamped} T=${new Date(T2).toISOString()}`,
-    { stamped }
+    `window dream recovered (interrupted): ${shortSessionId(sessionId)} stamped=${stamped} groups=${groupsDone}${fails > 0 ? ` fails=${fails}` : ""} T=${new Date(T2).toISOString()}`,
+    { stamped, groups: groupsDone, kind }
     // #108：changes 落真实计数，不再硬编码空对象
   );
   dreamLog(workspace, dir, `dream recovered session=${shortSessionId(sessionId)} stamped=${stamped}`);
@@ -4349,6 +4374,13 @@ function handleMemoryTurnFailure(db, sessionId, workspace, dir = ".dsh-meow") {
   if (fails >= DREAM_MAX_ATTEMPTS) {
     const stamped = db.stampDream(sessionId, lease.T);
     db.finishDream(sessionId, Date.now());
+    // [macro-fusion 0.2.107] 这条收尾以前只写调试日志（dream-debug.log），账本里一个字都没有——
+    // 于是「连续三次失败被止损封存」在面板上等于没发生过，同一个窗口看起来像从没整理过。
+    // 现在照账本记一条：kind=sealed 带失败次数，和 done / aborted 一样能查、能回指。
+    db.logDream(
+      `window dream sealed (turn-failed): ${shortSessionId(sessionId)} fails=${fails} stamped=${stamped} T=${new Date(lease.T).toISOString()}`,
+      { stamped, kind: { kind: "sealed", fails } },
+    );
     dreamLog(workspace, dir, `dream turn-failed cap sid=${shortSessionId(sessionId)} fails=${fails} -> sealed (stamped=${stamped})`);
     console.warn(`[meow-memory] dream \u8F6E\u8FDE\u7EED\u5931\u8D25 ${fails} \u6B21\uFF08\u7A97\u53E3 ${shortSessionId(sessionId)}\uFF09\uFF0C\u5DF2\u5C01\u5B58\u4E0D\u518D\u81EA\u52A8\u91CD\u8BD5\uFF1B\u8BE6\u89C1 dream-debug.log`);
     return "sealed";

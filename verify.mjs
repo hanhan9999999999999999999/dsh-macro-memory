@@ -7107,5 +7107,107 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.107] 账本要分清收尾方式：跑完 / 半路停下 / 补记 / 封存各有各的来路。
+// 以前只有摘要首词，组数没有分母，补记与被封存的账还被一律念成「比 0.2.96 早」——
+// 其中「连续失败止损封存」那支连账本都不落，面板上等于没整理过。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc107 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc107 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'dream 收尾方式: 分母在 finishDream 删 dreamplan 之前读（晚一步只剩分子）',
+    vSrc.includes('let groupsTotal = 0;') &&
+      vSrc.includes('const rawRounds = db.getDreamMeta(`dreamplan:${sessionId}`);') &&
+      vSrc.includes('if (Array.isArray(parsed)) groupsTotal = parsed.length;'),
+  )
+  check(
+    'dream 收尾方式: 中途放弃写 kind=aborted + 走完几组/本来几组，摘要里也印分数',
+    vSrc.includes('const kind = reason === "aborted" ? { kind: "aborted", groupsDone: Math.max(0, groupsCount - 1), groupsTotal } : { kind: "done" };') &&
+      vSrc.includes('const groupsText = reason === "aborted" && groupsTotal > 0 ? `${Math.max(0, groupsCount - 1)}/${groupsTotal}` : `${groupsCount}`;') &&
+      vSrc.includes('plan === void 0 ? { stamped, groups: groupsCount, kind } : { stamped, groups: groupsCount, kind, plan }'),
+  )
+  check(
+    'dream 收尾方式: 补记与被封存分开记（recovered 带走完组数 / gaveup 带失败次数），fails 提到函数级活到落账那行',
+    vSrc.includes('let fails = 0;') &&
+      vSrc.includes('fails = db.recordDreamFailure(sessionId, T2);') &&
+      vSrc.includes('const groupsDone = progressed ? lease.group_idx : 0;') &&
+      vSrc.includes('const kind = progressed ? { kind: "recovered", groupsDone } : { kind: "gaveup", fails };') &&
+      vSrc.includes('{ stamped, groups: groupsDone, kind }'),
+  )
+  check(
+    'dream 收尾方式: 连续失败止损封存也进账本（以前只写 dream-debug.log，面板上等于没发生过）',
+    vSrc.includes('window dream sealed (turn-failed): ${shortSessionId(sessionId)} fails=${fails} stamped=${stamped} T=${new Date(lease.T).toISOString()}') &&
+      vSrc.includes('{ stamped, kind: { kind: "sealed", fails } },') &&
+      (() => {
+        const seg = vSrc.slice(vSrc.indexOf('function handleMemoryTurnFailure'))
+        return seg.indexOf('db.logDream(') > 0 && seg.indexOf('db.logDream(') < seg.indexOf('return "sealed"')
+      })(),
+  )
+  check(
+    'dream 收尾方式: 读侧优先认 changes.kind，认不出来才退回摘要首词，并标明「这一格记没记」（缺值是 null，不是 0）',
+    panelSrc.includes('function kindOf(row) {') &&
+      panelSrc.includes("typeof raw.kind === 'string' && raw.kind !== ''") &&
+      panelSrc.includes('stored: true,') &&
+      panelSrc.includes('const legacy = reasonOf(row?.summary)') &&
+      panelSrc.includes('groupsDone: null, groupsTotal: null, fails: null, stored: false }') &&
+      panelSrc.includes('const numOf = (v) => {'),
+  )
+  check(
+    'dream 收尾方式: 摘要里的括号修饰语要跳过（`recovered (interrupted)` 不能被认成「原因未记」）',
+    panelSrc.includes('match(/^window dream ([a-z]+)[^:]*:/)'),
+  )
+  check(
+    'dream 收尾方式: 行上没有规模时按来路分开讲，只有真老账才念「比 0.2.96 早」',
+    panelSrc.includes('function kindTail(k) {') &&
+      panelSrc.includes("if (kt !== '') return `${head}${tail} · ${kt}${tailRef}`") &&
+      panelSrc.includes('这条记录比 0.2.96 早，当时还没写规模数字${tailRef}') &&
+      panelSrc.includes('半路停下，这一条没记走到第几组') &&
+      panelSrc.includes('补记时已走完 ${k.groupsDone} 组'),
+  )
+  check(
+    'dream 收尾方式: 展开先讲收尾方式，并禁止把没跑完的账说成老账（规模/对子两处都要改口）',
+    panelSrc.includes('function kindBlock(row) {') &&
+      panelSrc.includes('收尾方式：${KIND_TEXT[k.kind] ?? k.kind}') &&
+      panelSrc.includes('if (kind !== \'\') lines.push(kind)') &&
+      panelSrc.includes('这一轮不是跑完的整理（${KIND_TEXT[kk.kind] ?? kk.kind}），没有规模数字可念。') &&
+      panelSrc.includes('这一轮不是跑完的整理（${KIND_TEXT[k.kind] ?? k.kind}），没有对子明细可念。'),
+  )
+  check(
+    'dream 收尾方式: 趋势与「比更早一条」只吃跑完的一轮，并说清几次没跑完不进合计',
+    panelSrc.includes('function isFullRound(row) {') &&
+      panelSrc.includes('const full = withPlan.filter((r) => isFullRound(r))') &&
+      panelSrc.includes('const partial = withPlan.length - full.length') &&
+      panelSrc.includes('次没跑完（中途放弃 / 待补记 / 已封存），不进合计') &&
+      panelSrc.includes('const halfNow = !isFullRound(row)') &&
+      panelSrc.includes('，数字不可比。'),
+  )
+  check(
+    'dream 收尾方式: 探针进线（probe-ruler L21–L24 验真 engine 四种收尾、probe-fusion D49–D53 + D11b 验面板）',
+    rulerSrc107.includes('L21 中途放弃落结构化 kind') &&
+      rulerSrc107.includes('L22 被打断后补记') &&
+      rulerSrc107.includes('L23 连续失败达上限也进账本') &&
+      rulerSrc107.includes('L24 连续没进展被封存') &&
+      fusionSrc107.includes('D49 中途放弃的行与展开') &&
+      fusionSrc107.includes('D50 半轮不配跟整轮比数字') &&
+      fusionSrc107.includes('D51 趋势只拿跑完的轮做合计') &&
+      fusionSrc107.includes('D52 补记账不冒充老账') &&
+      fusionSrc107.includes('D53 封存账进面板') &&
+      fusionSrc107.includes('D11b 中途放弃的账不冒充老账'),
+  )
+  check(
+    'dream 收尾方式: 版本不早于 0.2.107（两处一致），文档 9.113 / 119 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 107)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.113') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 119'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

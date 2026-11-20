@@ -5946,3 +5946,88 @@ function levelsText(store) {
 - 不做「按项目段算库规模」：库规模是全局的（`dreamStoreScale` 数的是整库），按项目切需要另写一遍聚合，先不做。
 - 不把 `storeDelta` 写进 `summary`（只写两个端点 `store=A->B`）：日志要短，差可以现算，两个端点算不回来。
 - 不给 0.2.106 之前的老账补收尾数：补出来的数是「今天看账时」的库大小，冒充那一刻，会静默说错话。
+
+## 9.113 账本要分清收尾方式：跑完 / 半路停下 / 补记 / 封存（0.2.107）
+
+### 9.113.0 现象
+
+`window dream (done|aborted): …` 这行摘要一直够人读，但账本一旦要**被面板解释**，就露出四个洞：
+
+1. **只有首词**。`done` 与 `aborted` 靠摘要里的一个词分辨，`changes` 里没有这一格 —— 任何读账的代码都得去解析自然语言摘要。摘要本来是给人看的，一旦成了接口，改一个字就等于改协议。
+2. **只有分子，没有分母**。`groups=1` 说不出是「本来一组」还是「五组里只走了第一组」。中途放弃最有价值的信息恰恰是分母：它告诉你这一轮根本没跑完。
+3. **补记的账被说成老账**。`recoverInterruptedDream` 只写 `{ stamped }`，没有 `plan`，于是面板走「没有规模数字」那支，念成 `这条记录比 0.2.96 早，当时还没写规模数字`。可 0.2.96 之后才有补记这回事 —— 一句时间上的假话。
+4. **止损封存根本不进账本**。`handleMemoryTurnFailure` 连续失败到 `DREAM_MAX_ATTEMPTS = 3` 时 `finishDream` 掉了窗口，只往 `dream-debug.log` 写一行。整理失败得最惨的那次，恰恰是账本上看不见的那次：面板上等于没整理过。
+
+四条合起来是一个问题：**账本记的不是「这件事怎么结束的」，而是「这件事留下的那行字怎么写」**。
+
+### 9.113.1 写侧：把收尾方式落成 `changes.kind`
+
+五种收尾，各有各的字段：
+
+| kind | 谁写 | 附带字段 | 摘要 |
+| --- | --- | --- | --- |
+| `done` | `finalizeDream`（跑完全部轮） | — | `window dream done: … groups=N` |
+| `aborted` | `finalizeDream`（`reason === "aborted"`） | `groupsDone` / `groupsTotal` | `window dream aborted: … groups=1/2` |
+| `recovered` | `recoverInterruptedDream`（有进展） | `groupsDone` | `window dream recovered (interrupted): … groups=N` |
+| `gaveup` | `recoverInterruptedDream`（零进展且达上限） | `fails` | 同上，另加 `fails=N` |
+| `sealed` | `handleMemoryTurnFailure`（连续失败达上限） | `fails` | `window dream sealed (turn-failed): … fails=3` |
+
+落账处统一成 `{ stamped, groups, kind }`（有 plan 时再多一格 `plan`），摘要里同时把数字印出来 —— **结构化给人算，摘要给人看，两份都要有**。只留结构化，人翻日志要自己拼；只留摘要，机器要解析中文。
+
+`groupsDone` 取 `Math.max(0, groupsCount - 1)`：`abortDream` 传进 `finalizeDream` 的是 `lease.group_idx + 1`，即「进行到第几组」（1-based）。直接当「走完几组」用，会把半路停下说成「走完了那一组」。
+
+### 9.113.2 分母为什么必须在 `finishDream` 之前读
+
+`finishDream(sessionId, time)` 会 `delDreamMeta('dreamplan:…')`。轮次表就存在这个键里，所以：
+
+- 想在 `finalizeDream` 里知道「本来几组」，必须在 `finishDream` 之前读 `dreamplan:${sessionId}` 并 `JSON.parse` 取 `length`；
+- 读不到就 `groupsTotal = 0`，摘要退回 `groups=N`（不印 `/0`，也不猜一个数）。
+
+这是一条容易写反的顺序：函数名是 `finalizeDream`，直觉会先收尾再记账，而收尾动作本身就把账要吃的数据删了。
+
+### 9.113.3 读侧：五态与四份文案
+
+`lib/macro/dreamledger.js` 新增 `kindOf(row)`：
+
+- `changes.kind` 是对象且有字符串 `kind` → `stored: true`，组数/失败次数从 `changes.kind` 取（`numOf` 只认 `Number.isFinite && >= 0` 的有限非负数，缺就是 `null`）；
+- 否则退回 `reasonOf(summary)` 解析首词 → `stored: false`，三个数一律 `null`。
+
+`numOf` 不把 `undefined` 当 0 是关键：`走了 0 组` 是一句假话，而 `null` 会走到「这一条没记走到第几组」那支，说的是真话。
+
+`reasonOf` 的正则同时放宽成 `/^window dream ([a-z]+)[^:]*:/`：`recovered (interrupted)` 和 `sealed (turn-failed)` 中间有括号修饰语，原来的 `^window dream (\w+):` 会把它们认成「原因未记」。
+
+文案四份，各管一处：
+
+| 场合 | 念法 |
+| --- | --- |
+| 行上（无 plan） | `#1 11-20 13:16 · 中途放弃 · 2 轮 / 3 条 · 逐字重复 0 对 · 走了 1/2 组就停下` |
+| 展开第一行 | `收尾方式：连续失败已封存（连续失败 3 次）` |
+| 展开（缺 plan 的轮） | `这一条没有 changes.plan：这一轮不是跑完的整理（中途放弃），没有规模数字可念。` |
+| 对子段 | `这一轮不是跑完的整理（中途放弃），没有对子明细可念。` |
+
+老账的边界没有变：只有**真的**没有 `kind` 也没有 `plan` 的账，才念 `这条记录比 0.2.96 早，当时还没写规模数字`。补记与被封存的账有 `kind`，从此走自己的话。
+
+「这一格记没记」也要说：`stored === false` 时展开补一句 `——这一条没有 changes.kind，是从摘要首词认出来的（0.2.107 之前的账没记这一格）。` 认出来的和记下来的都能念，但不能长得一样。
+
+### 9.113.4 趋势与「比更早一条」只吃跑完的一轮
+
+`isFullRound(row)`：
+
+- 有 `kind` → 只有 `done` 才算跑完；
+- 没 `kind`（老账）→ 只要不是 `aborted` 就算跑完（那时候还没有中途放弃的账）。
+
+趋势行改成 `full = withPlan.filter(isFullRound)`，`full.length < 2` 就不出趋势，并加一条 caveat：`N 次没跑完（中途放弃 / 待补记 / 已封存），不进合计`。「比更早一条」任一侧不完整就只回一句 `这一条不是完整的一轮（没跑完 / 已封存），数字不可比。`
+
+理由一句话：半轮里的 `dup/cover/missing` 是「扫到那儿为止」的中间值。把它加进合计，等于把半张成绩单当满分算；拿它跟整轮比，减出来的「变少了」是假象。
+
+### 9.113.5 探针进线
+
+- `tools/probe-ruler.mjs` L21–L24（真引擎，86 → 90 条）：中途放弃落 `kind`、被打断后补记走 `recovered`、连续失败达上限 `sealed` 进账本、连续没进展 `gaveup`。两条前置条件写进了断言：`db.touchWindow` 先把 `last_event_time` 钉住，否则 `recordDreamFailure` 每轮都凭 `Date.now()` 开新范围，失败次数永远从 1 重数；sealed 那支要循环「start + handleMemoryTurnFailure」三次，前两次只是 `released`。
+- `tools/probe-fusion.mjs` D49–D53 + D11b（524 → 530 条）：面板真念四种收尾、半轮不比数字、趋势只合计整轮、补记账不冒充老账、封存账进面板。D11 顺手改成先插一条**真老账**（SQL 直插，`run_at` 取 `Date.now() - 5000`，不抢 D13 的「只列一条」），这样「比 0.2.96 早」这句还留在断言里，但它只归老账。
+
+### 9.113.6 没做的事
+
+- **没给失败次数做阈值展示**（比如「连续失败 2 次，再失败一次就封存」）。封存前的进度是运行期状态，账本只记结果；要做就得在 `dream` 面板读 lease，那是另一件事。
+- **没给 `aborted` 记「停在哪一组」的组名**。轮次表里有 group 列表，但把它抄进账本等于复制一份会漂移的数据。
+- **没改 `dream-debug.log`**。调试日志照写，账本另写一条：一个给排查，一个给回看，不合并。
+- **没把趋势按收尾方式分组统计**。样本太少，分了也读不出走势。

@@ -255,6 +255,16 @@ try {
     { stamped: true, groups: 2, plan: { rounds: 2, groups: 2, rows: 2, dup: 0, cover: 1, missing: 1, projects: ['探针项目'] } },
   )
   dreamDb.logDream('window dream aborted: sess-probe-96 groups=1 stamped=false T=2026-11-19T00:00:00.000Z', { stamped: false, groups: 1 })
+  // [macro-fusion 0.2.107] 一条真正的老账（0.2.96 之前，没有 plan 也没有 kind）：只有它才该念「比 0.2.96 早」，
+  // 而上面那条 aborted 是 0.2.96 之后的账，念成「更早的账」是误报。run_at 压在 aborted 之后，别打乱 D13 的「只列一条」。
+  dreamDb.db
+    .prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+    .run(
+      Date.now() - 5000,
+      'window dream done: sess-probe-95 groups=1 stamped=true T=2026-11-18T00:00:00.000Z',
+      JSON.stringify({ stamped: true, groups: 1 }),
+      '',
+    )
 
   const dreamPanel = text(await run('memory_admin', { action: 'dream' }))
   check(
@@ -262,7 +272,12 @@ try {
     dreamPanel.includes('2 轮 / 2 条') && dreamPanel.includes('重复详写 1 对') && dreamPanel.includes('缺 1 个词'),
     dreamPanel.split('\n').slice(1, 2).join(''),
   )
-  check('D11 老记录不冒充有规模', dreamPanel.includes('这条记录比 0.2.96 早'), '')
+  check('D11 老记录不冒充有规模', dreamPanel.includes('1 组 · 这条记录比 0.2.96 早，当时还没写规模数字'), '')
+  check(
+    'D11b 中途放弃的账不冒充老账：说「半路停下，这一条没记走到第几组」，不再念「比 0.2.96 早」',
+    dreamPanel.includes('半路停下，这一条没记走到第几组'),
+    '',
+  )
   check('D12 两种收尾都点出来路', dreamPanel.includes('整理完成') && dreamPanel.includes('中途放弃'), '')
   const dreamOne = text(await run('memory_admin', { action: 'dream', limit: 1 }))
   check('D13 limit 真的只列一条', dreamOne.includes('列最近 1 次整理记录') && !dreamOne.includes('2 轮 / 2 条'), dreamOne.split('\n').slice(0, 3).join(' | '))
@@ -783,6 +798,69 @@ try {
       digStoreTrendLine.includes('次有收尾数') &&
       digStoreTrendLine.includes('次只有开工数、没有收尾数'),
     `${digStoreOldLine} / ${digStoreTrendLine}`,
+  )
+
+  // D49–D53（0.2.107）：收尾方式。半路停下 / 补记 / 封存都不能再冒充「比 0.2.96 早」，
+  // 趋势与「比更早一条」也只吃跑完的一轮——半轮的数字是扫到那儿的中间值。
+  const kindWs = mkdtempSync(join(tmpdir(), 'macro-probe-kind-'))
+  const kindDb = Meow.getDb(kindWs, '.dsh-meow')
+  const kindCtx = { agent: { session: { header: { cwd: kindWs } } } }
+  const kindIns = kindDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const kindPlan = (dup) => ({ rows: 3, rounds: 2, dup, cover: 0, missing: 0, projects: [] })
+  const kindBase = Date.now() - 600000
+  const kindOf = (kind, plan) => JSON.stringify(plan === undefined ? { stamped: 1, kind } : { stamped: 1, groups: kind.groupsDone ?? 2, kind, plan })
+  kindIns.run(kindBase, 'window dream done: k1 groups=2 stamped=1 T=2026-11-20T04:00:00.000Z', kindOf({ kind: 'done' }, kindPlan(3)), '')
+  kindIns.run(kindBase + 1000, 'window dream done: k2 groups=2 stamped=1 T=2026-11-20T04:01:00.000Z', kindOf({ kind: 'done' }, kindPlan(2)), '')
+  kindIns.run(
+    kindBase + 2000,
+    'window dream aborted: k3 groups=1/2 stamped=1 T=2026-11-20T04:02:00.000Z',
+    kindOf({ kind: 'aborted', groupsDone: 1, groupsTotal: 2 }, kindPlan(0)),
+    '',
+  )
+  const kindOne = text(await tools.get('memory_admin').execute({ action: 'dream', id: '#1', limit: 10 }, kindCtx))
+  check(
+    'D49 中途放弃的行与展开都念「走了 1/2 组就停下」，并提醒那行数字只是中间值',
+    kindOne.includes('中途放弃') && kindOne.includes('走了 1/2 组就停下') && kindOne.includes('别跟跑完的轮一起算'),
+    kindOne.split('\n').slice(0, 2).join(' | '),
+  )
+  check(
+    'D50 半轮不配跟整轮比数字：说「这一条不是完整的一轮……数字不可比」（否则比出来的「变少了」是假象）',
+    kindOne.includes('这一条不是完整的一轮（没跑完 / 已封存），数字不可比'),
+    kindOne.split('\n').find((l) => l.startsWith('比更早')) ?? '(无)',
+  )
+  const kindTrendLine = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, kindCtx))
+    .split('\n')
+    .find((l) => l.startsWith('趋势')) ?? '(无)'
+  check(
+    'D51 趋势只拿跑完的轮做合计：最近 2 次 / 合计 5 对（半轮的 0 对不进），并说清 1 次没跑完不进合计',
+    kindTrendLine.includes('最近 2 次') && kindTrendLine.includes('逐字重复 合计 5 对') && kindTrendLine.includes('1 次没跑完（中途放弃 / 待补记 / 已封存），不进合计'),
+    kindTrendLine,
+  )
+  kindIns.run(
+    kindBase + 3000,
+    'window dream recovered (interrupted): k4 stamped=1 groups=1 T=2026-11-20T04:03:00.000Z',
+    JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'recovered', groupsDone: 1 } }),
+    '',
+  )
+  const kindRec = text(await tools.get('memory_admin').execute({ action: 'dream', id: '#1', limit: 10 }, kindCtx))
+  check(
+    'D52 补记账不冒充老账：念「补记时已走完 1 组」，不再念「比 0.2.96 早」（0.2.96 之后才有补记账）',
+    kindRec.includes('补记时已走完 1 组') && !kindRec.includes('比 0.2.96 早'),
+    kindRec.split('\n').slice(0, 2).join(' | '),
+  )
+  kindIns.run(
+    kindBase + 4000,
+    'window dream sealed (turn-failed): k5 fails=3 stamped=1 T=2026-11-20T04:04:00.000Z',
+    JSON.stringify({ stamped: 1, kind: { kind: 'sealed', fails: 3 } }),
+    '',
+  )
+  const kindSeal = text(await tools.get('memory_admin').execute({ action: 'dream', id: '#1', limit: 10 }, kindCtx))
+  check(
+    'D53 封存账进面板：念「连续失败已封存（连续失败 3 次）」，且不说它写在 0.2.96 之前',
+    kindSeal.includes('连续失败已封存') &&
+      kindSeal.includes('连续失败 3 次') &&
+      !kindSeal.includes('它写在 0.2.96 之前，当时还没有记规模'),
+    kindSeal.split('\n').slice(0, 2).join(' | '),
   )
 
   if (process.env.PROBE_LINK === '1' && id) {

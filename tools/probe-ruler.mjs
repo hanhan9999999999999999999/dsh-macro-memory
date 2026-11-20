@@ -970,5 +970,93 @@ check(
   `store=${endOldRow?.changes?.plan?.store?.active} end=${String(endOldRow?.changes?.plan?.storeEnd)}`,
 )
 
+// Q 段（0.2.107）：收尾方式落成结构化 changes.kind。
+// 以前只有摘要首词能分辨「跑完了」和「半路停下」，组数只有分子没有分母；
+// 补记账和被封存的账更惨——它们没有 plan，于是被一律念成「比 0.2.96 早」，把 0.2.96 之后的账说成更早的账，
+// 其中「连续失败被止损封存」那支连账本都不落，只在 dream-debug.log 里留一句。
+const qAgent = (ws, id) => {
+  const exec = execIn(ws, id)
+  const agent = { ...exec.agent, followup() {} }
+  return { ws, id, agent }
+}
+const qSeed = async (agent, tag) => {
+  await call(
+    'memory_remember',
+    { content: `收尾方式探针 ${tag}：发版前先备份到 D 盘，出问题先还原备份再排查。`, level: 'fact', keywords: ['probe', 'kind', tag, 'backup', 'restore', 'rollback', 'release', 'ops', 'discipline'], importance: 1, project: '全局' },
+    { agent },
+  )
+  await call(
+    'memory_remember',
+    { content: `收尾方式探针 ${tag}：半路停下的一轮不能算跑完的轮，数字只是扫到那儿的中间值。`, level: 'fact', keywords: ['probe', 'kind', tag, 'groups', 'abort', 'seal', 'recover', 'ledger'], importance: 1, project: '全局' },
+    { agent },
+  )
+}
+
+const qAbort = qAgent(mkdtempSync(join(tmpdir(), 'ruler-kind-abort-')), 'sess-ruler-kind-abort')
+await qSeed(qAbort.agent, 'abort')
+V.startWindowDream({}, qAbort.agent, qAbort.ws, '.dsh-meow', undefined, 0, { reason: '' })
+const qAbortDb = V.getDb(qAbort.ws, '.dsh-meow')
+V.advanceDream(qAbort.agent, '.dsh-meow', undefined, 0)
+V.abortDream(qAbort.agent, '.dsh-meow', undefined)
+const qAbortRow = qAbortDb.recentDreamsPage(1, 0)[0]
+const qAbortKind = qAbortRow?.changes?.kind
+check(
+  'L21 中途放弃落结构化 kind：走完几组 / 本来几组都有（分子分母都在账本里，不靠摘要猜）',
+  qAbortKind?.kind === 'aborted' &&
+    qAbortKind?.groupsDone === 1 &&
+    qAbortKind?.groupsTotal === 2 &&
+    String(qAbortRow?.summary ?? '').includes('groups=1/2'),
+  `kind=${JSON.stringify(qAbortKind)} summary=${qAbortRow?.summary}`,
+)
+
+const qRec = qAgent(mkdtempSync(join(tmpdir(), 'ruler-kind-recovered-')), 'sess-ruler-kind-recovered')
+await qSeed(qRec.agent, 'recovered')
+V.startWindowDream({}, qRec.agent, qRec.ws, '.dsh-meow', undefined, 0, { reason: '' })
+const qRecDb = V.getDb(qRec.ws, '.dsh-meow')
+V.advanceDream(qRec.agent, '.dsh-meow', undefined, 0)
+V.recoverInterruptedDream(qRecDb, qRec.id, qRec.ws, '.dsh-meow')
+const qRecRow = qRecDb.recentDreamsPage(1, 0)[0]
+check(
+  'L22 被打断后补记：kind=recovered 且写了走完几组（补记账也要能答「补到哪儿了」）',
+  qRecRow?.changes?.kind?.kind === 'recovered' &&
+    qRecRow?.changes?.kind?.groupsDone === 1 &&
+    qRecRow?.changes?.groups === 1,
+  `kind=${JSON.stringify(qRecRow?.changes?.kind)} groups=${qRecRow?.changes?.groups}`,
+)
+
+// 失败计数按「同一整理范围 T」累加，T 就是窗口的 last_event_time：先立窗口再开工，否则每次都算新范围。
+const qSeal = qAgent(mkdtempSync(join(tmpdir(), 'ruler-kind-sealed-')), 'sess-ruler-kind-sealed')
+await qSeed(qSeal.agent, 'sealed')
+const qSealDb = V.getDb(qSeal.ws, '.dsh-meow')
+qSealDb.touchWindow(qSeal.id, qSeal.ws, Date.now() - 60000)
+const qRets = []
+for (let i = 0; i < 3; i++) {
+  V.startWindowDream({}, qSeal.agent, qSeal.ws, '.dsh-meow', undefined, 0, { reason: '' })
+  qRets.push(V.handleMemoryTurnFailure(qSealDb, qSeal.id, qSeal.ws, '.dsh-meow'))
+}
+const qSealRow = qSealDb.recentDreamsPage(1, 0)[0]
+check(
+  'L23 连续失败达上限也进账本：kind=sealed + fails=3（以前只写 dream-debug.log，面板上像没整理过）',
+  qRets[0] === 'released' &&
+    qRets[1] === 'released' &&
+    qRets[2] === 'sealed' &&
+    qSealRow?.changes?.kind?.kind === 'sealed' &&
+    qSealRow?.changes?.kind?.fails === 3,
+  `rets=${qRets.join(',')} kind=${JSON.stringify(qSealRow?.changes?.kind)}`,
+)
+
+const qGive = qAgent(mkdtempSync(join(tmpdir(), 'ruler-kind-gaveup-')), 'sess-ruler-kind-gaveup')
+const qGiveDb = V.getDb(qGive.ws, '.dsh-meow')
+qGiveDb.touchWindow(qGive.id, qGive.ws, Date.now() - 60000)
+for (let i = 0; i < 3; i++) V.recoverInterruptedDream(qGiveDb, qGive.id, qGive.ws, '.dsh-meow')
+const qGiveRow = qGiveDb.recentDreamsPage(1, 0)[0]
+check(
+  'L24 连续没进展被封存：kind=gaveup + 失败次数都在账里（一组都没走完也要留痕）',
+  qGiveRow?.changes?.kind?.kind === 'gaveup' &&
+    qGiveRow?.changes?.kind?.fails === 3 &&
+    String(qGiveRow?.summary ?? '').includes('fails=3'),
+  `kind=${JSON.stringify(qGiveRow?.changes?.kind)}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
