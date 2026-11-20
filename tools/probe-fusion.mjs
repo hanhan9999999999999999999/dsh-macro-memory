@@ -1004,6 +1004,63 @@ try {
     pjFlatLine,
   )
 
+  // D78–D81（0.2.113）：项目走向的两处升级。①首尾净差说不出「第几次才冒出来、哪一轮归零」；
+  // ②轮数一多，序列会把回执那一行撑满——省 token 的口径在这里也要成立。
+  const pjLongWs = mkdtempSync(join(tmpdir(), 'macro-probe-projects-long-'))
+  const pjLongDb = Meow.getDb(pjLongWs, '.dsh-meow')
+  const pjLongIns = pjLongDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const pjLongBase = Date.now() - 900000
+  for (let i = 0; i < 8; i += 1) {
+    pjLongIns.run(
+      pjLongBase + i * 1000,
+      `window dream done: h${i + 1} groups=1 stamped=1 T=2026-11-20T06:0${i}:00.000Z`,
+      JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: i + 1 }, { Alpha: i + 1 })) }),
+      '',
+    )
+  }
+  const pjLongLine = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, { agent: { session: { header: { cwd: pjLongWs } } } }))
+    .split('\n')
+    .find((l) => l.startsWith('项目走向')) ?? '(无)'
+  check(
+    'D78 八轮的序列不许整条摆出来：留头两个、尾三个，中间用 … 并报出省略了几次（省略不等于没数）',
+    pjLongLine.includes('Alpha 1 → 2 → … → 6 → 7 → 8（+7）') &&
+      pjLongLine.includes('序列太长，中间 3 次用 … 省略') &&
+      !pjLongLine.includes('1 → 2 → 3 → 4 → 5'),
+    pjLongLine,
+  )
+
+  const pjMoveWs = mkdtempSync(join(tmpdir(), 'macro-probe-projects-move-'))
+  const pjMoveDb = Meow.getDb(pjMoveWs, '.dsh-meow')
+  const pjMoveIns = pjMoveDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const pjMoveBase = Date.now() - 600000
+  pjMoveIns.run(pjMoveBase, 'window dream done: m1 groups=1 stamped=1 T=2026-11-20T06:10:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 4 }, { Alpha: 3, Beta: 1 })) }), '')
+  pjMoveIns.run(pjMoveBase + 1000, 'window dream done: m2 groups=1 stamped=1 T=2026-11-20T06:11:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 6 }, { Alpha: 4, Beta: 2 })) }), '')
+  pjMoveIns.run(pjMoveBase + 2000, 'window dream done: m3 groups=1 stamped=1 T=2026-11-20T06:12:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 8 }, { Alpha: 6, Gamma: 2 })) }), '')
+  const pjMoveLine = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, { agent: { session: { header: { cwd: pjMoveWs } } } }))
+    .split('\n')
+    .find((l) => l.startsWith('项目走向')) ?? '(无)'
+  check(
+    'D79 新出现的要报第几次起有数：Gamma 前两次不在库里，净差里只看得出 +2，看不出「什么时候来的」',
+    pjMoveLine.includes('这条走向里新出现：Gamma（第 3 次起有数，现在 2 条）'),
+    pjMoveLine,
+  )
+  check(
+    'D80 消失的要报最后一次是多少：Beta 上一轮还在 2 条，归零只写 -2 会让人以为「本来就没有」',
+    pjMoveLine.includes('这条走向里消失：Beta（第 2 次是最后的数：2 条）'),
+    pjMoveLine,
+  )
+  check(
+    'D81 一存一失同时出现时点出「可能是改名」，但不替他断定：走向给线索，核对要人去翻那一轮的账',
+    pjMoveLine.includes('很可能只是改名') && pjMoveLine.includes('不替你猜') && pjMoveLine.includes('翻那一轮的账'),
+    pjMoveLine,
+  )
+  const pjStillLine = pjFlatLine
+  check(
+    'D82 没有新出现也没有消失就别加这两句（阴性对照：平稳的走向不许自己长戏）',
+    !pjStillLine.includes('这条走向里新出现') && !pjStillLine.includes('这条走向里消失') && !pjStillLine.includes('改名'),
+    pjStillLine,
+  )
+
   // D58–D61（0.2.109）：回执成本 + budget。六个维度里「效率」以前没有数——
   // 有条数、有耗时，没有「这次检索占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
   const { createUnifiedTools: costTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)

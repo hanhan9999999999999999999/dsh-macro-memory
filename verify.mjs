@@ -7702,5 +7702,79 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.113] 项目走向的两处升级：①首尾净差说不出「第几次才冒出来 / 哪一轮归零」；
+// ②轮数一多序列会撑满回执那一行——省 token 的口径在这里也要成立，省略必须报数。
+{
+  const ledgerSrc113 = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const fusionSrc113 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg113 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc113 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+
+  check(
+    '项目走向·省略: 头两个 + 尾三个 + 一个 …，阈值是「再少就没得省」（多省一次就丢信息）',
+    ledgerSrc113.includes('const SEQ_HEAD = 2') &&
+      ledgerSrc113.includes('const SEQ_TAIL = 3') &&
+      ledgerSrc113.includes('function compactSeq(seq)') &&
+      ledgerSrc113.includes('if (list.length <= SEQ_HEAD + SEQ_TAIL + 1) return { text: list.join(\' → \'), cut: 0 }') &&
+      ledgerSrc113.includes("return { text: [...list.slice(0, SEQ_HEAD), '…', ...list.slice(-SEQ_TAIL)].join(' → '), cut }"),
+  )
+  check(
+    '项目走向·省略: shown 走 compactSeq，不再直接 join（直接 join 等于「短了就整条给」和「长了整条给」两副面孔）',
+    (() => {
+      const at = ledgerSrc113.indexOf('function projectTrendLine(')
+      const end = ledgerSrc113.indexOf('function levelTrendLine(')
+      if (!(at > 0 && end > at)) return false
+      const body = ledgerSrc113.slice(at, end)
+      return body.includes('const box = compactSeq(c.seq)') && !body.includes('c.seq.join(\' → \')') && body.includes('if (box.cut > cut) cut = box.cut')
+    })(),
+  )
+  check(
+    '项目走向·省略: cut 要报数并指路（`…` 会被读成「这几次没数」，那是另一种谎）',
+    ledgerSrc113.includes('if (cut > 0) caveats.push(`序列太长，中间 ${cut} 次用 … 省略（要逐轮就展开那一轮看账）`)'),
+  )
+  check(
+    '项目走向·新出现: 判据是「第一次 > 0 的位置不在开头」，报第几次起有数 + 现在多少条',
+    ledgerSrc113.includes('const firstLive = (seq) => seq.findIndex((n) => n > 0)') &&
+      ledgerSrc113.includes('if (f > 0) appeared.push({ name: c.name, at: f + 1, now: c.last })') &&
+      ledgerSrc113.includes('这条走向里新出现：${top.join(\'、\')}') &&
+      ledgerSrc113.includes('（第 ${c.at} 次起有数，现在 ${c.now} 条）'),
+  )
+  check(
+    '项目走向·消失: 判据是「最后一次 > 0 的位置不在末尾」，报最后一次是多少（归零只写 -N 会让人以为本来就没有）',
+    ledgerSrc113.includes('const lastLive = (seq) => {') &&
+      ledgerSrc113.includes('if (l >= 0 && l < c.seq.length - 1) gone.push({ name: c.name, at: l + 1, was: c.seq[l] })') &&
+      ledgerSrc113.includes('这条走向里消失：${top.join(\'、\')}') &&
+      ledgerSrc113.includes('（第 ${c.at} 次是最后的数：${c.was} 条）'),
+  )
+  check(
+    '项目走向·点名: 各最多列 3 个，多的要写「还有 N 个没列」（列不完就得承认列不完）',
+    ledgerSrc113.includes('${appeared.length > top.length ? `，还有 ${appeared.length - top.length} 个没列` : \'\'}') &&
+      ledgerSrc113.includes('${gone.length > top.length ? `，还有 ${gone.length - top.length} 个没列` : \'\'}'),
+  )
+  check(
+    '项目走向·改名: 只有一存一失同时出现才提「可能是改名」，而且明说不替他猜（走向给线索，核对靠账本）',
+    ledgerSrc113.includes('if (appeared.length > 0 && gone.length > 0) {') &&
+      ledgerSrc113.includes('一存一失如果条数对得上，很可能只是改名——这条走向不替你猜，要确认就翻那一轮的账看项目段名字'),
+  )
+  check(
+    '项目走向·探针进线：D78 长序列省略 / D79 新出现 / D80 消失 / D81 改名提示 / D82 平稳不加戏',
+    fusionSrc113.includes('D78 八轮的序列不许整条摆出来') &&
+      fusionSrc113.includes('D79 新出现的要报第几次起有数') &&
+      fusionSrc113.includes('D80 消失的要报最后一次是多少') &&
+      fusionSrc113.includes('D81 一存一失同时出现时点出「可能是改名」') &&
+      fusionSrc113.includes('D82 没有新出现也没有消失就别加这两句'),
+  )
+  check(
+    '项目走向·版本不早于 0.2.113（两处一致），文档 9.119 / 125 在位',
+    (() => {
+      const v = pkg113.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 113)
+      return atLeast && idxSrc113.includes(`export const version = '${pkg113.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.119') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 125'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
