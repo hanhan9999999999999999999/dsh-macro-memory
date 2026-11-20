@@ -19,6 +19,8 @@
  *      DSH_APP="D:\\DSH\\DSH NEXT\\resources\\app" 可覆盖宿主目录
  */
 import { root } from './_root.mjs'
+
+const { GUIDE_MAX_CHARS: GUIDE_CAP } = await import(pathToFileURL(join(root, 'lib/macro/prompt.js')).href)
 import { registerHooks } from 'node:module'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -211,12 +213,12 @@ if (asm) {
   const length = (s) => String(typeof s.text === 'function' ? s.text({}) : s.text).length
   check('E1 assemble 里只有一段 macro-memory:guide', guide.length === 1, `实际 ${guide.length} 段`)
   if (guide[0]) {
-    check('E2 注入长度 ≤1300 字符', length(guide[0]) <= 1300, `${length(guide[0])} 字符`)
+    check(`E2 注入长度 ≤${GUIDE_CAP} 字符`, length(guide[0]) <= GUIDE_CAP, `${length(guide[0])} 字符`)
     const text = String(typeof guide[0].text === 'function' ? guide[0].text({}) : guide[0].text)
     check('E3 注入覆盖 8 个工具名', UNIFIED.every((n) => text.includes(n)))
     check('E4 注入里不出现 nebula_ 旧工具名', !/nebula_/.test(text))
     // 0.2.34：注入贴着上限时，clampGuide 会切掉尾巴且一句不说。留余量是唯一能提前发现的办法。
-    const headroom = 1300 - text.length
+    const headroom = GUIDE_CAP - text.length
     check('E4b 注入留有余量（≥120 字符），不贴上限', headroom >= 120, `余量 ${headroom} 字符`)
     check(
       'E4c 注入说清排队欠账去哪看（memory_admin links，按理由分组）',

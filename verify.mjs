@@ -3973,7 +3973,7 @@ function makeHostCtx() {
   check('budget: 这条判据自测过能被打红（不是恒真）', st63.baseline.length === 0 && st63.survived.length === 0, `样板红 ${st63.baseline.join('/') || '无'} / 打不红 ${st63.survived.join('/') || '无'}`)
   check(
     'budget: 探针在真函数与真工具面上钉住十一条上限事实（AT1–AT11）',
-    ['AT1', 'AT2', 'AT3', 'AT4', 'AT5', 'AT6', 'AT7', 'AT8', 'AT9', 'AT10', 'AT11'].every((n) => fusionSrc63.includes(`'${n} `)),
+    ['AT1', 'AT2', 'AT3', 'AT4', 'AT5', 'AT6', 'AT7', 'AT8', 'AT9', 'AT10', 'AT11'].every((n) => fusionSrc63.includes(`'${n} `) || fusionSrc63.includes('`' + n + ' ')),
     'probe-fusion',
   )
   const v63 = JSON.parse(read63('package.json')).version.split('.').map(Number)
@@ -8825,6 +8825,46 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.133 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 139 '),
+  )
+}
+
+// ── 回执不全不等于没有（0.2.130）────────────────────────────────────────────
+{
+  const guideText = (lang) => readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lang, 'system-guide.md'), 'utf8')
+  check(
+    'DZ 回答准则: 三语 system-guide 都写「回执不全不等于没有」，并带上实测两个数',
+    guideText('zh').includes('回执不全不等于没有') && guideText('zh').includes('45.9%→54.2%') && guideText('zh').includes('25.6%→0.3%') &&
+      guideText('en').includes('An incomplete receipt is not an absence') && guideText('en').includes('45.9% → 54.2%') &&
+      guideText('pt-br').includes('Um recibo incompleto não é ausência') && guideText('pt-br').includes('45,9% → 54,2%'),
+  )
+  check(
+    'DZ 回答准则: 挂在 system-guide（system prompt 段），不在工具描述里贴一遍——同一句话贴回执只值 +1.4pt',
+    !readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'zh', 'tools.md'), 'utf8').includes('回执不全不等于没有') &&
+      readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8').includes('svc2.section({ name: "meow-memory:guide", order: 130, text: getMemoryGuide() })'),
+  )
+  {
+    const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const text = String(Meow.getMemoryGuide() ?? '')
+    check('DZ 回答准则·行为: getMemoryGuide() 真把这条带进 system prompt', text.includes('回执不全不等于没有'), `${text.length} 字符`)
+  }
+  {
+    const promptMod = await import(pathToFileURL(join(root, 'lib', 'macro', 'prompt.js')).href)
+    const l0 = promptMod.GUIDE_TEXT
+    check(
+      'DZ 回答准则: L0 注入里也有一条（融合层吞掉子插件 section，模型只看得到这段）',
+      l0.includes('回执没写全≠没有') && l0.includes('三面都在：工具 / 命令') &&
+        promptMod.GUIDE_MAX_CHARS - l0.length >= promptMod.GUIDE_MIN_HEADROOM,
+      `${l0.length}/${promptMod.GUIDE_MAX_CHARS} 字符`,
+    )
+  }
+  check(
+    'DZ 回答准则: 版本与文档一起走（9.134 / 140）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      return pkg.version.split('.').map((x) => Number(x))[2] >= 130
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.134 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 140 '),
   )
 }
 

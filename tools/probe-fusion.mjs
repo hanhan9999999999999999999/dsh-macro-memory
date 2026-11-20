@@ -188,13 +188,14 @@ check('nebula_* 未进宿主', !hostTools.some((n) => n.startsWith('nebula_')), 
 check('memory_find_similar 未进宿主', !hostTools.includes('memory_find_similar'))
 check('memory_home 未进宿主', !hostTools.includes('memory_home'))
 
+const guideCap = (await import(pathToFileURL(join(root, 'lib/macro/prompt.js')).href)).GUIDE_MAX_CHARS
 const guideSections = prompts.filter((p) => p.kind === 'section')
 check('注入段数 = 1', guideSections.length === 1, String(guideSections.length))
 check('注入名 = macro-memory:guide', guideSections[0]?.decl?.name === 'macro-memory:guide', String(guideSections[0]?.decl?.name))
 check('注入 order = 130', guideSections[0]?.decl?.order === 130, String(guideSections[0]?.decl?.order))
 const guideText = guideSections[0]?.decl?.text
 check('注入文本是字符串', typeof guideText === 'string', typeof guideText)
-check('注入 ≤1300 字符', typeof guideText === 'string' && guideText.length <= 1300, String(guideText?.length))
+check(`注入 ≤${guideCap} 字符`, typeof guideText === 'string' && guideText.length <= guideCap, String(guideText?.length))
 check('nebula RULE 未单独注入', !prompts.some((p) => String(p.decl?.name ?? '').includes('memory-nebula')))
 check('注入提到 macro-memory', typeof guideText === 'string' && guideText.includes('macro-memory'))
 
@@ -5141,15 +5142,15 @@ check(
   const { createUnifiedTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)
 
   const b1 = promptAT.guideBudget(undefined)
-  check('AT1 没给上限：按默认 1300 字，且不多一句话', b1.value === 1300 && b1.note === '', `${b1.value}/${b1.note.length}`)
+  check(`AT1 没给上限：按默认 ${promptMod.GUIDE_MAX_CHARS} 字，且不多一句话`, b1.value === promptMod.GUIDE_MAX_CHARS && b1.note === '', `${b1.value}/${b1.note.length}`)
   const b2 = promptAT.guideBudget('4k')
   check(
-    'AT2 上限写成 "4k"：回默认 1300 并说「不是数字」——绝不落成 0（＝不注入）',
-    b2.value === 1300 && b2.note.includes('不是数字') && b2.note.includes('注入没有变成空的'),
+    `AT2 上限写成 "4k"：回默认 ${promptMod.GUIDE_MAX_CHARS} 并说「不是数字」——绝不落成 0（＝不注入）`,
+    b2.value === promptMod.GUIDE_MAX_CHARS && b2.note.includes('不是数字') && b2.note.includes('注入没有变成空的'),
     `${b2.value} ${b2.note.slice(0, 40)}`,
   )
   const b3 = promptAT.guideBudget(-5)
-  check('AT3 上限给负数：回默认 1300 并说「上限没有从后往前数」', b3.value === 1300 && b3.note.includes('是负数'), `${b3.value}`)
+  check(`AT3 上限给负数：回默认 ${promptMod.GUIDE_MAX_CHARS} 并说「上限没有从后往前数」`, b3.value === promptMod.GUIDE_MAX_CHARS && b3.note.includes('是负数'), `${b3.value}`)
   const b4 = promptAT.guideBudget(0)
   check(
     'AT4 上限给 0：照办 0，并说清「不是手册空了」',
@@ -5190,8 +5191,8 @@ check(
   }
   const g1 = await guideOf('4k')
   check(
-    'AT10 memory_admin(guide) 末尾带一行「L0 注入：现在 N/1300 字」，写坏时把那句话一起带出来',
-    g1.includes('L0 注入：现在') && g1.includes('/1300 字') && g1.includes('不是数字'),
+    `AT10 memory_admin(guide) 末尾带一行「L0 注入：现在 N/${promptMod.GUIDE_MAX_CHARS} 字」，写坏时把那句话一起带出来`,
+    g1.includes('L0 注入：现在') && g1.includes(`/${promptMod.GUIDE_MAX_CHARS} 字`) && g1.includes('不是数字'),
     g1.split('\n').slice(-1)[0].slice(0, 80),
   )
   const g2 = await guideOf(1000)
