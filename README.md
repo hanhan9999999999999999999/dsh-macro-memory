@@ -1,13 +1,13 @@
 ﻿# 宏记忆 · Macro Memory
 
-> 一个记忆插件，接管全部记忆能力：**8 个工具、一段 1,176 字符的常驻注入**，主库仍是 meow 的七层 SQLite，星图退成可重建的索引。
+> 一个记忆插件，接管全部记忆能力：**8 个工具、一段 1,235 字符的常驻注入**，主库仍是 meow 的七层 SQLite，星图退成可重建的索引。
 >
-> 适用：DeepSeek Harness（DSH）。版本 **0.2.129** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
+> 适用：DeepSeek Harness（DSH）。版本 **0.2.130** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
 
-| 指标 | 融合前（三插件并存） | 现在（0.2.129） | 变化 |
+| 指标 | 融合前（三插件并存） | 现在（0.2.130） | 变化 |
 | --- | --- | --- | --- |
 | 工具 schema 合计 | 17 个工具 / 56,759 B | **8 个工具 / 11,964 B** | **−78.9%** |
-| 常驻注入 | 4,085 字符（meow 3,396 + nebula 689） | **1,176 字符（1 段）** | **−71.2%** |
+| 常驻注入 | 4,085 字符（meow 3,396 + nebula 689） | **1,235 字符（1 段）** | **−69.8%** |
 | 每轮固定开销 | 约 14–16K token | **约 2.2K token** | **−85%** |
 | 面板 / 工具来源 | 三个插件各一套 | 一个插件两个面板 | 口径统一 |
 
@@ -89,7 +89,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 
 ### 注入
 
-每轮常驻的只有一段 1,176 字符的 L0（怎么用、有条目怎么找、没条目怎么办），**不随对话变化**——这是 prompt 缓存能命中的前提。真正的内容靠工具按需拉：变化的东西不进 system prompt 前缀。
+每轮常驻的只有一段 1,235 字符的 L0（怎么用、有条目怎么找、没条目怎么办），**不随对话变化**——这是 prompt 缓存能命中的前提。真正的内容靠工具按需拉：变化的东西不进 system prompt 前缀。
 
 ## 省 token 的账怎么算
 
@@ -98,7 +98,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 | 项 | 融合前 | 现在 | 说明 |
 | --- | --- | --- | --- |
 | 工具 schema | 56,759 B（17 个） | **11,964 B（8 个）** | `tools/probe-host.mjs` 实测 D2 判据 |
-| 常驻注入 | 4,085 字符 | **1,176 字符** | 同一支探针 E2 判据，上限 1,300 |
+| 常驻注入 | 4,085 字符 | **1,235 字符** | 同一支探针 E2 判据，上限 1,400 |
 | 旧工具名残留在注入里 | 有（`nebula_recall` 等） | **0** | E4 判据 |
 | 别名工具 | — | 默认关闭 | 打开后 19 个工具，供老会话/老脚本过渡 |
 
@@ -107,7 +107,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 省 token 的三刀，按收益排序：
 
 1. **砍工具面**（17 → 8，−79.4%）：合并同义工具，`mode` 用一个枚举代替四个工具。
-2. **压注入**（4,085 → 1,176 字符，−71.2%）：只留「怎么用 + 没找到怎么办」，全文手册改成 `memory_admin(action="guide")` 按需取，用完即弃。
+2. **压注入**（4,085 → 1,235 字符，−69.8%）：只留「怎么用 + 没找到怎么办」，全文手册改成 `memory_admin(action="guide")` 按需取，用完即弃。
 3. **禁掉每轮自动邻域注入**（nebula 原来每轮把邻居关系塞进 prompt）：改成工具按需拉（`memory_search({mode:"graph"|"bridge"})`）。
 
 ## 8 个工具
@@ -253,10 +253,10 @@ docs/                 INTERNAL.md 逐轮开发日志、images/ 配图
 
 ## English
 
-**Macro Memory** (DSH plugin, MIT) folds several memory plugins into one surface: **8 tools + a single 1,176-character standing injection**, while the storage engine stays meow-memory's seven-layer SQLite and the graph becomes a rebuildable index.
+**Macro Memory** (DSH plugin, MIT) folds several memory plugins into one surface: **8 tools + a single 1,235-character standing injection**, while the storage engine stays meow-memory's seven-layer SQLite and the graph becomes a rebuildable index.
 
 - Tool schemas: 17 tools / 56,759 B → **8 tools / 11,964 B** (−78.9%).
-- Standing prompt: 4,085 chars → **1,176 chars** (−71.2%).
+- Standing prompt: 4,085 chars → **1,235 chars** (−69.8%).
 - Per-turn fixed cost: ~14–16K → **~2.2K tokens**.
 - Nothing was dropped: every original tool is reachable through the unified surface (audited by `tools/coverage-audit.mjs` and `tools/param-audit.mjs`).
 - Writes land in the main store first; graph links that cannot be written are **queued, not lost** (500 entries, 7-day TTL, auto-flushed).

@@ -61,8 +61,8 @@
         "zh": "宏记忆"
       },
       "description": {
-        "en": "One memory plugin instead of three: 8 unified memory_* tools and a single 1,176-character injection, with meow-memory's seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 11,964 B (−78.9%), standing prompt 4,085 → 1,176 chars (−71.7%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart.",
-        "zh": "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,176 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 11,964 B（−78.9%），常驻注入 4,085 → 1,176 字符（−71.7%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。"
+        "en": "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory's seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 11,964 B (−78.9%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart.",
+        "zh": "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 11,964 B（−78.9%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。"
       },
       "icon": "icon.png",
       "author": "主人 & 小代码酱",
@@ -95,12 +95,12 @@
       },
       "versions": [
         {
-          "version": "0.2.129",
-          "publishTimestamp": 1795205636,
+          "version": "0.2.130",
+          "publishTimestamp": 1795209214,
           "source": {
             "type": "git",
             "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-            "commit": "e9c9909fa3398d4f317bc04273d224d6a28ac39f"
+            "commit": "69a97206a0fef7d3eddfaa1992b02da314e34027"
           }
         }
       ]
