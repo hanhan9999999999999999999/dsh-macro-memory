@@ -769,14 +769,20 @@ var MemoryDb = class {
   }
   /** [macro-fusion 0.2.100] 账本分页：一页几条、从第几条开始。行里带 rowid（面板只当内部句柄，
    *  对外仍按「第 k 近」说话），并给同 run_at 一个稳定的次序（rowid DESC），否则翻页会漏条/重条。 */
-  recentDreamsPage(limit = 5, offset = 0) {
+  recentDreamsPage(limit = 5, offset = 0, project = "") {
     const askedLimit = Math.trunc(Number(limit));
     const n = Math.min(50, Math.max(1, Number.isFinite(askedLimit) && askedLimit > 0 ? askedLimit : 5));
     const askedOffset = Math.trunc(Number(offset));
     const skip = Number.isFinite(askedOffset) && askedOffset > 0 ? askedOffset : 0;
-    const rows = this.db
-      .prepare("SELECT rowid AS id, run_at, summary, changes, note FROM dream_log ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?")
-      .all(n, skip);
+    // [macro-fusion 0.2.101] 按项目段筛：SQL 里筛，不搬到 JS 里再挑——否则「第几页」和
+    // 「一共几条」会各算一套，翻页就漏条。
+    const name = String(project ?? "").trim();
+    const where =
+      name === ""
+        ? ""
+        : "WHERE json_valid(changes) AND EXISTS (SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.value = ?)";
+    const sql = "SELECT rowid AS id, run_at, summary, changes, note FROM dream_log " + where + " ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?";
+    const rows = name === "" ? this.db.prepare(sql).all(n, skip) : this.db.prepare(sql).all(name, n, skip);
     return rows.map((r) => {
       let changes = null;
       try {
@@ -796,6 +802,43 @@ var MemoryDb = class {
   dreamCount() {
     const row = this.db.prepare("SELECT COUNT(*) AS n FROM dream_log").get();
     return Number(row?.n) || 0;
+  }
+  /** [macro-fusion 0.2.101] 账本按项目段筛：project 为空就是全账本。
+   *  项目名在 changes.plan.projects 里（JSON 数组），所以走 json_each；坏行先被 json_valid 挡掉，
+   *  不许让一行坏账把整条查询带崩，也不许把它悄悄算成「匹配」。 */
+  dreamCountOf(project = "") {
+    const name = String(project ?? "").trim();
+    if (name === "") return this.dreamCount();
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM dream_log WHERE json_valid(changes) AND EXISTS " +
+          "(SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.value = ?)",
+      )
+      .get(name);
+    return Number(row?.n) || 0;
+  }
+  /** [macro-fusion 0.2.101] 项目段的分布：每个项目在多少次账里出现过（次数降序、同数次按名字）。
+   *  返回 total 是「一共几个不同的项目段」——只列前几条时，别把「没列出来」读成「没有」。 */
+  dreamProjects(limit = 5) {
+    const asked = Math.trunc(Number(limit));
+    const n = Math.min(20, Math.max(1, Number.isFinite(asked) && asked > 0 ? asked : 5));
+    const rows = this.db
+      .prepare(
+        "SELECT je.value AS project, COUNT(*) AS n FROM dream_log, " +
+          "json_each(json_extract(dream_log.changes, '$.plan.projects')) AS je " +
+          "WHERE json_valid(dream_log.changes) GROUP BY je.value ORDER BY n DESC, je.value ASC LIMIT ?",
+      )
+      .all(n);
+    const seen = this.db
+      .prepare(
+        "SELECT COUNT(DISTINCT je.value) AS n FROM dream_log, " +
+          "json_each(json_extract(dream_log.changes, '$.plan.projects')) AS je WHERE json_valid(dream_log.changes)",
+      )
+      .get();
+    return {
+      items: rows.map((r) => ({ project: String(r.project ?? ""), n: Number(r.n) || 0 })),
+      total: Number(seen?.n) || 0,
+    };
   }
   close() {
     try {
@@ -3464,7 +3507,7 @@ function dreamLog(ws, dir, msg) {
 /** [macro-fusion 0.2.97] 读某个工作区的 dream 账本：面板要说的每一句都从这里出，别的地方不许自己猜。
  *  missing 分四种：'' 正常；'no-workspace' 会话没有 cwd；'no-db' 这个工作区还没建记忆库；
  *  'read-failed: …' 库在但读不出来（原因原样带出）——「没账本」和「读不出来」不能合成一句话。 */
-function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0) {
+function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0, project = "") {
   const empty = { rows: [], path: "", missing: "no-workspace", total: 0 };
   if (typeof workspace !== "string" || workspace.length === 0) return empty;
   const path = memoryDbPath(workspace, dir);
@@ -3473,9 +3516,25 @@ function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0) {
     const db = getDb(workspace, dir);
     // [macro-fusion 0.2.100] 分页要一个总数：翻到第几页、还有几条更早，只能从这里来，
     // 不许拿「这一页返回了几条」凑（最后一页会短，那是页面短，不是账本短）。
-    return { rows: db.recentDreamsPage(limit, offset), path, missing: "", total: db.dreamCount() };
+    // [macro-fusion 0.2.101] 带 project 时 total 也必须是筛后的数——两个数各算一套就会翻出空页。
+    return { rows: db.recentDreamsPage(limit, offset, project), path, missing: "", total: db.dreamCountOf(project) };
   } catch (e) {
     return { rows: [], path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0 };
+  }
+}
+
+/** [macro-fusion 0.2.101] 账本里出现过哪些项目段、各出现几次。
+ *  这是「按项目翻账」的入口：面板先告诉你有哪几个项目，再说每个项目能筛出几条。
+ *  missing 三态与 readDreamLedger 一样分开说，理由也一样——没库和读不开是两种修法。 */
+function readDreamProjects(workspace, dir = ".dsh-meow", limit = 5) {
+  if (typeof workspace !== "string" || workspace.length === 0) return { items: [], total: 0, path: "", missing: "no-workspace" };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { items: [], total: 0, path, missing: "no-db" };
+  try {
+    const got = getDb(workspace, dir).dreamProjects(limit);
+    return { items: got.items, total: got.total, path, missing: "" };
+  } catch (e) {
+    return { items: [], total: 0, path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
@@ -6367,6 +6426,7 @@ export {
   dreamPlanDigest,
   dreamReceipt,
   readDreamLedger,
+  readDreamProjects,
   readDreamRecord,
   readLiveDream,
   dreamSweepOnce,

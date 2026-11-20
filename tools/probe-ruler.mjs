@@ -678,5 +678,57 @@ check(
   `a="${J6.missing}" b="${J6b.missing}"`,
 )
 
+// K 段（0.2.101）：按项目段翻账——项目名在 changes.plan.projects 里，筛在 SQL 里做，数也一起筛。
+const projWs = mkdtempSync(join(tmpdir(), 'ruler-proj-'))
+const projDb = V.getDb(projWs, '.dsh-meow')
+projDb.logDream('window dream done: sess-a stamped=true', { stamped: true, plan: { rounds: 1, rows: 1, dup: 0, cover: 0, missing: 0, projects: ['Alpha', 'Beta'] } }, 'a')
+projDb.logDream('window dream done: sess-b stamped=true', { stamped: true, plan: { rounds: 1, rows: 2, dup: 0, cover: 0, missing: 0, projects: ['Alpha'] } }, 'b')
+projDb.logDream('window dream done: sess-c stamped=true', { stamped: true, plan: { rounds: 1, rows: 3, dup: 0, cover: 0, missing: 0, projects: [] } }, 'c')
+projDb.logDream('window dream done: sess-d stamped=true', { stamped: true, groups: 1 }, 'd')
+projDb.logDream('window dream done: sess-e stamped=true', { stamped: true, plan: { rounds: 1, rows: 5, dup: 0, cover: 0, missing: 0, projects: ['Alpha'] } }, 'e')
+const K1 = V.readDreamLedger(projWs, '.dsh-meow', 10, 0, 'Alpha')
+check(
+  'K1 按项目筛：行只剩 Alpha 那几条，total 也是筛后的数（不是全账本 5 条）',
+  K1.rows.length === 3 && K1.total === 3 && K1.rows.every((r) => r.changes.plan.projects.includes('Alpha')),
+  `rows=${K1.rows.length} total=${K1.total}`,
+)
+const K2 = V.readDreamLedger(projWs, '.dsh-meow', 10, 0, '')
+check(
+  'K2 不传项目：全账本 5 条都在（筛是加法，不改老口径）',
+  K2.rows.length === 5 && K2.total === 5,
+  `rows=${K2.rows.length} total=${K2.total}`,
+)
+const K3 = V.getDb(projWs, '.dsh-meow').dreamProjects(5)
+check(
+  'K3 项目分布：Alpha 3 次 / Beta 1 次，按次数降序；空数组与坏行不进分布',
+  K3.items.length === 2 && K3.items[0].project === 'Alpha' && K3.items[0].n === 3 && K3.items[1].project === 'Beta' && K3.items[1].n === 1 && K3.total === 2,
+  JSON.stringify(K3),
+)
+const K4 = V.getDb(projWs, '.dsh-meow').dreamProjects(1)
+check(
+  'K4 只列 1 个：total 仍报一共几个项目（「没列」不等于「没有」）',
+  K4.items.length === 1 && K4.total === 2,
+  `items=${K4.items.length} total=${K4.total}`,
+)
+const K5 = V.readDreamLedger(projWs, '.dsh-meow', 10, 0, 'Gamma')
+check(
+  'K5 筛一个不存在的项目：0 条、total=0，但不是 missing（账本在，只是没有这一段）',
+  K5.rows.length === 0 && K5.total === 0 && K5.missing === '',
+  `rows=${K5.rows.length} total=${K5.total} missing="${K5.missing}"`,
+)
+const K6 = V.readDreamProjects('', '.dsh-meow', 5)
+const K6b = V.readDreamProjects(join(tmpdir(), `no-such-proj-ws-${process.pid}`), '.dsh-meow', 5)
+check(
+  'K6 项目分布也是三态分开：没工作区 / 没建库（不合并成「没有项目段」）',
+  K6.missing === 'no-workspace' && K6b.missing === 'no-db',
+  `a="${K6.missing}" b="${K6b.missing}"`,
+)
+const K7 = V.getDb(projWs, '.dsh-meow').recentDreamsPage(1, 0, 'Alpha')
+check(
+  'K7 分页也在 SQL 里筛：第一页就给最新那条 Alpha（不是先取全账本再挑）',
+  K7.length === 1 && K7[0].changes.plan.rows === 5,
+  `rows=${K7[0]?.changes?.plan?.rows}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

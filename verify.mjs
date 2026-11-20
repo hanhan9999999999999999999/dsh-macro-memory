@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 自检：不启动 DSH，验证融合后的两个半侧都能成立。
  *
  *   A. 宿主侧：import('./lib/index.js') 拿到的必须是「融合层」的形状——
@@ -6449,14 +6449,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'dream 翻页: 读口带 OFFSET，总数由 dreamCount 给（不拿本页条数冒充总数）',
     vSrc.includes('ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?') &&
-      vSrc.includes('recentDreamsPage(limit = 5, offset = 0)') &&
+      vSrc.includes('recentDreamsPage(limit = 5, offset = 0') &&
       vSrc.includes('dreamCount() {') &&
-      vSrc.includes('total: db.dreamCount()'),
+      vSrc.includes('total: db.dreamCount'),
   )
   check(
     'dream 翻页: 同一个 run_at 也有稳定次序（rowid DESC），翻页不会漏条/重条',
     vSrc.includes('ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?') &&
-      vSrc.includes('  recentDreamsPage(limit = 5, offset = 0) {'),
+      vSrc.includes('  recentDreamsPage(limit = 5, offset = 0'),
   )
   check(
     'dream 展开: readDreamRecord 是模块级读口，多一个 no-row 态，并把「更早一条」一起带出来',
@@ -6499,7 +6499,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       adminSrc.includes('function idOf(raw)') &&
       adminSrc.includes('这次没有列账——别把「没列」读成「账本里只有这几条」') &&
       adminSrc.includes('这次没有展开任何一条') &&
-      adminSrc.includes("params: ['limit', 'page', 'id']") &&
+      adminSrc.includes("params: ['limit', 'page', 'id', 'project']") &&
       adminSrc.includes('page: { type: \'integer\''),
   )
   check(
@@ -6525,6 +6525,105 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.106') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 112'),
+  )
+}
+
+// [macro-fusion 0.2.101] 0.2.100 让账本能翻页、能摊开某一条，但 `changes.plan.projects` 一直只被数了个数。
+// 「这一轮动了哪几个项目、某个项目的账翻出来看看」问不出来。这里钉四件事：
+// ①筛在 SQL 里做（json_each + json_valid），页面与总数共用一个筛子，坏行不许算进匹配；
+// ②分布读口另有一份，total 是 COUNT(DISTINCT)——只列前几个时「没列」不等于「没有」；
+// ③面板：分布只在没筛且第 1 页出；筛着时编号改口径并说清；筛空 ≠ 账本空；展开不属于就说清；
+// ④project 给脏了当面打回，不静默当「没匹配到」。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const adminSrc = readFileSync(join(root, 'lib', 'macro', 'defs', 'admin.js'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  check(
+    'dream 项目筛: 筛在 SQL 里做，页面与总数共用一个筛子（不各算一套）',
+    vSrc.includes('recentDreamsPage(limit = 5, offset = 0, project = "")') &&
+      vSrc.includes("const name = String(project ?? \"\").trim();") &&
+      vSrc.includes('const rows = name === "" ? this.db.prepare(sql).all(n, skip) : this.db.prepare(sql).all(name, n, skip);') &&
+      /function readDreamLedger\(workspace, dir = "\.dsh-meow", limit = 5, offset = 0, project = ""\)/.test(vSrc) &&
+      vSrc.includes('total: db.dreamCountOf(project)'),
+  )
+  check(
+    'dream 项目筛: 坏行先被 json_valid 挡掉（不许把一行坏账算成「匹配」或把查询带崩）',
+    vSrc.includes('dreamCountOf(project = "")') &&
+      (vSrc.match(/json_valid\(changes\)/g) ?? []).length >= 2 &&
+      (vSrc.match(/json_valid\(dream_log\.changes\)/g) ?? []).length >= 2,
+  )
+  check(
+    'dream 项目分布: 次数降序、同数次按名字，total 是 COUNT(DISTINCT)（只列前几个也不许报成「只有这几个」）',
+    vSrc.includes('dreamProjects(limit = 5)') &&
+      vSrc.includes('GROUP BY je.value ORDER BY n DESC, je.value ASC LIMIT ?') &&
+      vSrc.includes('SELECT COUNT(DISTINCT je.value) AS n FROM dream_log, ') &&
+      vSrc.includes('const n = Math.min(20, Math.max(1, Number.isFinite(asked) && asked > 0 ? asked : 5));'),
+  )
+  check(
+    'dream 项目分布: 模块级读口 readDreamProjects 三态分开、并已导出',
+    /function readDreamProjects\(workspace, dir = "\.dsh-meow", limit = 5\)/.test(vSrc) &&
+      vSrc.includes('missing: "no-workspace"') &&
+      vSrc.includes('missing: "no-db"') &&
+      /^\s{2}readDreamProjects,$/m.test(vSrc),
+  )
+  check(
+    'dream 项目筛: 面板第 1 页给分布行，且只在没筛时给（筛完再报分布会被当成「分布也筛过了」）',
+    panelSrc.includes('function projectsLine(got)') &&
+      panelSrc.includes('function projectNames(row)') &&
+      panelSrc.includes('if (!filtered) {') &&
+      panelSrc.includes('const projects = projectsLine(Meow.readDreamProjects(workspace, dir, 5))') &&
+      panelSrc.includes('项目分布按 changes.plan.projects 数出现次数，只列前 5 个；要看某个项目的账就用 project= 筛'),
+  )
+  check(
+    'dream 项目筛: 筛着的时候编号改口径并说清（#k 是筛出来的第几近，不是全账本序号）',
+    panelSrc.includes('const filtered = wantProject !== \'\'') &&
+      panelSrc.includes('#k 是筛出来这几条里的第几近，不是全账本序号') &&
+      panelSrc.includes('`共 ${total} 条（项目段「${wantProject}」）· 每页 ${want} 条`') &&
+      panelSrc.includes('Meow.readDreamLedger(workspace, dir, want, (effectivePage - 1) * want, wantProject).rows'),
+  )
+  check(
+    'dream 项目筛: 筛空了不等于账本空（两句话分开说，并给出全账本条数）',
+    panelSrc.includes('`账本里没有项目段「${wantProject}」的整理记录（全账本 ${allTotal} 条）') &&
+      panelSrc.includes('项目名要按 changes.plan.projects 里的原样写，别自己翻译') &&
+      panelSrc.includes('账本还是空的（${ledger.path}），项目段「${wantProject}」自然也还没有记录'),
+  )
+  check(
+    'dream 项目筛: 展开时项目对不上就说清（照账念，但别当成筛选结果；编号仍是全账本的）',
+    panelSrc.includes('这一条属于项目段「${wantProject}」。') &&
+      panelSrc.includes('这一条不属于项目段「${wantProject}」——它记的是') &&
+      panelSrc.includes('展开的编号仍是全账本的第几近（筛选不改编号）'),
+  )
+  check(
+    'dream 参数: project 给成长句当面打回，不把它当「没匹配到」',
+    adminSrc.includes('function projectOf(raw)') &&
+      adminSrc.includes('只认一个项目段的名字') &&
+      adminSrc.includes('这次没有筛任何账——别把「没筛」读成「这个项目没有账」') &&
+      adminSrc.includes("params: ['limit', 'page', 'id', 'project']") &&
+      adminSrc.includes('action=dream 只列某个项目段的账'),
+  )
+  check(
+    'dream 项目筛: 探针进线（probe-ruler K1–K7、probe-fusion D26–D31）',
+    rulerSrc.includes('K1 按项目筛：行只剩 Alpha 那几条') &&
+      rulerSrc.includes('K3 项目分布：Alpha 3 次 / Beta 1 次') &&
+      rulerSrc.includes('K5 筛一个不存在的项目') &&
+      rulerSrc.includes('K7 分页也在 SQL 里筛') &&
+      fusionSrc.includes('D26 第 1 页给项目分布') &&
+      fusionSrc.includes('D28 筛一个不存在的项目') &&
+      fusionSrc.includes('D31 筛 + 翻页'),
+  )
+  check(
+    'dream 项目筛: 版本不早于 0.2.101（两处一致），文档 9.107 / 113 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 101)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.107') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 113'),
   )
 }
 

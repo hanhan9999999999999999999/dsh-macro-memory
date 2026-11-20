@@ -143,6 +143,11 @@ else {
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
   {
+    marker: '[macro-fusion 0.2.101]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '项目段写在账本里却只被数了个数：changes.plan.projects 从 0.2.96 起一直在写，但面板只用它报「N 个项目段」，问不出「有哪几个项目、各自几次」「某个项目的账翻出来看看」「这一条动了哪几个项目」。现在①MemoryDb.recentDreamsPage(limit, offset, project) 可按项目段筛，条件走 SQLite JSON1：json_valid(changes) AND EXISTS(SELECT 1 FROM json_each(json_extract(dream_log.changes, \'$.plan.projects\')) WHERE json_each.value = ?)——筛留在 SQL 里，不许取全量再在 JS 里 filter（否则页面与总数各算一套，翻页翻出空页），坏行先被 json_valid 挡掉（不许一行坏账把面板带成「读不出来」，也不许把它悄悄算成匹配）；②dreamCountOf(project) 给筛后的总数，空项目直接走 dreamCount()，与不筛时口径一致，readDreamLedger 里 total 与页面共用同一个筛子；③dreamProjects(limit) 给分布 {items:[{project,n}], total}：次数降序、同数次按名字，total 是 COUNT(DISTINCT je.value) 不是 items.length（只列前几个时「没列」不等于「没有」）；④新增模块级 readDreamProjects(workspace, dir, limit)，missing 三态 no-workspace / no-db / read-failed 与账本读口同样分开说；⑤面板第 1 页且没筛时多一行「项目段：Alpha 3 次 · Beta 1 次」，筛着时不再给分布（筛完再报分布会被当成「分布也筛过了」）；project= 时 scope 明写「M 条（全账本 N 条）」与「#k 是筛出来这几条里的第几近，不是全账本序号」，导航写「共 M 条（项目段「X」）· 每页 L 条」，越界重读也带同一个筛子；筛空时说「账本里没有项目段「X」的整理记录（全账本 N 条）」而不是「账本还是空的」（两句话分开说，并点明项目名要按原样写）；展开时补一句「属于/不属于这个项目段」但编号仍是全账本第几近（筛选不改编号）；⑥project 给成长句（80 字以上或带换行）当面打回，不静默当「没匹配到」。基准在 tools/probe-ruler.mjs 的 K1–K7 与 tools/probe-fusion.mjs 的 D26–D31（含「分布只在没筛时给」「筛空不等于账本空」「页 2 编号接上筛后顺序」「脏 project 打回」「分页也在 SQL 里筛」五条阴性对照）',
+  },
+  {
     marker: '[macro-fusion 0.2.100]',
     file: 'vendor/meow-memory/lib/index.js',
     what: '账本一长就只看得见最近五条：0.2.97–0.2.99 三版回答了「最近几次整理长什么样」，但面板永远只念 5 条、每行只有一句规模，问不出「那一次到底写了什么」、也看不出还有多少条更早。现在①MemoryDb.recentDreamsPage(limit, offset) 带 OFFSET，排序 ORDER BY run_at DESC, rowid DESC（同一毫秒的两条也有稳定次序，翻页不漏不重），行里带内部 id；dreamCount() 单独给总数——最后一页天然短，不拿页面长度当账本长度；②模块级 readDreamRecord(workspace, dir, rank) 在原来四态之外多一个 no-row（账本在、就是没有第 k 条），并顺手带出「更早一条」供比较；③readDreamLedger 多收 offset、返回 total；④对外的句柄只有一种口径「第几近」（1 = 最新，跨页连续），rowid 只当内部句柄不进正文；⑤面板 readDreamPanel 支持 page 与 id：翻页编号跨页连续、页越界退到最后一页并说清、趋势行与「整理进行中」只在第 1 页出；展开把 summary / note / changes JSON 原文摊开（超 1200 字符截断并报真实长度），老记录明说没有 changes.plan，坏行只说读不出来不拿摘要凑规模，并给「比更早一条」的差（只报真变了的段）；⑥page / id 给脏了当面打回（page=0 不悄悄当第一页、id=abc 不退回整本账），错误里写清「这次什么都没按你说的做」。基准在 tools/probe-ruler.mjs 的 J1–J6 与 tools/probe-fusion.mjs 的 D20–D25（含「总数不是本页条数」「第二页编号接上」「页越界不返回空白页」「展开第 99 条说没有」「脏参数打回」五条阴性对照）',

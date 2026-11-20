@@ -418,6 +418,75 @@ try {
   }
   check('D25 page 给脏了也打回（0 不悄悄当第一页）', dirtyPage.includes('从 1 起的整数') && dirtyPage.includes('这次没有列账'), dirtyPage.split('\n')[0])
 
+  // [macro-fusion 0.2.101] 按项目段翻账：项目名一直在 changes.plan.projects 里，以前只念了个数。
+  // 三条口径：筛在 SQL 里做（页面与总数同一个筛子）、计数与筛选都不改老口径、筛空了不等于账本空。
+  const projWs = mkdtempSync(join(tmpdir(), 'macro-probe-proj-'))
+  const projDb = Meow.getDb(projWs, '.dsh-meow')
+  const logProj = (rows, projects, note = '') =>
+    projDb.logDream(`window dream done: sess-${rows} 第${rows}次 stamped=true`, {
+      stamped: true,
+      plan: { rounds: 1, groups: 1, rows, dup: 0, cover: 0, missing: 0, projects },
+    }, note)
+  logProj(1, ['Alpha', 'Beta'])
+  logProj(2, ['Alpha'])
+  logProj(3, ['其他'])
+  projDb.logDream('window dream done: sess-old stamped=true', { stamped: true, groups: 1 }, '老记录')
+  logProj(5, ['Alpha'])
+  const projCtx = { agent: { session: { header: { cwd: projWs } } } }
+  const projAll = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, projCtx))
+  check(
+    'D26 第 1 页给项目分布：Alpha 3 次 · Beta 1 次（老记录与空数组不进分布）',
+    projAll.includes('项目段：Alpha 3 次 · Beta 1 次 · 其他 1 次') && !projAll.includes('项目段：Alpha 3 次 · Beta 1 次 · 其他 1 次 ·'),
+    projAll.split('\n').find((l) => l.startsWith('项目段：')) ?? projAll.split('\n')[0],
+  )
+  const projAlpha = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5, project: 'Alpha' }, projCtx))
+  check(
+    'D27 project=Alpha：只列 Alpha 那 3 条，并报出全账本几条（筛后的数与全账本的数都在）',
+    projAlpha.includes('#1 ') && projAlpha.includes('#3 ') && !projAlpha.includes('#4 ') &&
+      projAlpha.includes('按项目段「Alpha」筛：3 条（全账本 5 条）'),
+    projAlpha.split('\n')[0],
+  )
+  check(
+    'D27 筛着的时候不再给项目分布（筛完再报分布会被当成「分布也筛过了」）',
+    !projAlpha.includes('项目段：Alpha 3 次'),
+    '',
+  )
+  const projNone = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5, project: 'Gamma' }, projCtx))
+  check(
+    'D28 筛一个不存在的项目：说清「没有这个项目段」并报全账本条数（不是「账本还是空的」）',
+    projNone.includes('没有项目段「Gamma」') && projNone.includes('全账本 5 条') && !projNone.includes('账本还是空的'),
+    projNone.split('\n')[0],
+  )
+  const projNot = text(await tools.get('memory_admin').execute({ action: 'dream', id: '2', project: 'Alpha' }, projCtx))
+  const projYes = text(await tools.get('memory_admin').execute({ action: 'dream', id: '5', project: 'Alpha' }, projCtx))
+  check(
+    'D29 展开时项目对不上要说清（照账念，但别当成筛选结果）',
+    projNot.includes('不属于项目段「Alpha」') && projYes.includes('属于项目段「Alpha」'),
+    projNot.split('\n').filter((l) => l.includes('项目段「Alpha」')).join(' | '),
+  )
+  check(
+    'D29 展开的编号仍是全账本第几近（筛选不改编号，口径写在 note 里）',
+    projNot.includes('#2 ') && projNot.includes('筛选不改编号'),
+    projNot.split('\n')[0],
+  )
+  let dirtyProj = ''
+  try {
+    await tools.get('memory_admin').execute({ action: 'dream', project: 'x'.repeat(90) }, projCtx)
+  } catch (e) {
+    dirtyProj = String(e.message)
+  }
+  check(
+    'D30 project 给成长句当面打回（不把它当「没匹配到」）',
+    dirtyProj.includes('只认一个项目段的名字') && dirtyProj.includes('这次没有筛任何账'),
+    dirtyProj.split('\n')[0],
+  )
+  const projPage2 = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 2, page: 2, project: 'Alpha' }, projCtx))
+  check(
+    'D31 筛 + 翻页：编号接着筛出来的顺序（第 2 页给 #3），导航写明是「项目段」的条数',
+    projPage2.includes('#3 ') && projPage2.includes('共 3 条（项目段「Alpha」）'),
+    projPage2.split('\n').slice(-1)[0],
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {
