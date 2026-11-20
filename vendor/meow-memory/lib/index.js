@@ -3675,6 +3675,29 @@ function readDreamRecordByRef(workspace, dir = ".dsh-meow", ref = 0) {
   }
 }
 
+/** [macro-fusion 0.2.115] 一段连着的账：从第 offset 近开始往下取 limit 条。
+ *  为什么不留着「一条一条按第几近取」：跨轮追踪要问的是「这一对在更早的几轮里出现过没有」，
+ *  逐条取就是 N 次查库、还得自己拼次序；这里一次取出，次序与 recentDreamsPage 同一把尺子
+ *  （run_at DESC, rowid DESC），面板上的「第 k 近」和这里的下标才说得通。
+ *  missing 四态照旧，另加 'bad-arg' 只在 offset 写坏时出现（写坏就地打回，不猜）。 */
+function readDreamRecords(workspace, dir = ".dsh-meow", limit = 5, offset = 0) {
+  if (typeof workspace !== "string" || workspace.length === 0) return { rows: [], missing: "no-workspace", total: 0, path: "" };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { rows: [], missing: "no-db", total: 0, path };
+  const askedLimit = Math.trunc(Number(limit));
+  const n = Math.min(50, Math.max(1, Number.isFinite(askedLimit) && askedLimit > 0 ? askedLimit : 5));
+  const askedOffset = Math.trunc(Number(offset));
+  if (!Number.isFinite(askedOffset) || askedOffset < 0) return { rows: [], missing: "bad-arg", total: 0, path };
+  try {
+    const db = getDb(workspace, dir);
+    const total = db.dreamCount();
+    const rows = db.recentDreamsPage(n, askedOffset);
+    return { rows, missing: "", total, path };
+  } catch (e) {
+    return { rows: [], missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0, path };
+  }
+}
+
 var LEVEL_ORDER = { project: 0, topic: 1, fact: 2, lesson: 3, rules: 4, soul: 5, user: 6 };function formatTime(t) {
   return new Date(t).toISOString().slice(0, 16).replace("T", " ");
 }
@@ -6829,6 +6852,7 @@ export {
   readDreamProjects,
   readDreamRecord,
   readDreamRecordByRef,
+  readDreamRecords,
   readDreamSpan,
   readLiveDream,
   dreamSweepOnce,

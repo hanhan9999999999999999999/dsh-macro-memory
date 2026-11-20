@@ -142,6 +142,12 @@ else {
 // 只会让行为退回上游（例如归档的记忆又出现在检索结果里）。补丁必须能被机器找回来。
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
+  // [macro-fusion 0.2.115] 冲突跨轮追踪：报过的和刚发现的必须分得开
+  {
+    marker: '[macro-fusion 0.2.115]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: "冲突块只报不改，第三轮就会被自动跳过：同一对连着五轮都在报，与这一轮才撞上的，在面板上长得一模一样。这一版给冲突加「跨轮追踪」——报过的和刚发现的必须分得开。\n\n①  写侧新增读口 `readDreamRecords(workspace, dir = \".dsh-meow\", limit = 5, offset = 0)`（导出 `{ rows, missing, total, path }`）：内部走 `db.recentDreamsPage(n, offset)`，与面板同一把尺子（`run_at DESC, rowid DESC`），「第 k 近」在两处才说得通；`offset` 写坏返回 `missing: \"bad-arg\"`，不猜。\n\n②  读侧新增三个常量与两个工具：`OLDER_SPAN = 10`（往回看十条账）、`CONFLICT_REPEAT_MIN = 3`（连报三次才算挂着）、`conflictKeyOf(p)`（按短 id 排序拼 `a⇄b`，`a⇄b` 与 `b⇄a` 是同一对；自配或空 id 一律不认）、`conflictKeyIndex(rows, firstRank)`（摊成 `短 id 对 → { first, count }`）、`conflictSeenOf(workspace, dir, rank)`（读更早那几轮的账再摊索引，读不出来返回 undefined）。\n\n③  「最早第几轮」按轮号最大算：编号 1 是最新、越大越早，写反了「挂了五轮」会被读成「刚出现」，催办就永远不触发。\n\n④  读不到更早的账（undefined）就一个字都不说：不写「这一轮新报」（把未知说成结论），也不写「没报过」（把未知说成否定）——和上一版「0 与没查必须分开」是同一条原则。\n\n⑤  `conflictLine(p, seen)` 行尾加一句结论：命中报「 · 之前报过（最早第 N 轮，加这次共 k 次）」，未命中报「 · 这一轮新报」，`seen` 未提供时什么都不加。\n\n⑥  `conflictsBlock(row, seen)` 抬头在有重提时补「其中 M 对之前就报过，最早第 N 轮」；连报 ≥ `CONFLICT_REPEAT_MIN` 次的那一对在明细后点名催办（只点最严重那一对）：「同一对不会因为多报几次变得清楚：要么按【疑似冲突】处置（取新的、旧的标「（已被取代：…）」或设 stale），要么承认它是两件不同的事，把正文写清归属」。\n\n⑦  `expandPanel(rec, rank, seen)` 多一个参数，`readDreamPanel` 两条展开路径都传（按第几近 `rankNow`、按引用 `wantId`）——少传一条，同一条账从列表点和从 id 点会说出两套话。\n\n⑧  探针：`tools/probe-fusion.mjs` 新增 D89–D93（老账重提抬头与行尾 / 这一轮新报 / 连报三次催处置 / 只报两次不催 / 最早一轮没有可比），565 → 570 条；`verify.mjs` 新增 `[macro-fusion 0.2.115]` 块 11 条，1,150 → 1,161 条。\n\n⑨  文档：`docs/INTERNAL.md` 新增 9.121（270,447 → 273,039 字符），`DESIGN.md` 新增 127（217,877 → 218,963 字符）。\n\n⑩  没做的事：不记「已处置」（那要另建一张表，会把「账本只记看见什么」的边界弄糊，处置过的对下一轮检测本身就不再报）、不跨库追踪（短 id 换库即不可比，宁可少认）、不加冲突走向（逐条的病不该长成趋势线）、不把 `OLDER_SPAN` 做成参数。",
+  },
   // [macro-fusion 0.2.114] 疑似冲突：同一主题两个说法撞在一起，只摊差异不下判决
   {
     marker: '[macro-fusion 0.2.114]',

@@ -1136,6 +1136,61 @@ try {
     cfNone.split('\n').filter((l) => l.startsWith('疑似冲突')).join(' | ') + ' || ' + cfNoneRow,
   )
 
+  // [macro-fusion 0.2.115] 冲突跨轮追踪：同一对是不是老账重提，得看得出来。
+  // 三件事：①抬头点出「其中几对之前就报过、最早第几轮」；②每行结一句「这一轮新报」或「共 k 次」；
+  // ③连报三次还在账上，点名催处置——不然每轮安静地重提一遍，等于把噪音当成了工作。
+  const ctWs = mkdtempSync(join(tmpdir(), 'macro-probe-trail-'))
+  const ctDb = Meow.getDb(ctWs, '.dsh-meow')
+  const ctPair = {
+    kind: 'conflict', a: 'cccc0001', b: 'cccc0002', levelA: 'fact', levelB: 'fact',
+    shared: ['dsh', '路径'], sharedTotal: 2, onlyA: ['0.1'], onlyB: ['0.2.113'],
+    onlyACount: 1, onlyBCount: 1, newer: 'b', newerAt: 1760000600000,
+  }
+  const ctPairNew = { ...ctPair, a: 'dddd0003', b: 'dddd0004' }
+  const ctPlan = (list) => ({
+    rounds: 1, groups: 1, rows: 2, dup: 0, cover: 0, missing: 0, projects: 0,
+    conflicts: list.length, conflictPairs: list,
+  })
+  ctDb.logDream('window dream done: sess-trail-oldest stamped=true', { stamped: true, groups: 1, plan: ctPlan([ctPair]) }, '第 3 轮')
+  ctDb.logDream('window dream done: sess-trail-mid stamped=true', { stamped: true, groups: 1, plan: ctPlan([ctPair]) }, '第 2 轮')
+  ctDb.logDream('window dream done: sess-trail-newest stamped=true', { stamped: true, groups: 1, plan: ctPlan([ctPair, ctPairNew]) }, '第 1 轮')
+  const ctCtx = { agent: { session: { header: { cwd: ctWs } } } }
+  const ctTop = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, ctCtx))
+  const ctTopPairs = ctTop.split('\n').filter((l) => l.startsWith('疑似冲突') || l.startsWith('- cccc') || l.startsWith('- dddd'))
+  check(
+    'D89 老账重提：抬头点出「其中 1 对之前就报过，最早第 3 轮」，行尾写「加这次共 3 次」',
+    ctTop.includes('疑似冲突（账里存了 2 对，这一轮共 2 对；其中 1 对之前就报过，最早第 3 轮）：') &&
+      ctTop.includes('cccc0001 ⇄ cccc0002') &&
+      ctTop.includes('之前报过（最早第 3 轮，加这次共 3 次）'),
+    ctTopPairs.join(' | '),
+  )
+  check(
+    'D90 同一轮里新发现的那对标「这一轮新报」，不跟老账混成一堆',
+    /dddd0003 ⇄ dddd0004[^\n]*· 这一轮新报/.test(ctTop),
+    ctTopPairs.filter((l) => l.startsWith('- dddd')).join(' | '),
+  )
+  check(
+    'D91 连报三次还挂在账上：点名催处置（同一对不会因为多报几次变得清楚）',
+    ctTop.includes('- cccc0001 ⇄ cccc0002 已经第 3 次出现在账上（最早第 3 轮）') &&
+      ctTop.includes('同一对不会因为多报几次变得清楚'),
+    ctTop.split('\n').filter((l) => l.includes('已经第')).join(' | '),
+  )
+  const ctMid = text(await tools.get('memory_admin').execute({ action: 'dream', id: '2' }, ctCtx))
+  check(
+    'D92 只报过两次：说「共 2 次」，还不到催办门槛就不催——催得太早也是噪音',
+    ctMid.includes('之前报过（最早第 3 轮，加这次共 2 次）') && !ctMid.includes('已经第 3 次'),
+    ctMid.split('\n').filter((l) => l.startsWith('疑似冲突') || l.includes('之前报过') || l.includes('已经第')).join(' | '),
+  )
+  const ctOldest = text(await tools.get('memory_admin').execute({ action: 'dream', id: '3' }, ctCtx))
+  check(
+    'D93 最早那一轮没有更早的账可比：两对都算「这一轮新报」，抬头不提「之前就报过」',
+    ctOldest.includes('疑似冲突（账里存了 1 对，这一轮共 1 对）：') &&
+      ctOldest.includes('这一轮新报') &&
+      !ctOldest.includes('之前就报过') &&
+      !ctOldest.includes('已经第'),
+    ctOldest.split('\n').filter((l) => l.startsWith('疑似冲突') || l.includes('这一轮新报')).join(' | '),
+  )
+
   // D58–D61（0.2.109）：回执成本 + budget。六个维度里「效率」以前没有数——
   // 有条数、有耗时，没有「这次检索占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
   const { createUnifiedTools: costTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)

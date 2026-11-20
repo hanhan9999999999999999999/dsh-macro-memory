@@ -6697,7 +6697,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'dream 面板: 展开顺序是「项目段 → 对子 → 比更早一条 → 原文」（对子不被 1200 字截断挤掉）',
     (() => {
-      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank)'), panelSrc.indexOf('function compareLine('))
+      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank, seen)'), panelSrc.indexOf('function compareLine('))
       const a = seg.indexOf('lines.push(pairsBlock(row))')
       const b = seg.indexOf('const cmp = compareLine(row, prev, rank + 1)')
       const c = seg.indexOf('const raw = row.changes === null')
@@ -6781,7 +6781,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'dream 规模: 展开顺序是「项目段 → 对子 → 库规模 → 比更早一条 → 原文」',
     (() => {
-      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank)'), panelSrc.indexOf('function compareLine('))
+      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank, seen)'), panelSrc.indexOf('function compareLine('))
       const a = seg.indexOf('lines.push(pairsBlock(row))')
       const b = seg.indexOf('const storeLine = storeBlock(row)')
       const c = seg.indexOf('const cmp = compareLine(row, prev, rank + 1)')
@@ -7002,7 +7002,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'dream 日期筛: 展开一条时说清它在不在区间里，但编号/引用口径不变（和项目筛同一条分寸）',
     panelSrc.includes('function rangeNoteOf(row, range) {') &&
       panelSrc.includes('这一条不在 ${range.label} 这段时间里（它写在 ${stamp(at)}）') &&
-      panelSrc.includes('[expandPanel(rec, wantId), rangeNoteOf(rec.row, range), filterNote]') &&
+      panelSrc.includes('[expandPanel(rec, wantId, conflictSeenOf(workspace, dir, wantId)), rangeNoteOf(rec.row, range), filterNote]') &&
       panelSrc.includes('日期筛选也不影响引用'),
   )
   check(
@@ -7872,7 +7872,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '冲突: 面板插在重复对之后（先看该不该合并，再看该不该统一说法），走向两块不加冲突（那是两件事）',
     (() => {
-      const at = ledgerSrc114.indexOf('const conflictText = conflictsBlock(row)')
+      const at = ledgerSrc114.indexOf('const conflictText = conflictsBlock(row, seen)')
       const pairAt = ledgerSrc114.indexOf('lines.push(pairsBlock(row))')
       if (!(at > 0 && pairAt > 0 && at > pairAt)) return false
       const bodyOf = (name) => {
@@ -7913,6 +7913,92 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.120') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 126'),
+  )
+}
+
+// [macro-fusion 0.2.115] 冲突跨轮追踪：报过的和刚发现的必须分得开
+{
+  const meowSrc115 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const ledgerSrc115 = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const fusionSrc115 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg115 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc115 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const bodyOf115 = (name) => {
+    const from = ledgerSrc115.indexOf(`function ${name}(`)
+    if (from < 0) return ''
+    const next = ledgerSrc115.indexOf('\nfunction ', from + 10)
+    return ledgerSrc115.slice(from, next > from ? next : ledgerSrc115.length)
+  }
+
+  check(
+    '跨轮: 写侧开一个「连着取几段账」的读口（同一把尺子，次序与第几近对得上），坏的 offset 就地打回',
+    meowSrc115.includes('function readDreamRecords(workspace, dir = ".dsh-meow", limit = 5, offset = 0)') &&
+      meowSrc115.includes('const rows = db.recentDreamsPage(n, askedOffset);') &&
+      meowSrc115.includes('if (!Number.isFinite(askedOffset) || askedOffset < 0) return { rows: [], missing: "bad-arg", total: 0, path };') &&
+      meowSrc115.includes('  readDreamRecords,'),
+  )
+  check(
+    '跨轮: 覆盖面与催办门槛写成常量（往回看 10 条、连报 3 次才算挂着）',
+    ledgerSrc115.includes('const OLDER_SPAN = 10') && ledgerSrc115.includes('const CONFLICT_REPEAT_MIN = 3'),
+  )
+  check(
+    '跨轮: 配对键按短 id 排序拼，a⇄b 与 b⇄a 认成同一对（自配或空 id 一律不认）',
+    ledgerSrc115.includes('if (a === \'\' || b === \'\' || a === b) return \'\'') &&
+      ledgerSrc115.includes('return a < b ? `${a}⇄${b}` : `${b}⇄${a}`'),
+  )
+  check(
+    '跨轮: 「最早第几轮」按轮号最大算（1 是最新，轮号越大越早）——不然挂了五轮会读成刚出现',
+    ledgerSrc115.includes('if (rank > hit.first) hit.first = rank') &&
+      bodyOf115('conflictKeyIndex').includes('const rank = firstRank + i'),
+  )
+  check(
+    '跨轮: 更早的账读不出来就一个字都不说（不写「新报」，也不写「没报过」）',
+    bodyOf115('conflictSeenOf').includes("got.missing !== ''") &&
+      bodyOf115('conflictSeenOf').includes('return undefined') &&
+      bodyOf115('trailOf').includes("if (seen === undefined) return ''"),
+  )
+  check(
+    '跨轮: 行尾只加一句结论（老账重提报「最早第 N 轮、加这次共 k 次」，否则「这一轮新报」）',
+    ledgerSrc115.includes('return ` · 之前报过（最早第 ${hit.first} 轮，加这次共 ${times} 次）`') &&
+      ledgerSrc115.includes("if (hit === undefined) return ' · 这一轮新报'") &&
+      ledgerSrc115.includes('function conflictLine(p, seen)') &&
+      ledgerSrc115.includes('${verdict}${trail}'),
+  )
+  check(
+    '跨轮: 抬头点出「其中几对之前就报过、最早第几轮」，没有重提就不加这半句',
+    ledgerSrc115.includes('const head = repeats.length === 0') &&
+      ledgerSrc115.includes('对之前就报过，最早第 ${Math.min(...repeats.map((x) => x.hit.first))} 轮）：'),
+  )
+  check(
+    '跨轮: 连报 ≥3 次还在账上就点名催处置（多报几次不会让它变清楚），两次只报不催',
+    ledgerSrc115.includes('const stale = repeats.filter((x) => x.hit.count + 1 >= CONFLICT_REPEAT_MIN)') &&
+      ledgerSrc115.includes('已经第 ${worst.hit.count + 1} 次出现在账上（最早第 ${worst.hit.first} 轮）') &&
+      ledgerSrc115.includes('同一对不会因为多报几次变得清楚') &&
+      ledgerSrc115.includes('要么承认它是两件不同的事，把正文写清归属。'),
+  )
+  check(
+    '跨轮: 摊开面板时把「更早那几轮的账」查一遍（按第几近与按引用两条路都传，晚一条都不许漏）',
+    ledgerSrc115.includes('function expandPanel(rec, rank, seen)') &&
+      ledgerSrc115.includes('conflictSeenOf(workspace, dir, rankNow)') &&
+      ledgerSrc115.includes('conflictSeenOf(workspace, dir, wantId)'),
+  )
+  check(
+    '跨轮·探针进线：D89–D93（老账重提 / 这一轮新报 / 连报三次催处置 / 只报两次不催 / 最早一轮没有可比）',
+    fusionSrc115.includes('D89 老账重提') &&
+      fusionSrc115.includes('D90 同一轮里新发现的那对标「这一轮新报」') &&
+      fusionSrc115.includes('D91 连报三次还挂在账上') &&
+      fusionSrc115.includes('D92 只报过两次') &&
+      fusionSrc115.includes('D93 最早那一轮没有更早的账可比'),
+  )
+  check(
+    '跨轮·版本不早于 0.2.115（两处一致），文档 9.121 / 127 在位',
+    (() => {
+      const v = pkg115.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 115)
+      return atLeast && idxSrc115.includes(`export const version = '${pkg115.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.121') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 127'),
   )
 }
 
