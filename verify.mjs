@@ -8868,5 +8868,47 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── EA. 会话主题扩展：门牌号词写不出来，算得出来（0.2.131）─────────────────
+{
+  const meowSrc = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+  check(
+    'EA 会话主题: 闸门在、入口只有一个（sessionTopic:false 能整段关掉）',
+    meowSrc.includes('const SESS_TOPIC_MIN = 3;') &&
+      meowSrc.includes('function sessionTopicTerms(docs, docToks) {') &&
+      meowSrc.includes('opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks)'),
+  )
+  const V = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const mk = (id, content, sess) => ({
+    id, level: 'fact', title: content.slice(0, 6), content, keywords: [], importance: 2,
+    status: 'active', source_session: sess, created_at: 1, updated_at: Date.now(),
+  })
+  const docs = [
+    mk('x1', '陶艺课捏了个碗', 'sA'),
+    mk('x2', '买了六个杯子回家', 'sA'),
+    mk('x3', '老师说釉色要等三天', 'sA'),
+    mk('y1', '今天天气不错', 'sB'),
+  ]
+  const on = V.search('釉色 陶艺', docs, { k: 8 }).map((h) => h.id)
+  const off = V.search('釉色 陶艺', docs, { k: 8, sessionTopic: false }).map((h) => h.id)
+  check(
+    'EA 会话主题·行为: 同会话里一个查询词都不含的条目也能靠主题词进榜，关掉就回到纯 BM25',
+    on.includes('x2') && !off.includes('x2'),
+    `开 ${on.join(',')} / 关 ${off.join(',')}`,
+  )
+  check('EA 会话主题·行为: 扩词不越位（靠主题词进来的排在直接命中之后）', on[on.length - 1] === 'x2', on.join(','))
+  check(
+    'EA 会话主题: 探针真盯着这五条（不是只写在文档里）',
+    ['SESS1 ', 'SESS2 ', 'SESS3 ', 'SESS4 ', 'SESS5 '].every((k) => probeSrc.includes(k)),
+  )
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'EA 会话主题: 版本与文档一起走（9.137 / 143）',
+    pkg.version.split('.').map((x) => Number(x))[2] >= 131 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.137 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 143 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

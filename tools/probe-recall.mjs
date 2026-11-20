@@ -194,6 +194,64 @@ check('R5 强相关的一组不被误伤（查询「部署」时铁律与随手�
 const r5Bad = await call('memory_search', { query: '部署 备份', k: 10, min_rel: 5 })
 check('R5 min_rel 给越界值：夹回 1 并说明（不当作「查不到」）', /不在 0–1 里/.test(String(r5Bad.note ?? '')) && r5Bad.hits.length >= 1, String(r5Bad.note ?? '').split('\n').filter((l) => l.includes('min_rel')).join(' ').slice(0, 90))
 
+// ── SESS（0.2.131）：会话主题扩展 ─────────────────────────────────────────
+// 一条 20 字的短条目接不住问句的三四个实词。数据侧凭据是 omni35（649 题）：同一批条目上，
+// 「补本段 tf-idf 前 12 个实词」把准确率从 39.3% 抬到 46.7%（p<0.0001），而「补 12 个全局高频词」
+// 只值 +10（p=0.1986）。所以规则从语料现算，不靠写入纪律。这里只量引擎行为。
+const mkDoc = (id, content, sess) => ({
+  id,
+  level: 'fact',
+  title: content.slice(0, 8),
+  content,
+  keywords: [],
+  importance: 2,
+  status: 'active',
+  project: null,
+  source_session: sess,
+  created_at: Date.now() - 86400000,
+  updated_at: Date.now() - 86400000,
+})
+// s1 三条同会话：a1/a3 直接命中查询，a2 一个查询词都不含（BM25 完全不可见）。
+const SESS_DOCS = [
+  mkDoc('a1', '她在陶艺课上捏了个碗', 's1'),
+  mkDoc('a2', '她买了六个杯子回家', 's1'),
+  mkDoc('a3', '老师说釉色要等三天才干', 's1'),
+  mkDoc('b1', '今天天气不错适合晒被子', 's2'),
+]
+const SESS_Q = '釉色 陶艺'
+const sessOn = V.search(SESS_Q, SESS_DOCS, { k: 8 })
+const sessOff = V.search(SESS_Q, SESS_DOCS, { k: 8, sessionTopic: false })
+const sessIds = (hits) => hits.map((h) => h.id)
+
+check(
+  'SESS1 会话主题词：同会话里那条「一个查询词都不含」的条目也能进榜',
+  sessIds(sessOn).includes('a2') && sessOff.some((h) => h.id === 'a1') && !sessIds(sessOff).includes('a2'),
+  `开 ${sessIds(sessOn).join(',')} / 关 ${sessIds(sessOff).join(',')}`,
+)
+check(
+  'SESS2 一眼能关：sessionTopic:false 之后回到纯 BM25（a2 消失）',
+  !sessIds(sessOff).includes('a2') && sessIds(sessOff).length === 2,
+  `${sessOff.length} 条`,
+)
+check(
+  'SESS3 扩词不越位：靠主题词进榜的那条排在直接命中之后',
+  sessIds(sessOn)[sessIds(sessOn).length - 1] === 'a2' && sessIds(sessOn).length === 3,
+  sessIds(sessOn).join(','),
+)
+// 会话只有两条 → 低于 SESS_TOPIC_MIN=3，不扩。
+const thin = [
+  mkDoc('t1', '她在陶艺课上捏了个碗', 's9'),
+  mkDoc('t2', '她买了六个杯子回家', 's9'),
+]
+const thinOn = sessIds(V.search(SESS_Q, thin, { k: 8 }))
+check('SESS4 会话不足 3 条不扩（两条的段落不拿主题词凑数）', thinOn.join(',') === 't1', thinOn.join(','))
+
+// 完全没有 source_session（老库、手动导入的条目）→ 与关掉时逐条一致，一点不带漂移。
+const noSess = SESS_DOCS.map((d) => ({ ...d, source_session: null }))
+const nsOn = V.search(SESS_Q, noSess, { k: 8 }).map((h) => `${h.id}:${h.score.toFixed(4)}`)
+const nsOff = V.search(SESS_Q, noSess, { k: 8, sessionTopic: false }).map((h) => `${h.id}:${h.score.toFixed(4)}`)
+check('SESS5 没有 source_session 时完全惰性（分数逐条相同，不靠字段兜底）', nsOn.join(' ') === nsOff.join(' '), nsOn.join(' '))
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

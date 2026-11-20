@@ -1878,6 +1878,40 @@ function stemEn(word) {
 function docText(d) {
   return [d.title ?? "", d.content, ...d.keywords].join(" ");
 }
+// [macro-fusion 0.2.131] 会话主题扩展：一条 20 字的短条目接不住问句的三四个实词——数据侧证据是
+// omni33/34/35（LoCoMo 649 题同题配对）：把「这一段对话里 tf-idf 最高的 12 个实词」补给条目，
+// 准确率 39.3% → 46.7%（净 +48，p<0.0001）；同样 12 个「全局高频词」只值 +10（p=0.1986）；
+// 把这条要求写进写入提示词让模型自己写，只值 +2（p=0.9310，关键词 4.87→5.95 也没用）。
+// 也就是说：主题词必须从语料算出来，不能靠纪律。这里在检索时按 source_session 现算，
+// 不落盘、不进回执、不改一条记忆的正文。
+const SESS_TOPIC_MIN = 3;
+const SESS_TOPIC_TERMS = 12;
+function sessionTopicTerms(docs, docToks) {
+  const bySess = /* @__PURE__ */ new Map();
+  for (let i = 0; i < docs.length; i++) {
+    const s = docs[i]?.source_session;
+    if (!s) continue;
+    if (!bySess.has(s)) bySess.set(s, []);
+    bySess.get(s).push(i);
+  }
+  if (bySess.size === 0) return null;
+  const total = bySess.size;
+  const sessDf = /* @__PURE__ */ new Map();
+  for (const [, idxs] of bySess) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const i of idxs) for (const t of docToks[i]) seen.add(t);
+    for (const t of seen) sessDf.set(t, (sessDf.get(t) ?? 0) + 1);
+  }
+  const out = /* @__PURE__ */ new Map();
+  for (const [sess, idxs] of bySess) {
+    if (idxs.length < SESS_TOPIC_MIN) continue;
+    const tf = /* @__PURE__ */ new Map();
+    for (const i of idxs) for (const t of docToks[i]) tf.set(t, (tf.get(t) ?? 0) + 1);
+    const ranked = [...tf.entries()].filter(([t]) => t.length >= 2 && !EN_STOPWORDS.has(t)).map(([t, f]) => [t, f * Math.log(1 + total / (sessDf.get(t) ?? 1))]).sort((a, b) => b[1] - a[1]).slice(0, SESS_TOPIC_TERMS).map(([t]) => t);
+    if (ranked.length > 0) out.set(sess, ranked);
+  }
+  return out.size > 0 ? out : null;
+}
 function recencyWeight(ageMs) {
   const days = ageMs / 864e5;
   if (days < 1) return 1;
@@ -1916,7 +1950,12 @@ function search(query, docs, opts = {}) {
     ? []
     : queryEntities(query).map((e) => tokenize(e)).filter((t) => t.length === 1).map((t) => t[0]);
   const n = docs.length;
-  const docToks = docs.map((d) => tokenize(docText(d)));
+  const plainToks = docs.map((d) => tokenize(docText(d)));
+  const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
+  const docToks = sessTopics ? docs.map((d, i) => {
+    const extra = sessTopics.get(d.source_session);
+    return extra ? plainToks[i].concat(extra) : plainToks[i];
+  }) : plainToks;
   const avgdl = docToks.reduce((s, t) => s + t.length, 0) / n || 1;
   const df = /* @__PURE__ */ new Map();
   const tf = [];
