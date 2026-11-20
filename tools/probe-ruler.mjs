@@ -730,5 +730,79 @@ check(
   `rows=${K7[0]?.changes?.plan?.rows}`,
 )
 
+// L 段（0.2.102）：落库的那份摘要本身——项目存名字（不是个数）、对子存明细。
+// 为什么必须有这一段：0.2.101 的 K 段是手写 changes 造账，恰好写成了数组，于是「写侧存的是个数字」
+// 这个真问题一次都没被扫到。这里直接调真 writer（dreamPlanDigest），从源头验。
+const digWs = mkdtempSync(join(tmpdir(), 'ruler-digest-'))
+const digDb = V.getDb(digWs, '.dsh-meow')
+const mkRow = (id, level, content) => ({ id, level, content })
+const dupOne = '默认用 pnpm 装依赖 不要混用 npm 和 yarn 锁文件只提交一个'
+const dupTwo = '默认用 pnpm 装依赖 不要混用 npm 和 yarn 锁文件只提交一个副本'
+const shortRow = mkRow('aaaa1111zz', 'topic', '探针里不要用 ^ 锚定面板首行 因为首行是抬头')
+const longRow = mkRow('aaaa2222zz', 'fact', '探针里不要用 ^ 锚定面板首行 因为首行是抬头 否则断言必然打红 改密集块要带前后锚点')
+const digRounds = [
+  { kind: 'atomic', groups: [{ name: '', rows: [mkRow('cccc0001aa', 'fact', dupOne), mkRow('cccc0002aa', 'fact', dupTwo)] }], projects: ['Alpha', 'Beta'] },
+  { kind: 'topic', groups: [{ name: 't', rows: [shortRow, longRow] }], projects: ['Alpha'] },
+]
+const L1 = V.dreamPlanDigest(digRounds)
+check(
+  'L1 写侧的摘要：projects 是名字数组（去重保序），个数另存 projectCount',
+  Array.isArray(L1.projects) && L1.projects.join(',') === 'Alpha,Beta' && L1.projectCount === 3,
+  `projects=${JSON.stringify(L1.projects)} projectCount=${L1.projectCount}`,
+)
+check(
+  'L2 名字不再是数字：typeof projects 是 object（0.2.101 按名字筛账靠的就是这一条）',
+  typeof L1.projects !== 'number' && L1.projects.length === 2,
+  typeof L1.projects,
+)
+check(
+  'L3 对子带明细：dup 一对、cover 一对，短 id 与清单同一套、两边层级都念出来',
+  L1.pairs.length === 2 &&
+    L1.pairs[0].kind === 'dup' &&
+    L1.pairs[0].a === 'cccc0001' &&
+    L1.pairs[0].levelA === 'fact' &&
+    L1.pairs[1].kind === 'cover' &&
+    L1.pairs[1].levelA === 'topic' &&
+    L1.pairs[1].levelB === 'fact',
+  JSON.stringify(L1.pairs),
+)
+check(
+  'L4 重复详写对带「会丢几个词」的材料（合并时最容易被扔掉的就是这些词）',
+  L1.pairs[1].missing === 0 && Array.isArray(L1.pairs[1].words),
+  `missing=${L1.pairs[1].missing} words=${JSON.stringify(L1.pairs[1].words)}`,
+)
+// 7 条几乎一样的行 = 21 对；清单只印 5 对，摘要里的「几对」不许跟着被截断。
+const manyRows = Array.from({ length: 7 }, (_, i) => mkRow(`dddd000${i}aa`, 'fact', `${dupOne} 第${i}份`))
+const L5 = V.dreamPlanDigest([{ kind: 'atomic', groups: [{ name: '', rows: manyRows }], projects: [] }])
+check(
+  'L5 「这一轮撞上几对」是真数（21），存下来的明细才受上限（≤6）：数不被截断冒充',
+  L5.dup === 21 && L5.pairs.length === 6 && L5.pairs.every((p) => p.kind === 'dup'),
+  `dup=${L5.dup} pairs=${L5.pairs.length}`,
+)
+const L6 = V.dreamPlanDigest([])
+check(
+  'L6 空清单：全是 0，projects / pairs 是空数组（不是 undefined——读的人不用先判空）',
+  L6.rows === 0 && L6.dup === 0 && Array.isArray(L6.projects) && L6.projects.length === 0 && Array.isArray(L6.pairs) && L6.pairs.length === 0,
+  JSON.stringify(L6),
+)
+digDb.logDream('window dream done: sess-new stamped=true', { stamped: true, groups: 2, plan: L1 }, 'new')
+digDb.logDream('window dream done: sess-legacy stamped=true', { stamped: true, groups: 1, plan: { rounds: 1, groups: 1, rows: 3, dup: 0, cover: 0, missing: 0, projects: 2 } }, 'legacy')
+const L7 = V.readDreamLedger(digWs, '.dsh-meow', 10, 0, 'Alpha')
+const L7b = V.getDb(digWs, '.dsh-meow').dreamProjects(5)
+check(
+  'L7 从写侧到 SQL 一路通：真摘要落库后按名字筛得到（0.2.101 漏的就是这一环），旧数字账不进分布',
+  L7.total === 1 &&
+    L7.rows[0].changes.plan.pairs.length === 2 &&
+    L7b.items.length === 2 &&
+    L7b.items.every((it) => typeof it.project === 'string'),
+  `total=${L7.total} items=${JSON.stringify(L7b.items)}`,
+)
+const L8 = V.readDreamLedger(digWs, '.dsh-meow', 10, 0, '2')
+check(
+  'L8 老账本里那个「2」不是项目名：按 "2" 筛不到它（数字不许冒充文本）',
+  L8.total === 0,
+  `total=${L8.total}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

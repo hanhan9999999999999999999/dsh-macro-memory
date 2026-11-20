@@ -6125,7 +6125,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check(
     'dream 重复: 重复对是模块级的两个纯函数（可单测），门槛默认取写侧同一个 DEDUP_THRESHOLD',
-    vSrc.includes('function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD)') &&
+    vSrc.includes('function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD,') &&
       vSrc.includes('function uniqueShortIdsAmong(rows, min = 8)') &&
       vSrc.includes('var DREAM_DUP_MAX = 5;'),
   )
@@ -6242,7 +6242,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     vSrc.includes('var DREAM_COVER_MIN = 0.9;') &&
       vSrc.includes('var DREAM_COVER_MIN_WORDS = 8;') &&
       vSrc.includes('var DREAM_COVER_RATIO_MAX = 0.75;') &&
-      /function dreamCoverPairs\(rows, minContain = DREAM_COVER_MIN\)/.test(vSrc),
+      /function dreamCoverPairs\(rows, minContain = DREAM_COVER_MIN,/.test(vSrc),
   )
   check(
     'dream 详写对: 分母取小集合（覆盖度，不是 Jaccard），且与 ≥80% 的重复对互斥',
@@ -6624,6 +6624,104 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.107') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 113'),
+  )
+}
+
+// [macro-fusion 0.2.102] 0.2.101 的按项目筛账在真账本上永远筛不到东西：写侧存的是「个数」，
+// 而 0.2.101 的探针手写 changes 恰好写成了数组，于是整条链路的真问题被盖住。这一版修写侧，
+// 顺带把「跟谁撞了」落进账本，展开一条账就能直接动手合并。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc102 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc102 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'dream 摘要: projects 存名字数组（去重保序），个数另存 projectCount——按名字筛账才有东西可筛',
+    vSrc.includes('function dreamPlanProjectNames(rounds)') &&
+      vSrc.includes('if (name !== "" && !out.includes(name)) out.push(name);') &&
+      vSrc.includes('projects: dreamPlanProjectNames(rounds),') &&
+      vSrc.includes('projectCount: rounds.reduce((n, r) => n + (Array.isArray(r.projects) ? r.projects.length : 0), 0),'),
+  )
+  check(
+    'dream 摘要: 对子明细随账落库（短 id 与清单同一套，上限 6 对）',
+    vSrc.includes('var DREAM_PLAN_PAIR_CAP = 6;') &&
+      vSrc.includes('function dreamPlanPairs(allRows)') &&
+      vSrc.includes('const shortOf = uniqueShortIdsAmong(allRows);') &&
+      vSrc.includes('pairs: dreamPlanPairs(allRows)') &&
+      vSrc.includes('return out.slice(0, DREAM_PLAN_PAIR_CAP);') &&
+      vSrc.includes('words: Array.isArray(p.words) ? p.words.slice(0, DREAM_MERGE_WORDS) : []'),
+  )
+  check(
+    'dream 摘要: 「撞上几对」是真数，不被清单上限截断（截断只影响印出来的那几对）',
+    vSrc.includes('function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD, max = DREAM_DUP_MAX)') &&
+      vSrc.includes('function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN, max = DREAM_DUP_MAX)') &&
+      vSrc.includes('dup: dreamDupPairs(allRows, DEDUP_THRESHOLD, Infinity).length,') &&
+      vSrc.includes('const covers = dreamCoverPairs(allRows, DREAM_COVER_MIN, Infinity);'),
+  )
+  check(
+    'dream 筛账: 只把文本当项目名（老账本里的数字不许冒充名字，也不许进分布）',
+    vSrc.includes("WHERE json_valid(dream_log.changes) AND je.type = 'text' GROUP BY je.value") &&
+      vSrc.includes("WHERE json_valid(dream_log.changes) AND je.type = 'text'") &&
+      vSrc.includes("WHERE json_each.type = 'text' AND json_each.value = ?") &&
+      (vSrc.match(/json_each\.type = 'text' AND json_each\.value = \?/g) ?? []).length === 2,
+  )
+  check(
+    'dream 面板: 两种形态都认（老账本只记个数，不能念成 0 个项目段）',
+    panelSrc.includes('function projectCountOf(plan)') &&
+      panelSrc.includes('const projects = projectCountOf(plan)') &&
+      (panelSrc.match(/projectCountOf\(plan\)/g) ?? []).length >= 3 &&
+      !panelSrc.includes('Array.isArray(plan.projects) ? plan.projects.length : 0'),
+  )
+  check(
+    'dream 面板: 对子块的四种来路各说各话（没 plan / 没存明细 / 真没撞上 / 有数没列）',
+    panelSrc.includes('对子：这条账没有 changes.plan（它写在 0.2.96 之前），谈不上对子。') &&
+      panelSrc.includes('没有存对子明细（0.2.102 之前的记录）') &&
+      panelSrc.includes('对子：这一轮没撞上对子，没有可合并的。') &&
+      panelSrc.includes('却没有一条明细——别把「没列」读成「没有」。'),
+  )
+  check(
+    'dream 面板: 明细超上限要报差额，并点明短 id 可以直接拿去用',
+    panelSrc.includes('对子（账里存了 ${stored.length} 对，这一轮共 ${dup + cover} 对）：') &&
+      panelSrc.includes('还有 ${dup + cover - stored.length} 对没落账（一条账只存前几对）——数是真数，点名只到前几对。') &&
+      panelSrc.includes('短 id 和整理清单里印的是同一套，可以直接拿去 memory_read / memory_update。'),
+  )
+  check(
+    'dream 面板: 展开顺序是「项目段 → 对子 → 比更早一条 → 原文」（对子不被 1200 字截断挤掉）',
+    (() => {
+      const seg = panelSrc.slice(panelSrc.indexOf('function expandPanel(rec, rank)'), panelSrc.indexOf('function compareLine('))
+      const a = seg.indexOf('lines.push(pairsBlock(row))')
+      const b = seg.indexOf('const cmp = compareLine(row, prev, rank + 1)')
+      const c = seg.indexOf('const raw = row.changes === null')
+      return a > 0 && b > a && c > b
+    })(),
+  )
+  check(
+    'dream 面板: 老账本只记了数时把数念出来，不假装没记项目段',
+    panelSrc.includes('`项目段：这条账只记了个数（${legacy} 个），没记名字——它写在 0.2.102 之前。`'),
+  )
+  check(
+    'dream 摘要: 探针进线（probe-ruler L1–L8 从写侧验、probe-fusion D32–D36 从面板验）',
+    rulerSrc102.includes('L1 写侧的摘要：projects 是名字数组（去重保序），个数另存 projectCount') &&
+      rulerSrc102.includes('L2 名字不再是数字') &&
+      rulerSrc102.includes('L5 「这一轮撞上几对」是真数（21）') &&
+      rulerSrc102.includes('L7 从写侧到 SQL 一路通') &&
+      rulerSrc102.includes('L8 老账本里那个「2」不是项目名') &&
+      fusionSrc102.includes('D32 展开一条新账：对子摊成清单') &&
+      fusionSrc102.includes('D33 老格式的账：个数照念') &&
+      fusionSrc102.includes('D35 对子超出落库上限') &&
+      fusionSrc102.includes('D36 从写侧到面板一路通'),
+  )
+  check(
+    'dream 摘要: 版本不早于 0.2.102（两处一致），文档 9.108 / 114 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 102)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.108') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 114'),
   )
 }
 

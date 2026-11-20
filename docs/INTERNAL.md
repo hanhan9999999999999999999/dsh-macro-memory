@@ -5383,3 +5383,94 @@ WHERE json_valid(changes)
 - 不做按时间范围筛：账本里 `run_at` 有，但「最近 7 天」这类区间要配合时区口径，和「第几近」的编号口径会打架，先不做。
 - 不做项目名归一化（大小写、别名合并）：名字来自 dream 落盘时的原样，合并要一张映射表，那是另一件事；现在只保证**按原样匹配**，并把这个口径写进提示语。
 - 不缓存分布：`json_each` 扫一遍在几万行内是常数级开销，缓存反而要处理失效。
+
+## 9.108 项目名存成了个数，按名字筛账就永远筛不到（0.2.102）
+
+### 9.108.0 现象
+
+0.2.101 上线了「按项目段筛账」。面板上一切正常，探针也全绿。但真账本上问三件事，答案都是错的：
+
+1. `memory_admin(action="dream", project="Alpha")` 回「账本里没有项目段「Alpha」的整理记录（全账本 N 条）」，哪怕刚整理过 Alpha。
+2. 第 1 页的项目分布里出现一行 `3 次`——一个叫「3」的项目。
+3. 展开任意一条账，只看得到「这一轮动了 3 个项目段」，永远看不到名字；想看「到底哪几个项目」，只能回头翻那次整理的消息。
+
+三件事同一个根：**写侧存的是个数，读侧按名字筛**。
+
+### 9.108.1 账本里的 `changes.plan` 存了什么
+
+`dreamPlanDigest(rounds)` 是写侧唯一的摘要出口，0.2.96 起落进 `dream_log.changes`。这一版改了两个字段、加了两个字段：
+
+| 字段 | 0.2.101 及以前 | 0.2.102 起 | 为什么 |
+| --- | --- | --- | --- |
+| `projects` | `rounds.reduce(...)` 算出的**个数**（数字） | `dreamPlanProjectNames(rounds)` 返回的**名字数组**（去重、保序） | 读侧要用 `json_each(...).value = ?` 按名字配；数字进去只会产出一行 `value = 3, type = 'integer'` |
+| `projectCount` | 无 | 上面那个个数照旧存一份 | 老账本只有个数时，面板要能照实数念出来，不念成「0 个项目段」 |
+| `dup` / `cover` | `dreamDupPairs(allRows).length`（被清单上限 5 截断） | `dreamDupPairs(allRows, DEDUP_THRESHOLD, Infinity).length` | 「撞上几对」是真数；「印出来几对」是版面。两件事不能共用一个上限 |
+| `pairs` | 无 | `dreamPlanPairs(allRows)` 的前 6 条明细 | 只存数字时，展开也没法动手合并 |
+
+`dreamPlanProjectNames` 的口径很简单，但每一条都踩过：
+
+```js
+function dreamPlanProjectNames(rounds) {
+  const out = [];
+  for (const r of rounds) {
+    const list = Array.isArray(r.projects) ? r.projects : [];
+    for (const raw of list) {
+      const name = String(raw ?? "").trim();
+      if (name !== "" && !out.includes(name)) out.push(name);
+    }
+  }
+  return out;
+}
+```
+
+- 空名不存：整理时某个项目段算出来是空串，写进账本会变成一个「叫空字符串的项目」，按它筛能筛出一堆不相干的账。
+- 去重保序：同一个项目在多轮里出现是常态，重复存会让分布行把 `Alpha 3 次` 念成 `Alpha 6 次`。
+- 不 trim 掉内部空格、不改大小写：名字就是 `changes.plan.projects` 里的原样，**按原样配**。别名合并是另一件事（9.108.5）。
+
+### 9.108.2 对子明细：存「跟谁撞了」，不只存「撞了几对」
+
+0.2.94 起整理清单里会印「逐字重复 ⇄ / 重复详写 ⊂」，但那是**当轮消息里的清单**，账本里只有数字。于是展开一条老账，只能说「这一轮撞上 2 对」，说不出是哪两条。
+
+`dreamPlanPairs(allRows)` 把它们落进 `changes.plan.pairs`，每条形如：
+
+```json
+{ "kind": "dup", "a": "cccc0001", "b": "cccc0002", "levelA": "fact", "levelB": "fact", "score": 0.93 }
+{ "kind": "cover", "a": "cccc0001", "b": "cccc0003", "levelA": "topic", "levelB": "fact", "score": 0.2, "missing": 0, "words": [] }
+```
+
+- 短 id 走 `uniqueShortIdsAmong(allRows)`，和整理清单里印的是同一套——展开里看到的 `cccc0001` 能直接拿去 `memory_read` / `memory_update`。这一条不成立，明细就只是给人看的装饰。
+- `cover` 多带 `missing` 与 `words`（词表按 `DREAM_MERGE_WORDS` 截断），因为「合并会丢几个词」正是决定该不该合并的依据。
+- 上限 `DREAM_PLAN_PAIR_CAP = 6`：一条账存全部对子会让 `changes` 无限膨胀，而 99% 的读取只关心前几条。**截断的是明细，不是数**——`dup` / `cover` 仍是 `Infinity` 算出来的真数，面板据此写「还有 N 对没落账」。
+
+### 9.108.3 四个出口
+
+| 出口 | 这一版的变化 |
+| --- | --- |
+| `dreamProjects(limit)` / `readDreamProjects(...)` | 两个查询都加 `AND je.type = 'text'`：老账本里那个数字不再冒充项目名，也不进分布 |
+| `dreamCountOf(project)` / `recentDreamsPage(..., project)` | `WHERE json_each.type = 'text' AND json_each.value = ?`（两处），筛子与总数仍共用一份 |
+| `action="dream"` 展开（`id=k`） | 项目段念名字（`项目段：Alpha、Beta`）；老账本念「只记了个数（2 个），没记名字——它写在 0.2.102 之前」；紧跟一段对子块 |
+| 面板 `rowLine` / `liveLine` | 改走 `projectCountOf(plan)`：数组取长度、数字照念、再退 `plan.projectCount`；不再有「数组才叫有项目」的写法 |
+
+对子块 `pairsBlock(row)` 有四种来路，各说各话：
+
+- 没有 `changes.plan` → 「这条账没有 changes.plan（它写在 0.2.96 之前），谈不上对子。」
+- `pairs` 不是数组 → 「没有存对子明细（0.2.102 之前的记录）」——数还在，只是名字没存过。
+- 空数组且 `dup + cover === 0` → 「这一轮没撞上对子，没有可合并的。」
+- 空数组但有数 → 「账里记着 N 对，却没有一条明细——别把「没列」读成「没有」。」
+
+第四种是这一版最容易被写错的一格：明细是 0.2.102 才开始存的，老账本「有数无明细」是正常状态，不是「没撞上」。
+
+### 9.108.4 顺序与口径的坑
+
+- **写侧漏一格，读侧全链路假阴性。** 0.2.101 的探针手写 `changes` 时恰好写成了数组，于是整条链路（SQL → 分布 → 面板）全绿，真账本却一条也筛不到。**凡是穿越格式边界的字段，至少要有一条从真 writer 出发的探针。** 这一版补的 `L1`/`L7` 就是这个：`V.dreamPlanDigest(digRounds)` → 落库 → `readDreamLedger(..., 'Alpha').total === 1`。
+- **上限只加在印出来的地方。** 给 `dreamDupPairs` / `dreamCoverPairs` 加 `max` 参数时，默认值保持 `DREAM_DUP_MAX`，只有 digest 里显式传 `Infinity`。老调用一行不改，真数只有摘要这一处要。
+- **老账本不能念成 0。** `rowLine` 原写法 `Array.isArray(plan.projects) ? plan.projects.length : 0` 对 0.2.101 的账（数字）返回 0，于是「这一轮动了 3 个项目段」变成「0 个项目段」。`projectCountOf` 把三种形态收在一处，`rowLine` 与 `liveLine` 共用。
+- **展开的顺序有信息量。** 项目段 → 对子 → 比更早一条 → 原文。对子块放在原文前面：原文有 1200 字截断，放在对子后面容易被截掉，而对子才是能立刻动手的那部分。
+- **改签名的历史断言要跟着松。** 加 `max` 参数后，0.2.92/0.2.94 块里 `function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD)`、`function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN)` 两处等号匹配立刻打红。历史块一律改前缀匹配（留到 `,`），别回头把参数再删掉。
+
+### 9.108.5 没做的事
+
+- 不做项目名归一化：别名、大小写、`DSH NEXT` 与 `DSH-NEXT` 的合并需要一张映射表，做一半比不做更糟。现在只保证**按原样匹配**，并把这个口径写进筛空时的文案。
+- 不为老账本回填名字：`changes` 是历史事实，回填等于改写当时那一轮做了什么。老账本就照实说「只记了个数」。
+- 不存全部对子：`DREAM_PLAN_PAIR_CAP = 6` 是刻意的。真要全量，应该走「一次整理一份附件」，而不是把账本列撑成文本块。
+- 不做对子的自动处置：明细只是把「跟谁撞了」摊开，合并仍然要一次 `memory_update` 决策。

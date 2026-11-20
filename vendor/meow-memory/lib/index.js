@@ -776,11 +776,12 @@ var MemoryDb = class {
     const skip = Number.isFinite(askedOffset) && askedOffset > 0 ? askedOffset : 0;
     // [macro-fusion 0.2.101] 按项目段筛：SQL 里筛，不搬到 JS 里再挑——否则「第几页」和
     // 「一共几条」会各算一套，翻页就漏条。
+    // [macro-fusion 0.2.102] 再补 je.type='text'：老账本里 projects 是数字，别让数字被当成名字。
     const name = String(project ?? "").trim();
     const where =
       name === ""
         ? ""
-        : "WHERE json_valid(changes) AND EXISTS (SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.value = ?)";
+        : "WHERE json_valid(changes) AND EXISTS (SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.type = 'text' AND json_each.value = ?)";
     const sql = "SELECT rowid AS id, run_at, summary, changes, note FROM dream_log " + where + " ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?";
     const rows = name === "" ? this.db.prepare(sql).all(n, skip) : this.db.prepare(sql).all(name, n, skip);
     return rows.map((r) => {
@@ -812,13 +813,15 @@ var MemoryDb = class {
     const row = this.db
       .prepare(
         "SELECT COUNT(*) AS n FROM dream_log WHERE json_valid(changes) AND EXISTS " +
-          "(SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.value = ?)",
+          "(SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.type = 'text' AND json_each.value = ?)",
       )
       .get(name);
     return Number(row?.n) || 0;
   }
   /** [macro-fusion 0.2.101] 项目段的分布：每个项目在多少次账里出现过（次数降序、同数次按名字）。
-   *  返回 total 是「一共几个不同的项目段」——只列前几条时，别把「没列出来」读成「没有」。 */
+   *  返回 total 是「一共几个不同的项目段」——只列前几条时，别把「没列出来」读成「没有」。
+   *  [macro-fusion 0.2.102] 只认文本：0.2.96～0.2.101 写出来的账里 projects 是个数字，
+   *  json_each 会把它摊成一行 value=3——那不是项目名，别让它出现在分布里冒充一个项目。 */
   dreamProjects(limit = 5) {
     const asked = Math.trunc(Number(limit));
     const n = Math.min(20, Math.max(1, Number.isFinite(asked) && asked > 0 ? asked : 5));
@@ -826,13 +829,14 @@ var MemoryDb = class {
       .prepare(
         "SELECT je.value AS project, COUNT(*) AS n FROM dream_log, " +
           "json_each(json_extract(dream_log.changes, '$.plan.projects')) AS je " +
-          "WHERE json_valid(dream_log.changes) GROUP BY je.value ORDER BY n DESC, je.value ASC LIMIT ?",
+          "WHERE json_valid(dream_log.changes) AND je.type = 'text' GROUP BY je.value ORDER BY n DESC, je.value ASC LIMIT ?",
       )
       .all(n);
     const seen = this.db
       .prepare(
         "SELECT COUNT(DISTINCT je.value) AS n FROM dream_log, " +
-          "json_each(json_extract(dream_log.changes, '$.plan.projects')) AS je WHERE json_valid(dream_log.changes)",
+          "json_each(json_extract(dream_log.changes, '$.plan.projects')) AS je " +
+          "WHERE json_valid(dream_log.changes) AND je.type = 'text'",
       )
       .get();
     return {
@@ -3656,7 +3660,9 @@ function rowTokenSet(r) {
   return set;
 }
 var DREAM_DUP_MAX = 5;
-function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
+// [macro-fusion 0.2.102] max：清单只印前 5 对（一屏够读），但「这一轮撞上几对」是个事实，
+// 不能拿「列表截了几条」冒充。数的时候传 Infinity，印的时候用默认值。
+function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD, max = DREAM_DUP_MAX) {
   if (rows.length < 2) return [];
   const sets = rows.map(rowTokenSet);
   const out = [];
@@ -3672,7 +3678,7 @@ function dreamDupPairs(rows, threshold = DEDUP_THRESHOLD) {
     }
   }
   out.sort((x, y) => y.repeat - x.repeat);
-  return out.slice(0, DREAM_DUP_MAX);
+  return out.slice(0, max);
 }
 // [macro-fusion 0.2.94] 同一件事的另一种形态：一条短摘录 + 一条长详写。这种对子的逐字重复度天然很低
 //（实测 15 词 ⇄ 92 词只有 0.16，15 词 ⇄ 32 词也只有 0.47），上面那块（≥80%）与写侧 DEDUP_THRESHOLD
@@ -3704,7 +3710,7 @@ function coverOfSets(a, b) {
   for (const x of small) if (big.has(x)) inter++;
   return inter / small.size;
 }
-function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN) {
+function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN, max = DREAM_DUP_MAX) {
   if (rows.length < 2) return [];
   const sets = rows.map(rowTokenSet);
   const out = [];
@@ -3727,24 +3733,69 @@ function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN) {
     }
   }
   out.sort((x, y) => y.contain - x.contain);
-  return out.slice(0, DREAM_DUP_MAX);
+  return out.slice(0, max);
 }
 // [macro-fusion 0.2.96] dream 整理完什么都不留：claimDream 只防重复整理，logDream 只记「done + 轮数」，
 // 主人在面板与回执里都看不到「这一轮翻了多少条、撞上几对、有几对合并会丢字」。模型自己也无从预判规模。
 // 这段把清单本身算成一串数字——用的是后面真正印块的那两个函数，不另立口径——① 起 dream 时随回执说给模型听，
 // ② 收尾时随 dream_log.changes 落库，事后能对账；③ 中断/失败也留着上一条摘要，不必重算。
+// [macro-fusion 0.2.102] 两件真问题，都在「落库的那份摘要」上：
+//  ① 0.2.101 的面板开始按项目名筛账（json_extract(changes,'$.plan.projects') 配 json_each），
+//     可这里存的一直是**个数**。json_each 对数字只产出一行 value=数字（实测 integer 3），
+//     于是真账本上按名字筛永远是「没有这个项目段的账」——而探针里手写的 changes 是数组，所以当时全绿。
+//  ② 账本只记「撞上几对」，不记「跟谁撞」。0.2.100 的单条展开能把账摊开，摊开也只有数字，
+//     想动手合并还得回去翻那次 dream 的消息（早被压缩掉了）。
+// 现在：projects 存名字数组（去重保序、空名丢掉），个数另存 projectCount 保住老口径；pairs 存前几对明细
+// （短 id 与清单里印的是同一套 uniqueShortIdsAmong，能直接拿去 memory_read）。
+// 另外 dup / cover 的数改成不截断的真值：清单只印 5 对是一回事，「这一轮一共撞上几对」是另一回事。
+var DREAM_PLAN_PAIR_CAP = 6;
+function dreamPlanProjectNames(rounds) {
+  const out = [];
+  for (const r of rounds) {
+    if (!Array.isArray(r.projects)) continue;
+    for (const p of r.projects) {
+      const name = String(p ?? "").trim();
+      if (name !== "" && !out.includes(name)) out.push(name);
+    }
+  }
+  return out;
+}
+function dreamPlanPairs(allRows) {
+  const shortOf = uniqueShortIdsAmong(allRows);
+  const named = (row) => String(shortOf.get(String(row.id ?? "")) ?? String(row.id ?? ""));
+  const level = (row) => String(row.level ?? "");
+  const out = [];
+  for (const p of dreamDupPairs(allRows, DEDUP_THRESHOLD, Infinity)) {
+    out.push({ kind: "dup", a: named(p.a), b: named(p.b), levelA: level(p.a), levelB: level(p.b), score: p.repeat });
+  }
+  for (const p of dreamCoverPairs(allRows, DREAM_COVER_MIN, Infinity)) {
+    out.push({
+      kind: "cover",
+      a: named(p.a),
+      b: named(p.b),
+      levelA: level(p.a),
+      levelB: level(p.b),
+      score: p.contain,
+      missing: Number(p.missing) || 0,
+      words: Array.isArray(p.words) ? p.words.slice(0, DREAM_MERGE_WORDS) : []
+    });
+  }
+  return out.slice(0, DREAM_PLAN_PAIR_CAP);
+}
 function dreamPlanDigest(rounds) {
   const rowsOf = (r) => (Array.isArray(r.groups) ? r.groups.flatMap((g) => (Array.isArray(g.rows) ? g.rows : [])) : []);
   const allRows = rounds.flatMap(rowsOf);
-  const covers = dreamCoverPairs(allRows);
+  const covers = dreamCoverPairs(allRows, DREAM_COVER_MIN, Infinity);
   return {
     rounds: rounds.length,
     groups: rounds.reduce((n, r) => n + (Array.isArray(r.groups) ? r.groups.length : 0), 0),
     rows: allRows.length,
-    dup: dreamDupPairs(allRows).length,
+    dup: dreamDupPairs(allRows, DEDUP_THRESHOLD, Infinity).length,
     cover: covers.length,
     missing: covers.reduce((n, p) => n + (Number(p.missing) || 0), 0),
-    projects: rounds.reduce((n, r) => n + (Array.isArray(r.projects) ? r.projects.length : 0), 0)
+    projects: dreamPlanProjectNames(rounds),
+    projectCount: rounds.reduce((n, r) => n + (Array.isArray(r.projects) ? r.projects.length : 0), 0),
+    pairs: dreamPlanPairs(allRows)
   };
 }
 // 回执那句话：四个数字全部来自上面那份摘要，一个也不手写；只有真有字要补时才加第二句。

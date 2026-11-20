@@ -487,6 +487,89 @@ try {
     projPage2.split('\n').slice(-1)[0],
   )
 
+  // [macro-fusion 0.2.102] 落库的摘要要能回放「跟谁撞了」，并且项目段得真的存成名字。
+  // 这里一律用真 writer（Meow.dreamPlanDigest）造账，不再手写 changes——0.2.101 就是手写数组把问题盖住了。
+  const digWs = mkdtempSync(join(tmpdir(), 'macro-probe-digest-'))
+  const digDb = Meow.getDb(digWs, '.dsh-meow')
+  const mkRow = (id, level, content) => ({ id, level, content })
+  const dupOne = '默认用 pnpm 装依赖 不要混用 npm 和 yarn 锁文件只提交一个'
+  const dupTwo = '默认用 pnpm 装依赖 不要混用 npm 和 yarn 锁文件只提交一个副本'
+  const digRounds = [
+    {
+      kind: 'atomic',
+      groups: [{ name: '', rows: [mkRow('eeee0001aa', 'fact', dupOne), mkRow('eeee0002aa', 'fact', dupTwo)] }],
+      projects: ['Alpha', 'Beta'],
+    },
+    {
+      kind: 'topic',
+      groups: [{
+        name: 't',
+        rows: [
+          mkRow('eeee0003aa', 'topic', '探针里不要用 ^ 锚定面板首行 因为首行是抬头'),
+          mkRow('eeee0004aa', 'fact', '探针里不要用 ^ 锚定面板首行 因为首行是抬头 否则断言必然打红'),
+        ],
+      }],
+      projects: [],
+    },
+  ]
+  const digPlan = Meow.dreamPlanDigest(digRounds)
+  digDb.logDream('window dream done: sess-noplan stamped=true', { stamped: true, groups: 1 }, '极老记录')
+  digDb.logDream('window dream done: sess-legacy stamped=true', { stamped: true, groups: 1, plan: { rounds: 1, groups: 1, rows: 3, dup: 0, cover: 0, missing: 0, projects: 2 } }, '老格式')
+  digDb.logDream('window dream done: sess-digest stamped=true', { stamped: true, groups: 2, plan: digPlan }, '新格式')
+  // 对子存不下的时候：7 条几乎一样的行 = 21 对，账里只存前 6 对，面板必须把差额说出来。
+  const manyRows = Array.from({ length: 7 }, (_, i) => mkRow(`ffff000${i}aa`, 'fact', `${dupOne} 第${i}份`))
+  const manyPlan = Meow.dreamPlanDigest([{ kind: 'atomic', groups: [{ name: '', rows: manyRows }], projects: ['Alpha'] }])
+  digDb.logDream('window dream done: sess-many stamped=true', { stamped: true, groups: 1, plan: manyPlan }, '对子超上限')
+  const digCtx = { agent: { session: { header: { cwd: digWs } } } }
+  // 账本是「最新在前」：四条按写入顺序是 noplan / legacy / digest / many，所以 #1=many、#2=digest、#3=legacy、#4=noplan。
+  const digOne = text(await tools.get('memory_admin').execute({ action: 'dream', id: '2' }, digCtx))
+  check(
+    'D32 展开一条新账：对子摊成清单，短 id 与层级都在（能直接拿去 memory_read）',
+    digOne.includes('对子（账里存了 2 对，这一轮共 2 对）') && digOne.includes('逐字重复：') &&
+      digOne.includes('重复详写：') && digOne.includes('⇄') && digOne.includes('⊂') &&
+      digOne.includes('短 id 和整理清单里印的是同一套'),
+    digOne.split('\n').filter((l) => l.startsWith('- ') || l.startsWith('对子')).join(' | '),
+  )
+  check(
+    'D32 展开时项目段念的是名字（不是个数）',
+    digOne.includes('项目段：Alpha、Beta'),
+    digOne.split('\n').find((l) => l.startsWith('项目段：')) ?? '',
+  )
+  const digTwo = text(await tools.get('memory_admin').execute({ action: 'dream', id: '3' }, digCtx))
+  check(
+    'D33 老格式的账：个数照念（2 个），并说清名字没存过（不念成「0 个项目段」）',
+    digTwo.includes('只记了个数（2 个）') && !digTwo.includes('0 个项目段'),
+    digTwo.split('\n').find((l) => l.startsWith('项目段：')) ?? '',
+  )
+  check(
+    'D33 没有对子明细就说没有，不冒充「这一轮没撞上对子」',
+    digTwo.includes('没有存对子明细') && !digTwo.includes('这一轮没撞上对子'),
+    digTwo.split('\n').find((l) => l.includes('对子')) ?? '',
+  )
+  const digThree = text(await tools.get('memory_admin').execute({ action: 'dream', id: '4' }, digCtx))
+  check(
+    'D34 连 plan 都没有的账：直说 0.2.96 之前没记规模，对子无从谈起',
+    digThree.includes('没有 changes.plan（它写在 0.2.96 之前），谈不上对子'),
+    digThree.split('\n').find((l) => l.includes('对子')) ?? '',
+  )
+  const digMany = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, digCtx))
+  check(
+    'D35 对子超出落库上限：报「还有 N 对没落账」，数仍然是真的（21 对）',
+    digMany.includes('这一轮共 21 对') && digMany.includes('还有 15 对没落账'),
+    digMany.split('\n').find((l) => l.startsWith('对子')) ?? '',
+  )
+  const digFiltered = text(await tools.get('memory_admin').execute({ action: 'dream', project: 'Alpha', limit: 5 }, digCtx))
+  check(
+    'D36 从写侧到面板一路通：真摘要落库后按项目名筛得到（0.2.101 漏的就是这一环）',
+    digFiltered.includes('按项目段「Alpha」筛：2 条（全账本 4 条）') && digFiltered.includes('#1 ') && !digFiltered.includes('#3 '),
+    digFiltered.split('\n')[0],
+  )
+  check(
+    'D36 老账本里的数字不会被当成项目名（分布里没有「2 次的那个 2」）',
+    !digFiltered.includes('项目段：Alpha 2 次 · 2 ') && !digFiltered.includes('· 2 0 次'),
+    '',
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {
