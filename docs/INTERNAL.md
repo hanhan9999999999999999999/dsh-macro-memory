@@ -5826,3 +5826,123 @@ admin（`lib/macro/defs/admin.js`）：只取 `String(args.since ?? '').trim()` 
 - 不做「按时间段」（带小时）：账本的粒度是「一天」，加小时只会多一堆边界口径，问不出新东西。
 - 不在列表行上印 `summary` / `note`：行要短（一页 5 行），内容靠引用展开看 —— 探针也因此只能按行上的时间戳断言，不能按 note 文字断言。
 - 不把日期写进 `dream_meta`：筛是读侧的事，存下来会让「换个日期看」变成一次写操作。
+
+## 9.112 整理到底让库变轻还是变重？——两个观测点（0.2.106）
+
+### 9.112.0 现象
+
+0.2.103 给账本加了「库规模」，但只数**开工那一眼**，还在代码注释里写了理由：收尾再数一次容易让人把「库变了」读成「这一轮改的」，编出假因果。
+
+这条顾虑是真的，代价也是真的：
+
+- 只念开工，永远答不出「这一轮让库变轻了还是变重了」——而「整理是不是在收敛」是整理唯一的成绩单。
+- 趋势行原来那句 `库 开工时 2 → 3 条（多了 1 条）` 比的是**不同轮的开工数**，中间夹着别的会话、别的写入，读起来像「整理净增 1 条」，其实不是。
+- 想看单轮净变化，只能自己去翻 `changes.stamped` 再猜，而那正是最容易被读错的地方。
+
+### 9.112.1 为什么反转 0.2.103
+
+担心的是**假因果**，不是**多一个数**。正确的解法不是删数据，而是把「差」和「因」分开写：
+
+| 位置 | 说的事 | 来源 |
+| --- | --- | --- |
+| `开工时 N 条` | 这一轮开始前的库有多大 | `changes.plan.store`（0.2.103 起有） |
+| `收尾 M 条` | 这一轮结束那一刻的库有多大 | `changes.plan.storeEnd`（0.2.106 起有） |
+| `比开工多/少 K 条` | 两个观测点之间的**净变化** | `changes.plan.storeDelta` |
+| `这一轮封存/完结 S 条` | 这一轮自己动了几条 | `changes.stamped`（0.2.96 起） |
+
+净变化 ≠ 因。两个点之间可能有别的会话在写、可能有另一个窗口在整理、可能有人手工归档。所以面板在展开时**必须**紧跟一句口径：
+
+> 规模差口径：开工与收尾都只数 `status='active'`，两个点之间可能有别的会话也在写，所以 +1 是「库变了多少」，不是「这一轮改了几条」——这一轮封存/完结 2 条（changes.stamped）。
+
+有了这句，`storeDelta` 才敢存在。没有这句，就不该有这一格。
+
+### 9.112.2 写侧：收尾那一刻数一次
+
+写侧放在 `finalizeDream`（`vendor/meow-memory/lib/index.js`）里，紧贴着原来算 `planNote` 的地方：
+
+```js
+if (plan !== void 0 && typeof plan === "object") {
+  plan.storeEnd = dreamStoreScale(db);
+  const before = Number(plan.store?.active);
+  if (Number.isFinite(before) && before >= 0) plan.storeDelta = plan.storeEnd.active - before;
+}
+const storeNote = plan === void 0 || plan.storeEnd === void 0 ? "" : ` store=${plan.store?.active ?? "?"}->${plan.storeEnd.active}`;
+const planNote = plan === void 0 ? "" : ` plan rows=${plan.rows} dup=${plan.dup} cover=${plan.cover} missing=${plan.missing}${storeNote}`;
+```
+
+三件事值得记：
+
+1. **只能在写侧数**。面板渲染时库早就不是那一刻的样子了，重算出来的「收尾」是假的——它数的是「看账那一刻」，不是「整理结束那一刻」。
+2. **差要在写侧算好**。让每个读侧自己减，就等着某一天有人只减一半（比如忘了 `status='active'`）。`storeDelta` 落库，读侧只负责念。
+3. **缺一个点就不算差**。`Number.isFinite(before) && before >= 0` 这两道挡的是：老账没有 `store`（`before` 是 `NaN`）、坏账写了负数。宁可没有这一格，不许写进 `NaN` 或者把负当 0。
+
+落库日志里那两个点也进了 `summary`（`store=2->3`）：探针和 doctor 都能在日志上看见，不用先解 JSON。
+
+`stampDream` 只 `UPDATE ... SET updated_at = MAX(updated_at, ?)`，不改 `status` —— 所以「收尾数」不会因为一轮 stamp 而虚高，这条是数得准的前提。
+
+### 9.112.3 读侧：三态 + 一句口径
+
+```js
+function storeEndOf(plan) {
+  return storeOf({ store: plan?.storeEnd })   // 和读开工数同一套规矩：正数才认、零层不留
+}
+
+function storeDeltaOf(plan) {
+  const start = storeOf(plan)
+  const end = storeEndOf(plan)
+  if (start === null || end === null) return null   // 缺一个就不猜
+  return { start, end, delta: end.active - start.active }
+}
+
+function levelsText(store) {
+  const levels = Object.entries(store.byLevel).map(([level, n]) => `${level} ${n}`)
+  return levels.length === 0 ? '' : `（${levels.join(' · ')}）`
+}
+```
+
+`storeBlock` 四态：
+
+| 账本里有什么 | 念什么 |
+| --- | --- |
+| 没有 `plan` | 闭嘴（0.2.96 那句已经解释过） |
+| 有 `plan`、没有 `store` | `库规模：这条账没有记库规模（它写在 0.2.103 之前）——别把「没记」读成「库是空的」。` |
+| 只有 `store`（0.2.103–0.2.105 的账） | `库规模：开工时 2 条在用（fact 2）` —— 只念一眼，不编收尾、不补 0 |
+| `store` + `storeEnd` | `库规模：开工时 2 条在用（fact 1 · topic 1） → 收尾 3 条在用（fact 2 · lesson 1），比开工多 1 条` |
+
+空库那句照旧只在「开工 0 条且没有收尾数」时出：`库规模：开工时库里 0 条在用记忆——这一轮是在空库上整理的。`
+
+**文案上的一个坑**：第一版把差写成 `→ 收尾 1 条在用（fact 1）（-2）` —— 两层括号叠在一起，读的时候要数括号。改成「差在句尾当结论、层数夹在括号里」之后才是 `→ 收尾 1 条在用（fact 1），比开工少 2 条`。这类文案错不影响测试通过，但影响人愿不愿意读，所以 verify 里专门留了一条「不叠两层括号」。
+
+### 9.112.4 趋势行：净变化合计
+
+有了每一轮的 `storeDelta`，趋势行终于能答「这几轮整理总体上让库变重还是变轻」：
+
+```
+趋势：最近 9 次（最早→最新）· 逐字重复 合计 26 对，在变多 · … · 库 开工时 3 → 2 条（少了 1 条） · 收尾净减 2 条（1 次有收尾数）（库规模只有 7 次有数——更早的账写在 0.2.103 之前，没有这一格；6 次只有开工数、没有收尾数——0.2.106 之前的账没有这一格；1 条记录早于 0.2.96，没有数字、不参与）
+```
+
+两条规矩：
+
+- **缺收尾数的账不参与合计，但要说几次**。否则「净增 2 条」会被读成「所有轮加起来」。
+- **caveat 里的括号要用破折号拆开**。趋势 caveat 整体已经套在 `（ … ； … ）` 里，再嵌一层括号就成 `（A（B）；C）`。0.2.103 那句 `库规模只有 K 次有数（更早的账写在 0.2.103 之前…）` 顺手一起改成破折号。
+
+### 9.112.5 探针
+
+`tools/probe-ruler.mjs`（写侧，真开工 → 真收尾）：
+
+- **L18** 开工 2 条 → 中途加 fact + lesson、归档开工前那条 topic → 两次 `advanceDream` 收尾：`trace.digest.store.active = 2`、`plan.storeEnd.active = 3`、落库日志含 `store=2->3`。
+- **L19** 差是净变化：`+2 新写 -1 归档` 落成 `storeDelta = 1`；归档掉的 topic 不进收尾层数。
+- **L20** 阴性对照：手写一条只有 `store` 的老账，`storeEnd` / `storeDelta` 都是 `undefined` —— 宁可没有，不许补 0。
+
+`tools/probe-fusion.mjs`（面板层，走 `memory_admin` 真工具）：
+
+- **D46** 两个点都有时连起来念，且不叠两层括号。
+- **D47** 口径句在位：`不是「这一轮改了几条」` + `stamped` + 那个负数。
+- **D48** 只有开工数的账只念一眼、没有口径句；趋势行同时说 `次有收尾数` 与 `次只有开工数、没有收尾数`。
+
+### 9.112.6 没做
+
+- 活的那一轮（0.2.99 的「整理进行中」）仍只报摘要，没报开工规模：那一行要短，且它会随轮次刷新，加数字容易被当成实时库大小。
+- 不做「按项目段算库规模」：库规模是全局的（`dreamStoreScale` 数的是整库），按项目切需要另写一遍聚合，先不做。
+- 不把 `storeDelta` 写进 `summary`（只写两个端点 `store=A->B`）：日志要短，差可以现算，两个端点算不回来。
+- 不给 0.2.106 之前的老账补收尾数：补出来的数是「今天看账时」的库大小，冒充那一刻，会静默说错话。

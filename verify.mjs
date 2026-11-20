@@ -6764,8 +6764,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     panelSrc.includes('function storeOf(plan)') &&
       panelSrc.includes('function storeBlock(row)') &&
       panelSrc.includes("return '库规模：这条账没有记库规模（它写在 0.2.103 之前）——别把「没记」读成「库是空的」。'") &&
-      panelSrc.includes("if (store.active === 0) return '库规模：开工时库里 0 条在用记忆——这一轮是在空库上整理的。'") &&
-      panelSrc.includes('return `库规模：开工时 ${store.active} 条在用${levels.length === 0 ? \'\' : `（${levels.join(\' · \')}）`}`'),
+      panelSrc.includes("if (store.active === 0 && span === null) return '库规模：开工时库里 0 条在用记忆——这一轮是在空库上整理的。'") &&
+      panelSrc.includes('const head = `库规模：开工时 ${store.active} 条在用${levelsText(store)}`'),
   )
   check(
     'dream 规模: 没有 plan 的账不再叠一层库规模告示（0.2.96 那句已经解释过）',
@@ -6789,7 +6789,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     panelSrc.includes('const storeRows = ordered.map((r) => storeOf(r.changes?.plan)).filter((s) => s !== null)') &&
       panelSrc.includes('if (storeRows.length >= 2) {') &&
       panelSrc.includes('parts.push(`库 开工时 ${first} → ${last} 条（${word}）`)') &&
-      panelSrc.includes('库规模只有 ${storeRows.length} 次有数（更早的账写在 0.2.103 之前，没有这一格）'),
+      panelSrc.includes('库规模只有 ${storeRows.length} 次有数——更早的账写在 0.2.103 之前，没有这一格'),
   )
   check(
     'dream 规模: 探针进线（probe-ruler L9–L11 验写侧真数、probe-fusion D37–D39 验面板真念）',
@@ -7027,6 +7027,83 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.111') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 117'),
+  )
+}
+
+// [macro-fusion 0.2.106] 只念开工那一眼，永远算不出「这一轮让库变轻还是变重」：
+// 收尾也数一次，两个点的差单独一格，且必须和「因」（stamped）分开写。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc106 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc106 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'dream 库规模: 收尾那一刻也数一次，和开工那份一起进 changes（不靠事后重算）',
+    vSrc.includes('plan.storeEnd = dreamStoreScale(db);') &&
+      vSrc.includes('plan.storeDelta = plan.storeEnd.active - before;') &&
+      vSrc.includes('const before = Number(plan.store?.active);') &&
+      vSrc.includes('store=${plan.store?.active ?? "?"}->${plan.storeEnd.active}'),
+  )
+  check(
+    'dream 库规模: 差只在两个点都有数时才算（开工那一格没数就不猜差，别拿 NaN 当 0）',
+    vSrc.includes('if (Number.isFinite(before) && before >= 0) plan.storeDelta = plan.storeEnd.active - before;') &&
+      vSrc.includes('const storeNote = plan === void 0 || plan.storeEnd === void 0 ? "" :'),
+  )
+  check(
+    'dream 库规模: 面板读收尾数与读开工数用同一套规矩（正数才认、零层不留）',
+    panelSrc.includes('function storeEndOf(plan) {') &&
+      panelSrc.includes('return storeOf({ store: plan?.storeEnd })') &&
+      panelSrc.includes('function storeDeltaOf(plan) {') &&
+      panelSrc.includes('if (start === null || end === null) return null') &&
+      panelSrc.includes('return { start, end, delta: end.active - start.active }'),
+  )
+  check(
+    'dream 库规模: 两个点都有时连起来念（开工 → 收尾 + 差在句尾），层数走 levelsText 不叠两层括号',
+    panelSrc.includes('function levelsText(store) {') &&
+      panelSrc.includes('→ 收尾 ${span.end.active} 条在用${levelsText(span.end)}，${word}') &&
+      panelSrc.includes('比开工多 ${span.delta} 条') &&
+      panelSrc.includes('比开工少 ${-span.delta} 条') &&
+      panelSrc.includes("'和开工时一样'"),
+  )
+  check(
+    'dream 库规模: 只有开工数的老账照旧只念一眼（不编收尾、不补 0），空库那句也不动',
+    panelSrc.includes('if (store.active === 0 && span === null) return \'库规模：开工时库里 0 条在用记忆——这一轮是在空库上整理的。\'') &&
+      panelSrc.includes('if (span === null) return head'),
+  )
+  check(
+    'dream 库规模: 差与因分开写——口径句说清 ±N 是「库变了多少」，归因看 stamped',
+    panelSrc.includes('function storeDeltaNote(row) {') &&
+      panelSrc.includes('不是「这一轮改了几条」') &&
+      panelSrc.includes("这一轮封存/完结 ${stamped} 条（changes.stamped）") &&
+      panelSrc.includes('if (span === null) return \'\''),
+  )
+  check(
+    'dream 库规模: 趋势行给收尾净变化，缺收尾数的账要说几次（括号里的括号用破折号拆开）',
+    panelSrc.includes('const spans = ordered.map((r) => storeDeltaOf(r.changes?.plan)).filter((s) => s !== null)') &&
+      panelSrc.includes('收尾${word}（${spans.length} 次有收尾数）') &&
+      panelSrc.includes('次只有开工数、没有收尾数——0.2.106 之前的账没有这一格') &&
+      panelSrc.includes('库规模只有 ${storeRows.length} 次有数——更早的账写在 0.2.103 之前，没有这一格'),
+  )
+  check(
+    'dream 库规模: 探针进线（probe-ruler L18–L20 验真开工到真收尾、probe-fusion D46–D48 验面板两条路）',
+    rulerSrc106.includes('L18 收尾也数一次') &&
+      rulerSrc106.includes('L19 差是净变化，不是「新写了几条」') &&
+      rulerSrc106.includes('L20 老账不补收尾数') &&
+      fusionSrc106.includes('D46 有收尾数时念两个点') &&
+      fusionSrc106.includes('D47 差与因分开') &&
+      fusionSrc106.includes('D48 只有开工数的老账不许编收尾'),
+  )
+  check(
+    'dream 库规模: 版本不早于 0.2.106（两处一致），文档 9.112 / 118 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 106)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.112') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 118'),
   )
 }
 

@@ -4178,7 +4178,18 @@ function finalizeDream(db, sessionId, workspace, dir, T2, reason, groupsCount, o
     } catch {
       plan = void 0;
     }
-    const planNote = plan === void 0 ? "" : ` plan rows=${plan.rows} dup=${plan.dup} cover=${plan.cover} missing=${plan.missing}`;
+    // [macro-fusion 0.2.106] 收尾再数一次库规模：开工那一刻的数只说明「整理前有多大」，
+    // 答不了「这一轮之后库变成多大」。两个点用同一把尺子（dreamStoreScale，只数 status='active'），
+    // 差的符号就是这一轮把库变轻还是变重。它**不等于**「这一轮改了几条」——两个观测点之间可能有
+    // 别的会话在写、也可能有归档把 active 挪走，所以面板把这句和 stamped 并排说，让人自己分。
+    // 只在有 digest 时才补：没有 plan 的账（中断得很早 / 0.2.96 之前）连开工数都没有，无从对照。
+    if (plan !== void 0 && typeof plan === "object") {
+      plan.storeEnd = dreamStoreScale(db);
+      const before = Number(plan.store?.active);
+      if (Number.isFinite(before) && before >= 0) plan.storeDelta = plan.storeEnd.active - before;
+    }
+    const storeNote = plan === void 0 || plan.storeEnd === void 0 ? "" : ` store=${plan.store?.active ?? "?"}->${plan.storeEnd.active}`;
+    const planNote = plan === void 0 ? "" : ` plan rows=${plan.rows} dup=${plan.dup} cover=${plan.cover} missing=${plan.missing}${storeNote}`;
     db.logDream(
       `window dream ${reason}: ${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}${planNote} T=${new Date(T2).toISOString()}`,
       // #108：changes 落真实计数（此前两处调用硬编码 {before:undefined,after:undefined}

@@ -927,5 +927,48 @@ check(
   `missing=${spanGot.missing} first=${spanGot.first - day18} last=${spanGot.last - day18}`,
 )
 
+// P 段（0.2.106）：收尾那一刻也数一次库规模——只念开工那一眼，就永远算不出「这一轮让库变轻还是变重」。
+// 差要能被「加两条、归档一条」算成 +1（净变化），而不是「新写了几条」（2）。
+const endWs = mkdtempSync(join(tmpdir(), 'ruler-storeend-'))
+const endExec = execIn(endWs, 'sess-ruler-storeend')
+const endAgent = { ...endExec.agent, followup() {} }
+await call('memory_remember', { content: '收尾规模探针：开工前的一条事实', level: 'fact', keywords: ['probe', 'storeend'], importance: 1, project: '全局' }, { agent: endAgent })
+await call('memory_remember', { content: '收尾规模探针：开工前的一条主题', level: 'topic', title: '收尾规模探针', keywords: ['probe', 'storeend'], importance: 1, project: '全局' }, { agent: endAgent })
+const endTrace = { reason: '' }
+V.startWindowDream({}, endAgent, endWs, '.dsh-meow', undefined, 0, endTrace)
+const endDb = V.getDb(endWs, '.dsh-meow')
+await call('memory_remember', { content: '收尾规模探针：整理中新写的事实', level: 'fact', keywords: ['probe', 'storeend'], importance: 1, project: '全局' }, { agent: endAgent })
+await call('memory_remember', { content: '收尾规模探针：整理中新写的教训', level: 'lesson', keywords: ['probe', 'storeend'], importance: 1, project: '全局', corrected: true }, { agent: endAgent })
+const endTopic = endDb.db.prepare("SELECT id FROM topic WHERE status = 'active' LIMIT 1").get()
+endDb.update('topic', String(endTopic?.id), { status: 'archived' })
+V.advanceDream(endAgent, '.dsh-meow', undefined, 0)
+V.advanceDream(endAgent, '.dsh-meow', undefined, 0)
+const endRow = endDb.recentDreamsPage(1, 0)[0]
+const endPlan = endRow?.changes?.plan
+check(
+  'L18 收尾也数一次：开工 2 条 → 收尾 3 条，落库日志带 store=2->3（两个点都进 changes，不靠事后重算）',
+  endTrace.digest?.store?.active === 2 &&
+    endPlan?.storeEnd?.active === 3 &&
+    endPlan?.store?.active === 2 &&
+    String(endRow?.summary ?? '').includes('store=2->3'),
+  `trace=${endTrace.digest?.store?.active} store=${endPlan?.store?.active} end=${endPlan?.storeEnd?.active} summary=${endRow?.summary}`,
+)
+check(
+  'L19 差是净变化，不是「新写了几条」：+2 新写 -1 归档 落成 +1；归档的层不进收尾层数',
+  endPlan?.storeDelta === 1 && endPlan?.storeEnd?.byLevel?.fact === 2 && endPlan?.storeEnd?.byLevel?.lesson === 1 && endPlan?.storeEnd?.byLevel?.topic === undefined,
+  `delta=${endPlan?.storeDelta} byLevel=${JSON.stringify(endPlan?.storeEnd?.byLevel)}`,
+)
+const endOldWs = mkdtempSync(join(tmpdir(), 'ruler-storeend-old-'))
+const endOldDb = V.getDb(endOldWs, '.dsh-meow')
+endOldDb.logDream('老账：只记了开工', { stamped: 1, plan: { rows: 1, dup: 0, cover: 0, missing: 0, store: { active: 2, byLevel: { fact: 2 } } } }, '')
+const endOldRow = endOldDb.recentDreamsPage(1, 0)[0]
+check(
+  'L20 老账不补收尾数：0.2.106 之前写的账 storeEnd / storeDelta 都没有（宁可没有，不许补 0 让人以为库清零了）',
+  endOldRow?.changes?.plan?.store?.active === 2 &&
+    endOldRow?.changes?.plan?.storeEnd === undefined &&
+    endOldRow?.changes?.plan?.storeDelta === undefined,
+  `store=${endOldRow?.changes?.plan?.store?.active} end=${String(endOldRow?.changes?.plan?.storeEnd)}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

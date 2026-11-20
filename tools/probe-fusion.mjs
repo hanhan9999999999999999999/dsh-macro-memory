@@ -731,6 +731,60 @@ try {
     digGapDay.split('\n')[0],
   )
 
+  // D46–D48（0.2.106）：整理前后两个观测点。老账只有开工数，就别假装知道收尾；有收尾数时，
+  // 面板要把「开工 → 收尾」连起来念，并单独一行说清「差不是因」。
+  const digStorePlan = (start, end) =>
+    JSON.stringify({
+      stamped: 1,
+      groups: 1,
+      plan: {
+        rows: 2,
+        dup: 0,
+        cover: 0,
+        missing: 0,
+        store: { active: start, byLevel: { fact: start } },
+        storeEnd: { active: end, byLevel: { fact: end } },
+        storeDelta: end - start,
+      },
+    })
+  const digStoreIns = digDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  digStoreIns.run(Date.now() + 1000, '收尾：两个点都记了', digStorePlan(3, 1), '两个点')
+  const digStoreOne = text(await tools.get('memory_admin').execute({ action: 'dream', id: 1, limit: 10 }, digCtx))
+  const digStoreLine = digStoreOne.split('\n').find((l) => l.startsWith('库规模')) ?? '(无)'
+  check(
+    'D46 有收尾数时念两个点：`开工时 3 条在用 → 收尾 1 条在用，比开工少 2 条`，层数夹在括号里不叠两层括号',
+    digStoreLine.includes('开工时 3 条在用') &&
+      digStoreLine.includes('→ 收尾 1 条在用') &&
+      digStoreLine.includes('比开工少 2 条') &&
+      !digStoreLine.includes('）（'),
+    digStoreLine,
+  )
+  const digDeltaNote = digStoreOne.split('\n').find((l) => l.startsWith('规模差口径')) ?? '(无)'
+  check(
+    'D47 差与因分开：口径句明说 ±N 是「库变了多少」不是「这一轮改了几条」，并指出归因看 stamped',
+    digDeltaNote.includes('不是「这一轮改了几条」') && digDeltaNote.includes('stamped') && digDeltaNote.includes('-2'),
+    digDeltaNote,
+  )
+  digStoreIns.run(
+    Date.now() + 2000,
+    '老账：只记了开工',
+    JSON.stringify({ stamped: 1, plan: { rows: 1, dup: 0, cover: 0, missing: 0, store: { active: 2, byLevel: { fact: 2 } } } }),
+    '只有一个点',
+  )
+  const digStoreOld = text(await tools.get('memory_admin').execute({ action: 'dream', id: 1, limit: 10 }, digCtx))
+  const digStoreOldLine = digStoreOld.split('\n').find((l) => l.startsWith('库规模')) ?? '(无)'
+  const digStoreTrend = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, digCtx))
+  const digStoreTrendLine = digStoreTrend.split('\n').find((l) => l.startsWith('趋势')) ?? '(无)'
+  check(
+    'D48 只有开工数的老账不许编收尾（也不补 0）：只念开工一眼、没有「→ 收尾」、没有口径句；趋势里说清几次缺收尾数',
+    digStoreOldLine.includes('开工时 2 条在用') &&
+      !digStoreOldLine.includes('收尾') &&
+      !digStoreOld.includes('规模差口径') &&
+      digStoreTrendLine.includes('次有收尾数') &&
+      digStoreTrendLine.includes('次只有开工数、没有收尾数'),
+    `${digStoreOldLine} / ${digStoreTrendLine}`,
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {
