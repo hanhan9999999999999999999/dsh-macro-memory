@@ -34,6 +34,8 @@
 - memory_search.out.hits.keywords: As palavras-chave da entrada (extraídas por um LLM ou automaticamente).
 - memory_search.out.hits.project: Projeto ao qual a entrada pertence; ""=sem rótulo; entradas aplicáveis globalmente mostram "global".
 - memory_search.out.hits.updated_at: Timestamp da memória (última atualização, em milissegundos).
+- memory_search.out.hits.truncated: Se o content foi cortado em content_max; true significa que o original é maior — leia o texto completo com memory_read.
+- memory_search.out.hits.day: A data que a entrada carrega (uma palavra-chave YYYY-MM-DD); string vazia quando não tem.
 - memory_search.out.hits.explain: Pontuação bruta BM25 de palavras-chave (importance/recencyWeight/status voltam juntos no mesmo objeto).
 
 ### memory_find_similar

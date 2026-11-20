@@ -8311,5 +8311,75 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.121] 检索要能自答：词干门按 token 判 / 元数据透传 / 正文与日期进回执。
+// 三处病是同一种病——「排得对，却答不出」：记忆没归一到同一个词、元数据出了 search() 就没了、
+// 回执只印抬头所以 content_max 这个旋钮一直空转（预算砍它，回执一字不变）。
+{
+  const meowSrc121 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc121 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    '检索自答: 词干门按「这段 token 像不像英文」判，不按会话语言判（语言是文本的属性）',
+    meowSrc121.includes('function isMostlyLatin(tokens)') &&
+      meowSrc121.includes('return isMostlyLatin(out) ? normalizeEn(out) : out') &&
+      !meowSrc121.includes('lang === "en" ? normalizeEn(out) : out') &&
+      !meowSrc121.includes('const lang = getPromptLang().toLowerCase().split(/[-_]/)[0];'),
+  )
+  check(
+    '检索自答: 判据取「多数」（latin*2 >= tokens），夹一个 RRF 不该触发 Porter；CJK 二元组不动',
+    meowSrc121.includes('latin * 2 >= tokens.length') &&
+      meowSrc121.includes('/^[a-z]+$/.test(t)') &&
+      meowSrc121.includes('out.push(run[k] + run[k + 1]);'),
+  )
+  check(
+    '检索自答: 元数据透传是「有才带」（老调用方没这些字段时不许硬塞 undefined）',
+    meowSrc121.includes('...docs[di].keywords === void 0 ? {} : { keywords: docs[di].keywords },') &&
+      meowSrc121.includes('...docs[di].project === void 0 ? {} : { project: docs[di].project },') &&
+      meowSrc121.includes('...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },') &&
+      meowSrc121.includes('...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },'),
+  )
+  check(
+    '检索自答: render 把已经截好的正文印出来（不再只印「关于：关键词」）',
+    meowSrc121.includes('const body = String(h.content ?? "");') &&
+      meowSrc121.includes('if (body.length > 0) lines.push(`  ${body}${h.truncated === true ?'),
+  )
+  check(
+    '检索自答: 截断要交代（已截断到 N 字 + 指到 memory_read），不标就等于把摘要当全文',
+    meowSrc121.includes('memory_read\\uFF09') && meowSrc121.includes('\\u5DF2\\u622A\\u65AD\\u5230 ${cm}'),
+  )
+  check(
+    '检索自答: 日期从 keywords 的 YYYY-MM-DD 派生，抬头写成「相对时间 · 日期」',
+    meowSrc121.includes('var DAY_RE = /^\\d{4}-\\d{2}-\\d{2}$/;') &&
+      meowSrc121.includes('function dayOfKeywords(keywords)') &&
+      meowSrc121.includes('const day = h.day ? ` \\u00B7 ${h.day}` : "";'),
+  )
+  check(
+    '检索自答: truncated / day 两个新字段都进 schema（additionalProperties:false 下必须显式声明），且都可选',
+    meowSrc121.includes('truncated: { type: "boolean"') &&
+      meowSrc121.includes('day: { type: "string"') &&
+      meowSrc121.includes('...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {}') &&
+      meowSrc121.includes('day: dayOfKeywords(row?.keywords),'),
+  )
+  check(
+    '检索自答·探针进线：SR0–SR6（含阴性对照与「空旋钮」那条硬断言）',
+    probeSrc121.includes('SR1 回执带正文') &&
+      probeSrc121.includes('SR2 抬头带日期') &&
+      probeSrc121.includes('SR3 截断有交代') &&
+      probeSrc121.includes('SR4b 阴性对照：只印抬头的老格式过不了 SR1/SR3') &&
+      probeSrc121.includes('SR5 value 里 truncated=true') &&
+      probeSrc121.includes('SR6 预算收紧时回执真的变短（content_max 旋钮不再是空的）'),
+  )
+  check(
+    '检索自答: 版本与文档一起走（9.125 / 131）',
+    (() => {
+      const pkg121 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const v = pkg121.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 121)
+      return atLeast && readFileSync(join(root, 'lib', 'index.js'), 'utf8').includes(`export const version = '${pkg121.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.125') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 131 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

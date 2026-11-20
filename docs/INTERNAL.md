@@ -7281,3 +7281,130 @@ nebula_recall「检索融合」→ 3 条（扫描 42 条候选，2 跳）
   这类账，那是另一件事。
 - **不做 MMR 式的多样性去冗余**：本地那一段已经做过近似去重（meow 的 `foldNearDupes`），
   融合层再加一层会把「同一件事的两条不同说法」也压掉——那种两条恰恰是要一起看的。
+
+## 9.125 检索要能自答：词干门 / 元数据 / 正文与日期（0.2.119–0.2.121）
+
+### 9.125.0 病：三处「排得对，却答不出」
+
+一轮 LoCoMo 评测（1,536 题）把这三种病同时逼出来了。它们的共同点是：**检索环节看起来在工作，
+但模型拿到的东西不足以回答**。
+
+1. **词干门**。`tokenize()` 末尾一直是这一行：
+
+   ```js
+   const lang = getPromptLang().toLowerCase().split(/[-_]/)[0]
+   return lang === 'en' ? normalizeEn(out) : out
+   ```
+
+   意思成了「只有会话语言是英文时才做停用词 + Porter 词干」。而 `DEFAULT_LANG = 'zh'`（index.js:161），
+   于是中文用户的会话里，**存进去的英文记忆永远不归一**：`researching` ≠ `research`、
+   `camping` ≠ `camp`、`painted` ≠ `paint`。一题问「Caroline 研究的是什么」，记忆里写的是
+   「Researching adoption agencies」——这一条永远不会进候选。
+   离线台（`bench_local.mjs`，同一批题、同一批 docs）实测：hit@20 从 0.4929 抬到 0.5448、
+   MRR 0.3001 → 0.3584；Judge 口径 omni1 0.5351 → omni2 0.5987。
+
+2. **元数据不上来**。`search()` 的命中对象只带 `{ id, level, title, content, score, updated_at, explain }`。
+   库里明明有 `keywords / project / created_at / source_session`，出了 `search()` 就没了。
+   下游（评测 sidecar 的日期、融合层的项目标签、候选折叠的同会话判断）只能自己按 id 回查一遍——
+   能查到，但那是「每个调用方各自实现一遍同一件事」，迟早有一方实现错。
+
+3. **正文印不出来**。`memory_search` 的 `render` 只印抬头：
+
+   ```
+   [项目 : 层级] [id] [时间] 关于：关键词…
+   ```
+
+   `content` 一个字都不印。三个后果：
+   - 检索是**索引**不是**答案**：想看内容就得对每条命中再 `memory_read` 一次，一次检索变成 k+1 次往返；
+   - `content_max`（默认 300，在 `execute` 里已经把正文截好了）**是个空旋钮**——预算收缩那套
+     `k 10→1、content_max 300→60` 的收紧打在它身上，回执一字不变，只有尾注在说「收紧了」；
+   - 模型无法判断「这 10 条里哪几条该细读」，因为它只看到了关键词。
+
+   同一份库上实测：预算 260 token 时，收紧前回执 499 字、收紧后 459 字（只因为 k 变了），
+   正文一个字没少——该是 216 字。
+
+### 9.125.1 词干门：按「这段 token 像不像英文」判，不按会话语言判
+
+```js
+function isMostlyLatin(tokens) {
+  let latin = 0
+  for (const t of tokens) if (/^[a-z]+$/.test(t)) latin += 1
+  return latin * 2 >= tokens.length
+}
+```
+
+`tokenize()` 末尾改成 `return isMostlyLatin(out) ? normalizeEn(out) : out`，`lang` 那一行删掉。
+
+- **为什么不按会话语言判**：语言是会话的属性，token 才是文本的属性。同一段会话里中文提问、
+  英文资料、日文标题混着来是常态；用会话语言当开关，等于让「这段文本是什么语言」由「用户在哪个
+  语言环境里问问题」决定。
+- **判据取「多数」而不是「有一条拉丁词就归一」**：`isMostlyLatin` 要求拉丁 token 至少占一半
+  （`latin * 2 >= tokens.length`）。中文句子里夹一个 `RRF` 这种不该触发 Porter——归一的对象是
+  整段 token 表，混着一半 CJK 二元组进去，词干会把本来正常的词改得四不像。
+- **CJK 二元组那条路一个字没动**：中文不需要词干，需要的是切分，两者不冲突。
+
+实测（`Meow.tokenize`）：`researching / research → research`、`camping / camped / camp → camp`、
+`painted / paint → paint`；中文整句仍是二元组；`RRF k=60 → ["rrf","k","60"]`（英文侧照旧）。
+
+### 9.125.2 元数据透传：可选带上，不动排序与分数
+
+`search()` 的 `hits.push({…})` 里改用展开语法，**有才带**：
+
+```js
+...(docs[di].keywords === void 0 ? {} : { keywords: docs[di].keywords }),
+```
+
+`keywords / project / created_at / source_session` 四个字段同一写法。为什么坚持「有才带」：
+老调用方（和自检里的 stub）喂进来的 docs 本来就没有这些字段，硬塞 `undefined` 会让
+`'keywords' in hit` 从 false 变 true——判据里分不清「没有关键词」和「关键词是空数组」。
+
+排序、分数、`explain` 一个都没碰：`bench_local.mjs` 改前改后输出逐字相同
+（hit@5 0.4578 / hit@10 0.5026 / hit@20 0.5448 / MRR 0.3584）。
+
+### 9.125.3 正文与日期：把已经截好的东西印出来
+
+`render` 在抬头下面补一行正文，抬头补一天日期：
+
+```
+[渲染探针 : lesson] [0mwp57r84-…] [刚刚 · 2026-03-14] 关于：2026-03-14, tokenize, 词干, 归一
+  词干归一是检索的地基：researching 与 research 不归一，多跳题就永远差一个词。…（已截断到 300 字，全文用 memory_read）
+```
+
+- **正文就用 `execute` 已经截好的那份**（`content_max`，默认 300）。两边各截一次会出现
+  「回执说 300 字、value 说 300 字、其实截的不是同一处」这种最难查的错。
+- **截断必须交代**：`execute` 在 value 里多给一个 `truncated: true`（原文更长才给），`render`
+  据此补 `（已截断到 N 字，全文用 memory_read）`。不标的话，读者会把「截断的 300 字」当成全文——
+  `truncated` 跟着 `content_max` 走：`content_max=0` 时它是 `undefined`，回执也不标截断。
+- **日期从 keywords 派生**：`dayOfKeywords()` 认 `^\d{4}-\d{2}-\d{2}$` 的第一个关键词。
+  为什么需要它：`relativeTime` 只在 30 天前才落到绝对日期，「5 分钟前」回答不了「那天是几号」，
+  而时间类问题要的正是那个绝对日期。抬头写成 `[相对时间 · 日期]`：两个都是事实，一个给直觉、一个给计算。
+- **`keywords` 为空时**仍退回正文前 40 字当「关于」，这条兜底没变。
+
+### 9.125.4 判据
+
+`verify.mjs`（源码级，四组）：
+
+| 判据 | 钉住的东西 |
+| --- | --- |
+| 词干门按 token 判，不按会话语言 | `isMostlyLatin` 存在、`tokenize` 末尾用它的返回值、`lang === "en"` 那一行不在 |
+| 元数据透传「有才带」 | 四个字段都是 `=== void 0 ? {} : {…}` 展开、`hits.push` 里没有裸 `keywords:` |
+| 正文与日期 | `render` 印 `h.content`、`truncated` 才补截断句、抬头拼 `· day` |
+| 版本与文档一起走 | 0.2.121 / 9.125 / 131 |
+
+`tools/probe-fusion.mjs`（行为级，SR0–SR6，走**统一工具**那条路——`renderToolText` → 子插件
+`render`，不是直接调 vendor）：
+
+- SR1 回执带正文；SR2 抬头带日期；SR3 截断有交代；SR4 `content_max=0` 时正文齐全且不标截断；
+- SR4b **阴性对照**：只印抬头的老格式在 SR1/SR3 上必须是红的；
+- SR5 走真 vendor 的 value 层：`content.length === 300`、`truncated === true`、`day === '2026-03-14'`、
+  `content_max=0` 时不标截断；
+- SR6 **空旋钮**这条专门留一个判据：`budget: 260` 时回执要么真的变短、要么明说「没派上用场」，
+  并且尾注写出砍了哪个旋钮（`content_max 300→150`）。这一条红了，就说明正文又没印出来。
+
+### 9.125.5 边界
+
+- 只改**回执**，不改排序、不改分数、不改 value 的既有字段（只增 `day` / `truncated` 两个可选字段）。
+- `truncated` 与 `day` 都进 schema（`additionalProperties: false` 下必须显式声明），并且都是**可选**：
+  没截断就不给 `truncated`，没有日期就给空串 `day`。
+- 成本：正文进回执是本轮唯一变贵的地方（每条最多 300 字）。它换来的是「检索能自答」，
+  而 `budget` 现在真的能把它压下去——贵的那部分是**可控**的，这才是可以接受的贵。

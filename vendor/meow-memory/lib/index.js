@@ -1557,8 +1557,19 @@ function classify(cp) {
   if (WORD.test(cp)) return "word";
   return "skip";
 }
+// [macro-fusion 0.2.119] 词法归一的开关以前挂在「会话提示词语言」上：只有 promptLang 是 en 时
+// 才走 normalizeEn（英文停用词 + Porter 词干）。而 DEFAULT_LANG 就是 zh —— 于是中文用户存下的
+// 英文记忆永远不归一：researching 和 research 在索引里是两个词，camping 和 camp 也是，
+// BM25 各算各的 idf，两条本该互相命中的记忆彼此看不见（LoCoMo 实测：问「What did Caroline
+// research?」，记忆里写的是 Researching adoption agencies，零词交集，直接不进候选）。
+// 语言该由这段文本自己说，不是由谁在问：拉丁字母占多数的文本照样归一，中日韩二元组原样保留。
+function isMostlyLatin(tokens) {
+  if (tokens.length === 0) return false;
+  let latin = 0;
+  for (const t of tokens) if (/^[a-z]+$/.test(t)) latin += 1;
+  return latin * 2 >= tokens.length;
+}
 function tokenize(text) {
-  const lang = getPromptLang().toLowerCase().split(/[-_]/)[0];
   const cps = Array.from(text.normalize("NFKC"));
   const out = [];
   let i = 0;
@@ -1580,7 +1591,7 @@ function tokenize(text) {
     }
     i = j;
   }
-  return lang === "en" ? normalizeEn(out) : out;
+  return isMostlyLatin(out) ? normalizeEn(out) : out;
 }
 var EN_STOPWORDS = /* @__PURE__ */ new Set([
   "a",
@@ -1894,6 +1905,14 @@ function search(query, docs, opts = {}) {
       content: docs[di].content,
       importance: docs[di].importance,
       updated_at: docs[di].updated_at,
+      // [macro-fusion 0.2.120] 命中对象以前只回 id/level/title/content/importance/updated_at/score，
+      // keywords / project / created_at 被静默吞掉。后果不是「少个字段」：调用方拿不到这条记忆
+      // 属于哪一天、哪个项目，只能自己按 id 回查一遍（OmniMemEval 的日期丢失就是这样，
+      // temporal 类准确率因此卡在 0.2181，回查修好后到 0.7227）。这里原样透传，不改排序、不改分数。
+      ...docs[di].keywords === void 0 ? {} : { keywords: docs[di].keywords },
+      ...docs[di].project === void 0 ? {} : { project: docs[di].project },
+      ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
+      ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW,
       ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, recencyWeight: Math.round(w * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * 1e3) / 1e3 } } : {}
     });
@@ -2800,6 +2819,22 @@ function rememberTool(dir) {
 // 至少留 1 条（榜首永远在），并在回执里报出被收掉的条数与最高分——收窄要可追溯，
 // 不是悄悄少给几条（0.2.85 刚把「排得对」修好，这里补的是「排得对之后别把尾巴也端出来」）。
 // 参数 min_rel=0 可以关掉，用于「我要看全量」的场合。
+// [macro-fusion 0.2.121] 检索回执补两样东西，都是「模型能不能自答」的问题：
+//   ① 正文：原来 render 只印 `关于：关键词`，正文一个字不给——检索排在前面却读不到内容，
+//      每条命中都得再 memory_read 一次，一次检索变成 k+1 次往返，还读不出「这 k 条讲了什么」。
+//      content_max（默认 300）本来就在 execute 里截好了，只是没人打印；这里把截好的印出来，
+//      原文更长时标一句「已截断」，指向 memory_read 取全文（截断要可追溯，不是悄悄少给）。
+//   ② 日期：keywords 里带 `YYYY-MM-DD`（写入端/评测侧都这么塞日期）就在抬头补一天，因为
+//      relativeTime 只在 30 天前才落到绝对日期，「5 分钟前」回答不了「那天是几号」。
+// 两样都只在回执层面加，不改排序、不改分数。
+var DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function dayOfKeywords(keywords) {
+  if (!Array.isArray(keywords)) return "";
+  for (const kw of keywords) {
+    if (typeof kw === "string" && DAY_RE.test(kw.trim())) return kw.trim();
+  }
+  return "";
+}
 function searchTool(dir) {
   return {
     name: "memory_search",
@@ -2839,6 +2874,8 @@ function searchTool(dir) {
                 level: { type: "string" },
                 title: { type: "string" },
                 content: { type: "string" },
+                truncated: { type: "boolean", description: T("memory_search.out.hits.truncated") },
+                day: { type: "string", description: T("memory_search.out.hits.day") },
                 keywords: { type: "array", items: { type: "string" }, description: T("memory_search.out.hits.keywords") },
                 project: { type: "string", description: T("memory_search.out.hits.project") },
                 score: { type: "number" },
@@ -2862,12 +2899,16 @@ function searchTool(dir) {
       render: (_args, value) => {
         const v = value;
         const lines = [String(v.note ?? "")];
+        const cm = _args?.content_max ?? 300;
         for (const h of v.hits ?? []) {
           const kw = (Array.isArray(h.keywords) ? h.keywords : []).filter((x) => typeof x === "string" && x.length > 0);
           const about = kw.length > 0 ? kw.join(", ") : `${String(h.content ?? "").slice(0, 40)}\u2026`;
           const proj = `${projectLabel(h.project)} : ${String(h.level ?? "")}`;
           const rel = relativeTime(h.updated_at ?? null);
-          lines.push(`[${proj}] [${String(h.id ?? "")}] [${rel}] \u5173\u4E8E\uFF1A${about}`);
+          const day = h.day ? ` \u00B7 ${h.day}` : "";
+          lines.push(`[${proj}] [${String(h.id ?? "")}] [${rel}${day}] \u5173\u4E8E\uFF1A${about}`);
+          const body = String(h.content ?? "");
+          if (body.length > 0) lines.push(`  ${body}${h.truncated === true ? `\uFF08\u5DF2\u622A\u65AD\u5230 ${cm} \u5B57\uFF0C\u5168\u6587\u7528 memory_read\uFF09` : ""}`);
           const ex = h.explain;
           if (ex !== void 0) {
             lines.push(`  bm25=${String(ex.bm25 ?? 0)} importance=${String(ex.importance ?? 0)} recencyWeight=${String(ex.recencyWeight ?? 1)} status=${String(ex.status ?? "active")} score=${String(h.score ?? 0)}`);
@@ -2993,6 +3034,8 @@ function searchTool(dir) {
             level: h.level,
             title: h.title ?? "",
             content: contentMax > 0 ? h.content.slice(0, contentMax) : h.content,
+            ...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {},
+            day: dayOfKeywords(row?.keywords),
             keywords: row?.keywords ?? [],
             project: row?.project ?? "",
             score: Math.round(h.score * 100) / 100,

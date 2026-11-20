@@ -34,6 +34,8 @@
 - memory_search.out.hits.keywords: The entry's keywords (extracted by an LLM or automatically).
 - memory_search.out.hits.project: Project the entry belongs to; ""=unlabeled; globally applicable entries read "global".
 - memory_search.out.hits.updated_at: Memory timestamp (last update, in milliseconds).
+- memory_search.out.hits.truncated: Whether content was cut to content_max; true means the original is longer — read the full text with memory_read.
+- memory_search.out.hits.day: The date the entry carries (a YYYY-MM-DD keyword); empty string when it has none.
 - memory_search.out.hits.explain: Raw BM25 keyword score (importance/recencyWeight/status are returned alongside in the same object).
 
 ### memory_find_similar

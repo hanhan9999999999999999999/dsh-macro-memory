@@ -6093,6 +6093,69 @@ check(
   )
 }
 
+// ── SR. 检索回执要能自答：正文 / 日期 / 截断交代（0.2.121）─────────────────────
+// 0.2.120 之前 render 只印 `关于：关键词`，正文一个字不给：检索排前面却读不到内容，
+// 每条命中都要再 memory_read 一次；content_max 在 execute 里截好了，却没人打印——
+// 预算那套「砍 content_max」的旋钮因此是空的（砍了回执一字不变）。
+// 这里从**统一工具**打进去（renderToolText → 子插件 render 这条路），不是直接调 vendor。
+{
+  const LONG = '词干归一是检索的地基：researching 与 research 不归一，多跳题就永远差一个词。'.repeat(12)
+  const tailSrc = (t) => t.split('\n').filter((l) => l.trim() !== '').slice(-1)[0]
+  const wrote = await run('memory_remember', {
+    content: LONG,
+    project: '渲染探针',
+    keywords: ['2026-03-14', 'tokenize', '词干', '归一'],
+    importance: 3,
+    level: 'lesson',
+  })
+  check('SR0 写入一条长正文（带日期关键词）', text(wrote).includes('记忆已写入') || text(wrote).includes('已合并'), text(wrote).split('\n')[0])
+
+  const got = text(await run('memory_search', { query: '词干 归一 tokenize research', k: 3, content_max: 300 }))
+  check('SR1 回执带正文（不是只有「关于：关键词」）', got.includes('词干归一是检索的地基'), got.slice(0, 80))
+  check('SR2 抬头带日期（keywords 里的 YYYY-MM-DD 落到抬头）', /\[[^\]]+ · 2026-03-14\]/.test(got), got.split('\n').find((l) => l.includes('2026-03-14')) ?? '没找到')
+  check('SR3 截断有交代（已截断 + 指到 memory_read）', got.includes('已截断') && got.includes('memory_read'), tailSrc(got))
+
+  const full = text(await run('memory_search', { query: '词干 归一 tokenize research', k: 3, content_max: 0 }))
+  check('SR4 content_max=0 时不标截断、正文齐全', !full.includes('已截断') && full.includes(LONG.slice(0, 200)), `${full.length} 字`)
+
+  // 阴性对照：老渲染（只印抬头）在这几条判据上必须红——判据真的能红。
+  const legacyLike = '[渲染探针 : lesson] [0m…] [刚刚] 关于：2026-03-14, tokenize, 词干, 归一'
+  check(
+    'SR4b 阴性对照：只印抬头的老格式过不了 SR1/SR3',
+    !legacyLike.includes('词干归一是检索的地基') && !legacyLike.includes('已截断'),
+  )
+
+  // 真 vendor 工具的 value 层：day / truncated / content 长度 三个字段各就各位。
+  const srHome = mkdtempSync(join(tmpdir(), 'macro-probe-render-'))
+  const srWs = join(srHome, 'ws')
+  mkdirSync(srWs, { recursive: true })
+  const T = new Map()
+  Meow.registerMemoryTools((t) => T.set(t.name, t), '.dsh-meow')
+  // 新工作区要先开一次库（等价于会话第一条消息到达），否则 #64 的信任闸会把写入挡掉。
+  Meow.getDb(srWs, '.dsh-meow')
+  const srExec = { agent: { session: { header: { cwd: srWs, id: 'sess-sr' } } } }
+  const srRun = (name, args) => T.get(name).execute(args, srExec)
+  await srRun('memory_remember', { content: LONG, project: '渲染探针', keywords: ['2026-03-14', '词干'], importance: 2, level: 'lesson' })
+  const srValue = await srRun('memory_search', { query: '词干', k: 3, content_max: 300 })
+  const srHit = srValue.hits[0]
+  check('SR5 value 里 content 已按 content_max 截断（300 字）', srHit.content.length === 300, String(srHit.content.length))
+  check('SR5 value 里 truncated=true（原文更长）', srHit.truncated === true, String(srHit.truncated))
+  check('SR5 value 里 day 从 keywords 派生', srHit.day === '2026-03-14', JSON.stringify(srHit.day))
+  const srFull = await srRun('memory_search', { query: '词干', k: 3, content_max: 0 })
+  check('SR5 content_max=0 时 value 不标截断（截断标记要跟旋钮走）', srFull.hits[0].truncated === undefined, JSON.stringify(srFull.hits[0].truncated))
+  try {
+    rmSync(srHome, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+
+  // 预算旋钮不再是空的：budget 收紧要么真的把正文变短、要么明说没派上用场。
+  const loose = text(await run('memory_search', { query: '词干 归一', k: 10, content_max: 300 }))
+  const tight = text(await run('memory_search', { query: '词干 归一', k: 10, content_max: 300, budget: 260 }))
+  check('SR6 预算收紧时回执真的变短（content_max 旋钮不再是空的）', tight.length < loose.length || tight.includes('没派上用场'), `${loose.length} → ${tight.length}`)
+  check('SR6 砍了什么都写在尾注里', tight.includes('预算') && (tight.includes('content_max') || tight.includes('k ')), tailSrc(tight))
+}
+
 for (const d of disposers) {
   try {
     d()

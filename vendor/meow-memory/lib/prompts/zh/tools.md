@@ -34,6 +34,8 @@
 - memory_search.out.hits.keywords: 记忆关键词列表（LLM 提取或自动 bigram）。
 - memory_search.out.hits.project: 项目归属；""=未标记；全局信息为"全局"。
 - memory_search.out.hits.updated_at: 记忆时间戳（最后更新时间，毫秒）。
+- memory_search.out.hits.truncated: content 是否按 content_max 截断；true 表示原文更长，全文用 memory_read 读。
+- memory_search.out.hits.day: 条目自带的日期（keywords 里的 YYYY-MM-DD）；没有就是空串。
 - memory_search.out.hits.explain: bm25 关键词原始分（importance/recencyWeight/status 随行返回，不单独描述）。
 
 ### memory_find_similar
