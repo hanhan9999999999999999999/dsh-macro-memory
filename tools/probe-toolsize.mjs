@@ -31,6 +31,8 @@ function cutObject(src, openIdx) {
   return src.slice(openIdx)
 }
 
+const allRows = []
+
 function scan(file, label) {
   const src = readFileSync(file, 'utf8')
   const rows = []
@@ -60,6 +62,7 @@ function scan(file, label) {
     rows.push({ name, bytes: Buffer.byteLength(block, 'utf8'), form: 'factory' })
   }
 
+  allRows.push(...rows)
   const total = rows.reduce((a, r) => a + r.bytes, 0)
   console.log('== ' + label + '：' + rows.length + ' 个工具，字面量合计 ' + total + ' B（' + (total / 1024).toFixed(1) + ' KB）')
   for (const r of rows) console.log('   ' + r.name.padEnd(22) + String(r.bytes).padStart(6) + ' B  (' + r.form + ')')
@@ -93,7 +96,13 @@ const NEBULA_TOOLS = [
 // 上界不是等号：设成「今天的实测值」时，任何一次正当改动都会踩线（0.2.85 只加了
 // importanceWeight 一个字段 + 排序表达式改长，就 87,419 > 87,326）。留 ~5% 余量：
 // 判据要抓的是「悄悄长胖」（有人塞一段长描述、多开十个参数），不是「代码有变化」。
-const BUDGET_BYTES = 92000
+// [macro-fusion 0.2.123] 上界从 92,000 抬到 94,000：memory_search 新增了 context 参数
+// （输入 1 行 + 输出 1 行 + render 两行 + execute 里的窗口取值），实测 16,083 → 17,023 B。
+// 这是「加了一个真功能」，不是「有人塞了一段长描述」——但为了让两者以后还分得开，
+// 再加一道单项护栏：最大的那个工具自己也有上界，总量涨了必须能指到是哪个工具涨的。
+const BUDGET_BYTES = 94000
+const TOOL_BUDGET = { memory_search: 17200 }
+
 
 let failures = 0
 function ok(cond, label, detail) {
@@ -108,6 +117,13 @@ const missingN = NEBULA_TOOLS.filter((n) => !srcB.includes(`'${n}'`))
 ok(missingM.length === 0, '清单：meow 的 8 个原工具一个不少', missingM.length ? '缺 ' + missingM.join(',') : '8/8')
 ok(missingN.length === 0, '清单：星图的 9 个原工具一个不少', missingN.length ? '缺 ' + missingN.join(',') : '9/9')
 ok(sum <= BUDGET_BYTES, '体积：17 个工具字面量合计没有膨胀', sum + ' B ≤ ' + BUDGET_BYTES + ' B')
+// 单项护栏：合计算的是两套引擎的总账；总账一轮就抬 2,000 B 太粗，涨了多少得指到具体工具。
+for (const name of Object.keys(TOOL_BUDGET)) {
+  const hit = allRows.find((r) => r.name === name)
+  ok(hit !== undefined && hit.bytes <= TOOL_BUDGET[name],
+    '体积：单项 ' + name + ' 没有膨胀',
+    hit ? hit.bytes + ' B ≤ ' + TOOL_BUDGET[name] + ' B' : '没有这个工具')
+}
 
 console.log(failures === 0 ? 'ALL PASS' : 'FAILURES: ' + failures)
 if (failures !== 0) process.exitCode = 1

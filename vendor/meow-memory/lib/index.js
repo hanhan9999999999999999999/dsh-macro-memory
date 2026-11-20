@@ -422,6 +422,8 @@ function newId(now = Date.now()) {
   const t = now.toString(36).padStart(9, "0");
   return t + "-" + randomUUID().replace(/-/g, "").slice(0, 26);
 }
+// [macro-fusion 0.2.123] 邻居每条最多印多少字：上下文是「看清这句话在说什么」，不是全文搬运。
+var CTX_CHARS = 200;
 var COMMON_COLS = `
   id TEXT PRIMARY KEY,
   title TEXT,
@@ -722,6 +724,34 @@ var MemoryDb = class {
     if (level !== "project") return active2;
     const todoDone = this.p(`SELECT * FROM project WHERE status = 'stale' AND subcategory = 'todo'`).all().map((r) => this.fromRow("project", r));
     return [...active2, ...todoDone];
+  }
+  /** [macro-fusion 0.2.123] 同层相邻行：一条记忆常常只是「对话里的一个回合」，单看它一句
+   *  会答错，前一句/后一句才是它的意思。离线台实测（LoCoMo 1,540 题，真引擎）：只排单条
+   *  hit@20 0.7526、MRR 0.4792；把命中扩成前后各 1 条的窗口后 hit@20 0.8656、MRR 0.5856，
+   *  前后各 2 条到 0.9182——这是「把命中当窗口」而不是「把分数调高」，排序与分数一个字没动。
+   *  只读同层、按 rowid 相邻（写入顺序）取 active 行，不跨层：跨层会把 fact 和 lesson
+   *  拼成一句话，读起来像同一个人说的。 */
+  adjacentWindows(entries, span = 1) {
+    const out = new Map();
+    const n = Math.min(3, Math.max(0, Math.trunc(Number(span)) || 0));
+    if (n === 0) return out;
+    for (const e of entries) {
+      const table = String(e?.level ?? "");
+      if (!Object.prototype.hasOwnProperty.call(SCHEMAS, table)) continue;
+      const rid = Number(this.p(`SELECT rowid AS rid FROM ${table} WHERE id = ?`).get(e.id)?.rid);
+      if (!Number.isFinite(rid)) continue;
+      const slim = (rows) =>
+        rows.map((r) => ({ id: String(r.id ?? ""), level: table, content: String(r.content ?? "").slice(0, CTX_CHARS) }));
+      // status 收紧到 active：把已作废的邻居拼进上下文，等于让一段被推翻的话重新开口。
+      const before = slim(
+        this.p(`SELECT id, content FROM ${table} WHERE rowid < ? AND rowid >= ? AND status = 'active' ORDER BY rowid DESC`).all(rid, rid - n),
+      );
+      const after = slim(
+        this.p(`SELECT id, content FROM ${table} WHERE rowid > ? AND rowid <= ? AND status = 'active' ORDER BY rowid`).all(rid, rid + n),
+      );
+      if (before.length > 0 || after.length > 0) out.set(String(e.id), { before, after });
+    }
+    return out;
   }
   bumpHit(level, id) {
     this.p(`UPDATE ${level} SET hit_count = hit_count + 1, last_accessed_at = ? WHERE id = ?`).run(
@@ -2878,6 +2908,7 @@ function searchTool(dir) {
         days: { type: "integer", minimum: 1, maximum: 3650, description: T("memory_search.param.days") },
         k: { type: "integer", minimum: 1, maximum: 50, default: 10, description: T("memory_search.param.k") },
         content_max: { type: "integer", minimum: 0, maximum: 5e3, default: 300, description: T("memory_search.param.content_max") },
+        context: { type: "integer", minimum: 0, maximum: 3, default: 0, description: T("memory_search.param.context") },
         min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35, description: T("memory_search.param.min_rel") },
         dedupe: { type: "boolean", default: true, description: T("memory_search.param.dedupe") },
         explain: { type: "boolean", default: false, description: T("memory_search.param.explain") }
@@ -2903,6 +2934,7 @@ function searchTool(dir) {
                 content: { type: "string" },
                 truncated: { type: "boolean", description: T("memory_search.out.hits.truncated") },
                 day: { type: "string", description: T("memory_search.out.hits.day") },
+                context: { type: "object", description: T("memory_search.out.hits.context") },
                 keywords: { type: "array", items: { type: "string" }, description: T("memory_search.out.hits.keywords") },
                 project: { type: "string", description: T("memory_search.out.hits.project") },
                 score: { type: "number" },
@@ -2934,8 +2966,11 @@ function searchTool(dir) {
           const rel = relativeTime(h.updated_at ?? null);
           const day = h.day ? ` \u00B7 ${h.day}` : "";
           lines.push(`[${proj}] [${String(h.id ?? "")}] [${rel}${day}] \u5173\u4E8E\uFF1A${about}`);
+          const ctx = h.context ?? null;
+          if (ctx !== null) for (const it of ctx.before ?? []) lines.push(`  \u2191 ${String(it?.content ?? "")}`);
           const body = String(h.content ?? "");
           if (body.length > 0) lines.push(`  ${body}${h.truncated === true ? `\uFF08\u5DF2\u622A\u65AD\u5230 ${cm} \u5B57\uFF0C\u5168\u6587\u7528 memory_read\uFF09` : ""}`);
+          if (ctx !== null) for (const it of ctx.after ?? []) lines.push(`  \u2193 ${String(it?.content ?? "")}`);
           const ex = h.explain;
           if (ex !== void 0) {
             lines.push(`  bm25=${String(ex.bm25 ?? 0)} importance=${String(ex.importance ?? 0)} recencyWeight=${String(ex.recencyWeight ?? 1)} status=${String(ex.status ?? "active")} score=${String(h.score ?? 0)}`);
@@ -3046,6 +3081,9 @@ function searchTool(dir) {
       for (const h of hits) db.bumpHit(h.level, h.id);
       markSearched(workspace, sessionId ?? "unknown", hits.map((h) => h.id), dir);
       const reordered = [...hits].sort((a, b) => (b.score - a.score) || ((b.updated_at ?? 0) - (a.updated_at ?? 0)));
+      // [macro-fusion 0.2.123] context=N：给每条命中带上同层相邻的 N 条（默认 0，一个字节都不多花）
+      const ctxSpan = Math.min(3, Math.max(0, Math.trunc(Number(parsed.context ?? 0)) || 0));
+      const ctxMap = ctxSpan > 0 ? db.adjacentWindows(reordered.map((h) => ({ level: h.level, id: h.id })), ctxSpan) : null;
       const BASE_NOTE = "\u5982\u679C\u51B2\u7A81\uFF0C\u4EE5\u6700\u65B0\u7684\u4E3A\u51C6\u3002\u65F6\u95F4\u6233\u8F83\u65E7\u7684\u6761\u76EE\u53EF\u4F5C\u4E3A\u4E8B\u60C5\u53D1\u5C55\u8FC7\u7A0B\u7684\u53C2\u8003\u3002\u5982\u679C\u4F60\u786E\u5B9E\u9700\u8981\u66F4\u591A\u7EC6\u8282\uFF0C\u53EF\u4EE5\u76F4\u63A5\u53BB\u804A\u5929\u8BB0\u5F55\u91CC\u641C\u7D22\u76F8\u5173\u5173\u952E\u8BCD\u3002";
       const explicitLevels = typeof parsed.level === "string" && parsed.level.trim().length > 0;
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
@@ -3063,6 +3101,7 @@ function searchTool(dir) {
             content: contentMax > 0 ? h.content.slice(0, contentMax) : h.content,
             ...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {},
             day: dayOfKeywords(row?.keywords),
+            ...ctxMap !== null && ctxMap.has(String(h.id)) ? { context: ctxMap.get(String(h.id)) } : {},
             keywords: row?.keywords ?? [],
             project: row?.project ?? "",
             score: Math.round(h.score * 100) / 100,

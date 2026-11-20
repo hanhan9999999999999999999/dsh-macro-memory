@@ -6188,6 +6188,82 @@ check(
   )
 }
 
+// ── CT. 上下文窗口：命中是「一句话」，答案常在它前后（0.2.123）─────────────────
+{
+  const ctHome = mkdtempSync(join(tmpdir(), 'macro-probe-ctx-'))
+  const ctWs = join(ctHome, 'ws')
+  mkdirSync(ctWs, { recursive: true })
+  const CT = new Map()
+  Meow.registerMemoryTools((t) => CT.set(t.name, t), '.dsh-meow')
+  Meow.getDb(ctWs, '.dsh-meow')
+  const ctExec = { agent: { session: { header: { cwd: ctWs, id: 'sess-ct' } } } }
+  const ctRun = (name, args) => CT.get(name).execute(args, ctExec)
+  await ctRun('memory_remember', { content: 'Alice: 我们明天去看鲸鱼。', project: '上下文探针', keywords: ['鲸鱼', '前'], importance: 2, level: 'fact' })
+  await ctRun('memory_remember', { content: 'Bob: 好，几点集合？', project: '上下文探针', keywords: ['鲸鱼', '命中'], importance: 2, level: 'fact' })
+  await ctRun('memory_remember', { content: 'Alice: 早上七点，码头见。', project: '上下文探针', keywords: ['鲸鱼', '后'], importance: 2, level: 'fact' })
+  const ctOld = await ctRun('memory_search', { query: '几点集合', k: 1 })
+  check('CT0 context=0 时回执与老格式逐字相同', ctOld.hits[0].context === undefined, JSON.stringify(ctOld.hits[0].context ?? null).slice(0, 40))
+  const ctOn = await ctRun('memory_search', { query: '几点集合', k: 1, context: 1 })
+  const win = ctOn.hits[0].context
+  check(
+    'CT1 context=1 带出前后各一条',
+    (win?.before?.[0]?.content ?? '').includes('看鲸鱼') && (win?.after?.[0]?.content ?? '').includes('码头见'),
+    JSON.stringify([win?.before?.length, win?.after?.length]),
+  )
+  const ctText = CT.get('memory_search').output.render({ context: 1 }, ctOn).map((t) => t.text).join('\n')
+  check('CT1 回执里 ↑ 印前、↓ 印后', ctText.includes('\u2191 Alice') && ctText.includes('\u2193 Alice'), ctText.split('\n').slice(1, 4).join(' / '))
+  // 跨层不串味：相邻写一条 lesson，fact 的邻居里不许出现它
+  await ctRun('memory_remember', { content: '教训：七点太早，下次改九点。', project: '上下文探针', keywords: ['鲸鱼', '教训'], importance: 2, level: 'lesson' })
+  const ctCross = await ctRun('memory_search', { query: '几点集合', k: 1, context: 3, level: 'fact' })
+  const flat = JSON.stringify(ctCross.hits[0].context ?? {})
+  check('CT3 跨层不串味：fact 的邻居不会把 lesson 拼进来', !flat.includes('七点太早'), flat.slice(0, 80))
+  // archive 掉后一句，它要从窗口里消失
+  const afterId = win?.after?.[0]?.id
+  await ctRun('memory_update', { id: afterId, status: 'archived' })
+  const ctGone = await ctRun('memory_search', { query: '几点集合', k: 1, context: 1 })
+  check('CT2 邻居被 archive 后不再出现在上下文里', !JSON.stringify(ctGone.hits[0].context ?? {}).includes('码头见'), JSON.stringify(ctGone.hits[0].context ?? {}).slice(0, 60))
+  const ctBig = await ctRun('memory_search', { query: '几点集合', k: 1, context: 9 })
+  check(
+    'CT4 context 上限 3（传 9 只取 3 条）',
+    (ctBig.hits[0].context?.before?.length ?? 0) <= 3 && (ctBig.hits[0].context?.after?.length ?? 0) <= 3,
+    JSON.stringify([ctBig.hits[0].context?.before?.length, ctBig.hits[0].context?.after?.length]),
+  )
+  try {
+    rmSync(ctHome, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
+// ── CT5/CT6. 融合层：context 要能穿过统一工具，预算紧时先关窗口（0.2.124）──────
+// CT0–CT4 打的是 meow 自己的工具；这条打的是**统一工具**——它有自己的 schema，
+// 参数不在 pick 列表里就一个字节都传不下去（第一版就漏在主路上，窗口永远空）。
+{
+  const P = '融合窗口探针'
+  const tailOf = (t) => t.split('\n').filter((l) => l.trim() !== '').slice(-1)[0]
+  await run('memory_remember', { content: '融合探针：Alice 说明天去看鲸鱼。', project: P, keywords: ['鲸鱼', '融合前'], importance: 2, level: 'fact' })
+  await run('memory_remember', { content: '融合探针：Bob 问几点集合？', project: P, keywords: ['鲸鱼', '融合中'], importance: 2, level: 'fact' })
+  await run('memory_remember', { content: '融合探针：Alice 说七点码头见。', project: P, keywords: ['鲸鱼', '融合后'], importance: 2, level: 'fact' })
+
+  const plain = text(await run('memory_search', { query: '几点集合', k: 1, project: P }))
+  check('CT5a 融合层 context 默认 0：回执里没有 ↑（一个字节都不多花）', !plain.includes('\u2191'), `${plain.length} 字`)
+
+  const withCtx = text(await run('memory_search', { query: '几点集合', k: 1, context: 1, project: P }))
+  check(
+    'CT5 融合层：context=1 穿到 meow，回执带 ↑ 前 / ↓ 后',
+    withCtx.includes('\u2191 融合探针：Alice 说明天去看鲸鱼。') && withCtx.includes('\u2193 融合探针：Alice 说七点码头见。'),
+    withCtx.split('\n').slice(-3).join(' / '),
+  )
+
+  // 预算紧到装不下带窗口的那一份：先关窗口，不砍字、不砍条数。
+  const tight = text(await run('memory_search', { query: '几点集合', k: 1, context: 1, project: P, budget: 120 }))
+  check(
+    'CT6 融合层：装不下时先关窗口（context 1→0），字和条数一个没动',
+    tailOf(tight).includes('context 1→0') && !tight.includes('\u2191'),
+    tailOf(tight).slice(0, 90),
+  )
+}
+
 for (const d of disposers) {
   try {
     d()

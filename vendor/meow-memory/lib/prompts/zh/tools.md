@@ -26,6 +26,7 @@
 - memory_search.param.days: 只看最近 N 天创建的条目（按创建时间）。
 - memory_search.param.k: 返回条数上限。
 - memory_search.param.content_max: 每条内容截断长度，0=全文。
+- memory_search.param.context: 相邻上下文开关（默认 0=不取）：给每条命中带上同层前后各 N 条（1–3），用来看清这句话在对话里的位置。会多花 token，只在「这条看不懂它在说什么」时开。
 - memory_search.param.min_rel: 相关度下限（0–1，默认 0.35）：只展开分数不低于榜首这个比例的条目，更低的尾巴收掉，并在回执里报出被收掉的条数与最高分；传 0 = 看全量。
 - memory_search.param.dedupe: 同类折叠开关（默认开）：内容几乎一样（逐字级重复，重复度 ≥80%）的条目只列分数最高的一条，折了几条写进尾注——同一句既存了 fact 又存了 lesson 时最常见；传 false = 每条都列。
 - memory_search.param.explain: 可解释检索开关（默认关）。开=true 时每条命中附带分项得分 explain（bm25 关键词分、importance、recencyWeight 艾宾浩斯权重、status），用于排查"为什么没召回/为什么召回它"，不改排序。
@@ -36,6 +37,7 @@
 - memory_search.out.hits.updated_at: 记忆时间戳（最后更新时间，毫秒）。
 - memory_search.out.hits.truncated: content 是否按 content_max 截断；true 表示原文更长，全文用 memory_read 读。
 - memory_search.out.hits.day: 条目自带的日期（keywords 里的 YYYY-MM-DD）；没有就是空串。
+- memory_search.out.hits.context: 同层相邻记忆 {before, after}（每条最多 200 字，只含 active 行）；只在传了 context 时出现。
 - memory_search.out.hits.explain: bm25 关键词原始分（importance/recencyWeight/status 随行返回，不单独描述）。
 
 ### memory_find_similar

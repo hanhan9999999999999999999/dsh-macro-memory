@@ -746,7 +746,7 @@ export function contractChecklist({
       id: 'graph-fallback-param-note',
       label: '同一组参数两条路径：星图接上时本地条件没用上、退本地时真的生效——尾注跟着路径说话',
       ok:
-        searchDefSrcS.includes("const LOCAL_ONLY_PARAMS = ['level', 'project', 'status', 'days', 'content_max', 'explain']") &&
+        searchDefSrcS.includes("const LOCAL_ONLY_PARAMS = ['level', 'project', 'status', 'days', 'content_max', 'context', 'explain']") &&
         searchDefSrcS.includes('const fell = flags.graphFellBack === true') &&
         searchDefSrcS.includes('const absent = flags.graphAbsentNoLocal === true') &&
         searchDefSrcS.includes('k 这次真的用上了') &&
@@ -1027,7 +1027,7 @@ export function readAnswerKind(text) { return 'ok' }`,
         'const spread = flags.spread === true',
         'flags.spreadTried = true',
         'if (spread.entry) flags.spread = true',
-        "const LOCAL_ONLY_PARAMS = ['level', 'project', 'status', 'days', 'content_max', 'explain']",
+        "const LOCAL_ONLY_PARAMS = ['level', 'project', 'status', 'days', 'content_max', 'context', 'explain']",
         'const fell = flags.graphFellBack === true',
         'const absent = flags.graphAbsentNoLocal === true',
         'k 这次真的用上了',

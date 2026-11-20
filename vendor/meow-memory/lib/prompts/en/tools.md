@@ -26,6 +26,7 @@
 - memory_search.param.days: Only entries created in the last N days (by creation time).
 - memory_search.param.k: Maximum number of results.
 - memory_search.param.content_max: Truncate each entry's content to this length, 0=full text.
+- memory_search.param.context: adjacent-context switch (default 0 = off): attach up to N (1-3) neighbouring rows on each side of every hit, so a single turn can be read in place. Costs tokens; turn it on only when a hit does not make sense on its own.
 - memory_search.param.min_rel: Relevance floor (0-1, default 0.35): only expand entries scoring at least this fraction of the top hit; the weaker tail is dropped and its count plus best score are reported. Pass 0 for everything.
 - memory_search.param.dedupe: Near-duplicate folding (default on): entries with nearly identical content (verbatim-level overlap ≥80%) are listed once, keeping the highest-scoring one, and the folded count is reported; the usual cause is the same sentence stored in both fact and lesson. Pass false to list every hit.
 - memory_search.param.explain: Explainable-retrieval switch (default off). With true, each hit carries a per-component score breakdown in explain (bm25 keyword score, importance, recencyWeight Ebbinghaus weight, status) to debug "why wasn't this recalled / why was this recalled"; ordering is unchanged.
@@ -36,6 +37,7 @@
 - memory_search.out.hits.updated_at: Memory timestamp (last update, in milliseconds).
 - memory_search.out.hits.truncated: Whether content was cut to content_max; true means the original is longer — read the full text with memory_read.
 - memory_search.out.hits.day: The date the entry carries (a YYYY-MM-DD keyword); empty string when it has none.
+- memory_search.out.hits.context: adjacent memories {before, after} (at most 200 chars each, active rows only); present only when context was requested.
 - memory_search.out.hits.explain: Raw BM25 keyword score (importance/recencyWeight/status are returned alongside in the same object).
 
 ### memory_find_similar

@@ -4175,7 +4175,7 @@ function makeHostCtx() {
     'fb: 两条退路（星图缺席 / 图是空的）都置了 flag，尾注才有依据',
     searchSrc66.split('flags.graphFellBack = true').length - 1 === 2 &&
       searchSrc66.split('flags.graphAbsentNoLocal = true').length - 1 === 2 &&
-      searchSrc66.includes("const LOCAL_ONLY_PARAMS = ['level', 'project', 'status', 'days', 'content_max', 'explain']"),
+      searchSrc66.includes("const LOCAL_ONLY_PARAMS = ['level', 'project', 'status', 'days', 'content_max', 'context', 'explain']"),
     'defs/search.js',
   )
   const criteria66 = await import(pathToFileURL(join(root, 'tools', 'criteria.mjs')).href)
@@ -5640,9 +5640,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 0.2.85：上界从「等于今天实测值」改成留余量（87,326 → 92,000）。
   // 等于实测值的判据在正当改动上也会红（只加一个 explain 字段就踩线），
   // 那会教人「红了就往上调」，最后等于没有判据；留 5% 余量才抓得住真正的膨胀。
+  // 0.2.123：memory_search 加了 context 参数，总账抬到 94,000，并补一道单项护栏——
+  // 总账涨了必须能指到是哪个工具涨的，否则「抬上界」就成了万能钥匙。
   check(
-    '脚本: 体积有上限判据（92,000，留 ~5% 余量而不是等于实测值），膨胀就红',
-    probeSrc.includes('const BUDGET_BYTES = 92000') && probeSrc.includes('ok(sum <= BUDGET_BYTES'),
+    '脚本: 体积有上限判据（94,000 + 单项 17,200，留 ~5% 余量而不是等于实测值），膨胀就红',
+    probeSrc.includes('const BUDGET_BYTES = 94000') &&
+      probeSrc.includes('const TOOL_BUDGET = { memory_search: 17200 }') &&
+      probeSrc.includes('ok(sum <= BUDGET_BYTES') &&
+      probeSrc.includes("'体积：单项 ' + name + ' 没有膨胀'"),
   )
   check(
     '脚本: 失败时置 exitCode 1（check-all 才看得见）',
@@ -8454,6 +8459,115 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.126') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 132 '),
+  )
+}
+
+// ── 上下文窗口（0.2.123）：命中是「一句话」，答案常在它前后 ──────────────────
+{
+  const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const meowSrc123 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc123 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'CT 上下文窗口: 只按 rowid 相邻取同层 active 行（不跨层、不把作废的邻居拼回来）',
+    meowSrc123.includes('adjacentWindows(entries, span = 1)') &&
+      meowSrc123.includes("WHERE rowid < ? AND rowid >= ? AND status = 'active'") &&
+      meowSrc123.includes("WHERE rowid > ? AND rowid <= ? AND status = 'active'"),
+  )
+  check(
+    'CT 上下文窗口: 邻居每条只截 CTX_CHARS=200 字（上下文不是全文搬运）',
+    meowSrc123.includes('var CTX_CHARS = 200;') &&
+      meowSrc123.includes('String(r.content ?? "").slice(0, CTX_CHARS)'),
+  )
+  check(
+    'CT 上下文窗口: context 上限 3、默认 0（默认不查库、不拼字符串）',
+    meowSrc123.includes('context: { type: "integer", minimum: 0, maximum: 3, default: 0') &&
+      meowSrc123.includes('const ctxSpan = Math.min(3, Math.max(0, Math.trunc(Number(parsed.context ?? 0)) || 0));'),
+  )
+  check(
+    'CT 上下文窗口: 回执 ↑ 印前、↓ 印后',
+    meowSrc123.includes('\\u2191 ${String(it?.content ?? "")}') &&
+      meowSrc123.includes('\\u2193 ${String(it?.content ?? "")}'),
+  )
+  {
+    const ctxHome = mkdtempSync(join(tmpdir(), 'macro-ctx-'))
+    const db = Meow.getDb(ctxHome, '.dsh-meow')
+    const w = (content, level = 'fact') => db.insert({ level, content, project: '全局', keywords: [], importance: 1 })
+    w('Alice: \u6211\u4EEC\u660E\u5929\u53BB\u770B\u9CB8\u9C7C\u3002')
+    const mid = w('Bob: \u597D\uFF0C\u51E0\u70B9\u96C6\u5408\uFF1F')
+    w('Alice: \u65E9\u4E0A\u4E03\u70B9\uFF0C\u7801\u5934\u89C1\u3002')
+    const win = db.adjacentWindows([{ level: 'fact', id: mid.id }], 1).get(String(mid.id))
+    check(
+      'CT 上下文窗口·行为: 前后各一条取对（前一句 + 后一句，顺序不能反）',
+      (win?.before?.[0]?.content ?? '').includes('\u9CB8\u9C7C') && (win?.after?.[0]?.content ?? '').includes('\u7801\u5934'),
+      JSON.stringify([win?.before?.length, win?.after?.length]),
+    )
+    check(
+      'CT 上下文窗口·行为: span=0 时一条都不取（默认路径不读库）',
+      db.adjacentWindows([{ level: 'fact', id: mid.id }], 0).size === 0,
+    )
+    db.update('fact', mid.id, { status: 'archived' })
+    const midRow = db.findById('fact', mid.id)
+    check('CT 上下文窗口·行为: 被作废的命中自己也查（窗口只由调用方决定）', midRow !== null)
+    try {
+      rmSync(ctxHome, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  check(
+    'CT 上下文窗口·探针进线：CT0–CT4（含「默认不花一个字节」与跨层不串味）',
+    probeSrc123.includes('CT0 context=0 时回执与老格式逐字相同') &&
+      probeSrc123.includes('CT1 context=1 带出前后各一条') &&
+      probeSrc123.includes('CT2 邻居被 archive 后不再出现在上下文里') &&
+      probeSrc123.includes('CT3 跨层不串味：fact 的邻居不会把 lesson 拼进来') &&
+      probeSrc123.includes('CT4 context 上限 3'),
+  )
+  check(
+    'CT 上下文窗口: 版本与文档一起走（9.127 / 133）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 123)
+      return atLeast && readFileSync(join(root, 'lib', 'index.js'), 'utf8').includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.127') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 133 '),
+  )
+}
+
+
+// ── 窗口穿过统一工具（0.2.124）：融合层有自己的 schema，参数不在 pick 列表里就传不下去 ──
+{
+  const searchSrc124 = readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8')
+  const probeSrc124 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'CT 融合层: 统一 memory_search 的 schema 里有 context（否则模型看不见这个参数）',
+    searchSrc124.includes("context: { type: 'integer', description: '相邻上下文"),
+  )
+  check(
+    'CT 融合层: 主路与 graph 回退的 pick 列表都带 context（第一版漏了主路）',
+    (searchSrc124.match(/'content_max', 'context', 'explain'/g) ?? []).length >= 2,
+  )
+  check(
+    'CT 融合层: context 进了 LOCAL_ONLY_PARAMS（graph/similar 会明说用不上）',
+    searchSrc124.includes("'content_max', 'context', 'explain']"),
+  )
+  check(
+    'CT 融合层: 预算装不下时先关窗口（context 1→0），再走砍字砍条数',
+    searchSrc124.includes("const ctx0 = Number.isFinite(rawCtx) && rawCtx > 0 ? Math.min(3, Math.floor(rawCtx)) : 0") &&
+      searchSrc124.includes("const noCtx = await flow.call('memory_search', { ...baseArgs, context: 0 }, exec)") &&
+      searchSrc124.includes('context ${ctx0}→0（邻居先不铺开）'),
+  )
+  check(
+    'CT 融合层: 探针进线 CT5a / CT5 / CT6（从统一工具打进去，不是直调 vendor）',
+    probeSrc124.includes('CT5a 融合层 context 默认 0') &&
+      probeSrc124.includes('CT5 融合层：context=1 穿到 meow') &&
+      probeSrc124.includes('CT6 融合层：装不下时先关窗口'),
+  )
+  check(
+    'CT 融合层: 版本与文档一起走（9.128 / 134）',
+    readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.128 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 134 '),
   )
 }
 

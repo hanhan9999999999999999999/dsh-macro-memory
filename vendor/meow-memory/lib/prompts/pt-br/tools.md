@@ -26,6 +26,7 @@
 - memory_search.param.days: Apenas entradas criadas nos últimos N dias (por tempo de criação).
 - memory_search.param.k: Número máximo de resultados.
 - memory_search.param.content_max: Trunca o content de cada entrada neste comprimento, 0=texto completo.
+- memory_search.param.context: chave de contexto adjacente (padrão 0 = desligado): anexa até N (1-3) linhas vizinhas de cada lado de cada acerto, para ler um turno no lugar dele. Custa tokens; ligue só quando o acerto não fizer sentido sozinho.
 - memory_search.param.min_rel: Piso de relevancia (0-1, padrao 0.35): so expande entradas com pontuacao de pelo menos essa fracao do topo; a cauda mais fraca e descartada e o total com a melhor pontuacao e informado. Passe 0 para ver tudo.
 - memory_search.param.dedupe: Dobra de quase-duplicatas (padrao ativo): entradas com conteudo praticamente igual (sobreposicao literal ≥80%) aparecem uma vez so, mantendo a de maior pontuacao, e o total dobrado e informado; o caso tipico e a mesma frase gravada em fact e em lesson. Passe false para listar todas.
 - memory_search.param.explain: Interruptor de recuperação explicável (padrão desativado). Com true, cada hit traz uma decomposição de pontuação em explain (pontuação bm25 de palavras-chave, importance, peso recencyWeight de Ebbinghaus, status), para depurar "por que não foi recuperado / por que foi recuperado"; a ordem não muda.
@@ -36,6 +37,7 @@
 - memory_search.out.hits.updated_at: Timestamp da memória (última atualização, em milissegundos).
 - memory_search.out.hits.truncated: Se o content foi cortado em content_max; true significa que o original é maior — leia o texto completo com memory_read.
 - memory_search.out.hits.day: A data que a entrada carrega (uma palavra-chave YYYY-MM-DD); string vazia quando não tem.
+- memory_search.out.hits.context: memórias adjacentes {before, after} (no máximo 200 caracteres cada, só linhas active); aparece apenas quando context foi pedido.
 - memory_search.out.hits.explain: Pontuação bruta BM25 de palavras-chave (importance/recencyWeight/status voltam juntos no mesmo objeto).
 
 ### memory_find_similar
