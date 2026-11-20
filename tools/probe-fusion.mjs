@@ -952,7 +952,36 @@ try {
       return out
     })
     add('memory_read', async () => `【标题】长记忆\n\n${'正文一句。'.repeat(300)}`)
-    add('nebula_recall', async () => '沿关联：A → B')
+    // [macro-fusion 0.2.110] 星图 / 补邻居 / 相似三路也要能被预算约束：stub 的体量必须跟着
+    // 各自的旋钮走（limit / chars / content_max+k），否则「收紧了」这句话验不出真假。
+    add('nebula_recall', async (a) => {
+      costStore.calls.push({ tool: 'recall', limit: a.limit, hops: a.hops })
+      if (costStore.rigid) return `固定长星图：${'节点'.repeat(900)}`
+      const limit = Number(a.limit ?? 10)
+      let out = '沿关联：'
+      for (let i = 0; i < limit; i += 1) out += `${i ? ' → ' : ''}节点${i}（${'说明'.repeat(40)}）`
+      return out
+    })
+    add('nebula_bridge', async (a) => {
+      costStore.calls.push({ tool: 'bridge', chars: a.chars, limit: a.limit })
+      if (costStore.rigid) return `固定长邻居：${'邻居'.repeat(900)}`
+      const chars = Number(a.chars ?? 900)
+      const limit = Number(a.limit ?? 4)
+      let out = ''
+      for (let i = 0; i < limit; i += 1) out += `- 邻居${i}. ${'邻居内容'.repeat(Math.max(1, Math.ceil(chars / limit / 4)))}\n`
+      return out
+    })
+    add('memory_find_similar', async (a) => {
+      costStore.calls.push({ tool: 'similar', k: a.k, content_max: a.content_max })
+      if (costStore.rigid) return `固定长相似：${'相似'.repeat(900)}`
+      const k = Number(a.k ?? 10)
+      const cm = Number(a.content_max ?? 300)
+      let out = '['
+      for (let i = 0; i < k; i += 1) {
+        out += `${i ? ',' : ''}{"id":"x${i}","content":"${'相似'.repeat(Math.max(1, Math.ceil(cm / 2)))}"}`
+      }
+      return `${out}]`
+    })
     const bridge = {
       has: (n) => entries.has(n),
       get: (n) => entries.get(n),
@@ -1005,11 +1034,55 @@ try {
     costTiny.slice(-160),
   )
   const costSmall = await costRun({ query: '小', k: 1, content_max: 40, expand: false })
-  const costGraph = await costRun({ mode: 'graph', query: 'x', budget: 400 })
+  const costNoBudget = await costRun({ mode: 'graph', query: 'x' })
   check(
-    'D61 小回执不报成本、星图那两路不吃预算但要说清：省 token 的工具自己先要省',
-    !costSmall.includes('成本 ≈') && costGraph.includes('budget 只有本地检索能收紧'),
-    `small=${costSmall.slice(0, 30)} | graph=${costGraph.slice(-80)}`,
+    'D61 小回执不报成本、没给预算就不缩也不说废话：省 token 的工具自己先要省',
+    !costSmall.includes('成本 ≈') &&
+      !costNoBudget.includes('收紧了') &&
+      !costNoBudget.includes('只有本地检索能收紧'),
+    `small=${costSmall.slice(0, 30)} | graph=${costNoBudget.slice(-80)}`,
+  )
+
+  // D62–D65（0.2.110）：预算原来只落在本地这一路，尾注老实写着「星图 / 相似两路不缩」——
+  // 一句诚实的缺功能。四路回执都进上下文，凭什么只有一路能被约束。
+  costStore.calls = []
+  const costGraphFit = await costRun({ mode: 'graph', query: 'x', budget: 300 })
+  check(
+    'D62 星图这一路也按预算收紧，并说清动了哪个旋钮（limit 而不是 k）',
+    costGraphFit.includes('沿关联扩散这一路按 300 token 预算收紧了') &&
+      /limit 10→\d+/.test(costGraphFit) &&
+      !costGraphFit.includes('k 10→'),
+    `调用 ${costStore.calls.length} 次 · ${costGraphFit.slice(-140)}`,
+  )
+  costStore.calls = []
+  const costBridgeFit = await costRun({ mode: 'bridge', query: 'x', budget: 300 })
+  check(
+    'D63 补邻居先砍字符预算再砍条数：字符预算是这一路的「每条的字」',
+    costBridgeFit.includes('补邻居这一路按 300 token 预算收紧了') && /chars 900→\d+/.test(costBridgeFit),
+    `调用 ${costStore.calls.length} 次 · ${costBridgeFit.slice(-140)}`,
+  )
+  costStore.calls = []
+  const costSimilarFit = await costRun({ mode: 'similar', id: 'abc', budget: 300 })
+  check(
+    'D64 相似这一路按预算收字（content_max），不是只砍条数',
+    costSimilarFit.includes('相似条目这一路按 300 token 预算收紧了') && /content_max 300→\d+/.test(costSimilarFit),
+    `调用 ${costStore.calls.length} 次 · ${costSimilarFit.slice(-140)}`,
+  )
+  costStore.rigid = true
+  const costGraphTiny = await costRun({ mode: 'graph', query: 'x', budget: 200 })
+  costStore.rigid = false
+  check(
+    'D65 星图路装不下也要量到下限（limit=1、hops=0）再说：报「最小」之前必须真试过最小',
+    costGraphTiny.includes('预算 200 token 装不下') &&
+      costGraphTiny.includes('（limit=1、hops=0）实测') &&
+      !costGraphTiny.includes('收紧了'),
+    costGraphTiny.slice(-160),
+  )
+  const costExpand = await costRun({ query: 'q', k: 6, content_max: 200, expand: true, budget: 900 })
+  check(
+    'D66 本地展开时扩散按「剩余预算」算，不是各自算一遍：读者付的是整份回执',
+    costExpand.includes('星图扩散按剩余') && costExpand.includes('预算算'),
+    costExpand.slice(-150),
   )
 
   if (process.env.PROBE_LINK === '1' && id) {

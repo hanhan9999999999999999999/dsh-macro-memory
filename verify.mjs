@@ -3518,7 +3518,7 @@ function makeHostCtx() {
   )
   check(
     'search: 尾注与成本账都在薄壳里各拼一次（十几个出口不必各写一遍）',
-    /const notes = modeNotes\(mode\.name, args, flags\)\s*\n\s*const body = notes\.length > 0 \? `\$\{text\}\\n\\n\$\{notes\.join\('\\n'\)\}` : text\s*\n\s*return costTail\(body, \{ mode: mode\.name, budget, flags \}\)/.test(
+    /const notes = modeNotes\(mode\.name, args, flags\)\s*\n\s*const body = notes\.length > 0 \? `\$\{text\}\\n\\n\$\{notes\.join\('\\n'\)\}` : text\s*\n\s*return costTail\(body, \{ budget, flags \}\)/.test(
       searchSrc,
     ),
     'wrapper',
@@ -7363,9 +7363,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     searchSrc109.split('await maybeFit(').length - 1 === 2 && searchSrc109.includes('async function maybeFit('),
   )
   check(
-    '成本: 小回执一个字不加（省 token 的工具自己先要省），星图两路不吃预算但要说清',
+    '成本: 小回执一个字不加（省 token 的工具自己先要省），没预算就不缩也不说废话',
     searchSrc109.includes('if (budget.value !== null || est >= COST_SHOW_MIN)') &&
-      searchSrc109.includes('budget 只有本地检索能收紧') &&
+      searchSrc109.includes('if (budget.value !== null && !flags.budgetNote)') &&
       readSrc109.includes('return readCostTail(') &&
       tok109.readCostTail('短') === '短',
   )
@@ -7394,6 +7394,114 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.115') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 121'),
+  )
+}
+
+// [macro-fusion 0.2.110] 预算贯通四路：0.2.109 只在本地这一路落了预算，尾注老实写着
+// 「星图 / 相似两路不缩」——一句诚实的缺功能。四路回执都进上下文，凭什么只有一路能被约束。
+{
+  const searchSrc110 = readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8')
+  const prompt110 = await import(pathToFileURL(join(root, 'lib', 'macro', 'prompt.js')).href)
+  const pkg110 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc110 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const fusionSrc110 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+
+  check(
+    '预算: 四条路各自的旋钮集中一处，且都是「先砍只是少看一点的那个」',
+    (() => {
+      const at = searchSrc110.indexOf('const PATH_KNOBS = {')
+      if (at < 0) return false
+      const body = searchSrc110.slice(at, searchSrc110.indexOf('\n}\n', at))
+      const graphAt = body.indexOf('graph: [')
+      const bridgeAt = body.indexOf('bridge: [')
+      const similarAt = body.indexOf('similar: [')
+      if (!(graphAt > 0 && bridgeAt > graphAt && similarAt > bridgeAt)) return false
+      const graphPart = body.slice(graphAt, bridgeAt)
+      const bridgePart = body.slice(bridgeAt, similarAt)
+      const similarPart = body.slice(similarAt)
+      return (
+        graphPart.indexOf("key: 'limit'") < graphPart.indexOf("key: 'hops'") &&
+        bridgePart.indexOf("key: 'chars'") < bridgePart.indexOf("key: 'limit'") &&
+        similarPart.indexOf("key: 'content_max'") < similarPart.indexOf("key: 'k'")
+      )
+    })(),
+  )
+  check(
+    '预算: 预算对象先摊成数字再比（拿 {value} 去比，永远比不成立，一路滑到「装不下」）',
+    searchSrc110.includes('const cap = Number(budget.value)') &&
+      (() => {
+        const at = searchSrc110.indexOf('async function fitPath(')
+        const end = searchSrc110.indexOf('async function maybeFit(')
+        if (!(at > 0 && end > at)) return false
+        const body = searchSrc110.slice(at, end)
+        return (
+          body.includes('if (first <= cap)') &&
+          body.includes('if (est <= cap)') &&
+          !body.includes('<= budget')
+        )
+      })(),
+  )
+  check(
+    '预算: 星图 / 补邻居 / 相似都接进同一条收缩循环（三处 fitPath 调用：星图+补邻居共用、相似、本地展开）',
+    searchSrc110.split('await fitPath(').length - 1 === 3 &&
+      searchSrc110.includes('knobs: PATH_KNOBS[mode]') &&
+      searchSrc110.includes('knobs: PATH_KNOBS.similar') &&
+      searchSrc110.includes('knobs: PATH_KNOBS.graph'),
+  )
+  check(
+    '预算: 只报真动过的旋钮（`hops 2→2` 这种「报了但没变」会让读者以为它被砍了）',
+    searchSrc110.includes('dials.filter((d) => d.value !== d.from)') &&
+      searchSrc110.includes("|| '没动到任何旋钮'"),
+  )
+  check(
+    '预算: 报「最小」之前真把旋钮压到下限再量一次（不是拿某一级的估计冒充最小）',
+    searchSrc110.includes('for (const d of dials) d.value = d.min') &&
+      searchSrc110.includes('（${floorText}）实测') &&
+      searchSrc110.includes('收到了最小的一份'),
+  )
+  check(
+    '预算: 本地展开时扩散按「剩余预算」算（读者付的是整份回执），剩余不够就明说拿不出来',
+    searchSrc110.includes('const remain = budget.value - used') &&
+      searchSrc110.includes('if (remain < BUDGET_MIN)') &&
+      searchSrc110.includes('已经被本地结果用掉') &&
+      searchSrc110.includes('星图扩散按剩余'),
+  )
+  check(
+    '预算: 出口不再声称「只有本地能收紧」，没派上用场那句改成四路通用',
+    !searchSrc110.includes('只有本地检索能收紧') &&
+      searchSrc110.includes('if (budget.value !== null && !flags.budgetNote)') &&
+      searchSrc110.includes('这条路上没有可缩的东西') &&
+      searchSrc110.includes('return costTail(body, { budget, flags })'),
+  )
+  check(
+    '预算: schema 写清四条路各砍什么（不然模型以为 budget 只管本地）',
+    searchSrc110.includes('四条路都听') &&
+      searchSrc110.includes('星图先砍条数、再砍跳数') &&
+      searchSrc110.includes('补邻居先砍字符预算、再砍条数'),
+  )
+  check(
+    '预算: 手册告诉模型「四路都听」，且手册仍未触顶（余量 ≥ 下限）',
+    prompt110.GUIDE_TEXT.includes('四路都听') &&
+      prompt110.clampGuide() === prompt110.GUIDE_TEXT &&
+      prompt110.GUIDE_MAX_CHARS - prompt110.GUIDE_TEXT.length >= prompt110.GUIDE_MIN_HEADROOM,
+  )
+  check(
+    '预算: 探针进线（D61 改成「没预算就不缩」、D62 星图收 limit、D63 补邻居收 chars、D64 相似收字、D65 星图最小实测、D66 剩余预算）',
+    fusionSrc110.includes('D62 星图这一路也按预算收紧') &&
+      fusionSrc110.includes('D63 补邻居先砍字符预算再砍条数') &&
+      fusionSrc110.includes('D64 相似这一路按预算收字') &&
+      fusionSrc110.includes('D65 星图路装不下也要量到下限') &&
+      fusionSrc110.includes('D66 本地展开时扩散按「剩余预算」算'),
+  )
+  check(
+    '预算: 版本不早于 0.2.110（两处一致），文档 9.116 / 122 在位',
+    (() => {
+      const v = pkg110.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 110)
+      return atLeast && idxSrc110.includes(`export const version = '${pkg110.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.116') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 122'),
   )
 }
 
