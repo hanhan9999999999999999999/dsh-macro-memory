@@ -711,7 +711,7 @@ function makeHostCtx() {
   check('动作表: 每行都有名字（call/graph 或 local 分支）', (() => {
     const body = adminSrc.slice(adminSrc.indexOf('export const ACTIONS'), adminSrc.indexOf('function guardIngest'))
     const rows = [...body.matchAll(/^\s{2}(\w+): \{([^}]*)\}/gm)]
-    return rows.length === 8 && rows.every(([, , spec]) => /kind: '(call|graph|local)'/.test(spec))
+    return rows.length === 9 && rows.every(([, , spec]) => /kind: '(call|graph|local)'/.test(spec))
   })())
   // ingest 的运行时守卫还在（schema 收不住必填）
   check('动作表: ingest 仍守 provider/items', adminSrc.includes('action="ingest" 需要 provider') && adminSrc.includes('action="ingest" 需要 items'))
@@ -805,7 +805,7 @@ function makeHostCtx() {
   // 2) 名字只有一份：动作表的 label，八行都要有且两两不同
   const table = adminSrc.slice(adminSrc.indexOf('export const ACTIONS'), adminSrc.indexOf('export const PANEL_SUMMARY'))
   const rowLabels = [...table.matchAll(/label: '([^']+)'/g)].map((m) => m[1])
-  check('口径: 八个面板名都在动作表里', rowLabels.length === 8 && new Set(rowLabels).size === 8, rowLabels.join('/'))
+  check('口径: 九个面板名都在动作表里', rowLabels.length === 9 && new Set(rowLabels).size === 9, rowLabels.join('/'))
   // 3) 三种 kind 走同一个 wrap：正文原样、抬头统一
   check('口径: 三种 kind 都过同一个 wrap', /const wrap = \(spec, \{ body, note \}\) => \{[\s\S]{0,400}?return panelText\(spec\.label, body, note\)\n      \}/.test(adminSrc) && (adminSrc.match(/wrap\(spec, /g) ?? []).length === 3)
   check('口径: 手册那行明确豁免（wrap: false + 理由）', /guide: \{ kind: 'local', label: '完整手册'[^}]*wrap: false \}/.test(adminSrc) && adminSrc.includes('唯一豁免'))
@@ -825,7 +825,7 @@ function makeHostCtx() {
   check('口径: 成本账本的正文没被抬头顶掉', !costSrc.includes('# macro-memory 成本账本') && costSrc.includes('合计：入参'))
   // 9) 证据 + 文档出处
   const probe = read(join('tools', 'probe-fusion.mjs'))
-  check('口径: 探针实测七个抬头一致、手册豁免', probe.includes('L1 七个统计面板的抬头同一个样') && probe.includes('L3 手册不加抬头') && probe.includes('L5 条数上限有口径说明'))
+  check('口径: 探针实测八个抬头一致、手册豁免', probe.includes('L1 八个统计面板的抬头同一个样') && probe.includes('L3 手册不加抬头') && probe.includes('L5 条数上限有口径说明'))
   check('口径: README 有出处与 0.2.25', readme.includes('panel.js') && readme.includes('0.2.25'))
   check('口径: DESIGN 记了抬头与豁免', design.includes('抬头') && design.includes('为什么手册不加抬头') && design.includes('wrap: false'))
 }

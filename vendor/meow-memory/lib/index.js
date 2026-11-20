@@ -751,6 +751,22 @@ var MemoryDb = class {
     if (!row) return false;
     return Date.now() - row.run_at < hours * 36e5;
   }
+  /** [macro-fusion 0.2.97] 最近几次 dream 的账本（面板只读这个，不靠猜）：changes 里 0.2.96 起的
+   *  plan 就是那一轮的规模。changes 坏行照样出一行（plan=null），别让一行坏账吞掉整本账。 */
+  recentDreams(limit = 5) {
+    const asked = Math.trunc(Number(limit));
+    const n = Math.min(50, Math.max(1, Number.isFinite(asked) && asked > 0 ? asked : 5));
+    const rows = this.db.prepare("SELECT run_at, summary, changes, note FROM dream_log ORDER BY run_at DESC LIMIT ?").all(n);
+    return rows.map((r) => {
+      let changes = null;
+      try {
+        changes = JSON.parse(String(r.changes ?? ""));
+      } catch {
+        changes = null;
+      }
+      return { runAt: Number(r.run_at) || 0, summary: String(r.summary ?? ""), changes, note: String(r.note ?? "") };
+    });
+  }
   close() {
     try {
       this.db.close();
@@ -3415,8 +3431,21 @@ function dreamLog(ws, dir, msg) {
   } catch {
   }
 }
-var LEVEL_ORDER = { project: 0, topic: 1, fact: 2, lesson: 3, rules: 4, soul: 5, user: 6 };
-function formatTime(t) {
+/** [macro-fusion 0.2.97] 读某个工作区的 dream 账本：面板要说的每一句都从这里出，别的地方不许自己猜。
+ *  missing 分四种：'' 正常；'no-workspace' 会话没有 cwd；'no-db' 这个工作区还没建记忆库；
+ *  'read-failed: …' 库在但读不出来（原因原样带出）——「没账本」和「读不出来」不能合成一句话。 */
+function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5) {
+  if (typeof workspace !== "string" || workspace.length === 0) return { rows: [], path: "", missing: "no-workspace" };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { rows: [], path, missing: "no-db" };
+  try {
+    return { rows: getDb(workspace, dir).recentDreams(limit), path, missing: "" };
+  } catch (e) {
+    return { rows: [], path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+var LEVEL_ORDER = { project: 0, topic: 1, fact: 2, lesson: 3, rules: 4, soul: 5, user: 6 };function formatTime(t) {
   return new Date(t).toISOString().slice(0, 16).replace("T", " ");
 }
 function groupByProject(rows) {
@@ -6240,6 +6269,7 @@ export {
   dreamCommandDefinition,
   dreamPlanDigest,
   dreamReceipt,
+  readDreamLedger,
   dreamSweepOnce,
   dreamSweepTick,
   dshHomeDir,

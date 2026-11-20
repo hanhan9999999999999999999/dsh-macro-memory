@@ -5104,3 +5104,52 @@ window dream done: sess-xxxx groups=2 stamped=2 T=2026-11-19T…
 面板还没读这条路。理由：`.dsh-meow` 的账本在 meow 手里，融合层的面板动作都走 `$DSH_HOME` 下的文件，
 硬接一个 sqlite 句柄等于把账本抄一份到面板侧，两处口径迟早会漂。下一步应当走已有的事件通道
 （`/meow-memory/dream-events` 的 `DreamStateBroadcast`）把 `plan` 带出去，而不是让面板自己去查库。
+
+## 9.103 账本写完了，得有人念：面板上的整理留痕（0.2.97）
+
+### 9.103.0 现象
+
+0.2.96 让 dream 在收尾时把这一轮的规模写进 `dream_log`（summary 一行 + `changes.plan` 一份结构）。
+可库里只有写口：`memory_admin` 没有任何一行读它，主人想知道「上一轮整理看到几条、点出几对、缺几个词」，
+只能自己去翻 sqlite。**一个只有写口的账本，等于把「可追溯」做成了「看我写过」**。
+
+### 9.103.1 判据与读口
+
+- 读口唯一：`readDreamLedger(workspace, dir = ".dsh-meow", limit = 5)`（`vendor/meow-memory/lib/index.js`）。
+  面板、以后任何 UI 都从这一个出口读，不许各自开一眼 `SELECT`。
+- 四种「没念出账」必须分开，`missing` 字段：
+  `''` 正常 / `'no-workspace'` 会话头没有 cwd / `'no-db'` 这个工作区还没建库 /
+  `'read-failed: …'` 库在但读不出来（原因原样带出）。
+  **把后两种合成「还没跑过 dream」，是最难查的那种谎。**
+- 数字只念账：`changes.plan` 是 0.2.96 起才有的字段。更老的记录只说
+  「这条记录比 0.2.96 早，当时还没写规模数字」，绝不拿现在的清单反推当时的样子。
+- 一行坏账不吞整本账：`recentDreams()` 里 `JSON.parse` 失败的那行 `changes = null`，照样列出，
+  后面的好账一条不少。
+
+### 9.103.2 三个出口
+
+| 出口 | 位置 | 职责 |
+|---|---|---|
+| `MemoryDb.recentDreams(limit)` | `vendor/meow-memory/lib/index.js` | `LIMIT 1..50`（超界夹住），最新在前，返回 `{runAt, summary, changes, note}` |
+| `readDreamLedger(workspace, dir, limit)` | 同上（模块级） | 先判 `no-workspace` / `no-db` / `read-failed`，再 `getDb().recentDreams()` |
+| `memory_admin(action="dream")` | `lib/macro/dreamledger.js` + `lib/macro/defs/admin.js` | 正文逐行：`时间 · 收尾原因 · N 轮/M 条 · 逐字重复 X 对 · 重复详写 Y 对 · 缺 Z 个词 · K 个项目段`；口径只说条数差 |
+
+收尾原因从 summary 前缀取（`window dream (done|aborted|recovered):`），文案表 `REASON_TEXT`：
+`done → 整理完成`、`aborted → 中途放弃`、`recovered → 上次被打断，这次补记`。
+
+### 9.103.3 顺序上的坑
+
+- **projectDir 不在 macro 的配置段里**：它在 meow 段（默认 `.dsh-meow`，可配）。面板若自己写死
+  `.dsh-meow`，主人一改目录，面板就会对着一个不存在的路径说「还没建过库」。
+  所以 `lib/index.js` 留了模块级 `meowDirReader()`，由 `engineCfg.meow` 现读，随重挂一起更新。
+- **面板不重算**：`dreamPlanDigest()` 只在开工时算一次、收尾落库；面板念的是落库的那份。
+  两处各算一次，迟早会出现「面板说 2 对、留痕说 1 对」。
+- **`parse` 失败不是空账**：`changes` 坏掉只影响那一行的细节，不影响「这一轮存在」这件事。
+
+### 9.103.4 没做的事
+
+- 客户端月相图标的 SSE 事件里还没有 plan 字段（`DreamStateBroadcast` 只带 state）。
+  真要搬上去，下一步是给 `/meow-memory/dream-events` 的广播加第三参，面板与图标共读一份，
+  不为图标另开一条读口。
+- 面板不分页：`limit` 上限 50，再往前要翻账本得改工具参数（暂不做「翻页游标」，
+  账本本身是 append-only，按时间截断足够）。

@@ -143,6 +143,11 @@ else {
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
   {
+    marker: '[macro-fusion 0.2.97]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: 'dream 的账本只有写口：0.2.96 起每轮整理都把规模和合并候选写进 dream_log（summary 一行 + changes.plan），但库里没有任何读口——memory_admin 面板上没有一行念它，主人想知道上一轮看到几条、点出几对，只能去翻 sqlite；一个只有写口的账本等于把「可追溯」做成了「看我写过」。现在①新增 MemoryDb.recentDreams(limit=5)：LIMIT 1..50、最新在前、返回 {runAt, summary, changes, note}，changes 解析失败记 null 但该行照列（一行坏账不吞整本账）；②新增模块级 readDreamLedger(workspace, dir, limit)：先分 no-workspace / no-db / read-failed 三种没念出账的来路（「还没建库」与「库在但读不开」不许合成一句），再把库交给 recentDreams；③融合层面板加 memory_admin(action="dream")：逐行念 时间 · 收尾原因 · N 轮/M 条 · 逐字重复/重复详写/缺词/项目段，数字只念 changes.plan，老记录明说「比 0.2.96 早」；④面板不写死 .dsh-meow：lib/index.js 的 meowDirReader() 从引擎配置现读 projectDir，随重挂更新。基准在 tools/probe-ruler.mjs 的 H 段与 tools/probe-fusion.mjs 的 D9–D14（含「空账本、坏账、没有会话工作区都不许凭空报数」三条阴性对照）',
+  },
+  {
     marker: '[macro-fusion 0.2.96]',
     file: 'vendor/meow-memory/lib/index.js',
     what: 'dream 整理完不留痕：claimDream 只防重复整理、logDream 只记「done + 轮数+封存数」，主人在面板与回执里都看不到这一轮翻了多少条、撞上几对、有几对合并会丢字——模型自己也无从预判规模。现在①新增 dreamPlanDigest：用后面真正印块的那两个判据函数（dreamDupPairs / dreamCoverPairs，不另立口径）把清单算成 {rounds, groups, rows, dup, cover, missing, projects}；②起 dream 时存进 dream_meta 的 dreamdigest:<sid>，回执（memory_dream 与 /dream 同源）先用三语 labels 的 dream.plan 念一遍规模，真有字要补时再加一句 dream.plan.missing；③收尾（done/aborted/中断恢复都走 finalizeDream）把同一份摘要写进 dream_log.changes.plan 与 summary 的 plan rows=/dup=/cover=/missing=，念完删 meta，不留下一轮读的旧账；④顺带把「同一批行算三遍词集」收成 rowTokenSet 按 id+updated_at 记忆，三个消费者共用一张词表。基准在 tools/probe-ruler.mjs 的 G 段（含「数字与真印出来的块逐项相等」「干净清单不加 missing 那句」两条阴性对照）',

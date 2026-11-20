@@ -517,5 +517,47 @@ check(
   String(abortLog?.summary ?? '(没这一行)').slice(0, 96),
 )
 
+// ── H. 账本读口（0.2.97）────────────────────────────────────────────────────
+// 面板要把 dream_log 念给主人看，读口是 readDreamLedger()。它必须把三种「没念出账」分开：
+// 没工作区 / 没建库 / 库在但读不出来——后两种合成一句，就是在拿「还没跑过」掩盖「坏了」。
+const H1 = V.readDreamLedger('', '.dsh-meow', 5)
+check('H1 没有工作区：missing=no-workspace，不假装「没跑过 dream」', H1.missing === 'no-workspace' && H1.rows.length === 0, H1.missing)
+
+const emptyWs = join(home, 'ws-ledger-empty')
+mkdirSync(emptyWs, { recursive: true })
+const H2 = V.readDreamLedger(emptyWs, '.dsh-meow', 5)
+check(
+  'H2 工作区还没建库：missing=no-db，并且把要看的路径报出来',
+  H2.missing === 'no-db' && H2.rows.length === 0 && H2.path.endsWith('memory.db'),
+  H2.path.slice(-28),
+)
+
+const brokenWs = join(home, 'ws-ledger-broken')
+mkdirSync(join(brokenWs, '.dsh-meow'), { recursive: true })
+writeFileSync(join(brokenWs, '.dsh-meow', 'memory.db'), 'not a sqlite file at all', 'utf8')
+const H3 = V.readDreamLedger(brokenWs, '.dsh-meow', 5)
+check(
+  'H3 库在但读不出来：missing 以 read-failed 开头、原因原样带出（不许说成没账本）',
+  H3.missing.startsWith('read-failed:') && H3.rows.length === 0,
+  H3.missing.slice(0, 60),
+)
+
+const H4 = V.readDreamLedger(logWs, '.dsh-meow', 5)
+check(
+  'H4 有账就念：最近一条带 plan，且顺序是最新在前',
+  H4.missing === '' && H4.rows.length >= 1 && H4.rows[0].changes?.plan !== undefined && H4.rows[0].runAt >= (H4.rows[1]?.runAt ?? 0),
+  `${H4.rows.length} 条 · 最新 plan.cover=${H4.rows[0]?.changes?.plan?.cover}`,
+)
+
+// 一行坏账不能吞掉整本账：手动插一条 changes 不是 JSON 的行
+const badDb = V.getDb(logWs, '.dsh-meow')
+badDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)').run(Date.now() + 5, 'window dream done: sess-bad changes={oops', '{oops', '')
+const H5 = V.readDreamLedger(logWs, '.dsh-meow', 5)
+check(
+  'H5 坏行照样出一行（changes=null），不吞掉后面的好账',
+  H5.rows.length >= 2 && H5.rows[0].changes === null && H5.rows.some((r) => r.changes?.plan !== undefined),
+  `首行 changes=${String(H5.rows[0]?.changes)} 共 ${H5.rows.length} 条`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

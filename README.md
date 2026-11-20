@@ -1,13 +1,13 @@
 # 宏记忆 · Macro Memory
 
-> 一个记忆插件，接管全部记忆能力：**8 个工具、一段 1,085 字符的常驻注入**，主库仍是 meow 的七层 SQLite，星图退成可重建的索引。
+> 一个记忆插件，接管全部记忆能力：**8 个工具、一段 1,091 字符的常驻注入**，主库仍是 meow 的七层 SQLite，星图退成可重建的索引。
 >
-> 适用：DeepSeek Harness（DSH）。版本 **0.2.96** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
+> 适用：DeepSeek Harness（DSH）。版本 **0.2.97** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
 
-| 指标 | 融合前（三插件并存） | 现在（0.2.96） | 变化 |
+| 指标 | 融合前（三插件并存） | 现在（0.2.97） | 变化 |
 | --- | --- | --- | --- |
 | 工具 schema 合计 | 17 个工具 / 56,759 B | **8 个工具 / 8,655 B** | **−84.7%** |
-| 常驻注入 | 4,085 字符（meow 3,396 + nebula 689） | **1,085 字符（1 段）** | **−73.4%** |
+| 常驻注入 | 4,085 字符（meow 3,396 + nebula 689） | **1,091 字符（1 段）** | **−73.3%** |
 | 每轮固定开销 | 约 14–16K token | **约 2.2K token** | **−85%** |
 | 面板 / 工具来源 | 三个插件各一套 | 一个插件两个面板 | 口径统一 |
 
@@ -85,7 +85,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 
 ### 注入
 
-每轮常驻的只有一段 1,085 字符的 L0（怎么用、有条目怎么找、没条目怎么办），**不随对话变化**——这是 prompt 缓存能命中的前提。真正的内容靠工具按需拉：变化的东西不进 system prompt 前缀。
+每轮常驻的只有一段 1,091 字符的 L0（怎么用、有条目怎么找、没条目怎么办），**不随对话变化**——这是 prompt 缓存能命中的前提。真正的内容靠工具按需拉：变化的东西不进 system prompt 前缀。
 
 ## 省 token 的账怎么算
 
@@ -94,7 +94,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 | 项 | 融合前 | 现在 | 说明 |
 | --- | --- | --- | --- |
 | 工具 schema | 56,759 B（17 个） | **8,655 B（8 个）** | `tools/probe-host.mjs` 实测 D2 判据 |
-| 常驻注入 | 4,085 字符 | **1,085 字符** | 同一支探针 E2 判据，上限 1,300 |
+| 常驻注入 | 4,085 字符 | **1,091 字符** | 同一支探针 E2 判据，上限 1,300 |
 | 旧工具名残留在注入里 | 有（`nebula_recall` 等） | **0** | E4 判据 |
 | 别名工具 | — | 默认关闭 | 打开后 19 个工具，供老会话/老脚本过渡 |
 
@@ -103,7 +103,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 省 token 的三刀，按收益排序：
 
 1. **砍工具面**（17 → 8，−84.7%）：合并同义工具，`mode` 用一个枚举代替四个工具。
-2. **压注入**（4,085 → 1,085 字符，−73.4%）：只留「怎么用 + 没找到怎么办」，全文手册改成 `memory_admin(action="guide")` 按需取，用完即弃。
+2. **压注入**（4,085 → 1,091 字符，−73.3%）：只留「怎么用 + 没找到怎么办」，全文手册改成 `memory_admin(action="guide")` 按需取，用完即弃。
 3. **禁掉每轮自动邻域注入**（nebula 原来每轮把邻居关系塞进 prompt）：改成工具按需拉（`memory_search({mode:"graph"|"bridge"})`）。
 
 ## 8 个工具
@@ -192,12 +192,12 @@ git clone <THIS_REPO> dsh-macro-memory
 ## 质量：怎么证明它没坏
 
 ```bash
-node tools/check-all.mjs          # 21 支自检，1,948 条断言，140s
+node tools/check-all.mjs          # 21 支自检，1,961 条断言，141s
 node verify.mjs                   # 单支：宿主契约 + 浏览器装配
 node tools/doctor.mjs             # 体检：两棵树字节一致、加载面、注入长度、队列、账本
 ```
 
-- **21 支自检 / 1,948 条断言**，全部可执行，覆盖：宿主装配契约、真 vendor 端到端联动（含星图缺席降级）、真 meow 库 + 真 nebula 引擎的节点/边/生命周期、真 cordis + 真 ToolsService + 真 SystemPrompt、浏览器侧 UI 注册、17 个原工具 → 8 个统一工具的参数级覆盖审计、17 个原工具的清单与字面量体积、工具账本（每个脚本有归属）、口径总账（手册/schema 常量/对外文案同源）、召回校准（相关度优先 + 重要度进分数 + 相关度下限 min_rel）、合并账本（关键词并集 / 归属不搬 / 变短默认不换 / overwrite 才换）、跨层重复（写时点名另一层 / 检索折叠逐字级重复 / dedupe: false 看全量）、相似检索（基准与候选同一把尺子 / 本会话刚写的也算候选 / 端过的不再端）、两把尺子（相似度 cosine 与逐字重复度 Jaccard 并报 / 与写侧合并判据同源 / 长文嵌一句要点名）、记忆体检口径（「相似 N」是稀有词签名估算、判「同一句存两层」看 repeat、两把尺子靠一句口径说明指路）、dream 重复对（整理清单里点名逐字重复的对子 / 没对子一个字不加 / 短 id 在清单内互不撞前缀）、dream 跨轮次重复（同一句话一条 fact 一条 topic 也点名 / 一对只说一次 / 半边标「另一组」并说清怎么处置）、dream 重复详写（短摘录 + 长详写也算同一件事 / 覆盖度 ≥90% 且短条至少 8 个词 / 与逐字重复块互斥不重复点）、dream 合并处方（每个重复详写对下面点名短条里长条没有的词、最多 6 个 / 无损时明说「没有长条之外的词」/ 三把尺子各管一段：重复合并、相似不许合并）、dream 整理留痕（回执先说这一轮看到几轮几条 / 几对逐字重复 / 几对重复详写 / 几个词要补；收尾把同一份数字写进 dream_log 的 changes.plan 与 summary；念完即清 meta，下一轮读不到旧账），都含阴性对照、注入体、加载器判据、组合产物、YAML 接线、市场索引、体检。
+- **21 支自检 / 1,961 条断言**，全部可执行，覆盖：宿主装配契约、真 vendor 端到端联动（含星图缺席降级）、真 meow 库 + 真 nebula 引擎的节点/边/生命周期、真 cordis + 真 ToolsService + 真 SystemPrompt、浏览器侧 UI 注册、17 个原工具 → 8 个统一工具的参数级覆盖审计、17 个原工具的清单与字面量体积、工具账本（每个脚本有归属）、口径总账（手册/schema 常量/对外文案同源）、召回校准（相关度优先 + 重要度进分数 + 相关度下限 min_rel）、合并账本（关键词并集 / 归属不搬 / 变短默认不换 / overwrite 才换）、跨层重复（写时点名另一层 / 检索折叠逐字级重复 / dedupe: false 看全量）、相似检索（基准与候选同一把尺子 / 本会话刚写的也算候选 / 端过的不再端）、两把尺子（相似度 cosine 与逐字重复度 Jaccard 并报 / 与写侧合并判据同源 / 长文嵌一句要点名）、记忆体检口径（「相似 N」是稀有词签名估算、判「同一句存两层」看 repeat、两把尺子靠一句口径说明指路）、dream 重复对（整理清单里点名逐字重复的对子 / 没对子一个字不加 / 短 id 在清单内互不撞前缀）、dream 跨轮次重复（同一句话一条 fact 一条 topic 也点名 / 一对只说一次 / 半边标「另一组」并说清怎么处置）、dream 重复详写（短摘录 + 长详写也算同一件事 / 覆盖度 ≥90% 且短条至少 8 个词 / 与逐字重复块互斥不重复点）、dream 合并处方（每个重复详写对下面点名短条里长条没有的词、最多 6 个 / 无损时明说「没有长条之外的词」/ 三把尺子各管一段：重复合并、相似不许合并）、dream 整理留痕（回执先说这一轮看到几轮几条 / 几对逐字重复 / 几对重复详写 / 几个词要补；收尾把同一份数字写进 dream_log 的 changes.plan 与 summary；念完即清 meta，下一轮读不到旧账）、整理留痕面板（`memory_admin(action="dream")` 照账本念，不现算；没工作区 / 还没建库 / 库读不开 / 账本为空四种来路各说各话；0.2.96 之前的老记录明说「比 0.2.96 早」，不冒充有规模），都含阴性对照、注入体、加载器判据、组合产物、YAML 接线、市场索引、体检。
 - **断言数基线**：`tools/baselines.json` 记每支的 PASS 条数——少了判红（有人删了东西），多了只提醒。
 - **耗时预算**：每支 4×实测且不低于 30s，超时 SIGKILL；比基线慢 1.5 倍只提醒不判红（慢不等于坏）。
 - **vendor 账本**：`vendor/VENDOR.json` 记两棵 vendor 树的文件数/字节/整树指纹，改过没重记就 FAIL；另有 25 条「我们故意打的补丁还在位」的内容断言。
@@ -249,14 +249,14 @@ docs/                 INTERNAL.md 逐轮开发日志、images/ 配图
 
 ## English
 
-**Macro Memory** (DSH plugin, MIT) folds several memory plugins into one surface: **8 tools + a single 1,085-character standing injection**, while the storage engine stays meow-memory's seven-layer SQLite and the graph becomes a rebuildable index.
+**Macro Memory** (DSH plugin, MIT) folds several memory plugins into one surface: **8 tools + a single 1,091-character standing injection**, while the storage engine stays meow-memory's seven-layer SQLite and the graph becomes a rebuildable index.
 
 - Tool schemas: 17 tools / 56,759 B → **8 tools / 8,655 B** (−84.7%).
-- Standing prompt: 4,085 chars → **1,085 chars** (−73.4%).
+- Standing prompt: 4,085 chars → **1,091 chars** (−73.3%).
 - Per-turn fixed cost: ~14–16K → **~2.2K tokens**.
 - Nothing was dropped: every original tool is reachable through the unified surface (audited by `tools/coverage-audit.mjs` and `tools/param-audit.mjs`).
 - Writes land in the main store first; graph links that cannot be written are **queued, not lost** (500 entries, 7-day TTL, auto-flushed).
-- 21 self-check scripts / 1,948 assertions / `node tools/check-all.mjs`.
+- 21 self-check scripts / 1,961 assertions / `node tools/check-all.mjs`.
 
 Bundled third-party code is MIT: `meow-memory` © 2026 Phant0Meow ([source](https://github.com/Phant0Meow/dsh-meow-memory)), `dsh-memory-nebula` © 2026 the authors. See `THIRD-PARTY-NOTICES.md` for the exact list of modifications.
 

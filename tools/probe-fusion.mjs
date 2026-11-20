@@ -243,6 +243,32 @@ try {
   const stats = await run('memory_admin', { action: 'stats' })
   check('D8 星图统计可用', text(stats).length > 0, text(stats).split('\n')[0])
 
+  // [macro-fusion 0.2.97] 整理留痕面板。先看空账本（阴性对照：这时候一个数字都不许报），
+  // 再往真库里写两条账（一条带 0.2.96 的 plan、一条老格式），面板必须照账念、不自己算。
+  const dreamEmpty = text(await run('memory_admin', { action: 'dream' }))
+  check('D9 空账本只说没跑过', dreamEmpty.includes('整理留痕') && dreamEmpty.includes('还是空的'), dreamEmpty.split('\n').slice(1, 2).join(''))
+  check('D9 空账本不凭空报数', !/\d+ 轮 \/ \d+ 条/.test(dreamEmpty), '')
+
+  const dreamDb = Meow.getDb(workspace, '.dsh-meow')
+  dreamDb.logDream(
+    'window dream done: sess-probe-97 groups=2 stamped=true plan rows=2 dup=0 cover=1 missing=1 T=2026-11-20T00:00:00.000Z',
+    { stamped: true, groups: 2, plan: { rounds: 2, groups: 2, rows: 2, dup: 0, cover: 1, missing: 1, projects: ['探针项目'] } },
+  )
+  dreamDb.logDream('window dream aborted: sess-probe-96 groups=1 stamped=false T=2026-11-19T00:00:00.000Z', { stamped: false, groups: 1 })
+
+  const dreamPanel = text(await run('memory_admin', { action: 'dream' }))
+  check(
+    'D10 面板照账念出规模',
+    dreamPanel.includes('2 轮 / 2 条') && dreamPanel.includes('重复详写 1 对') && dreamPanel.includes('缺 1 个词'),
+    dreamPanel.split('\n').slice(1, 2).join(''),
+  )
+  check('D11 老记录不冒充有规模', dreamPanel.includes('这条记录比 0.2.96 早'), '')
+  check('D12 两种收尾都点出来路', dreamPanel.includes('整理完成') && dreamPanel.includes('中途放弃'), '')
+  const dreamOne = text(await run('memory_admin', { action: 'dream', limit: 1 }))
+  check('D13 limit 真的只列一条', dreamOne.includes('列最近 1 次整理记录') && !dreamOne.includes('2 轮 / 2 条'), dreamOne.split('\n').slice(0, 3).join(' | '))
+  const dreamNoWs = text(await tools.get('memory_admin').execute({ action: 'dream' }, {}))
+  check('D14 没有会话工作区时说清没有账本', dreamNoWs.includes('没有工作区'), dreamNoWs.split('\n').slice(1, 2).join(''))
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {
@@ -3218,7 +3244,8 @@ const adminMod = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', '
 const adminEnum = tools.get('memory_admin').parameters.properties.action.enum
 const tableKeys = Object.keys(adminMod.ACTIONS)
 check('K1 枚举就是动作表本身（同一份数据）', JSON.stringify(adminEnum) === JSON.stringify(tableKeys), adminEnum.join('/'))
-check('K2 动作表八行，一个不多一个不少', tableKeys.length === 8 && ['home', 'stats', 'hygiene', 'sources', 'ingest', 'cost', 'links', 'guide'].every((k) => tableKeys.includes(k)), tableKeys.join('/'))
+// 0.2.97：多了 dream 一行（整理留痕），八行变九行。
+check('K2 动作表九行，一个不多一个不少', tableKeys.length === 9 && ['home', 'stats', 'hygiene', 'sources', 'ingest', 'cost', 'dream', 'links', 'guide'].every((k) => tableKeys.includes(k)), tableKeys.join('/'))
 check('K3 每个动作恰好一种实现', tableKeys.every((k) => ['call', 'graph', 'local'].filter((kind) => adminMod.ACTIONS[k].kind === kind).length === 1) && tableKeys.every((k) => adminMod.ACTIONS[k].kind), tableKeys.map((k) => `${k}:${adminMod.ACTIONS[k].kind}`).join(' '))
 const deadEnds = []
 for (const action of adminEnum) {
@@ -3239,7 +3266,7 @@ check('K5 表外的 action 仍然明确报错', await (async () => {
   }
 })())
 
-// ── L. 面板口径：八个面板一个抬头，名字只有一份（0.2.25）──────────────────────
+// ── L. 面板口径：九个面板一个抬头，名字只有一份（0.2.25；0.2.97 起含整理留痕）────────
 // 抬头以前各写各的（`# macro-memory 成本账本`、`待补连线：N 条`、星图原文自己的开头），
 // 模型拿到哪段都得自己猜这是哪个面；「空」也分不清是没数据还是没接上。
 const panelMod = await import(pathToFileURL(join(root, 'lib', 'macro', 'panel.js')).href)
@@ -3257,8 +3284,8 @@ for (const action of adminEnum) {
 const headPanels = panels.filter((p) => p.action !== 'guide')
 const badHead = headPanels.filter((p) => !p.first.startsWith(panelMod.panelHead(adminMod.ACTIONS[p.action].label)))
 check(
-  'L1 七个统计面板的抬头同一个样（名字取自动作表）',
-  badHead.length === 0 && headPanels.length === 7,
+  'L1 八个统计面板的抬头同一个样（名字取自动作表）',
+  badHead.length === 0 && headPanels.length === 8,
   badHead.map((p) => `${p.action}: ${p.first.slice(0, 40)}`).join(' | ') || `${headPanels.length} 个一致`,
 )
 check(
@@ -4334,15 +4361,15 @@ check(
 
   const statsStray = text(await run('memory_admin', { action: 'stats', limit: 5 }))
   check(
-    'AY2 stats 配了 limit：要说清 limit 归 hygiene / cost / links，stats 不读它',
-    first(statsStray).includes('limit 是 hygiene / cost / links 的') && first(statsStray).includes('stats 不读它'),
+    'AY2 stats 配了 limit：要说清 limit 归 hygiene / cost / dream / links，stats 不读它',
+    first(statsStray).includes('limit 是 hygiene / cost / dream / links 的') && first(statsStray).includes('stats 不读它'),
     first(statsStray).slice(0, 140),
   )
 
   const homeStray = text(await run('memory_admin', { action: 'home', limit: 3 }))
   check(
     'AY3 home 配了 limit：必须被点出来（不许因为「反正读了一个参数」就整句吞掉）',
-    first(homeStray).includes('limit 是 hygiene / cost / links 的') && first(homeStray).includes('home 不读它'),
+    first(homeStray).includes('limit 是 hygiene / cost / dream / links 的') && first(homeStray).includes('home 不读它'),
     first(homeStray).slice(0, 140),
   )
 
@@ -4356,7 +4383,7 @@ check(
   const guideStray = text(await run('memory_admin', { action: 'guide', limit: 5 }))
   check(
     'AY5 手册豁免抬头但不豁免说话：末尾补 limit 那句，第一行仍是门牌',
-    guideStray.startsWith('宏记忆有三个面') && guideStray.includes('limit 是 hygiene / cost / links 的'),
+    guideStray.startsWith('宏记忆有三个面') && guideStray.includes('limit 是 hygiene / cost / dream / links 的'),
     guideStray.split('\n').slice(-1)[0].slice(0, 120),
   )
 
