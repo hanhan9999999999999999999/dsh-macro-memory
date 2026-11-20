@@ -5642,12 +5642,22 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 那会教人「红了就往上调」，最后等于没有判据；留 5% 余量才抓得住真正的膨胀。
   // 0.2.123：memory_search 加了 context 参数，总账抬到 94,000，并补一道单项护栏——
   // 总账涨了必须能指到是哪个工具涨的，否则「抬上界」就成了万能钥匙。
+  // 0.2.126：判据的量换成 schema（parameters + output），整字面量只留粗胖警戒线。
+  // 理由：render 去重让 memory_search 字面量长了 1.3 KB，schema 一字节没动——拿字面量当判据，
+  // 会把「改实现」误判成「塞描述」，人就开始抬上界。
   check(
-    '脚本: 体积有上限判据（94,000 + 单项 17,200，留 ~5% 余量而不是等于实测值），膨胀就红',
-    probeSrc.includes('const BUDGET_BYTES = 94000') &&
-      probeSrc.includes('const TOOL_BUDGET = { memory_search: 17200 }') &&
+    '脚本: 体积判据量的是 schema（24,000 + 单项 6,500），整字面量另有粗胖线 105,000',
+    probeSrc.includes('const BUDGET_BYTES = 24000') &&
+      probeSrc.includes('const TOOL_BUDGET = { memory_search: 6500 }') &&
+      probeSrc.includes('const LITERAL_CEIL = 105000') &&
       probeSrc.includes('ok(sum <= BUDGET_BYTES') &&
-      probeSrc.includes("'体积：单项 ' + name + ' 没有膨胀'"),
+      probeSrc.includes("'体积：单项 schema ' + name + ' 没有膨胀'"),
+  )
+  check(
+    '脚本: schema 只数 parameters + output（render 与闭包不算 schema）',
+    probeSrc.includes('function schemaOf(block)') &&
+      probeSrc.includes("const pi = block.indexOf('parameters:')") &&
+      probeSrc.includes("const oi = block.indexOf('output:', pi)"),
   )
   check(
     '脚本: 失败时置 exitCode 1（check-all 才看得见）',
@@ -8485,8 +8495,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'CT 上下文窗口: 回执 ↑ 印前、↓ 印后',
-    meowSrc123.includes('\\u2191 ${it?.day ? String(it.day) + " " : ""}') &&
-      meowSrc123.includes('\\u2193 ${it?.day ? String(it.day) + " " : ""}'),
+    meowSrc123.includes('const ln = ctxLine("\\u2191", it);') &&
+      meowSrc123.includes('const ln = ctxLine("\\u2193", it);'),
   )
   {
     const ctxHome = mkdtempSync(join(tmpdir(), 'macro-ctx-'))
@@ -8589,6 +8599,82 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'DW 日期: 版本与文档一起走（9.129 / 135）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.129 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 135 '),
+  )
+}
+
+// ── 同一条不印两遍 + 邻居行封顶（0.2.126）─────────────────────────────────────
+{
+  const meowSrc126 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc126 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'DT 去重: 命中体预先记进 printed（邻居里再出现就不印）',
+    meowSrc126.includes('const printed = new Set(hits.map((h) => `${String(h.level ?? "")}:${String(h.id ?? "")}`));'),
+  )
+  check(
+    'DT 去重: ctxLine 按 level:id 判重，不看文本',
+    meowSrc126.includes('if (key !== ":" && printed.has(key)) return null;') &&
+      meowSrc126.includes('const key = `${String(it?.level ?? "")}:${String(it?.id ?? "")}`;'),
+  )
+  check(
+    'DT 封顶: CTX_LINES=24 + 超了就停手并计数',
+    meowSrc126.includes('var CTX_LINES = 24;') &&
+      meowSrc126.includes('if (ctxUsed >= CTX_LINES) {') &&
+      meowSrc126.includes('ctxSkipped++;'),
+  )
+  check(
+    'DT 封顶: 截断时留一行说明（省 token 不许悄悄少给）',
+    meowSrc126.includes('\\u90BB\\u5C45\\u8FD8\\u6709 ${String(ctxSkipped)} \\u884C\\u6CA1\\u94FA\\u5F00'),
+  )
+  {
+    const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const dtHome = mkdtempSync(join(tmpdir(), 'macro-dt-'))
+    const db = Meow.getDb(dtHome, '.dsh-meow')
+    const w = (content) => db.insert({ level: 'fact', content, project: '全局', keywords: [], importance: 1 })
+    const rows = [
+      'Dana: 我们周六去潜水。',
+      'Dana: 潜水装备要提前租。',
+      'Dana: 租装备的地方在码头二楼。',
+      'Dana: 下午三点才开门。',
+    ]
+    const ids = rows.map((r) => w(r))
+    const T = new Map()
+    Meow.registerMemoryTools((t) => T.set(t.name, t), '.dsh-meow')
+    const tool = T.get('memory_search')
+    const hits = [
+      { id: ids[1].id, level: 'fact', content: rows[1], project: '全局', updated_at: Date.now(), score: 2 },
+      { id: ids[2].id, level: 'fact', content: rows[2], project: '全局', updated_at: Date.now(), score: 1 },
+    ]
+    const wins = db.adjacentWindows(hits.map((h) => ({ level: h.level, id: h.id })), 1)
+    const value = { note: '', hits: hits.map((h) => ({ ...h, context: wins.get(String(h.id)) ?? { before: [], after: [] } })) }
+    const text = tool.output.render({ context: 1, content_max: 300 }, value).map((x) => x.text).join('\n')
+    const countOf = (needle) => text.split(needle).length - 1
+    // 表头里的「关于：」在没有关键词时会回退印正文前 40 字，所以只数正文/邻居行。
+    const bodyText = text.split('\n').filter((l) => l.trim().length > 0 && !l.startsWith('[')).join('\n')
+    const countBody = (needle) => bodyText.split(needle).length - 1
+    check('DT 去重·行为: 相邻两条命中，同一句只印一遍', countBody('潜水装备要提前租') === 1 && countBody('码头二楼') === 1, JSON.stringify([countOf('潜水装备要提前租'), countBody('潜水装备要提前租')]))
+    check('DT 去重·行为: 命中体不冒充上一条的 ↓', !/\u2193[^\n]*潜水装备要提前租/.test(text))
+    check('DT 去重·行为: 真正的邻居照样印（周六去潜水 / 下午三点才开门）', text.includes('我们周六去潜水') && text.includes('下午三点才开门'))
+    try {
+      rmSync(dtHome, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  check(
+    'DT 去重·探针进线：DT0–DT3（含 24 行封顶与默认 0 一字不多）',
+    probeSrc126.includes('DT0 相邻两条命中：同一句只印一遍') &&
+      probeSrc126.includes('DT1 邻居行封顶 24 行') &&
+      probeSrc126.includes('DT2 截断时留一行说明还剩几行') &&
+      probeSrc126.includes('DT3 context 默认 0'),
+  )
+  check(
+    'DT: 版本与文档一起走（9.130 / 136）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      return pkg.version.split('.').map((x) => Number(x))[2] >= 126
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.130 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 136 '),
   )
 }
 

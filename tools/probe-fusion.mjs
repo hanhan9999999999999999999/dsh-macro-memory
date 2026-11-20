@@ -6264,6 +6264,70 @@ check(
   )
 }
 
+// ── DT. 同一条不印两遍 + 邻居行封顶（0.2.126）────────────────────────────────
+{
+  const dtHome = mkdtempSync(join(tmpdir(), 'macro-probe-dedupe-'))
+  const dtWs = join(dtHome, 'ws')
+  mkdirSync(dtWs, { recursive: true })
+  const DT = new Map()
+  Meow.registerMemoryTools((t) => DT.set(t.name, t), '.dsh-meow')
+  Meow.getDb(dtWs, '.dsh-meow')
+  const dtExec = { agent: { session: { header: { cwd: dtWs, id: 'sess-dt' } } } }
+  const dtRun = (name, args) => DT.get(name).execute(args, dtExec)
+  const render = (value, args = {}) => DT.get('memory_search').output.render(args, value).map((t) => t.text).join('\n')
+  const bodyOnly = (tx) => tx.split('\n').filter((l) => l.trim().length > 0 && !l.startsWith('[')).join('\n')
+  const countIn = (hay, needle) => hay.split(needle).length - 1
+
+  for (const content of [
+    'Dana: 我们周六去潜水。',
+    'Dana: 潜水装备要提前租。',
+    'Dana: 租装备的地方在码头二楼。',
+    'Dana: 下午三点才开门。',
+  ]) {
+    await dtRun('memory_remember', { content, project: '去重探针', keywords: ['潜水', '装备'], importance: 2, level: 'fact' })
+  }
+  const two = await dtRun('memory_search', { query: '潜水 装备 租 开门', k: 3, context: 1, min_rel: 0, project: '去重探针' })
+  const txTwo = render(two, { context: 1 })
+  check(
+    'DT0 相邻两条命中：同一句只印一遍（上一条的 ↓ 不再重复下一条的正文）',
+    countIn(bodyOnly(txTwo), '潜水装备要提前租') === 1 && countIn(bodyOnly(txTwo), '码头二楼') === 1,
+    JSON.stringify([countIn(bodyOnly(txTwo), '潜水装备要提前租'), countIn(bodyOnly(txTwo), '码头二楼')]),
+  )
+  check('DT0 真正的邻居照样印（前一句 / 后一句都在）', txTwo.includes('我们周六去潜水') && txTwo.includes('下午三点才开门'))
+
+  const topics = ['潮汐', '码头', '气瓶', '脚蹼', '船期', '教练', '夜潜', '保暖衣', '接驳车', '保险费']
+  const songs = [
+    '鲸歌录音时长三分半，水听器放在船尾。',
+    '傍晚风小的时候最容易听到鲸歌，海面几乎没浪。',
+    '录到的鲸歌属于座头鲸，低频段重复三次。',
+    '鲸歌的音量在深水区比浅水区高出一截。',
+    '鲸歌样本存进了硬盘的第三个分区。',
+  ]
+  let k = 0
+  for (let i = 0; i < 40; i++) {
+    const isHit = i % 8 === 0 && k < songs.length
+    const content = isHit ? songs[k++] : `第 ${i} 条：${topics[i % topics.length]}的记录（不相关）。`
+    await dtRun('memory_remember', { content, project: '封顶探针', keywords: isHit ? ['鲸歌', '录音'] : [topics[i % topics.length]], importance: 2, level: 'fact' })
+  }
+  const spread = await dtRun('memory_search', { query: '鲸歌 录音 水听器', k: 8, context: 3, min_rel: 0, project: '封顶探针' })
+  const txSpread = render(spread, { context: 3 })
+  const ctxRows = txSpread.split('\n').filter((l) => /^\s+[\u2191\u2193] /.test(l)).length
+  check('DT1 邻居行封顶 24 行（命中分散也不许铺满）', ctxRows === 24, `${ctxRows} 行`)
+  check(
+    'DT2 截断时留一行说明还剩几行（省 token 不许悄悄少给）',
+    /邻居还有 \d+ 行没铺开/.test(txSpread) && txSpread.includes('memory_read'),
+    txSpread.split('\n').slice(-1)[0].slice(0, 80),
+  )
+
+  const plain = render(await dtRun('memory_search', { query: '潜水 装备', k: 3, project: '去重探针' }), {})
+  check('DT3 context 默认 0：回执里一个 ↑ / ↓ 都没有', !plain.includes('\u2191') && !plain.includes('\u2193'), `${plain.length} 字`)
+  try {
+    rmSync(dtHome, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
 for (const d of disposers) {
   try {
     d()
