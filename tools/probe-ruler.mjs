@@ -1177,5 +1177,74 @@ check(
   `scale=${JSON.stringify(qProj2)}`,
 )
 
+// ═══ [macro-fusion 0.2.114] 疑似冲突对：同一件事写成两种说法 ═══
+// 逐字重复与「摘要 + 全文」都抓不到的那一种病：正文差得够多（所以不算重复），
+// 关键词却指着同一个主题，数字/版本彼此不同。断言写的是「差异摊得出来 + 判据不误报」。
+const cfRow = (id, content, keywords, updated_at, status = 'active', level = 'fact') => ({
+  id, level, content, keywords, updated_at, created_at: updated_at - 100, status,
+})
+const cfA = cfRow('cf000001aa', 'DSH 的记忆库在 C 盘的 .dsh 目录里，插件版本 0.1.x，配置文件也在 C 盘', ['DSH', '路径'], 1000)
+const cfB = cfRow('cf000002bb', 'DSH 已经搬到 D 盘 dsh-home，插件版本 0.2.113，所有配置与插件数据都在 D 盘', ['DSH', '路径'], 2000)
+const cfRounds = [{ kind: 'atomic', groups: [{ name: '', rows: [cfA, cfB] }], projects: ['Alpha'] }]
+const cfDig = V.dreamPlanDigest(cfRounds)
+const cfPair = cfDig.conflictPairs?.[0] ?? {}
+check(
+  'L32 同一主题写了不同版本：digest 记 1 对，差异（共用关键词 / 各自独有 / 谁更新）全部落账',
+  cfDig.conflicts === 1 &&
+    cfDig.dup === 0 && cfDig.cover === 0 &&
+    cfPair.newer === 'b' && cfPair.onlyA?.includes('0.1') && cfPair.onlyB?.includes('0.2.113') &&
+    Array.isArray(cfPair.shared) && cfPair.shared.length === 2 && cfPair.newerAt === 2000,
+  `conflicts=${cfDig.conflicts} pair=${JSON.stringify(cfPair)}`,
+)
+// 阴性对照一：数字一致、只是换了说法 —— 那是复述，不许报成冲突（报了就会让整理去改本来对的条目）。
+const cfC = cfRow('cf000003cc', '插件版本 0.2.113 装在 D 盘，配置文件也放在 D 盘的 dsh-home 下', ['DSH', '路径'], 3000)
+const cfRestate = V.dreamPlanDigest([{ kind: 'atomic', groups: [{ name: '', rows: [cfB, cfC] }], projects: [] }])
+check(
+  'L33 阴性对照：数字一致而措辞不同的复述不算冲突',
+  cfRestate.conflicts === 0,
+  `conflicts=${cfRestate.conflicts} pair=${JSON.stringify(cfRestate.conflictPairs)}`,
+)
+// 阴性对照二：归档的那条不报——归档本身就是处置，再报一次只是催人做已经做过的事。
+const cfArchived = V.dreamPlanDigest([{ kind: 'atomic', groups: [{ name: '', rows: [cfA, { ...cfB, status: 'archived' }] }], projects: [] }])
+check(
+  'L34 阴性对照：归档的那条不报冲突',
+  cfArchived.conflicts === 0,
+  `conflicts=${cfArchived.conflicts}`,
+)
+// 回执与清单：数字进回执（不用展开账才看见），清单里摊差异与判据；时间一样就说「分不出谁新」。
+const cfReceipt = V.dreamReceipt(cfDig)
+const cfMsg = (rounds, idx) => V.buildDreamMessage(null, 'sess', Date.now(), rounds, idx).content.map((c) => c.text ?? '').join('\n')
+const cfBody = cfMsg(cfRounds, 0)
+check(
+  'L35 回执点出冲突对数，清单里标题 / 共用关键词 / 各自独有 / 判据四件都在',
+  cfReceipt.includes('另有 1 对疑似冲突') &&
+    cfBody.includes('【疑似冲突 1 对】') &&
+    cfBody.includes('共用关键词：') &&
+    cfBody.includes('  cf000001 独有 0.1') &&
+    /→ cf000002 更新（\d{4}-\d{2}-\d{2} \d{2}:\d{2}）/.test(cfBody) &&
+    cfBody.includes('措辞不同而数字一致的'),
+  `receipt=${flat(cfReceipt)} body=${flat(cfBody.slice(cfBody.indexOf('【疑似冲突'), cfBody.indexOf('【疑似冲突') + 200))}`,
+)
+const cfTie = V.dreamPlanDigest([{ kind: 'atomic', groups: [{ name: '', rows: [cfA, { ...cfB, updated_at: 1000 }] }], projects: [] }])
+const cfTieRounds = [{ kind: 'atomic', groups: [{ name: '', rows: [cfA, { ...cfB, updated_at: 1000 }] }], projects: [] }]
+check(
+  'L36 更新时间一模一样：newer=both，清单说「分不出谁新」而不是硬挑一条',
+  cfTie.conflictPairs?.[0]?.newer === 'both' && cfMsg(cfTieRounds, 0).includes('分不出谁新'),
+  `newer=${cfTie.conflictPairs?.[0]?.newer}`,
+)
+// 同一对跨轮（一条在 fact 轮、另一条在 topic 轮）只由先出现的那一轮负责说，别两轮各印一遍；
+// 另一条不在本组清单里时要标「（另一组）」，否则整理时看不见对方会以为没这回事。
+const cfCross = [
+  { kind: 'atomic', groups: [{ name: '', rows: [cfA] }], projects: [] },
+  { kind: 'topic', groups: [{ name: 't', rows: [cfB] }], projects: [] },
+]
+check(
+  'L37 跨轮同一对只印一次：先出现的那一轮有块并标「另一组」，后一轮一个字都不加',
+  cfMsg(cfCross, 0).includes('【疑似冲突 1 对】') &&
+    cfMsg(cfCross, 0).includes('（另一组）') &&
+    !cfMsg(cfCross, 1).includes('【疑似冲突 1 对】'),
+  `r0=${cfMsg(cfCross, 0).includes('【疑似冲突 1 对】')} r1=${cfMsg(cfCross, 1).includes('【疑似冲突 1 对】')}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

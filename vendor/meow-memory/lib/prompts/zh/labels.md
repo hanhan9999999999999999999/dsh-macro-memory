@@ -37,6 +37,14 @@
 - dream.cover.keepNone: 处方：短条没有长条之外的词，这次合并没有东西要补——留着长条、把短条设 archived 就行，正文不用改写。
 - dream.plan: 【这一轮看到：{rounds} 轮 / {rows} 条 · 逐字重复 {dup} 对 · 重复详写 {cover} 对】——数字是从清单本身算出来的，收尾时同一份数字会写进整理留痕。
 - dream.plan.missing: 这些详写对里共 {missing} 个词只活在短条里，合并时必须补进去（每一对下面都有处方行点名）。
+- dream.conflict.title: 【疑似冲突 {n} 对】（下面每一对都写在同一个主题上——关键词至少 {keys} 个相同——数字/版本却彼此不同；它们不是重复，重复归上面两块。这里只把两种说法摆在一起，不判谁对）：
+- dream.conflict.keywords: 共用关键词：{words}{more}
+- dream.conflict.only: {id} 独有 {nums}{more}
+- dream.conflict.more: （共 {n} 个）
+- dream.conflict.newer: → {id} 更新（{time}）：按时间新的算——旧的那条要么改成这个说法，要么用 memory_update 把 status 设 stale
+- dream.conflict.same: → 两条更新时间一模一样（{time}），分不出谁新——看正文自己决断
+- dream.conflict.rule: 判据：同一主题 + 数字/版本不一样 + 既不是重复也不是摘要与全文。措辞不同而数字一致的**不算**冲突（那是复述）；归档的那条也不报（归档本身就是处置）。改完库之后，被改的那条要留下能说明「为什么这么定」的痕迹。
+- dream.plan.conflicts: 另有 {n} 对疑似冲突（同一主题写了彼此不同的数字/版本，清单里点名了）。
 - project.unlabeled: 未标记
 - project.header: 【项目：{name}】
 - project.empty: 【项目：{name}】该项目暂无记忆条目。

@@ -7776,5 +7776,145 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.114] 疑似冲突：对子两块只抓「同一句话存了两份」，抓不到「同一件事两种说法」
+{
+  const meowSrc114 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const ledgerSrc114 = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const rulerSrc114 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc114 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg114 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc114 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+
+  check(
+    '冲突: 写侧门槛在位（同一主题 2 个关键词、两侧各有数字、最多 3 对 / 各侧点到 3 个 / 关键词采样 4 个）',
+    meowSrc114.includes('var DREAM_CONFLICT_MAX = 3;') &&
+      meowSrc114.includes('var DREAM_CONFLICT_KEYS = 2;') &&
+      meowSrc114.includes('var DREAM_CONFLICT_NUMS = 3;') &&
+      meowSrc114.includes('var DREAM_CONFLICT_KEYS_SAMPLE = 4;') &&
+      meowSrc114.includes('function dreamConflictPairs(rows, max = DREAM_CONFLICT_MAX)'),
+  )
+  check(
+    '冲突: 四种「不算冲突」都排除（归档已处置 / 逐字重复归对子块 / 覆盖归详写块 / 数字一致是复述）',
+    meowSrc114.includes('const live = rows.filter((r) => String(r.status ?? "active") !== "archived")') &&
+      meowSrc114.includes('if (overlapOfSets(sets[i], sets[j]) >= DEDUP_THRESHOLD) continue') &&
+      meowSrc114.includes('if (coverOfSets(sets[i], sets[j]) >= DREAM_COVER_MIN) continue') &&
+      meowSrc114.includes('if (sameNumberSet(nums[i], nums[j])) continue') &&
+      meowSrc114.includes('if (nums[i].size === 0) continue'),
+  )
+  check(
+    '冲突: 摊出来的是差异而不是结论（共用关键词 / 各自独有 / 谁更新，时间相同就说分不出）',
+    meowSrc114.includes('shared: shared.slice(0, DREAM_CONFLICT_KEYS_SAMPLE),') &&
+      meowSrc114.includes('onlyA: onlyA.slice(0, DREAM_CONFLICT_NUMS),') &&
+      meowSrc114.includes('newer: ta === tb ? "both" : ta > tb ? "a" : "b"') &&
+      meowSrc114.includes('out.sort((x, y) => stamp(y) - stamp(x))'),
+  )
+  check(
+    '冲突: 计数与明细分两个字段（混进 dup/cover 会让读侧「对子没落账」误报），计数不受上限截断',
+    meowSrc114.includes('const conflicts = dreamConflictPairs(allRows, Infinity)') &&
+      meowSrc114.includes('conflicts: conflicts.length,') &&
+      meowSrc114.includes('conflictPairs: dreamPlanConflicts(allRows)') &&
+      meowSrc114.includes('for (const p of dreamConflictPairs(allRows, Infinity)) {'),
+  )
+  check(
+    '冲突: 回执会点出对数（标着 0 的真值，不会被当成「没查」），空串不占行',
+    meowSrc114.includes('const conf = Number(digest.conflicts) > 0 ? lbl4("dream.plan.conflicts", { n: String(digest.conflicts) }) : "";') &&
+      meowSrc114.includes('[head, miss, conf].filter((s) => s !== "").join("\\n")'),
+  )
+  check(
+    '冲突: 清单块按「先出现的那一轮」归轮，另一条不在本组时标「另一组」，块本身插在详写块之后',
+    meowSrc114.includes('const conflictPairs = dreamConflictPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);') &&
+      meowSrc114.includes('dream.conflict.more') &&
+      meowSrc114.includes('list: listBlock + dupBlock + coverBlock + conflictBlock'),
+  )
+  check(
+    '冲突: 三语标签各 8 键（标题 / 关键词 / 独有 / 更多 / 谁更新 / 分不出 / 判据 / 回执）',
+    ['title', 'keywords', 'only', 'more', 'newer', 'same', 'rule'].every((k) =>
+      ['zh', 'en', 'pt-br'].every((l) =>
+        readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, 'labels.md'), 'utf8').includes(`- dream.conflict.${k}:`),
+      ),
+    ) &&
+      ['zh', 'en', 'pt-br'].every((l) =>
+        readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, 'labels.md'), 'utf8').includes('- dream.plan.conflicts:'),
+      ),
+  )
+  check(
+    '冲突: 六份槽位指导都教了「别合并、别因为旧就归档」（三语 × fact/topic）',
+    ['zh', 'en', 'pt-br'].every((l) => {
+      const atomic = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, 'dream-atomic.md'), 'utf8')
+      const topic = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', l, 'dream-topic.md'), 'utf8')
+      const block = l === 'zh' ? '【疑似冲突】' : l === 'en' ? '[probable conflicts]' : '[conflitos prováveis]'
+      const mergeWarn = l === 'zh' ? '别合并成一条' : l === 'en' ? '**Do not merge them into one' : '**Não junte as duas em uma'
+      const staleHint = l === 'zh' ? '（已被取代' : l === 'en' ? '(superseded' : '(substituída'
+      const fileHint = l === 'zh' ? '翻项目文件' : l === 'en' ? 'check the project files' : 'confira os arquivos do projeto'
+      return (
+        atomic.includes(block) && atomic.includes(mergeWarn) && atomic.includes(staleHint) && atomic.includes(fileHint) &&
+        topic.includes(block) && topic.includes(mergeWarn) && topic.includes(staleHint) && topic.includes(fileHint)
+      )
+    }),
+  )
+  check(
+    '冲突: 读侧四个分支各说各话（老账=没查 / 真没有 / 说有几对却没明细 / 只存前几对）',
+    ledgerSrc114.includes("function conflictsOf(plan) {") &&
+      ledgerSrc114.includes('return Number.isFinite(n) && n > 0 ? n : 0') &&
+      ledgerSrc114.includes('if (!Array.isArray(list)) return null') &&
+      ledgerSrc114.includes('那一轮根本没查冲突，不是「查了没有」。') &&
+      ledgerSrc114.includes('这一轮没有「同一主题却写了不同数字」的条目。') &&
+      ledgerSrc114.includes('却没有一条明细——别把「没列」读成「没有」。') &&
+      ledgerSrc114.includes('对没落账（一条账只存前几对）——数是真数，点名只到前几对。'),
+  )
+  check(
+    '冲突: 明细一行摊事实（id 对 / 层 / 共用关键词 / 各自独有 / 谁更新），0 对不进行首',
+    ledgerSrc114.includes("const head = `- ${idA} ⇄ ${idB} · ${p?.levelA ?? '?'} ⇄ ${p?.levelB ?? '?'}`") &&
+      ledgerSrc114.includes('· 共用关键词：${words.join') &&
+      ledgerSrc114.includes('两条更新时间相同，分不出谁新') &&
+      ledgerSrc114.includes('if (conflictCount > 0) parts.push(`疑似冲突 ${conflictCount} 对`)'),
+  )
+  check(
+    '冲突: 面板插在重复对之后（先看该不该合并，再看该不该统一说法），走向两块不加冲突（那是两件事）',
+    (() => {
+      const at = ledgerSrc114.indexOf('const conflictText = conflictsBlock(row)')
+      const pairAt = ledgerSrc114.indexOf('lines.push(pairsBlock(row))')
+      if (!(at > 0 && pairAt > 0 && at > pairAt)) return false
+      const bodyOf = (name) => {
+        const from = ledgerSrc114.indexOf(`function ${name}(`)
+        if (from < 0) return ''
+        const next = ledgerSrc114.indexOf('\nfunction ', from + 10)
+        return ledgerSrc114.slice(from, next > from ? next : ledgerSrc114.length)
+      }
+      const level = bodyOf('levelTrendLine')
+      const project = bodyOf('projectTrendLine')
+      return level !== '' && project !== '' && !level.includes('conflict') && !project.includes('conflict')
+    })(),
+  )
+  check(
+    '冲突·探针进线：写侧 L32–L37（落账 / 复述不报 / 归档不报 / 回执与清单 / 时间相同 / 跨轮只印一次）',
+    rulerSrc114.includes('L32 同一主题写了不同版本') &&
+      rulerSrc114.includes('L33 阴性对照：数字一致而措辞不同的复述不算冲突') &&
+      rulerSrc114.includes('L34 阴性对照：归档的那条不报冲突') &&
+      rulerSrc114.includes('L35 回执点出冲突对数') &&
+      rulerSrc114.includes('L36 更新时间一模一样') &&
+      rulerSrc114.includes('L37 跨轮同一对只印一次'),
+  )
+  check(
+    '冲突·探针进线：面板 D83–D88（摊差异 / 行里点名 / 老账说没查 / 有数没明细 / 只存前几对 / 阴性对照）',
+    fusionSrc114.includes('D83 摊开一条带冲突的账') &&
+      fusionSrc114.includes('D84 行里就点出「疑似冲突 N 对」') &&
+      fusionSrc114.includes('D85 老账（0.2.114 之前）明说「没查过冲突」') &&
+      fusionSrc114.includes('D86 账里记着 2 对却一条明细都没有') &&
+      fusionSrc114.includes('D87 只存了前几对') &&
+      fusionSrc114.includes('D88 阴性对照：这一轮没有两种说法就明说没有'),
+  )
+  check(
+    '冲突·版本不早于 0.2.114（两处一致），文档 9.120 / 126 在位',
+    (() => {
+      const v = pkg114.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 114)
+      return atLeast && idxSrc114.includes(`export const version = '${pkg114.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.120') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 126'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

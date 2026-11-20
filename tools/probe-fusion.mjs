@@ -1061,6 +1061,81 @@ try {
     pjStillLine,
   )
 
+  // [macro-fusion 0.2.114] 疑似冲突：账本里能摊出「同一件事的两种说法」
+  // 三件事要看见：①行里点出对数；②摊开看见差在哪些数字、共用哪些关键词、谁更新；
+  // ③0.2.114 之前的账没查过冲突，得说「没查」，不能说「查了没有」。
+  const cfWs = mkdtempSync(join(tmpdir(), 'macro-probe-conflict-'))
+  const cfDb = Meow.getDb(cfWs, '.dsh-meow')
+  const cfRowOf = (id, content, keywords, updated_at, status = 'active', level = 'fact') => ({
+    id, level, content, keywords, updated_at, created_at: updated_at - 100, status,
+  })
+  const cfA = cfRowOf('cccc0001aa', 'DSH 的记忆库在 C 盘的 .dsh 目录里，插件版本 0.1.x，配置文件也在 C 盘', ['DSH', '路径'], 1760000000000)
+  const cfB = cfRowOf('cccc0002bb', 'DSH 已经搬到 D 盘 dsh-home，插件版本 0.2.113，所有配置与插件数据都在 D 盘', ['DSH', '路径'], 1760000600000)
+  const cfRounds = [{ kind: 'atomic', groups: [{ name: '', rows: [cfA, cfB] }], projects: ['Alpha'] }]
+  const cfDigest = Meow.dreamPlanDigest(cfRounds)
+  cfDb.logDream('window dream done: sess-conflict-legacy stamped=true', {
+    stamped: true, groups: 1,
+    plan: { rounds: 1, groups: 1, rows: 2, dup: 0, cover: 0, missing: 0, projects: 0, pairs: [] },
+  }, '老格式：0.2.114 之前没有冲突这一格')
+  cfDb.logDream('window dream done: sess-conflict stamped=true', { stamped: true, groups: 1, plan: cfDigest }, '疑似冲突')
+  const cfCtx = { agent: { session: { header: { cwd: cfWs } } } }
+  const cfNew = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, cfCtx))
+  check(
+    'D83 摊开一条带冲突的账：对数、短 id、共用关键词、各自独有、谁更新全在',
+    cfNew.includes('疑似冲突（账里存了 1 对，这一轮共 1 对）：') &&
+      cfNew.includes('- cccc0001 ⇄ cccc0002') &&
+      cfNew.includes('共用关键词：dsh、路径') &&
+      cfNew.includes('cccc0001 独有 0.1') &&
+      cfNew.includes('cccc0002 独有 0.2.113') &&
+      /cccc0002 更新（\d{2}-\d{2} \d{2}:\d{2}）/.test(cfNew),
+    cfNew.split('\n').filter((l) => l.startsWith('疑似冲突') || l.startsWith('- cccc')).join(' | '),
+  )
+  const cfNewRow = cfNew.split('\n').find((l) => l.startsWith('#') && l.includes('疑似冲突')) ?? ''
+  check(
+    'D84 行里就点出「疑似冲突 N 对」，不用展开才知道这一轮撞上了',
+    cfNewRow.includes('疑似冲突 1 对'),
+    cfNewRow || cfNew.split('\n').slice(0, 3).join(' | '),
+  )
+  const cfLegacy = text(await tools.get('memory_admin').execute({ action: 'dream', id: '2' }, cfCtx))
+  check(
+    'D85 老账（0.2.114 之前）明说「没查过冲突」，不是「查了没有」',
+    cfLegacy.includes('没有存这一格') && cfLegacy.includes('根本没查冲突') && cfLegacy.includes('不是「查了没有」'),
+    cfLegacy.split('\n').filter((l) => l.startsWith('疑似冲突')).join(' | '),
+  )
+  cfDb.logDream('window dream done: sess-conflict-hollow stamped=true', {
+    stamped: true, groups: 1,
+    plan: { rounds: 1, groups: 1, rows: 2, dup: 0, cover: 0, missing: 0, projects: 0, conflicts: 2, conflictPairs: [] },
+  }, '有数没明细')
+  const cfHollow = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, cfCtx))
+  check(
+    'D86 账里记着 2 对却一条明细都没有：别把「没列」读成「没有」',
+    cfHollow.includes('账里记着 2 对，却没有一条明细') && cfHollow.includes('别把「没列」读成「没有」'),
+    cfHollow.split('\n').filter((l) => l.startsWith('疑似冲突')).join(' | '),
+  )
+  cfDb.logDream('window dream done: sess-conflict-clip stamped=true', {
+    stamped: true, groups: 1,
+    plan: {
+      rounds: 1, groups: 1, rows: 6, dup: 0, cover: 0, missing: 0, projects: 0,
+      conflicts: 5,
+      conflictPairs: [{ kind: 'conflict', a: 'cccc0001', b: 'cccc0002', levelA: 'fact', levelB: 'fact', shared: ['dsh', '路径'], sharedTotal: 2, onlyA: ['0.1'], onlyB: ['0.2.113'], onlyACount: 1, onlyBCount: 1, newer: 'b', newerAt: 1760000600000 }],
+    },
+  }, '明细超上限')
+  const cfClip = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, cfCtx))
+  check(
+    'D87 只存了前几对：差额要说出来（数是真数，点名只到前几对）',
+    cfClip.includes('账里存了 1 对，这一轮共 5 对') && cfClip.includes('- 还有 4 对没落账'),
+    cfClip.split('\n').filter((l) => l.startsWith('疑似冲突') || l.startsWith('- 还有')).join(' | '),
+  )
+  const cfQuiet = Meow.dreamPlanDigest([{ kind: 'atomic', groups: [{ name: '', rows: [cfB] }], projects: [] }])
+  cfDb.logDream('window dream done: sess-conflict-none stamped=true', { stamped: true, groups: 1, plan: cfQuiet }, '没有冲突')
+  const cfNone = text(await tools.get('memory_admin').execute({ action: 'dream', id: '1' }, cfCtx))
+  const cfNoneRow = cfNone.split('\n').find((l) => l.startsWith('#')) ?? ''
+  check(
+    'D88 阴性对照：这一轮没有两种说法就明说没有，行里也不多一个「疑似冲突 0 对」',
+    cfNone.includes('这一轮没有「同一主题却写了不同数字」的条目') && !cfNoneRow.includes('疑似冲突'),
+    cfNone.split('\n').filter((l) => l.startsWith('疑似冲突')).join(' | ') + ' || ' + cfNoneRow,
+  )
+
   // D58–D61（0.2.109）：回执成本 + budget。六个维度里「效率」以前没有数——
   // 有条数、有耗时，没有「这次检索占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
   const { createUnifiedTools: costTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)

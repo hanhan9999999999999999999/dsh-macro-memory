@@ -37,6 +37,14 @@
 - dream.cover.keepNone: Recipe: the excerpt has no words the long entry lacks, so there is nothing to fold in — keep the long entry, set the excerpt to archived, and leave the text as it is.
 - dream.plan: [this run sees {rounds} rounds / {rows} entries · {dup} verbatim-duplicate pairs · {cover} duplicate write-up pairs] — these numbers are counted from the checklist itself; the same numbers go into the dream log at the end.
 - dream.plan.missing: Across those write-up pairs {missing} words live only in the excerpt, so they must be folded in when merging (each pair names them on its recipe line).
+- dream.conflict.title: [probable conflicts: {n}] (each pair below sits on the same subject — at least {keys} shared keywords — yet states different numbers or versions; these are not duplicates, duplicates are handled above. Both readings are laid side by side here with no verdict):
+- dream.conflict.keywords: shared keywords: {words}{more}
+- dream.conflict.only: {id} alone has {nums}{more}
+- dream.conflict.more: ({n} in total)
+- dream.conflict.newer: -> {id} is newer ({time}): go with the newer reading — either rewrite the older one to match, or set its status to stale with memory_update
+- dream.conflict.same: -> both carry the exact same update time ({time}), so neither is newer — read the bodies and decide yourself
+- dream.conflict.rule: Ruler — same subject + different numbers/versions + neither a verbatim duplicate nor an excerpt-plus-write-up. Different wording with identical numbers does **not** count as a conflict (that is a restatement); an archived entry is not reported either (archiving is already the disposition). However you settle it, leave a trace on the entry you changed that says why.
+- dream.plan.conflicts: {n} more probable conflicts (same subject, different numbers/versions — named in the checklist).
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.

@@ -3847,6 +3847,85 @@ function dreamCoverPairs(rows, minContain = DREAM_COVER_MIN, max = DREAM_DUP_MAX
   out.sort((x, y) => y.contain - x.contain);
   return out.slice(0, max);
 }
+// [macro-fusion 0.2.114] 上面两块（逐字重复 / 重复详写）回答的都是「同一句话存了两份」。
+// 还有另一种形态它们都抓不到，而那一种才是真会让记忆变错的：**同一件事写成了两种说法**。
+// 例：一条说「DSH 在 C 盘」、另一条说「DSH 已经搬到 D 盘」——逐字重复度不到 30%，覆盖度也够不着
+// 「摘要 + 全文」，两块都不出声，可它们一起被召回就是自相矛盾。手册里那句「冲突以时间戳最新者为准」
+// 此前在代码里没有任何落地：没人检测，也就没人知道什么时候该用这条规则。
+// 判据刻意窄，宁可漏也不误报（误报会让整理时的模型去改本来对的条目）：
+//  ① 同题：两条关键词交集 ≥ DREAM_CONFLICT_KEYS。关键词是写记忆时亲手挑的主题标签，比正文词集
+//     更能说明「说的是同一件事」；正文词集的 Jaccard 只用来排除重复，不用来判定同题。
+//  ② 既不是重复（< DEDUP_THRESHOLD），也不是摘要+全文（< DREAM_COVER_MIN）——那两块各有自己的处置，
+//     同一对不印两遍。
+//  ③ 两条都写了数字/版本，且数字集合**不完全相同**：只有「同一件事 + 数字不一样」才有两种说法的嫌疑。
+//     措辞不同而数字一致的不算冲突，那是复述。
+// 不做判决：只把两种说法与更新时间摆在一起，谁新由时间戳说，改哪条由整理时的模型决断。
+var DREAM_CONFLICT_MAX = 3;
+var DREAM_CONFLICT_KEYS = 2;
+var DREAM_CONFLICT_NUMS = 3;
+var DREAM_CONFLICT_KEYS_SAMPLE = 4;
+function rowKeywordSet(r) {
+  const out = new Set();
+  for (const k of Array.isArray(r.keywords) ? r.keywords : []) {
+    const s = String(k ?? "").trim().toLowerCase();
+    if (s !== "") out.add(s);
+  }
+  return out;
+}
+// 数字/版本号：0.2.113、1795165494、2026-11-20、3,826,540 都算；同一串只算一次。
+function rowNumberSet(r) {
+  const out = new Set();
+  const re = /\d+(?:[.,:\/-]\d+)*/g;
+  let m;
+  while ((m = re.exec(String(r.content ?? ""))) !== null) out.add(m[0]);
+  return out;
+}
+function sameNumberSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+function dreamConflictPairs(rows, max = DREAM_CONFLICT_MAX) {
+  // 归档的那条不算：归档本身就是「这条已作废」的处置，再报一次只是催人做已经做过的事。
+  const live = rows.filter((r) => String(r.status ?? "active") !== "archived");
+  if (live.length < 2) return [];
+  const sets = live.map(rowTokenSet);
+  const kws = live.map(rowKeywordSet);
+  const nums = live.map(rowNumberSet);
+  const out = [];
+  for (let i = 0; i < live.length; i++) {
+    if (nums[i].size === 0) continue;
+    for (let j = i + 1; j < live.length; j++) {
+      if (nums[j].size === 0) continue;
+      const shared = [];
+      for (const k of kws[i]) if (kws[j].has(k)) shared.push(k);
+      if (shared.length < DREAM_CONFLICT_KEYS) continue;
+      if (sets[i].size === 0 || sets[j].size === 0) continue;
+      if (overlapOfSets(sets[i], sets[j]) >= DEDUP_THRESHOLD) continue;
+      if (coverOfSets(sets[i], sets[j]) >= DREAM_COVER_MIN) continue;
+      if (sameNumberSet(nums[i], nums[j])) continue;
+      const onlyA = [...nums[i]].filter((x) => !nums[j].has(x));
+      const onlyB = [...nums[j]].filter((x) => !nums[i].has(x));
+      const ta = Number(live[i].updated_at) || 0;
+      const tb = Number(live[j].updated_at) || 0;
+      out.push({
+        a: live[i],
+        b: live[j],
+        shared: shared.slice(0, DREAM_CONFLICT_KEYS_SAMPLE),
+        sharedTotal: shared.length,
+        onlyA: onlyA.slice(0, DREAM_CONFLICT_NUMS),
+        onlyB: onlyB.slice(0, DREAM_CONFLICT_NUMS),
+        onlyACount: onlyA.length,
+        onlyBCount: onlyB.length,
+        newer: ta === tb ? "both" : ta > tb ? "a" : "b"
+      });
+    }
+  }
+  // 越新越靠前：整理时先看最可能正在出问题的那一对。
+  const stamp = (p) => Math.max(Number(p.a.updated_at) || 0, Number(p.b.updated_at) || 0);
+  out.sort((x, y) => stamp(y) - stamp(x));
+  return out.slice(0, max);
+}
 // [macro-fusion 0.2.96] dream 整理完什么都不留：claimDream 只防重复整理，logDream 只记「done + 轮数」，
 // 主人在面板与回执里都看不到「这一轮翻了多少条、撞上几对、有几对合并会丢字」。模型自己也无从预判规模。
 // 这段把清单本身算成一串数字——用的是后面真正印块的那两个函数，不另立口径——① 起 dream 时随回执说给模型听，
@@ -3894,10 +3973,41 @@ function dreamPlanPairs(allRows) {
   }
   return out.slice(0, DREAM_PLAN_PAIR_CAP);
 }
+// [macro-fusion 0.2.114] 账本明细里记一对疑似冲突，与重复对不是同一种卡片：
+// 重复对问「要不要并成一条」，冲突对问「两条说法哪里不一样、谁更新」——所以只记差异与时间，不记判决。
+// newerAt 记的是「新那条」的更新时间（时间一样就记两者相等的那一个，读侧据此说「分不出谁新」）。
+function dreamPlanConflicts(allRows) {
+  const shortOf = uniqueShortIdsAmong(allRows);
+  const named = (row) => String(shortOf.get(String(row.id ?? "")) ?? String(row.id ?? ""));
+  const out = [];
+  for (const p of dreamConflictPairs(allRows, Infinity)) {
+    const ta = Number(p.a.updated_at) || 0;
+    const tb = Number(p.b.updated_at) || 0;
+    const win = p.newer === "a" ? p.a : p.newer === "b" ? p.b : null;
+    out.push({
+      kind: "conflict",
+      a: named(p.a),
+      b: named(p.b),
+      levelA: String(p.a.level ?? ""),
+      levelB: String(p.b.level ?? ""),
+      shared: p.shared,
+      sharedTotal: p.sharedTotal,
+      onlyA: p.onlyA,
+      onlyB: p.onlyB,
+      onlyACount: p.onlyACount,
+      onlyBCount: p.onlyBCount,
+      newer: p.newer,
+      newerAt: win === null ? Math.max(ta, tb) : Number(win.updated_at) || 0
+    });
+  }
+  return out.slice(0, DREAM_PLAN_PAIR_CAP);
+}
 function dreamPlanDigest(rounds) {
   const rowsOf = (r) => (Array.isArray(r.groups) ? r.groups.flatMap((g) => (Array.isArray(g.rows) ? g.rows : [])) : []);
   const allRows = rounds.flatMap(rowsOf);
   const covers = dreamCoverPairs(allRows, DREAM_COVER_MIN, Infinity);
+  // 数的时候传 Infinity：清单印几张是排版，撞上几对是事实（0.2.102 的教训）。
+  const conflicts = dreamConflictPairs(allRows, Infinity);
   return {
     rounds: rounds.length,
     groups: rounds.reduce((n, r) => n + (Array.isArray(r.groups) ? r.groups.length : 0), 0),
@@ -3907,7 +4017,11 @@ function dreamPlanDigest(rounds) {
     missing: covers.reduce((n, p) => n + (Number(p.missing) || 0), 0),
     projects: dreamPlanProjectNames(rounds),
     projectCount: rounds.reduce((n, r) => n + (Array.isArray(r.projects) ? r.projects.length : 0), 0),
-    pairs: dreamPlanPairs(allRows)
+    // [macro-fusion 0.2.114] 疑似冲突：与 dup/cover 分开两个字段。dup 与 cover 是「同一句话存了两份」，
+    // 读侧拿 dup+cover 对账落了几对卡片；冲突是另一种病，混进同一个计数会让「对子没落账」那句误报。
+    conflicts: conflicts.length,
+    pairs: dreamPlanPairs(allRows),
+    conflictPairs: dreamPlanConflicts(allRows)
   };
 }
 // [macro-fusion 0.2.103] 账本原来只记「这一轮翻了几条」（清单里的行），不记「库本身有多大」。
@@ -3970,8 +4084,10 @@ function dreamReceipt(digest) {
     cover: String(digest.cover)
   });
   const miss = Number(digest.missing) > 0 ? lbl4("dream.plan.missing", { missing: String(digest.missing) }) : "";
-  return miss === "" ? head : `${head}
-${miss}`;
+  // [macro-fusion 0.2.114] 疑似冲突也进回执：这是「这次整理同时发现了两种说法的记忆」，
+  // 与「合并会丢 N 个词」一样属于该立刻被看见、而不是要展开账才看见的东西。
+  const conf = Number(digest.conflicts) > 0 ? lbl4("dream.plan.conflicts", { n: String(digest.conflicts) }) : "";
+  return [head, miss, conf].filter((s) => s !== "").join("\n");
 }
 function buildDreamMessage(db, sessionId, T2, rounds, idx) {
   const round = rounds[idx];
@@ -4036,7 +4152,32 @@ ${coverPairs.map((p) => {
       return `${head}\n  ${recipe}`;
     }).join("\n")}
 ${lbl3("dream.cover.rule", { contain: String(Math.round(DREAM_COVER_MIN * 100)) })}`;
-    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock, groupMarker }).split("\n"));
+    // [macro-fusion 0.2.114] 疑似冲突块：同一主题、数字/版本却不一样的两条，摆在一起而不是判一条死刑。
+    // ① 与上面两块不是同一类问题，所以单独成块、单独一句话交接；
+    // ② 一样按「先出现的那一轮负责说」去重，跨轮的标一句，不会两轮各印一遍；
+    // ③ 谁新由 updated_at 说（时间一样就说「分不出」），改哪条由整理时的模型决断——检测器不替它改库。
+    const conflictPairs = dreamConflictPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);
+    const moreOf = (shown, total) => (total > shown ? lbl3("dream.conflict.more", { n: String(total - shown) }) : "");
+    const conflictBlock = conflictPairs.length === 0 ? "" : `
+${lbl3("dream.conflict.title", { n: String(conflictPairs.length), keys: String(DREAM_CONFLICT_KEYS) })}
+${conflictPairs.map((p) => {
+      const idA = String(shortOf.get(String(p.a.id)));
+      const idB = String(shortOf.get(String(p.b.id)));
+      const head = `- ${idA} \u21C4 ${idB}  ${p.a.level} \u21C4 ${p.b.level}${roundIds.has(String(p.a.id)) && roundIds.has(String(p.b.id)) ? "" : `\uFF08${lbl3("dream.dup.crossRound")}\uFF09`}`;
+      const kwLine = lbl3("dream.conflict.keywords", { words: p.shared.join("\u3001"), more: moreOf(p.shared.length, p.sharedTotal) });
+      const sideLines = [];
+      if (p.onlyA.length > 0) sideLines.push(lbl3("dream.conflict.only", { id: idA, nums: p.onlyA.join("\u3001"), more: moreOf(p.onlyA.length, p.onlyACount) }));
+      if (p.onlyB.length > 0) sideLines.push(lbl3("dream.conflict.only", { id: idB, nums: p.onlyB.join("\u3001"), more: moreOf(p.onlyB.length, p.onlyBCount) }));
+      const verdict = p.newer === "both"
+        ? lbl3("dream.conflict.same", { time: formatTime(Math.max(Number(p.a.updated_at) || 0, Number(p.b.updated_at) || 0)) })
+        : lbl3("dream.conflict.newer", {
+            id: String(shortOf.get(String((p.newer === "a" ? p.a : p.b).id))),
+            time: formatTime(Number((p.newer === "a" ? p.a : p.b).updated_at) || 0)
+          });
+      return [head, `  ${kwLine}`, ...sideLines.map((s) => `  ${s}`), `  ${verdict}`].join("\n");
+    }).join("\n")}
+${lbl3("dream.conflict.rule", {})}`;
+    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock + conflictBlock, groupMarker }).split("\n"));
   }
   return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }

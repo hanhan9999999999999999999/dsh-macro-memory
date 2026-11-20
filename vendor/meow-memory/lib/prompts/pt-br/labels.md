@@ -37,6 +37,14 @@
 - dream.cover.keepNone: Receita: o resumo não tem nenhuma palavra que a versão completa não tenha, então não há nada a absorver — mantenha a versão completa, marque o resumo como archived e não reescreva o texto.
 - dream.plan: [esta rodada vê {rounds} rodadas / {rows} entradas · {dup} pares repetidos ao pé da letra · {cover} pares de redações duplicadas] — os números saem da própria lista; no fim, os mesmos números vão para o registro do dream.
 - dream.plan.missing: Nesses pares de redações duplicadas, {missing} palavras vivem só no resumo, então precisam ser absorvidas na fusão (cada par as nomeia na linha de receita).
+- dream.conflict.title: [conflitos prováveis: {n}] (cada par abaixo está no mesmo assunto — pelo menos {keys} palavras-chave em comum — mas afirma números ou versões diferentes; não são duplicatas, duplicatas ficam acima. As duas versões aparecem lado a lado, sem veredito):
+- dream.conflict.keywords: palavras-chave em comum: {words}{more}
+- dream.conflict.only: {id} tem sozinho {nums}{more}
+- dream.conflict.more: ({n} no total)
+- dream.conflict.newer: -> {id} é mais novo ({time}): vale a versão mais nova — ou reescreva a antiga para bater, ou ponha status stale com memory_update
+- dream.conflict.same: -> as duas têm exatamente o mesmo horário de atualização ({time}), então nenhuma é mais nova — leia os textos e decida você mesmo
+- dream.conflict.rule: Régua — mesmo assunto + números/versões diferentes + nem duplicata literal nem resumo-com-redação. Redação diferente com números idênticos **não** conta como conflito (é reescrita); entrada arquivada também não é reportada (arquivar já é o desfecho). Como quer que resolva, deixe na entrada alterada um rastro do porquê.
+- dream.plan.conflicts: mais {n} conflitos prováveis (mesmo assunto, números/versões diferentes — nomeados na lista).
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.
