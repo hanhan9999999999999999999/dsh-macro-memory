@@ -74,7 +74,7 @@ console.log('粗估 token：混合中英按 3.5–4 字符/token → 约 ' + Mat
 console.log('注：JSON 化后含 key 引号与转义，线上体积略大于此值；不含宿主附加字段；i18n 描述（T("key")）另计。')
 console.log('※ 这是 0.1.x「拼接态」的下界基线（17 个原工具，未做 i18n 描述与 JSON 开销）；')
 console.log('  0.2.x 融合后对外只注册 8 个工具：原始参数 4,714 B（verify.mjs A 段），')
-console.log('  宿主 projectToolSchema 投影后 8,655 B（tools/probe-host.mjs D2，上限 16,000）。')
+console.log('  宿主 projectToolSchema 投影后 11,544 B（tools/probe-host.mjs D2，上限 16,000）。')
 
 // ── 判据（0.2.82）──────────────────────────────────────────────────────────
 // 这个脚本 0.2.7x 起就跑不动（用了没导入的 `root`），因为没人跑它、也没有断言盯着它，

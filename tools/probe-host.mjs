@@ -11,6 +11,7 @@
  *   B. 我们的插件能 ctx.plugin 进真 cordis，apply 不抛
  *   C. 宿主看到的工具面严格是 8 个 memory_*，nebula_* 一个不漏进来
  *   D. 8 个工具全部通过宿主 projectToolSchema + assertSupportedJsonSchema，且 schema 合计 < 16000 B
+ *      对外文案（README / 两个市场索引）写的体积必须等于实测，不许再漂
  *   E. assemble() 里只有一段 macro-memory:guide（order 130、≤1300 字符），nebula RULE 没落地
  *   F. 8 个工具直接执行都能跑通（真 vendor、临时 DSH_HOME）
  *
@@ -19,7 +20,7 @@
  */
 import { root } from './_root.mjs'
 import { registerHooks } from 'node:module'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -180,6 +181,23 @@ for (const def of defs) {
 }
 check('D1 8 个工具全部通过 projectToolSchema + assertSupportedJsonSchema', schemaOk)
 check('D2 schema 合计 < 16000 B', schemaBytes < 16000, `${schemaBytes} B`)
+
+// D3：对外文案写的体积必须等于实测（0.2.121 曾漂了 2,889 B，一路没人发现）
+const fmtB = (n) => n.toLocaleString('en-US')
+for (const [rel, label] of [
+  ['README.md', 'README'],
+  ['plugin-market/index.json', '市场主索引'],
+  ['plugin-market/index.cn.json', '市场镜像'],
+]) {
+  let text = ''
+  try {
+    text = readFileSync(join(root, rel), 'utf8')
+  } catch (err) {
+    check(`D3 ${label} 可读`, false, err.message)
+    continue
+  }
+  check(`D3 ${label} 写的 schema 体积与实测一致`, text.includes(`${fmtB(schemaBytes)} B`), `${fmtB(schemaBytes)} B`)
+}
 
 // ── E. 注入单点 ───────────────────────────────────────────────────────────
 let asm
