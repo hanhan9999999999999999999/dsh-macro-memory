@@ -1125,5 +1125,57 @@ check(
   JSON.stringify([tok.budgetOf('abc').note, tok.budgetOf(20).note, tok.budgetOf(30000).note]),
 )
 
+// Q 段（0.2.111）：项目规模要按项目数，所以先把写侧的项目口径钉死——
+// 它跨五个带 project 列的层相加、按 status='active' 数、NULL 与空串不算一个项目、零不写进 byProject。
+const qProj = qAgent(mkdtempSync(join(tmpdir(), 'ruler-project-scale-')), 'sess-ruler-project-scale')
+await call(
+  'memory_remember',
+  { content: '项目规模探针甲：Alpha 项目的第一条事实，用来验证跨层按项目相加时它算进 Alpha。', level: 'fact', keywords: ['probe', 'project', 'byproject', 'alpha', 'ledger', 'scale', 'store', 'trend'], importance: 1, project: 'Alpha' },
+  { agent: qProj.agent },
+)
+await call(
+  'memory_remember',
+  { content: '项目规模探针乙：Alpha 项目的第二条事实，关键词刻意与上一条错开，免得写侧去重把它们并成一条。', level: 'fact', keywords: ['probe', 'project', 'beta', 'snapshot', 'counter', 'store', 'ledger', 'byproject'], importance: 1, project: 'Alpha' },
+  { agent: qProj.agent },
+)
+await call(
+  'memory_remember',
+  { content: '项目规模探针丙：这条落在教训层但同属 Alpha，用来验证跨层同名项目会相加而不是各算一行。', level: 'lesson', keywords: ['probe', 'project', 'lesson', 'byproject', 'drift', 'scale', 'ledger', 'trend'], importance: 1, project: 'Alpha', corrected: true },
+  { agent: qProj.agent },
+)
+await call(
+  'memory_remember',
+  { content: '项目规模探针丁：Beta 项目的唯一一条主题，用来验证不同项目互不相加。', level: 'topic', keywords: ['probe', 'project', 'topic', 'beta', 'byproject', 'scale', 'goal', 'ledger'], importance: 1, project: 'Beta', goal: '验证按项目计数时不串味' },
+  { agent: qProj.agent },
+)
+const qProjDb = V.getDb(qProj.ws, '.dsh-meow')
+const qProj1 = V.dreamStoreScale(qProjDb)
+check(
+  'L29 项目规模跨五个带 project 的层相加、只数 active：Alpha 3（fact 2 + lesson 1）/ Beta 1；soul 与 user 没有归属不进这条数',
+  qProj1.byProject?.Alpha === 3 &&
+    qProj1.byProject?.Beta === 1 &&
+    Object.keys(qProj1.byProject ?? {}).length === 2 &&
+    qProj1.byLevel.fact === 2 &&
+    qProj1.byLevel.lesson === 1 &&
+    qProj1.byLevel.topic === 1,
+  `scale=${JSON.stringify(qProj1)}`,
+)
+// 全局条目（project 为 NULL）不许占一个项目名，否则每个「全局」都会被算成一个项目。
+const qProjGlobal = V.dreamStoreScale(V.getDb(qScale.ws, '.dsh-meow'))
+check(
+  'L30 没有项目归属的条目不算一个项目：全写「全局」的库里 byProject 里不出现 null / 空名',
+  Object.keys(qProjGlobal.byProject ?? {}).every((k) => String(k).trim() !== '') &&
+    !Object.prototype.hasOwnProperty.call(qProjGlobal.byProject ?? {}, 'null'),
+  `scale=${JSON.stringify(qProjGlobal)}`,
+)
+const qProjTopic = qProjDb.db.prepare("SELECT id FROM topic WHERE status = 'active' LIMIT 1").get()
+qProjDb.update('topic', String(qProjTopic?.id), { status: 'archived' })
+const qProj2 = V.dreamStoreScale(qProjDb)
+check(
+  'L31 归档立刻从项目规模里掉出去：Beta 1 → 0（整个键消失，不是写成 0），Alpha 仍是 3',
+  qProj2.byProject?.Beta === undefined && qProj2.byProject?.Alpha === 3 && qProj2.active === 3,
+  `scale=${JSON.stringify(qProj2)}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

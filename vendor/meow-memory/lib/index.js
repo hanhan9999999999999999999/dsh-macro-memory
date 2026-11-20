@@ -3915,6 +3915,30 @@ function dreamPlanDigest(rounds) {
 // 口径三件事：①只数 status='active'，归档/stale 的账在 status 上，不该混进「库有多大」；
 // ②取的是**开工那一刻**，不是收尾之后（收尾时模型才动手改库，那之后的结果要等下一轮账才知道）；
 // ③只留非零的层，别在 JSON 里塞一排 0 让读的人以为「空层也算数」。
+// [macro-fusion 0.2.111] 规模原来只按层（byLevel），答不了「是哪个项目在涨」：Alpha 一直在长、
+// Beta 一直在掉，层走向上 fact 只是个净数。按项目数一次，但要说清口径——
+// ①七个层里只有五个带 project 列（project / fact / lesson / topic / rules），soul 与 user 没有归属，
+//   这两层永远不进这条数；②NULL 与空串不是一个项目（全局条目不占名字）；
+// ③同一层同名的合并相加，跨层同名也相加（读者问的是「这个项目一共多少条」）。
+var PROJECT_LAYERS = ["project", "fact", "lesson", "topic", "rules"];
+function dreamStoreProjects(db) {
+  const byProject = {};
+  for (const level of PROJECT_LAYERS) {
+    let rows = [];
+    try {
+      rows = db.p(`SELECT project AS name, COUNT(*) AS n FROM ${level} WHERE status = 'active' GROUP BY project`).all();
+    } catch {
+      rows = [];
+    }
+    for (const row of rows) {
+      const name = String(row?.name ?? "").trim();
+      const n = Number(row?.n) || 0;
+      if (name === "" || n <= 0) continue;
+      byProject[name] = (byProject[name] || 0) + n;
+    }
+  }
+  return byProject;
+}
 function dreamStoreScale(db) {
   const byLevel = {};
   let active = 0;
@@ -3929,7 +3953,11 @@ function dreamStoreScale(db) {
     if (n > 0) byLevel[level] = n;
     active += n;
   }
-  return { active, byLevel };
+  const byProject = dreamStoreProjects(db);
+  const out = { active, byLevel };
+  // 一个项目都没有就不写这一格：空对象塞进 JSON 只会让人以为「数过、结果是零个项目」。
+  if (Object.keys(byProject).length > 0) out.byProject = byProject;
+  return out;
 }
 // 回执那句话：四个数字全部来自上面那份摘要，一个也不手写；只有真有字要补时才加第二句。
 function dreamReceipt(digest) {
@@ -6655,6 +6683,7 @@ export {
   dreamPlanDigest,
   dreamReceipt,
   dreamStoreScale,
+  dreamStoreProjects,
   readDreamLedger,
   readDreamProjects,
   readDreamRecord,

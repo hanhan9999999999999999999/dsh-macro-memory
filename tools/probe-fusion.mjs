@@ -934,6 +934,76 @@ try {
     lvFlatLine,
   )
 
+  // D67–D69（0.2.111）：项目走向。层走向只说「fact 在涨」，说不出「哪个项目在涨」——
+  // Alpha 涨 3 条、Beta 掉 3 条，层走向念「fact 没变」，而实际上一个项目在膨胀、另一个在被清空。
+  const pjWs = mkdtempSync(join(tmpdir(), 'macro-probe-projects-'))
+  const pjDb = Meow.getDb(pjWs, '.dsh-meow')
+  const pjCtx = { agent: { session: { header: { cwd: pjWs } } } }
+  const pjIns = pjDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const pjScale = (byLevel, byProject) => ({
+    active: Object.values(byLevel).reduce((a, b) => a + b, 0),
+    byLevel,
+    ...(byProject === undefined ? {} : { byProject }),
+  })
+  const pjPlan = (end, start, endProject) => ({
+    rounds: 1,
+    rows: 2,
+    dup: 0,
+    cover: 0,
+    missing: 0,
+    store: start,
+    ...(end === null ? {} : { storeEnd: end }),
+  })
+  const pjStart = pjScale({ fact: 4, topic: 1 }, { Alpha: 3, Beta: 2 })
+  const pjBase = Date.now() - 600000
+  pjIns.run(pjBase, 'window dream done: p1 groups=1 stamped=1 T=2026-11-20T05:10:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjStart, pjStart) }), '')
+  pjIns.run(pjBase + 1000, 'window dream done: p2 groups=1 stamped=1 T=2026-11-20T05:11:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 5, topic: 1 }, { Alpha: 4, Beta: 2 })) }), '')
+  // 这一轮 fact 净增 2、Beta 掉到 0：层走向会说 fact 在涨，项目走向要能指出是 Alpha 涨、Beta 空。
+  pjIns.run(pjBase + 2000, 'window dream done: p3 groups=1 stamped=1 T=2026-11-20T05:12:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 6, topic: 1 }, { Alpha: 6 })) }), '')
+  pjIns.run(pjBase + 3000, 'window dream done: p4 groups=1 stamped=1 T=2026-11-20T05:13:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 6, topic: 1 })) }), '')
+  const pjPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, pjCtx))
+  const pjLine = pjPanel.split('\n').find((l) => l.startsWith('项目走向')) ?? '(无)'
+  check(
+    'D67 项目走向按每一轮收尾的 byProject 摊开：Alpha 3 → 4 → 6（+3）· Beta 2 → 2 → 0（-2）（层走向只会说 fact 在涨）',
+    pjLine.includes('项目走向：最近 3 次收尾（最早→最新）') &&
+      pjLine.includes('Alpha 3 → 4 → 6（+3）') &&
+      pjLine.includes('Beta 2 → 2 → 0（-2）') &&
+      pjLine.includes('涨得最多的是 Alpha（+3）'),
+    pjLine,
+  )
+  check(
+    'D68 口径要说全：只数带项目归属的 5 层（soul / user 没有这一格）、项目名按原样（改名算两行）、缺这一格的账不进走向',
+    pjLine.includes('只数带项目归属的 5 层') &&
+      pjLine.includes('soul / user 没有这一格') &&
+      pjLine.includes('改过名的会算成两行') &&
+      pjLine.includes('1 次没有收尾项目数（0.2.111 之前的账没有这一格），不进这条走向'),
+    pjLine,
+  )
+  const pjOneWs = mkdtempSync(join(tmpdir(), 'macro-probe-projects-one-'))
+  const pjOneDb = Meow.getDb(pjOneWs, '.dsh-meow')
+  pjOneDb.db
+    .prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+    .run(Date.now() - 1000, 'window dream done: q1 groups=1 stamped=1 T=2026-11-20T05:20:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjScale({ fact: 2 }, { Alpha: 2 })) }), '')
+  const pjOnePanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, { agent: { session: { header: { cwd: pjOneWs } } } }))
+  check(
+    'D69 只有一轮不出项目走向：一次是快照，不是走向（硬算等于编）',
+    !pjOnePanel.includes('项目走向'),
+    pjOnePanel.split('\n').slice(0, 3).join(' | '),
+  )
+  const pjFlatWs = mkdtempSync(join(tmpdir(), 'macro-probe-projects-flat-'))
+  const pjFlatDb = Meow.getDb(pjFlatWs, '.dsh-meow')
+  const pjFlatIns = pjFlatDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  const pjFlatScale = pjScale({ fact: 3 }, { Alpha: 2, Beta: 1 })
+  pjFlatIns.run(Date.now() - 2000, 'window dream done: g1 groups=1 stamped=1 T=2026-11-20T05:30:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjFlatScale) }), '')
+  pjFlatIns.run(Date.now() - 1000, 'window dream done: g2 groups=1 stamped=1 T=2026-11-20T05:31:00.000Z', JSON.stringify({ stamped: 1, groups: 1, kind: { kind: 'done' }, plan: pjPlan(pjFlatScale) }), '')
+  const pjFlatPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 10 }, { agent: { session: { header: { cwd: pjFlatWs } } } }))
+  const pjFlatLine = pjFlatPanel.split('\n').find((l) => l.startsWith('项目走向')) ?? '(无)'
+  check(
+    'D70 每个项目都没变就说没变：不硬凑一句「涨得最多」（噪声不许讲成走势）',
+    pjFlatLine.includes('每个项目的条数都没变') && !pjFlatLine.includes('涨得最多') && !pjFlatLine.includes('掉得最多'),
+    pjFlatLine,
+  )
+
   // D58–D61（0.2.109）：回执成本 + budget。六个维度里「效率」以前没有数——
   // 有条数、有耗时，没有「这次检索占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
   const { createUnifiedTools: costTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)

@@ -91,11 +91,11 @@
         "sortKeys": {
           "updated": 1795136086
         },
-        "publishTimestamp": 1795158265
+        "publishTimestamp": 1795160797
       },
       "versions": [
         {
-          "version": "0.2.110",
+          "version": "0.2.111",
           "publishTimestamp": 1795147996,
           "source": {
             "type": "git",

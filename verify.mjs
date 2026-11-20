@@ -6746,7 +6746,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     vSrc.includes('function dreamStoreScale(db)') &&
       vSrc.includes('SELECT COUNT(*) AS n FROM ${level} WHERE status = \'active\'') &&
       vSrc.includes('if (n > 0) byLevel[level] = n;') &&
-      vSrc.includes('return { active, byLevel };') &&
+      // [macro-fusion 0.2.111] 返回值多了 byProject（没有项目时整格不写），这句跟着改形。
+      vSrc.includes('const out = { active, byLevel };') &&
+      vSrc.includes('return out;') &&
       vSrc.includes('  dreamStoreScale,'),
   )
   check(
@@ -7502,6 +7504,109 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.116') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 122'),
+  )
+}
+
+// [macro-fusion 0.2.111] 项目走向：层走向只说「fact 在涨」，说不出「哪个项目在涨」
+{
+  const ledgerSrc111 = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const meowSrc111 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const rulerSrc111 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc111 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg111 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc111 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+
+  check(
+    '项目走向: 写侧跨五个带 project 列的层相加（soul / user 没有这一格，不许假装数过）',
+    meowSrc111.includes('var PROJECT_LAYERS = ["project", "fact", "lesson", "topic", "rules"]') &&
+      meowSrc111.includes('function dreamStoreProjects(db)') &&
+      meowSrc111.includes('SELECT project AS name, COUNT(*) AS n FROM ${level} WHERE status = \'active\' GROUP BY project') &&
+      meowSrc111.includes('dreamStoreProjects,') &&
+      !/PROJECT_LAYERS = \[[^\]]*"soul"/.test(meowSrc111),
+  )
+  check(
+    '项目走向: 空项目名不算一个项目、没有项目时整格不写（空对象会被读成「数过，零个项目」）',
+    meowSrc111.includes("const name = String(row?.name ?? \"\").trim()") &&
+      meowSrc111.includes('if (name === "" || n <= 0) continue') &&
+      meowSrc111.includes('if (Object.keys(byProject).length > 0) out.byProject = byProject'),
+  )
+  check(
+    '项目走向: 读侧与层同一套读法（正数才认、名字 trim、老账没有这一格就是没有）',
+    ledgerSrc111.includes('const byProject = {}') &&
+      ledgerSrc111.includes('if (store.byProject !== undefined && store.byProject !== null && typeof store.byProject === \'object\')') &&
+      ledgerSrc111.includes('if (key !== \'\' && Number.isFinite(v) && v > 0) byProject[key] = v') &&
+      ledgerSrc111.includes('return { active, byLevel, byProject }'),
+  )
+  check(
+    '项目走向: 只认收尾那一刻的项目数（拿开工数占位等于把整理前的库贴到整理后的位置）',
+    (() => {
+      const at = ledgerSrc111.indexOf('function projectSeriesOf(')
+      const end = ledgerSrc111.indexOf('function projectTrendLine(')
+      if (!(at > 0 && end > at)) return false
+      const body = ledgerSrc111.slice(at, end)
+      return (
+        body.includes('const raw = plan?.storeEnd') &&
+        body.includes('raw.byProject') &&
+        !body.split('plan?.storeEnd').join('').includes('plan?.store')
+      )
+    })(),
+  )
+  check(
+    '项目走向: 少于两轮不出（一次是快照，不是走向）',
+    (() => {
+      const at = ledgerSrc111.indexOf('function projectTrendLine(')
+      const end = ledgerSrc111.indexOf('/**\n * [macro-fusion 0.2.108] 把最近几轮的收尾层数摊成一条走向')
+      if (!(at > 0 && end > at)) return false
+      const body = ledgerSrc111.slice(at, end)
+      return body.includes('if (kept.length < 2) return \'\'') && body.includes('kept.reverse()')
+    })(),
+  )
+  check(
+    '项目走向: 排除要交代（没跑完的轮 / 没有这一格的老账），且常驻一句「只数 5 层、名字按原样」',
+    ledgerSrc111.includes('${half} 次没跑完（中途放弃 / 待补记 / 已封存），不进这条走向') &&
+      ledgerSrc111.includes('次没有收尾项目数（0.2.111 之前的账没有这一格），不进这条走向') &&
+      ledgerSrc111.includes('只数带项目归属的 5 层（soul / user 没有这一格），项目名按写入时原样——改过名的会算成两行'),
+  )
+  check(
+    '项目走向: 三支结论分开说——涨/掉/都没变，没涨就不许编「涨得最多的是 X（+0）」',
+    ledgerSrc111.includes("parts.push('每个项目的条数都没变')") &&
+      ledgerSrc111.includes('涨得最多的是 ${up.name}（+${up.delta}）') &&
+      ledgerSrc111.includes('掉得最多的是 ${down.name}（${down.delta}）') &&
+      ledgerSrc111.includes('if (rest > 0) caveats.push(`还有 ${rest} 个项目没列`)'),
+  )
+  check(
+    '项目走向: 挂在第 1 页、紧跟在层走向之后（同一批行、同一套「只吃跑完的轮」的规矩）',
+    (() => {
+      const at = ledgerSrc111.indexOf('const levels = levelTrendLine(rows)')
+      const end = ledgerSrc111.indexOf("if (rows.some((r) => refOfRow(r) !== ''))")
+      if (!(at > 0 && end > at)) return false
+      const body = ledgerSrc111.slice(at, end)
+      return (
+        body.includes('const projectsTrend = projectTrendLine(rows)') &&
+        body.indexOf('projectTrendLine(rows)') > body.indexOf('levelTrendLine(rows)') &&
+        body.includes("scopeParts.push('项目走向按每一轮收尾时的 storeEnd.byProject 数，只有 0.2.111 之后的账有这一格')")
+      )
+    })(),
+  )
+  check(
+    '项目走向: 探针进线（写侧 L29–L31 钉跨层相加 / 全局不占名 / 归档立刻掉出；面板 D67–D70 钉摊开与两条阴性对照）',
+    rulerSrc111.includes('L29 项目规模跨五个带 project 的层相加、只数 active') &&
+      rulerSrc111.includes('L30 没有项目归属的条目不算一个项目') &&
+      rulerSrc111.includes('L31 归档立刻从项目规模里掉出去') &&
+      fusionSrc111.includes('D67 项目走向按每一轮收尾的 byProject 摊开') &&
+      fusionSrc111.includes('D68 口径要说全') &&
+      fusionSrc111.includes('D69 只有一轮不出项目走向') &&
+      fusionSrc111.includes('D70 每个项目都没变就说没变'),
+  )
+  check(
+    '项目走向: 版本不早于 0.2.111（两处一致），文档 9.117 / 123 在位',
+    (() => {
+      const v = pkg111.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 111)
+      return atLeast && idxSrc111.includes(`export const version = '${pkg111.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.117') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 123'),
   )
 }
 
