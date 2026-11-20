@@ -5924,6 +5924,175 @@ check(
   )
 }
 
+
+// ── F. 检索融合：两路名次合成一张榜（0.2.118）────────────────────────────────
+// 老做法把本地结果与星图回执上下拼两段：同一堆记忆出现两遍，第二遍白花 token，
+// 而「两条路都命中」这条最硬的相关性证据没人指出来。这里只按**名次**合（RRF）——
+// 两路分数不同源（BM25 与星图强度），比大小等于编结论。
+{
+  const { createUnifiedTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)
+  const fusionF = await import(pathToFileURL(join(root, 'lib/macro/fusion.js')).href)
+  const tokF = await import(pathToFileURL(join(root, 'lib/macro/tokencost.js')).href)
+
+  const GRAPH_TEXT = [
+    'nebula_recall「检索融合」→ 3 条（扫描 42 条候选，2 跳）',
+    '1. [fact] dsh-macro-memory     强度 0.82 检索融合 RRF',
+    '   id: dsh-macro-memory:0mfa1111-1111222233334444555566667777aaaa',
+    '   为什么：直接命中关键词「融合」',
+    '   摘要：把本地检索与星图扩散按名次合成一张榜，重复条目只出现一次。',
+    '2. [lesson] dsh-macro-memory     强度 0.61 名次不是分数',
+    '   id: dsh-macro-memory:0mfa1111-bbbb2222333344445555666677778888',
+    '   为什么：经由「RRF」的关键词关联',
+    '   摘要：两路分数不同源，比大小是在编结论。',
+    '3. [fact] other-ws     强度 0.95 分数最高但排第三',
+    '   id: other-ws:0mfa1111-cccc2222333344445555666677779999',
+    '   为什么：共同邻居「记忆」',
+    '   摘要：与当前问题弱相关。',
+  ].join('\n')
+
+  const HIT_A = {
+    id: '0mfa1111-1111222233334444555566667777aaaa',
+    level: 'fact',
+    title: '检索融合',
+    content: '本地给全文：把本地检索与星图扩散按名次合成一张榜。',
+    keywords: ['融合', 'RRF'],
+  }
+  const HIT_B = {
+    id: '0mfa1111-dddd2222333344445555666677770000',
+    level: 'fact',
+    title: '本地独有',
+    content: '只在本地出现的条目。',
+    keywords: ['本地'],
+  }
+  const LOCAL_NOTE = '默认检索范围是 fact/lesson/topic/rules。'
+  const LOCAL_TEXT = `${LOCAL_NOTE}\n1. [fact] 检索融合\n2. [fact] 本地独有`
+
+  const bridgeF = (hits, graphText) => {
+    const entries = new Map()
+    const add = (name, fn) => entries.set(name, { name, vendor: 'stub', def: { name, execute: fn }, options: {} })
+    add('memory_search', async () => ({ hits, note: LOCAL_NOTE }))
+    add('nebula_recall', async () => graphText)
+    const bridge = {
+      has: (n) => entries.has(n),
+      get: (n) => entries.get(n),
+      names: () => [...entries.keys()],
+      awaitTool: async (n) => entries.get(n),
+      async call(name) {
+        const e = entries.get(name)
+        if (!e) throw new Error('macro-memory：这项能力还没就绪')
+        const value = await e.def.execute({})
+        return { entry: e, def: e.def, value, text: typeof value === 'string' ? value : LOCAL_TEXT }
+      },
+      async tryCall(name) {
+        return bridge.call(name)
+      },
+      promptDeclarations: () => [],
+    }
+    return bridge
+  }
+  const callF = async (hits, graphText, args) => {
+    const tools = createUnifiedTools({ bridge: bridgeF(hits, graphText), config: { toolWaitMs: 10, linkWaitMs: 10, flushThrottleMs: 0 } })
+    return String(await tools.find((t) => t.name === 'memory_search').execute(args, {}))
+  }
+
+  const nodes = fusionF.graphNodesOf(GRAPH_TEXT)
+  check(
+    'F1 解析得动真实那三行格式（排名/层级/强度/标题/为什么/摘要）',
+    nodes.length === 3 &&
+      nodes[0].rank === 1 &&
+      nodes[0].level === 'fact' &&
+      nodes[0].score === 0.82 &&
+      nodes[0].label.includes('检索融合') &&
+      nodes[1].why.includes('RRF') &&
+      nodes[2].preview.includes('弱相关'),
+    nodes.map((n) => `${n.rank}:${n.level}:${n.score}`).join(' '),
+  )
+  check(
+    'F2 星图 id 带工作区前缀，裸 id 取最后一段',
+    fusionF.uidOf(nodes[0].id) === '0mfa1111-1111222233334444555566667777aaaa',
+    fusionF.uidOf(nodes[0].id),
+  )
+
+  const fused = fusionF.fuseRanked({ localHits: [HIT_A, HIT_B], graphNodes: nodes })
+  check(
+    'F3 两路都命中的只算一行（3 个星图节点 + 2 条本地命中，重复 1 条 → 4 行）',
+    fused.both === 1 && fused.graphOnly === 2 && fused.localOnly === 1 && fused.rows.length === 4,
+    `both=${fused.both} graphOnly=${fused.graphOnly} localOnly=${fused.localOnly} rows=${fused.rows.length}`,
+  )
+  check(
+    'F4 交叉验证的那条排第一（两路都命中是 RRF 分最高的组合）',
+    fused.rows[0].localRank === 1 && fused.rows[0].graphRank === 1 && fused.rows[0].rrf > fused.rows[1].rrf,
+    `${fused.rows[0].localRank}/${fused.rows[0].graphRank} ${fused.rows[0].rrf.toFixed(5)} > ${fused.rows[1].rrf.toFixed(5)}`,
+  )
+  const cIdx = fused.rows.findIndex((r) => r.uid.startsWith('0mfa1111-cccc'))
+  check(
+    'F5 名次说了算，分数再高也不许插队（0.95 但排第三就排第三）',
+    cIdx === fused.rows.length - 1 && nodes[2].score > nodes[0].score,
+    `第 ${cIdx + 1}/${fused.rows.length} 位，星图分 ${nodes[2].score} 对 ${nodes[0].score}`,
+  )
+  const shortFuse = fusionF.fuseRanked({ localHits: [{ id: '0mfa1111-bbbb2222' }], graphNodes: nodes })
+  check(
+    'F6 星图只给前 12 位也认得出是同一条（前缀不是另一条记忆）',
+    shortFuse.both === 1 && shortFuse.rows.filter((r) => r.uid.startsWith('0mfa1111-bbbb')).length === 1,
+    `both=${shortFuse.both} rows=${shortFuse.rows.length}`,
+  )
+
+  const fusedBody = fusionF.fusedText({ note: LOCAL_NOTE, rows: fused.rows, k: 2, graphShown: 5, dropped: 0 })
+  check(
+    'F7 榜上每条只出现一次，也不再另起「星图关联扩散」那一段',
+    (fusedBody.match(/0mfa1111-1111222233334444555566667777aaaa/g) || []).length === 1 &&
+      (fusedBody.match(/0mfa1111-bbbb2222333344445555666677778888/g) || []).length === 1 &&
+      !fusedBody.includes('— 星图关联扩散 —'),
+    `${fusedBody.split('\n').length} 行`,
+  )
+  check(
+    'F8 本地条目带全文，星图独有的只带「为什么相关」+ 摘要',
+    fusedBody.includes('本地给全文：把本地检索与星图扩散按名次合成一张榜。') &&
+      fusedBody.includes('（本地没命中，靠关联进来：经由「RRF」的关键词关联）') &&
+      fusedBody.includes('两路分数不同源，比大小是在编结论。'),
+    fusedBody.split('\n')[4] ?? '',
+  )
+  check(
+    'F9 每条都写明它从哪一路来（本地#n / 星图#m / 两路）',
+    fusedBody.includes('本地#1 + 星图#1') && fusedBody.includes('本地#2 ·') && fusedBody.includes('星图#3（本地没命中'),
+    fusedBody.split('\n')[1] ?? '',
+  )
+  const cut = fusionF.fusedText({ note: '', rows: fused.rows, k: 2, graphShown: 1, dropped: 1 })
+  check(
+    'F10 星图独有被截断时说清「另有几条没展开」',
+    cut.includes('另有 1 条星图带回来的没有展开') && cut.includes('只够前 1 条'),
+    cut.split('\n').slice(-1)[0],
+  )
+
+  const out = await callF([HIT_A, HIT_B], GRAPH_TEXT, { query: '融合', expand: true })
+  check(
+    'F11 端到端：expand=true 时给的是融合榜，不是两段拼接',
+    out.includes('融合榜（本地 # / 星图 # 两路按名次合并') &&
+      out.includes('两路都命中 1 条') &&
+      !out.includes('— 星图关联扩散 —'),
+    out.split('\n')[0]?.slice(0, 90) ?? '',
+  )
+  check(
+    'F12 端到端：本地那条正文只出现一次（融合确实省了重复的 token）',
+    (out.match(/本地给全文：把本地检索与星图扩散按名次合成一张榜。/g) || []).length === 1,
+    `${(out.match(/本地给全文/g) || []).length} 次`,
+  )
+  const legacy = await callF([HIT_A, HIT_B], '— 星图关联扩散 —\n- [m9] 第九条', { query: '融合', expand: true })
+  check(
+    'F13 星图回执解析不出节点时退回两段式（不硬凑半张榜）',
+    legacy.includes('— 星图关联扩散 —') && !legacy.includes('融合榜'),
+    legacy.split('\n').slice(-1)[0],
+  )
+  const oldStyle = `${LOCAL_TEXT}\n\n— 星图关联扩散 —\n${GRAPH_TEXT}`
+  const fusedCost = tokF.estTokens(fusedBody)
+  const oldCost = tokF.estTokens(oldStyle)
+  check(
+    'F14 融合确实省 token：同一堆记忆只出现一次，星图独有只带证据',
+    fusedCost < oldCost,
+    `融合 ≈${fusedCost} token < 两段式 ≈${oldCost} token（省 ${Math.round((1 - fusedCost / oldCost) * 100)}%）`,
+  )
+}
+
 for (const d of disposers) {
   try {
     d()

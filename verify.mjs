@@ -8226,5 +8226,90 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.118] 检索融合：本地检索与星图扩散按名次合成一张榜。
+// 老做法把两段文本上下拼在一起——同一堆记忆出现两遍（第二遍白花 token），
+// 而「两条路都命中」这条最硬的相关性证据，没有任何人替读者指出来。
+{
+  const fusionSrc118 = readFileSync(join(root, 'lib/macro/fusion.js'), 'utf8')
+  const searchSrc118 = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
+  const probeSrc118 = readFileSync(join(root, 'tools/probe-fusion.mjs'), 'utf8')
+  check(
+    '融合: 只按名次合（RRF k=60），不拿两路分数比大小——分数线不同源的数放在一起，结论是编出来的',
+    fusionSrc118.includes('export const RRF_K = 60') &&
+      fusionSrc118.includes('export function fuseRanked(') &&
+      fusionSrc118.includes('1 / (RRF_K + r.localRank)') &&
+      fusionSrc118.includes('1 / (RRF_K + r.graphRank)') &&
+      fusionSrc118.includes('的分数不同源'),
+  )
+  check(
+    '融合: 解析的是 nebula_recall 真实那几行（排名 / 层级 / 强度 / 标题 + id / 为什么 / 摘要）',
+    fusionSrc118.includes('const NODE_HEAD = /^(\\d+)\\.\\s+\\[([^\\]]+)\\]\\s+(.*?)\\s+强度\\s+([\\d.]+)\\s*(.*)$/') &&
+      fusionSrc118.includes('const ID_LINE = /^\\s{2,}id:\\s*(\\S+)\\s*$/') &&
+      fusionSrc118.includes('const WHY_LINE = /^\\s{2,}为什么：\\s*(.*)$/') &&
+      fusionSrc118.includes('const PREVIEW_LINE = /^\\s{2,}摘要：\\s*(.*)$/'),
+  )
+  check(
+    '融合: 星图 id 带工作区前缀、本地是裸 id——取最后一段对齐，前 12 位指认同一条',
+    fusionSrc118.includes('export function uidOf(id) {') &&
+      fusionSrc118.includes("const at = s.lastIndexOf(':')") &&
+      fusionSrc118.includes('function sameMem(a, b) {') &&
+      fusionSrc118.includes('return a.startsWith(b) || b.startsWith(a)'),
+  )
+  check(
+    '融合: 同一条记忆只占一个位置，三种来路分开说（本地#n / 星图#m / 两路）',
+    fusionSrc118.includes('export function routeOf(row) {') &&
+      fusionSrc118.includes('+ 星图#') &&
+      fusionSrc118.includes('if (row.localRank > 0) return '),
+  )
+  check(
+    '融合: 本地命中带全文（它就是答案），星图独有只带「为什么相关」+ 摘要（全文在本地那边已经有了）',
+    fusionSrc118.includes('export function fusedText(') &&
+      fusionSrc118.includes('（本地没命中，靠关联进来') &&
+      fusionSrc118.includes('clip(g.preview, 150)'),
+  )
+  check(
+    '融合: 截断要说清（星图独有的条数被 limit / 预算压过时，报出还有几条没展开）',
+    fusionSrc118.includes('if (dropped > 0) {') && fusionSrc118.includes('条星图带回来的没有展开'),
+  )
+  check(
+    '融合: 接在 expand 分支上，并且排在预算分支之前（融合榜是整份回执，不能先按分段花完预算再合）',
+    searchSrc118.includes('const fusedHead = await fusedPart({ localValue: main.value, graphText: spread.text, spreadLimit, budget, flags })') &&
+      searchSrc118.includes('if (fusedHead !== null) return fusedHead') &&
+      searchSrc118.indexOf('await fusedPart(') < searchSrc118.indexOf('const spreadFit = await fitPath(flow, exec, {'),
+  )
+  check(
+    '融合: 合不了就退回两段式（本地零命中 / 星图解析不出 / 预算装不下都不硬凑半张榜）',
+    searchSrc118.includes('if (localHits.length === 0 || nodes.length === 0) return null') &&
+      (searchSrc118.match(/— 星图关联扩散 —/g) || []).length === 2,
+  )
+  check(
+    '融合: 预算紧时先砍星图独有那几条（先砍证据，不砍答案），并把砍掉的说一句',
+    searchSrc118.includes('while (shown > 0 && estTokens(build(shown)) > budget.value) shown -= 1') &&
+      searchSrc118.includes('融合榜按 ${budget.value} token 预算收紧：星图独有的条目从 ${graphShown} 条压到 ${shown} 条。') &&
+      searchSrc118.includes('flags.fused = true'),
+  )
+  check(
+    '融合·探针进线：F1–F14（含「名次说了算」「省 token」两条硬断言）',
+    probeSrc118.includes('F1 解析得动真实那三行格式') &&
+      probeSrc118.includes('F3 两路都命中的只算一行') &&
+      probeSrc118.includes('F5 名次说了算，分数再高也不许插队') &&
+      probeSrc118.includes('F6 星图只给前 12 位也认得出是同一条') &&
+      probeSrc118.includes('F11 端到端：expand=true 时给的是融合榜，不是两段拼接') &&
+      probeSrc118.includes('F13 星图回执解析不出节点时退回两段式') &&
+      probeSrc118.includes('F14 融合确实省 token'),
+  )
+  check(
+    '融合: 版本与文档一起走（9.124 / 130）',
+    (() => {
+      const pkg118 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const v = pkg118.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 118)
+      return atLeast && readFileSync(join(root, 'lib/index.js'), 'utf8').includes(`export const version = '${pkg118.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.124') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 130'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
