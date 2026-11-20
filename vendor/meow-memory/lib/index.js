@@ -769,7 +769,9 @@ var MemoryDb = class {
   }
   /** [macro-fusion 0.2.100] 账本分页：一页几条、从第几条开始。行里带 rowid（面板只当内部句柄，
    *  对外仍按「第 k 近」说话），并给同 run_at 一个稳定的次序（rowid DESC），否则翻页会漏条/重条。 */
-  recentDreamsPage(limit = 5, offset = 0, project = "") {
+  // [macro-fusion 0.2.105] 再收 since / until（毫秒，闭区间）：问「这几天整理得怎么样」以前只能翻页数条。
+  // 时间条件也必须留在 SQL 里，理由与项目筛同款——搬出去算，「第几页」和「一共几条」就各有一套了。
+  recentDreamsPage(limit = 5, offset = 0, project = "", since = 0, until = 0) {
     const askedLimit = Math.trunc(Number(limit));
     const n = Math.min(50, Math.max(1, Number.isFinite(askedLimit) && askedLimit > 0 ? askedLimit : 5));
     const askedOffset = Math.trunc(Number(offset));
@@ -778,12 +780,28 @@ var MemoryDb = class {
     // 「一共几条」会各算一套，翻页就漏条。
     // [macro-fusion 0.2.102] 再补 je.type='text'：老账本里 projects 是数字，别让数字被当成名字。
     const name = String(project ?? "").trim();
-    const where =
-      name === ""
-        ? ""
-        : "WHERE json_valid(changes) AND EXISTS (SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.type = 'text' AND json_each.value = ?)";
+    const from = Number(since);
+    const to = Number(until);
+    const parts = [];
+    const args = [];
+    if (name !== "") {
+      parts.push(
+        "json_valid(changes) AND EXISTS (SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.type = 'text' AND json_each.value = ?)",
+      );
+      args.push(name);
+    }
+    // run_at 是毫秒时间戳，闭区间：since 当天 0 点、until 当天 23:59:59.999 都算在内。
+    if (Number.isFinite(from) && from > 0) {
+      parts.push("run_at >= ?");
+      args.push(Math.trunc(from));
+    }
+    if (Number.isFinite(to) && to > 0) {
+      parts.push("run_at <= ?");
+      args.push(Math.trunc(to));
+    }
+    const where = parts.length === 0 ? "" : "WHERE " + parts.join(" AND ");
     const sql = "SELECT rowid AS id, run_at, summary, changes, note FROM dream_log " + where + " ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?";
-    const rows = name === "" ? this.db.prepare(sql).all(n, skip) : this.db.prepare(sql).all(name, n, skip);
+    const rows = this.db.prepare(sql).all(...args, n, skip);
     return rows.map((r) => {
       let changes = null;
       try {
@@ -804,18 +822,38 @@ var MemoryDb = class {
     const row = this.db.prepare("SELECT COUNT(*) AS n FROM dream_log").get();
     return Number(row?.n) || 0;
   }
+  /** [macro-fusion 0.2.105] 账本最早 / 最新一条的时间（毫秒）。筛空了要靠它说清「这段时间里没有」
+   *  与「账本里根本没有这段」——不给这两个数，读者只能把空结果读成「整理没发生过」。 */
+  dreamsSpan() {
+    const row = this.db.prepare("SELECT MIN(run_at) AS a, MAX(run_at) AS b FROM dream_log").get();
+    return { first: Number(row?.a) || 0, last: Number(row?.b) || 0 };
+  }
   /** [macro-fusion 0.2.101] 账本按项目段筛：project 为空就是全账本。
    *  项目名在 changes.plan.projects 里（JSON 数组），所以走 json_each；坏行先被 json_valid 挡掉，
    *  不许让一行坏账把整条查询带崩，也不许把它悄悄算成「匹配」。 */
-  dreamCountOf(project = "") {
+  // [macro-fusion 0.2.105] 带 since / until 时 total 也必须是筛后的数（否则翻到第二页就空）。
+  dreamCountOf(project = "", since = 0, until = 0) {
     const name = String(project ?? "").trim();
-    if (name === "") return this.dreamCount();
-    const row = this.db
-      .prepare(
-        "SELECT COUNT(*) AS n FROM dream_log WHERE json_valid(changes) AND EXISTS " +
-          "(SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.type = 'text' AND json_each.value = ?)",
-      )
-      .get(name);
+    const from = Number(since);
+    const to = Number(until);
+    const parts = [];
+    const args = [];
+    if (name !== "") {
+      parts.push(
+        "json_valid(changes) AND EXISTS (SELECT 1 FROM json_each(json_extract(dream_log.changes, '$.plan.projects')) WHERE json_each.type = 'text' AND json_each.value = ?)",
+      );
+      args.push(name);
+    }
+    if (Number.isFinite(from) && from > 0) {
+      parts.push("run_at >= ?");
+      args.push(Math.trunc(from));
+    }
+    if (Number.isFinite(to) && to > 0) {
+      parts.push("run_at <= ?");
+      args.push(Math.trunc(to));
+    }
+    if (parts.length === 0) return this.dreamCount();
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM dream_log WHERE " + parts.join(" AND ")).get(...args);
     return Number(row?.n) || 0;
   }
   /** [macro-fusion 0.2.101] 项目段的分布：每个项目在多少次账里出现过（次数降序、同数次按名字）。
@@ -3543,7 +3581,7 @@ function dreamLog(ws, dir, msg) {
 /** [macro-fusion 0.2.97] 读某个工作区的 dream 账本：面板要说的每一句都从这里出，别的地方不许自己猜。
  *  missing 分四种：'' 正常；'no-workspace' 会话没有 cwd；'no-db' 这个工作区还没建记忆库；
  *  'read-failed: …' 库在但读不出来（原因原样带出）——「没账本」和「读不出来」不能合成一句话。 */
-function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0, project = "") {
+function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0, project = "", since = 0, until = 0) {
   const empty = { rows: [], path: "", missing: "no-workspace", total: 0 };
   if (typeof workspace !== "string" || workspace.length === 0) return empty;
   const path = memoryDbPath(workspace, dir);
@@ -3553,9 +3591,29 @@ function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0, pr
     // [macro-fusion 0.2.100] 分页要一个总数：翻到第几页、还有几条更早，只能从这里来，
     // 不许拿「这一页返回了几条」凑（最后一页会短，那是页面短，不是账本短）。
     // [macro-fusion 0.2.101] 带 project 时 total 也必须是筛后的数——两个数各算一套就会翻出空页。
-    return { rows: db.recentDreamsPage(limit, offset, project), path, missing: "", total: db.dreamCountOf(project) };
+    // [macro-fusion 0.2.105] since / until（毫秒，闭区间）同理：行和总数一起过同一把筛子。
+    return {
+      rows: db.recentDreamsPage(limit, offset, project, since, until),
+      path,
+      missing: "",
+      total: db.dreamCountOf(project, since, until),
+    };
   } catch (e) {
     return { rows: [], path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0 };
+  }
+}
+
+/** [macro-fusion 0.2.105] 账本覆盖的时间范围（最早 / 最新，毫秒）。
+ *  筛出一段空结果时，面板要能说「这段时间里没有」而不是「账本里没有」——两者的修法完全不同。 */
+function readDreamSpan(workspace, dir = ".dsh-meow") {
+  if (typeof workspace !== "string" || workspace.length === 0) return { first: 0, last: 0, path: "", missing: "no-workspace" };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { first: 0, last: 0, path, missing: "no-db" };
+  try {
+    const got = getDb(workspace, dir).dreamsSpan();
+    return { first: got.first, last: got.last, path, missing: "" };
+  } catch (e) {
+    return { first: 0, last: 0, path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
@@ -6558,6 +6616,7 @@ export {
   readDreamProjects,
   readDreamRecord,
   readDreamRecordByRef,
+  readDreamSpan,
   readLiveDream,
   dreamSweepOnce,
   dreamSweepTick,

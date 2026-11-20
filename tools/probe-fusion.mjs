@@ -671,6 +671,66 @@ try {
     digRefGone.split('\n')[0],
   )
 
+  // D43–D45（0.2.105）：按日期筛账。账本里现有的 6 条都是「现在」写的，
+  // 要量「按天筛」就得塞两条旧账——直接插 run_at，logDream 只会写现在。
+  const digDayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const digNowDay = new Date()
+  const digDaysAgo = (n) => {
+    const d = new Date(digNowDay.getFullYear(), digNowDay.getMonth(), digNowDay.getDate() - n, 10, 0, 0, 0)
+    return d
+  }
+  const digTenAgo = digDaysAgo(10)
+  const digThreeAgo = digDaysAgo(3)
+  const digMidGap = digDaysAgo(6)
+  const digIns = digDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+  digIns.run(digTenAgo.getTime(), 'window dream done: sess-ten-ago stamped=true', JSON.stringify({ stamped: true, groups: 1, plan: digPlan }), '十天前')
+  digIns.run(digThreeAgo.getTime(), 'window dream done: sess-three-ago stamped=true', JSON.stringify({ stamped: true, groups: 1, plan: digPlan }), '三天前')
+  const digTodayKey = digDayKey(digNowDay)
+  const digTenKey = digDayKey(digTenAgo)
+  const digThreeKey = digDayKey(digThreeAgo)
+  const digGapKey = digDayKey(digMidGap)
+  const digSinceToday = text(await tools.get('memory_admin').execute({ action: 'dream', since: digTodayKey, limit: 10 }, digCtx))
+  check(
+    'D43 since=今天：只列今天的账（全账本 8 条、筛后 6 条），旧账一条都不混进来，口径里写清筛子与时区',
+    digSinceToday.includes(`按时间 ${digTodayKey} → 现在 筛：6 条（全账本 8 条）`) &&
+      digSinceToday.includes('UTC') &&
+      !digSinceToday.includes('十天前') &&
+      !digSinceToday.includes('三天前'),
+    digSinceToday.split('\n')[0],
+  )
+  const digStampOf = (d) => `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 10:00`
+  const digOneDay = text(await tools.get('memory_admin').execute({ action: 'dream', since: digThreeKey, until: digThreeKey }, digCtx))
+  check(
+    'D43 同一天当 since 和 until = 这一天整天（筛出 1 条旧账，行上时间就是那天 10:00，不是 0 条也不是全账本）',
+    digOneDay.includes(digStampOf(digThreeAgo)) &&
+      digOneDay.includes(`按时间 ${digThreeKey} → ${digThreeKey} 筛：1 条（全账本 8 条）`) &&
+      digOneDay.includes('#1 ') &&
+      !digOneDay.includes('#2 '),
+    digOneDay.split('\n')[0],
+  )
+  const digBadDay = text(await tools.get('memory_admin').execute({ action: 'dream', since: '2026-13-40' }, digCtx))
+  const digReversed = text(await tools.get('memory_admin').execute({ action: 'dream', since: digTodayKey, until: digTenKey }, digCtx))
+  check(
+    'D44 日期写坏了就打回：不猜一个日期去筛（猜出来的结论比不筛更误导），反着写也直接说反了',
+    digBadDay.includes('这种写法不敢猜') &&
+      digBadDay.includes('这次没有列账') &&
+      digReversed.includes('还晚') &&
+      digReversed.includes('这次没有列账'),
+    digBadDay.split('\n')[0],
+  )
+  const digUntilTen = text(await tools.get('memory_admin').execute({ action: 'dream', until: digTenKey, limit: 10 }, digCtx))
+  const digGapDay = text(await tools.get('memory_admin').execute({ action: 'dream', since: digGapKey, until: digGapKey }, digCtx))
+  check(
+    'D45 空区间要说清「这段里没有」而不是「账本里没有」：带上账本覆盖范围与全账本条数；只给 until 时挑得出那天之前那一条',
+    digUntilTen.includes(digStampOf(digTenAgo)) &&
+      digUntilTen.includes(`筛：1 条（全账本 8 条）`) &&
+      !digUntilTen.includes(digStampOf(digThreeAgo)) &&
+      digGapDay.includes('这段时间里没有') &&
+      digGapDay.includes('账本覆盖') &&
+      digGapDay.includes('全账本 8 条'),
+    digGapDay.split('\n')[0],
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {

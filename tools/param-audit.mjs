@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 参数覆盖审计：证明「没有砍掉 meow / nebula 原有的任何一个参数」。
  *
  * coverage-audit.mjs 证明的是「17 个工具都有去处」；
@@ -127,7 +127,9 @@ const EXTRA = {
   'memory_search': ['mode', 'expand', 'id', 'memory_ids', 'limit', 'hops', 'chars', 'min_weight'],
   'memory_read': ['neighbors'],
   'memory_link': ['action', 'a', 'b', 'note', 'maxHops'],
-  'memory_admin': ['action', 'target', 'limit', 'kind', 'hubs', 'verbose', 'provider', 'items', 'page'],
+  // [macro-fusion 0.2.105] since / until：按日期筛 dream 账本，是统一工具自己加的能力
+  // （vendor 的 dream 读口原来只有 limit/offset/project），登记在这里才算「有出处」。
+  'memory_admin': ['action', 'target', 'limit', 'kind', 'hubs', 'verbose', 'provider', 'items', 'page', 'since', 'until'],
   'memory_remember': ['links'],
   'memory_update': ['links'],
 }

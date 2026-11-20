@@ -890,5 +890,42 @@ check(
   `missing=${refZero.missing}`,
 )
 
+// O 段（0.2.105）：按日期筛账——闭区间、本机时区、行与总数同一把筛子。
+// 这一段不用 logDream（它写的是「现在」），直接插 run_at，才量得出边界：
+// 18 号 00:00:00.000 要算进来、18 号 23:59:59.999 要算进来、19 号 00:00:00.000 要挡在外面。
+const spanWs = mkdtempSync(join(tmpdir(), 'ruler-span-'))
+const spanDb = V.getDb(spanWs, '.dsh-meow')
+const spanIns = spanDb.db.prepare('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?, ?, ?, ?)')
+const spanPlan = (project) => JSON.stringify({ plan: { projects: [project], rounds: [], pairs: { dup: 0, cover: 0 }, words: [] } })
+const day18 = new Date(2026, 10, 18, 0, 0, 0, 0).getTime()
+const day19 = day18 + 86400000
+spanIns.run(day18 - 1, 'window dream done: before', spanPlan('Alpha'), '')
+spanIns.run(day18, 'window dream done: start', spanPlan('Beta'), '')
+spanIns.run(day18 + 43200000, 'window dream done: noon', spanPlan('Alpha'), '')
+spanIns.run(day19 - 1, 'window dream done: end', spanPlan('Alpha'), '')
+spanIns.run(day19, 'window dream done: after', spanPlan('Beta'), '')
+const spanRows = spanDb.recentDreamsPage(10, 0, '', day18, day19 - 1)
+const spanCount = spanDb.dreamCountOf('', day18, day19 - 1)
+const spanOneDay = spanDb.recentDreamsPage(10, 0, '', day18, day18 + 1)
+check(
+  'L15 日期是闭区间：00:00:00.000 与 23:59:59.999 都在里面，前 1 毫秒、后 1 毫秒都在外面；条数（3）与行数一致',
+  spanRows.length === 3 && spanCount === 3 && spanRows.every((r) => r.runAt >= day18 && r.runAt <= day19 - 1) && spanOneDay.length === 1,
+  `rows=${spanRows.length} count=${spanCount} oneDay=${spanOneDay.length} at=${spanRows.map((r) => r.runAt).join(',')}`,
+)
+const spanProj = spanDb.dreamCountOf('Alpha', day18, day19 - 1)
+const spanOnlyProj = spanDb.dreamCountOf('Alpha')
+const spanNothing = spanDb.dreamCountOf('', day19 + 1, day19 + 86400000)
+check(
+  'L16 时间与项目段叠着筛：Alpha 在 18 号只有 2 条、全账本 3 条；筛到没账的区间是 0（不是回退成全账本）',
+  spanProj === 2 && spanOnlyProj === 3 && spanNothing === 0,
+  `proj=${spanProj} onlyProj=${spanOnlyProj} nothing=${spanNothing}`,
+)
+const spanGot = V.readDreamSpan(spanWs, '.dsh-meow')
+check(
+  'L17 账本覆盖范围：first / last 就是最早与最新那条的时间（筛空了要靠它说「这段里没有」，不是「账本里没有」）',
+  spanGot.missing === '' && spanGot.first === day18 - 1 && spanGot.last === day19,
+  `missing=${spanGot.missing} first=${spanGot.first - day18} last=${spanGot.last - day18}`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -6544,15 +6544,18 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
   check(
     'dream 项目筛: 筛在 SQL 里做，页面与总数共用一个筛子（不各算一套）',
-    vSrc.includes('recentDreamsPage(limit = 5, offset = 0, project = "")') &&
-      vSrc.includes("const name = String(project ?? \"\").trim();") &&
-      vSrc.includes('const rows = name === "" ? this.db.prepare(sql).all(n, skip) : this.db.prepare(sql).all(name, n, skip);') &&
-      /function readDreamLedger\(workspace, dir = "\.dsh-meow", limit = 5, offset = 0, project = ""\)/.test(vSrc) &&
-      vSrc.includes('total: db.dreamCountOf(project)'),
+    // [macro-fusion 0.2.105] 写侧改成 parts/args 拼 WHERE（项目段 + 日期共用一套筛子），
+    // 签名多了 since/until，行和总数都吃同一份 parts。
+    vSrc.includes('recentDreamsPage(limit = 5, offset = 0, project = "", since = 0, until = 0)') &&
+      vSrc.includes('const name = String(project ?? "").trim();') &&
+      vSrc.includes('const where = parts.length === 0 ? "" : "WHERE " + parts.join(" AND ");') &&
+      vSrc.includes('const rows = this.db.prepare(sql).all(...args, n, skip);') &&
+      /function readDreamLedger\(workspace, dir = "\.dsh-meow", limit = 5, offset = 0, project = "", since = 0, until = 0\)/.test(vSrc) &&
+      vSrc.includes('total: db.dreamCountOf(project, since, until),'),
   )
   check(
     'dream 项目筛: 坏行先被 json_valid 挡掉（不许把一行坏账算成「匹配」或把查询带崩）',
-    vSrc.includes('dreamCountOf(project = "")') &&
+    vSrc.includes('dreamCountOf(project = "", since = 0, until = 0)') &&
       (vSrc.match(/json_valid\(changes\)/g) ?? []).length >= 2 &&
       (vSrc.match(/json_valid\(dream_log\.changes\)/g) ?? []).length >= 2,
   )
@@ -6574,7 +6577,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'dream 项目筛: 面板第 1 页给分布行，且只在没筛时给（筛完再报分布会被当成「分布也筛过了」）',
     panelSrc.includes('function projectsLine(got)') &&
       panelSrc.includes('function projectNames(row)') &&
-      panelSrc.includes('if (!filtered) {') &&
+      // [macro-fusion 0.2.105] 按日期筛时同样不给分布：那是全账本的分布，不是这段日子的。
+      panelSrc.includes('if (!filtered && !ranged) {') &&
       panelSrc.includes('const projects = projectsLine(Meow.readDreamProjects(workspace, dir, 5))') &&
       panelSrc.includes('项目分布按 changes.plan.projects 数出现次数，只列前 5 个；要看某个项目的账就用 project= 筛'),
   )
@@ -6582,8 +6586,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'dream 项目筛: 筛着的时候编号改口径并说清（#k 是筛出来的第几近，不是全账本序号）',
     panelSrc.includes('const filtered = wantProject !== \'\'') &&
       panelSrc.includes('#k 是筛出来这几条里的第几近，不是全账本序号') &&
-      panelSrc.includes('`共 ${total} 条（项目段「${wantProject}」）· 每页 ${want} 条`') &&
-      panelSrc.includes('Meow.readDreamLedger(workspace, dir, want, (effectivePage - 1) * want, wantProject).rows'),
+      // [macro-fusion 0.2.105] 筛子可能是「项目段」也可能是「日期」，导航行改成念 sieve，别只认项目段。
+      panelSrc.includes("nav.push(sieve === '' ? `共 ${total} 条 · 每页 ${want} 条` : `共 ${total} 条（${sieve}）· 每页 ${want} 条`)") &&
+      panelSrc.includes('Meow.readDreamLedger(workspace, dir, want, (effectivePage - 1) * want, wantProject, range.since, range.until).rows'),
   )
   check(
     'dream 项目筛: 筛空了不等于账本空（两句话分开说，并给出全账本条数）',
@@ -6830,7 +6835,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'dream 引用: 「第几近」和账本列表必须同一把尺子（run_at 相同再比 id），否则引用和编号会指向不同的行',
     (() => {
       const seg = vSrc.slice(vSrc.indexOf('dreamRankOf(id) {'), vSrc.indexOf('close() {'))
-      const page = vSrc.slice(vSrc.indexOf('recentDreamsPage('), vSrc.indexOf('recentDreamsPage(') + 1200)
+      const page = vSrc.slice(vSrc.indexOf('recentDreamsPage('), vSrc.indexOf('recentDreamsPage(') + 2400)
       return (
         seg.includes('SELECT COUNT(*) AS n FROM dream_log WHERE run_at > ? OR (run_at = ? AND id > ?)') &&
         page.includes('ORDER BY run_at DESC, rowid DESC') &&
@@ -6917,6 +6922,111 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.110') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 116'),
+  )
+}
+
+// [macro-fusion 0.2.105] 账本只知道「翻了几条」，问不了「这几天整理得怎么样」：
+// 要按日期问，就得有日期筛。三条硬口径：闭区间、本机时区、行与总数过同一把筛子。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const adminSrc = readFileSync(join(root, 'lib', 'macro', 'defs', 'admin.js'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const auditSrc = readFileSync(join(root, 'tools', 'param-audit.mjs'), 'utf8')
+  const rulerSrc105 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc105 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'dream 日期筛: 写侧把日期条件放进 SQL（行和总数同一把筛子），闭区间两端都含',
+    vSrc.includes('recentDreamsPage(limit = 5, offset = 0, project = "", since = 0, until = 0) {') &&
+      vSrc.includes('parts.push("run_at >= ?");') &&
+      vSrc.includes('parts.push("run_at <= ?");') &&
+      vSrc.includes('const where = parts.length === 0 ? "" : "WHERE " + parts.join(" AND ");') &&
+      vSrc.includes('dreamCountOf(project = "", since = 0, until = 0) {'),
+  )
+  check(
+    'dream 日期筛: 三个读口都接日期（账本行 / 总数 / 覆盖范围），readDreamSpan 也导出',
+    vSrc.includes('function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0, project = "", since = 0, until = 0) {') &&
+      vSrc.includes('rows: db.recentDreamsPage(limit, offset, project, since, until),') &&
+      vSrc.includes('total: db.dreamCountOf(project, since, until),') &&
+      vSrc.includes('dreamsSpan() {') &&
+      vSrc.includes('SELECT MIN(run_at) AS a, MAX(run_at) AS b FROM dream_log') &&
+      vSrc.includes('function readDreamSpan(workspace, dir = ".dsh-meow")') &&
+      vSrc.includes('  readDreamSpan,'),
+  )
+  check(
+    'dream 日期筛: 面板按本机时区解日期，绝不用 Date.parse（那是 UTC，东八区整体错 8 小时）',
+    panelSrc.includes('function dayStartOf(raw) {') &&
+      panelSrc.includes('const t = new Date(y, mo - 1, d, 0, 0, 0, 0)') &&
+      panelSrc.includes('return s === null ? null : s + 86400000 - 1') &&
+      // 注释里可以写「不能用 Date.parse」，代码里一个字都不许有——先剥掉注释行再查。
+      !panelSrc
+        .split('\n')
+        .filter((line) => {
+          const t = line.trim()
+          return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
+        })
+        .join('\n')
+        .includes('Date.parse(') &&
+      panelSrc.includes('return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, \'0\')}:${String(abs % 60).padStart(2, \'0\')}`'),
+  )
+  check(
+    'dream 日期筛: 写坏了就打回（坏日期 / 反着写），不猜一个日期去筛',
+    panelSrc.includes('function rangeOf(sinceRaw, untilRaw) {') &&
+      panelSrc.includes('这种写法不敢猜') &&
+      panelSrc.includes('比 until「${untilText}」还晚——这样筛不出任何一条') &&
+      panelSrc.includes("if (range.bad !== '') return { body: `${range.bad}这次没有列账。`, scope: '按时间筛的写法被打回，账本一条没动' }"),
+  )
+  check(
+    'dream 日期筛: 打回发生在读账本之前（一次坏日期不该先查库再拒绝），行与总数都带日期',
+    (() => {
+      const bad = panelSrc.indexOf('if (range.bad !== \'\') return { body:')
+      const firstRead = panelSrc.indexOf('Meow.readDreamLedger(')
+      return bad > 0 && firstRead > bad
+    })() &&
+      panelSrc.includes("const ledger = Meow.readDreamLedger(workspace, dir, want, offset, wantProject, range.since, range.until)") &&
+      panelSrc.includes('Meow.readDreamLedger(workspace, dir, want, (effectivePage - 1) * want, wantProject, range.since, range.until).rows'),
+  )
+  check(
+    'dream 日期筛: 筛空了要说「这段里没有」+ 账本覆盖范围，不能读成「账本里没有」',
+    panelSrc.includes("const span = Meow.readDreamSpan(workspace, dir)") &&
+      panelSrc.includes('这段时间里没有${who}整理记录——${cover}') &&
+      panelSrc.includes("账本覆盖 ${stamp(span.first)} → ${stamp(span.last)}（本机时区 ${tzLabel()}）") &&
+      panelSrc.includes('；项目段「${wantProject}」这段时间里一条都没有'),
+  )
+  check(
+    'dream 日期筛: 展开一条时说清它在不在区间里，但编号/引用口径不变（和项目筛同一条分寸）',
+    panelSrc.includes('function rangeNoteOf(row, range) {') &&
+      panelSrc.includes('这一条不在 ${range.label} 这段时间里（它写在 ${stamp(at)}）') &&
+      panelSrc.includes('[expandPanel(rec, wantId), rangeNoteOf(rec.row, range), filterNote]') &&
+      panelSrc.includes('日期筛选也不影响引用'),
+  )
+  check(
+    'dream 日期筛: admin 只把原样日期交过去（解析只写一份，别在两处各写一套）',
+    adminSrc.includes('const since = String(args.since ?? \'\').trim()') &&
+      adminSrc.includes('const until = String(args.until ?? \'\').trim()') &&
+      adminSrc.includes('        since,\n        until,') &&
+      adminSrc.includes('写 "2026-11-18"') &&
+      auditSrc.includes("'page', 'since', 'until']"),
+  )
+  check(
+    'dream 日期筛: 探针进线（probe-ruler L15–L17 验闭区间与覆盖范围、probe-fusion D43–D45 验面板真念）',
+    rulerSrc105.includes('L15 日期是闭区间') &&
+      rulerSrc105.includes('L16 时间与项目段叠着筛') &&
+      rulerSrc105.includes('L17 账本覆盖范围') &&
+      fusionSrc105.includes('D43 since=今天') &&
+      fusionSrc105.includes('D44 日期写坏了就打回') &&
+      fusionSrc105.includes('D45 空区间要说清'),
+  )
+  check(
+    'dream 日期筛: 版本不早于 0.2.105（两处一致），文档 9.111 / 117 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 105)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.111') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 117'),
   )
 }
 
