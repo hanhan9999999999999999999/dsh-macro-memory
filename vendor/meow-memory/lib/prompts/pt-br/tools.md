@@ -31,6 +31,7 @@
 - memory_search.param.dedupe: Dobra de quase-duplicatas (padrao ativo): entradas com conteudo praticamente igual (sobreposicao literal ≥80%) aparecem uma vez so, mantendo a de maior pontuacao, e o total dobrado e informado; o caso tipico e a mesma frase gravada em fact e em lesson. Passe false para listar todas.
 - memory_search.param.explain: Interruptor de recuperação explicável (padrão desativado). Com true, cada hit traz uma decomposição de pontuação em explain (pontuação bm25 de palavras-chave, importance, peso recencyWeight de Ebbinghaus, status), para depurar "por que não foi recuperado / por que foi recuperado"; a ordem não muda.
 - memory_search.out.note: Nota de conflito.
+- memory_search.out.timeline: Linha do tempo, do mais antigo ao mais recente: so quando a query pergunta sobre tempo (when / before / after / ...) e houve pelo menos 3 acertos; no maximo 8 entradas, como `[3] 2023-05-08 13:56 · [1] ...`, em que o numero e o mesmo [k] do cabecalho do acerto.
 - memory_search.out.hits.id: id completo da memória (passe-o para memory_read/memory_update/memory_find_similar).
 - memory_search.out.hits.keywords: As palavras-chave da entrada (extraídas por um LLM ou automaticamente).
 - memory_search.out.hits.project: Projeto ao qual a entrada pertence; ""=sem rótulo; entradas aplicáveis globalmente mostram "global".

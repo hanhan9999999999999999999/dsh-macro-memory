@@ -31,6 +31,7 @@
 - memory_search.param.dedupe: Near-duplicate folding (default on): entries with nearly identical content (verbatim-level overlap ≥80%) are listed once, keeping the highest-scoring one, and the folded count is reported; the usual cause is the same sentence stored in both fact and lesson. Pass false to list every hit.
 - memory_search.param.explain: Explainable-retrieval switch (default off). With true, each hit carries a per-component score breakdown in explain (bm25 keyword score, importance, recencyWeight Ebbinghaus weight, status) to debug "why wasn't this recalled / why was this recalled"; ordering is unchanged.
 - memory_search.out.note: Conflict note.
+- memory_search.out.timeline: Timeline, earliest first: only when the query asks about time (when / before / after / ...) and at least 3 hits came back; at most 8 entries, like `[3] 2023-05-08 13:56 · [1] ...`, where the number is the same [k] that starts each hit header.
 - memory_search.out.hits.id: Full memory id (pass it to memory_read/memory_update/memory_find_similar).
 - memory_search.out.hits.keywords: The entry's keywords (extracted by an LLM or automatically).
 - memory_search.out.hits.project: Project the entry belongs to; ""=unlabeled; globally applicable entries read "global".

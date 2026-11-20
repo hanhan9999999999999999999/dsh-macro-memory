@@ -6342,6 +6342,47 @@ check(
     /\u2191 \d{4}-\d{2}-\d{2} /.test(txTwo) && !/\u2191 \d{4}-\d{2}-\d{2} \d{2}:\d{2} /.test(txTwo),
     (txTwo.split('\n').find((l) => l.includes('\u2191')) ?? '').slice(0, 60),
   )
+  // TL0–TL3（0.2.129）：问句问时间时才印一行时间轴，编号与命中抬头同一套。
+  const mkHit = (i, day, extra = {}) => ({
+    id: `tl${i}`,
+    level: 'fact',
+    content: `第 ${i} 条正文`,
+    project: '全局',
+    keywords: ['潜水'],
+    day,
+    updated_at: 0,
+    score: 10 - i,
+    ...extra,
+  })
+  const tlHits = [mkHit(1, '2023-05-08 13:56'), mkHit(2, '2023-05-09 09:00'), mkHit(3, '2023-05-07 18:30')]
+  const tlText = render({ note: '', hits: tlHits }, { query: '我们什么时候去潜水？' })
+  const tlLine = tlText.split('\n').find((l) => l.includes('时间轴')) ?? ''
+  check(
+    'TL0 问句问时间：回执顶部印一行时间轴，按早到晚排',
+    tlLine.includes('[3] 2023-05-07 18:30') &&
+      tlLine.includes('[1] 2023-05-08 13:56') &&
+      tlLine.includes('[2] 2023-05-09 09:00') &&
+      tlLine.indexOf('[3]') < tlLine.indexOf('[1]') &&
+      tlLine.indexOf('[1]') < tlLine.indexOf('[2]'),
+    tlLine.slice(0, 120),
+  )
+  check(
+    'TL0 命中抬头带序号，与时间轴编号同一套',
+    /^\[1\] \[.* : fact\] \[tl1\] /m.test(tlText) && /^\[3\] \[.* : fact\] \[tl3\] /m.test(tlText),
+    tlText.split('\n').filter((l) => /^\[\d\] \[/.test(l)).slice(0, 3).join(' / ').slice(0, 120),
+  )
+  const tlQuiet = render({ note: '', hits: tlHits }, { query: '潜水装备在哪租' })
+  check('TL1 问句不问时间：一个字都不印（省 token 也不打扰）', !tlQuiet.includes('时间轴'), `${tlQuiet.length} 字`)
+  const tlFew = render({ note: '', hits: tlHits.slice(0, 2) }, { query: '我们什么时候去潜水？' })
+  check('TL2 命中不到三条：不印时间轴（两条比大小看不出趋势）', !tlFew.includes('时间轴'))
+  const tlManyHits = Array.from({ length: 10 }, (_, i) => mkHit(i + 1, `2023-05-${String(10 + i).padStart(2, '0')} 09:00`))
+  const tlMany = render({ note: '', hits: tlManyHits }, { query: '第一次潜水是什么时候' })
+  const manyLine = tlMany.split('\n').find((l) => l.includes('时间轴')) ?? ''
+  check(
+    'TL3 超过 8 条：只铺最早 8 条，尾注说明还剩几条',
+    manyLine.includes('…另有 2 条') && (manyLine.match(/\[\d+\] 2023-/g) ?? []).length === 8,
+    manyLine.slice(-60),
+  )
   try {
     rmSync(dtHome, { recursive: true, force: true })
   } catch {

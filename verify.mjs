@@ -8757,5 +8757,76 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── 时间轴 + 命中序号（0.2.129）────────────────────────────────────────────
+{
+  const meowSrc129 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc129 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'DY 时间轴: 闸门是「问句含时间词 + 命中 ≥3」，上限 8 条，逻辑在模块级 timelineLine（不撑 render 字面量）',
+    meowSrc129.includes('var TIMELINE_CUE =') &&
+      meowSrc129.includes('var TIMELINE_MAX = 8;') &&
+      meowSrc129.includes('function timelineLine(hits, query) {') &&
+      meowSrc129.includes('if (!TIMELINE_CUE.test(q) || !Array.isArray(hits) || hits.length < 3) return "";') &&
+      meowSrc129.includes('const tl = timelineLine(hits, _args?.query);'),
+  )
+  check(
+    'DY 时间轴: 排序靠 stampMs 解析回执里的 day，不猜不补',
+    meowSrc129.includes('function stampMs(day) {') &&
+      meowSrc129.includes('return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0), 0, 0).getTime();'),
+  )
+  check(
+    'DY 序号: 命中抬头带 [k]，与时间轴编号同一套（没有序号的时间轴只值 +0.8pt）',
+    meowSrc129.includes('hits.forEach((h, hi) => {') &&
+      meowSrc129.includes('`[${String(hi + 1)}] [${proj}] [${String(h.id ?? "")}] [${rel}${day}]'),
+  )
+  check(
+    'DY 时间轴: 三语 prompt 都写了 out.timeline',
+    ['zh', 'en', 'pt-br'].every((lang) => {
+      const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lang, 'tools.md'), 'utf8')
+      return t.includes('memory_search.out.timeline')
+    }),
+  )
+  {
+    const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const dyHome = mkdtempSync(join(tmpdir(), 'macro-dy-'))
+    const T = new Map()
+    Meow.registerMemoryTools((t) => T.set(t.name, t), '.dsh-meow')
+    Meow.getDb(dyHome, '.dsh-meow')
+    const tool = T.get('memory_search')
+    const mk = (i, day) => ({ id: `dy${i}`, level: 'fact', title: '', content: `第 ${i} 条正文`, project: '全局', keywords: ['潜水'], day, updated_at: 0, score: 10 - i })
+    const value = { note: '', hits: [mk(1, '2023-05-08 13:56'), mk(2, '2023-05-09 09:00'), mk(3, '2023-05-07 18:30')] }
+    const ask = tool.output.render({ query: '我们什么时候去潜水？', content_max: 300 }, value).map((x) => x.text).join('\n')
+    const line = ask.split('\n').find((l) => l.includes('时间轴')) ?? ''
+    check(
+      'DY 时间轴·行为: 问时间 → 一行按早到晚[3] [1] [2]，抬头带同序号',
+      line.indexOf('[3] 2023-05-07 18:30') >= 0 &&
+        line.indexOf('[3]') < line.indexOf('[1]') &&
+        line.indexOf('[1]') < line.indexOf('[2]') &&
+        /^\[1\] \[.* : fact\] \[dy1\] /m.test(ask),
+      line.slice(0, 100),
+    )
+    const plain = tool.output.render({ query: '潜水装备在哪租', content_max: 300 }, value).map((x) => x.text).join('\n')
+    check('DY 时间轴·行为: 不问时间 → 不印（cat4 单跳题不掉分）', !plain.includes('时间轴'), `${plain.length} 字`)
+    try {
+      rmSync(dyHome, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  check(
+    'DY 时间轴·探针进线：TL0 / TL1 / TL2 / TL3',
+    probeSrc129.includes('TL0 问句问时间') && probeSrc129.includes('TL1 问句不问时间') && probeSrc129.includes('TL2 命中不到三条') && probeSrc129.includes('TL3 超过 8 条'),
+  )
+  check(
+    'DY 时间轴: 版本与文档一起走（9.133 / 139）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      return pkg.version.split('.').map((x) => Number(x))[2] >= 129
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.133 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 139 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

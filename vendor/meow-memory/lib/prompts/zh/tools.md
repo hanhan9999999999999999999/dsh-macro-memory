@@ -31,6 +31,7 @@
 - memory_search.param.dedupe: 同类折叠开关（默认开）：内容几乎一样（逐字级重复，重复度 ≥80%）的条目只列分数最高的一条，折了几条写进尾注——同一句既存了 fact 又存了 lesson 时最常见；传 false = 每条都列。
 - memory_search.param.explain: 可解释检索开关（默认关）。开=true 时每条命中附带分项得分 explain（bm25 关键词分、importance、recencyWeight 艾宾浩斯权重、status），用于排查"为什么没召回/为什么召回它"，不改排序。
 - memory_search.out.note: 冲突提示。
+- memory_search.out.timeline: 时间轴（从早到晚）：只在 query 问时间（when / 什么时候 / 之前 / 之后 …）且命中 ≥3 条时出现，最多 8 条，形如「[3] 2023-05-08 13:56 · [1] …」；方括号编号就是命中抬头开头的 [k]。
 - memory_search.out.hits.id: 完整记忆 id（可传给 memory_read/memory_update/memory_find_similar）。
 - memory_search.out.hits.keywords: 记忆关键词列表（LLM 提取或自动 bigram）。
 - memory_search.out.hits.project: 项目归属；""=未标记；全局信息为"全局"。

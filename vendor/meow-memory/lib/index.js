@@ -428,6 +428,13 @@ var CTX_CHARS = 200;
 //  42.5%（4,727 字符）、限 24 行 41.5%（3,462 字符）、限 16 行 39.1%（2,335 字符）、
 //  逐条 ±1 38.9%（3,501 字符）——24 行这一档与逐条 ±1 花一样多的字，多 2.6pt，所以封在 24。
 var CTX_LINES = 24;
+
+// [0.2.129] 时间轴只在「问句本身在问时间」时才印。1,193 题同题对照（omni13）：
+//   不印 43.8% / 一律印 46.2% / 只在问句含时间词时印 46.5%（p<0.0001）——一律印会多花 168 字，
+//   而且单跳查事实的题会掉分（cat4 71.5%→70.9%）；按问句闸门反而把 cat4 保住了。
+var TIMELINE_CUE =
+  /\b(when|what date|what day|which (year|month|day|week)|how long|how many (days|weeks|months|years)|before|after|earlier|later|first|last|ago|yesterday|tomorrow|next (week|month|year)|previous)\b|\u4ec0\u4e48\u65f6\u5019|\u4f55\u65f6|\u54ea\u5929|\u54ea\u4e00\u5929|\u51e0\u53f7|\u54ea\u5e74|\u54ea\u4e2a\u6708|\u661f\u671f\u51e0|\u5468\u51e0|\u591a\u4e45|\u591a\u957f\u65f6\u95f4|\u4e4b\u524d|\u4e4b\u540e|\u4ee5\u524d|\u4ee5\u540e|\u6700\u65e9|\u6700\u665a|\u5148\u540e/i;
+var TIMELINE_MAX = 8;
 var COMMON_COLS = `
   id TEXT PRIMARY KEY,
   title TEXT,
@@ -2915,6 +2922,13 @@ function stampDay(ms) {
   const p = (v) => String(v).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+/** 把回执里的 day（`YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM`）解析成毫秒；认不出回 NaN。
+ *  时间轴只按这个数排序，不猜、不补。 */
+function stampMs(day) {
+  const m = String(day ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/);
+  if (!m) return NaN;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0), 0, 0).getTime();
+}
 /** 同上，但精确到分：写入时间本身带时刻时给 `YYYY-MM-DD HH:MM`，整点 00:00 只给日期。
  *  为什么只给命中行：0.2.128 的 1,193 题对照里，时间只出现在命中自己那行是 44.3%，
  *  铺到每一行是 40.4%——多出来的字没换来分，反而把正文挤走。 */
@@ -2927,6 +2941,23 @@ function stampWhen(ms) {
   const mm = d.getMinutes();
   if (hh === 0 && mm === 0) return day;
   return `${day} ${p(hh)}:${p(mm)}`;
+}
+/** [0.2.129] 时间轴：只在问句本身问时间、且至少三条命中带时刻时才给一行。
+ *  为什么必须带序号：omni14 拿「正文前十个字」当锚只有 43.9%（对不含时间轴的 43.1%，p=0.23 不显著），
+ *  带 `[k]` 那版 46.5%——这条线的价值就在「[3] 比 [1] 早」这一眼可比，所以命中抬头也带 [k]。
+ *  闸门（问句含时间词 + 命中 ≥3）来自 omni13：一律印 46.2%、只在问句问时间时印 46.5%，
+ *  而且一律印会把单跳查事实的题拖低（cat4 71.5%→70.9%）。 */
+function timelineLine(hits, query) {
+  const q = typeof query === "string" ? query : "";
+  if (!TIMELINE_CUE.test(q) || !Array.isArray(hits) || hits.length < 3) return "";
+  const timed = hits
+    .map((h, i) => ({ i, day: String(h.day ?? ""), ms: stampMs(h.day) }))
+    .filter((x) => x.day.length > 0 && Number.isFinite(x.ms));
+  if (timed.length < 3) return "";
+  const order = timed.sort((a, b) => a.ms - b.ms || a.i - b.i);
+  const shown = order.slice(0, TIMELINE_MAX);
+  const more = order.length > shown.length ? ` \u00B7 \u2026\u53E6\u6709 ${String(order.length - shown.length)} \u6761` : "";
+  return `\u65F6\u95F4\u8F74\uFF08\u4ECE\u65E9\u5230\u665A\uFF09\uFF1A${shown.map((x) => `[${String(x.i + 1)}] ${x.day}`).join(" \u00B7 ")}${more}`;
 }
 function searchTool(dir) {
   return {
@@ -2957,6 +2988,7 @@ function searchTool(dir) {
         required: ["note", "hits"],
         properties: {
           note: { type: "string", description: T("memory_search.out.note") },
+          timeline: { type: "string", description: T("memory_search.out.timeline") },
           hits: {
             type: "array",
             items: {
@@ -3012,13 +3044,16 @@ function searchTool(dir) {
           ctxUsed++;
           return `  ${arrow} ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`;
         };
-        for (const h of hits) {
+        // [0.2.129] 时间轴本身在模块级 timelineLine 里（不塞进 render 字面量）
+        const tl = timelineLine(hits, _args?.query);
+        if (tl) lines.push(tl);
+        hits.forEach((h, hi) => {
           const kw = (Array.isArray(h.keywords) ? h.keywords : []).filter((x) => typeof x === "string" && x.length > 0);
           const about = kw.length > 0 ? kw.join(", ") : `${String(h.content ?? "").slice(0, 40)}\u2026`;
           const proj = `${projectLabel(h.project)} : ${String(h.level ?? "")}`;
           const rel = relativeTime(h.updated_at ?? null);
           const day = h.day ? ` \u00B7 ${h.day}` : "";
-          lines.push(`[${proj}] [${String(h.id ?? "")}] [${rel}${day}] \u5173\u4E8E\uFF1A${about}`);
+          lines.push(`[${String(hi + 1)}] [${proj}] [${String(h.id ?? "")}] [${rel}${day}] \u5173\u4E8E\uFF1A${about}`);
           const ctx = h.context ?? null;
           if (ctx !== null) for (const it of ctx.before ?? []) {
             const ln = ctxLine("\u2191", it);
@@ -3034,7 +3069,7 @@ function searchTool(dir) {
           if (ex !== void 0) {
             lines.push(`  bm25=${String(ex.bm25 ?? 0)} importance=${String(ex.importance ?? 0)} recencyWeight=${String(ex.recencyWeight ?? 1)} status=${String(ex.status ?? "active")} score=${String(h.score ?? 0)}`);
           }
-        }
+        });
         if (ctxSkipped > 0)
           lines.push(`  \u2026\u90BB\u5C45\u8FD8\u6709 ${String(ctxSkipped)} \u884C\u6CA1\u94FA\u5F00\uFF08\u4E00\u6B21\u6700\u591A ${String(CTX_LINES)} \u884C\uFF1B\u8BA4\u51C6\u54EA\u6761\u5C31\u7528 memory_read \u8BFB\u5168\u6587\uFF09`);
         return lines.map((t) => ({ type: "text", text: t }));
