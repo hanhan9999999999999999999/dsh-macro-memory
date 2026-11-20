@@ -133,7 +133,9 @@ const EXTRA = {
   // [macro-fusion 0.2.105] since / until：按日期筛 dream 账本，是统一工具自己加的能力
   // （vendor 的 dream 读口原来只有 limit/offset/project），登记在这里才算「有出处」。
   'memory_admin': ['action', 'target', 'limit', 'kind', 'hubs', 'verbose', 'provider', 'items', 'page', 'since', 'until'],
-  'memory_remember': ['links'],
+  // [macro-fusion 0.2.117] supersedes：写新的同时把被顶掉的旧条目降格并留取代句，是统一工具自己加的能力
+  // （vendor 的 remember 只做重复合并，没有「取代」这个概念），登记在这里才算「有出处」。
+  'memory_remember': ['links', 'supersedes'],
   'memory_update': ['links'],
 }
 

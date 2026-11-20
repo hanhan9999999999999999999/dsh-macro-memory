@@ -8105,5 +8105,126 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// [macro-fusion 0.2.117] 取代关系：写新的同时把被顶掉的旧的降格——不删，只矫正。
+// 主人对这一版的口径：好的记忆插件不需要「遗忘」，需要的是「对过期或错误记忆的修改矫正」。
+{
+  const remSrc117 = readFileSync(join(root, 'lib/macro/defs/remember.js'), 'utf8')
+  const ledgerSrc117 = readFileSync(join(root, 'lib/macro/dreamledger.js'), 'utf8')
+  const auditSrc117 = readFileSync(join(root, 'tools/param-audit.mjs'), 'utf8')
+  const fusionSrc117 = readFileSync(join(root, 'tools/probe-fusion.mjs'), 'utf8')
+  check(
+    '取代: 口子挂在 memory_remember 上（写的一条延伸），不另起工具——工具分工仍然一工具一件事',
+    remSrc117.includes("name: 'memory_remember',") &&
+      !remSrc117.includes("name: 'memory_supersede',") &&
+      !remSrc117.includes("name: 'memory_forget',"),
+  )
+  check(
+    '取代: schema 里是 supersedes（数组、最多 5 条），描述就把「不删除 / 可读 / 可反悔」写在门口',
+    remSrc117.includes('supersedes: {') &&
+      remSrc117.includes("type: 'array',") &&
+      remSrc117.includes('这次写入顶掉的旧条目 id（最多 5 条，短 id 前 8 位也行）') &&
+      remSrc117.includes('不删除、可 memory_read、可反悔。'),
+  )
+  check(
+    '取代: 参数审计认这个参数（不给白名单就等于默默拒绝，调用方永远不知道它被丢了）',
+    auditSrc117.includes("'memory_remember': ['links', 'supersedes']"),
+  )
+  check(
+    '取代: 归一先去非字符串 / 空串 / 重复，再截 5 条，超出的原样报回（不许静默截断）',
+    remSrc117.includes('function supersedeAskedOf(raw) {') &&
+      remSrc117.includes("if (typeof one !== 'string') continue") &&
+      remSrc117.includes('if (!asked.includes(id)) asked.push(id)') &&
+      remSrc117.includes('return { ids: asked.slice(0, SUPERSEDE_MAX), extra: asked.slice(SUPERSEDE_MAX) }'),
+  )
+  check(
+    '取代: 那半句只写事实（谁顶掉的、哪天），不写判决——正文归 caller',
+    remSrc117.includes('const SUPERSEDE_MAX = 5') &&
+      remSrc117.includes("const SUPERSEDE_MARK = '（已被取代：'") &&
+      remSrc117.includes('const SUPERSEDE_HEAD = 24') &&
+      remSrc117.includes('${SUPERSEDE_MARK}${who}${head ? `「${head}」` : \'\'}，${dayStamp(at)}）'),
+  )
+  check(
+    '取代: 一条记忆不能取代自己——但不能靠前缀先判（同秒写下的两条 id 前 8 位一样），得先读出来再判',
+    remSrc117.includes('if (v && v.id === newId) {') &&
+      remSrc117.includes('就是这次刚写的那一条，跳过了（一条记忆不能取代自己）') &&
+      !remSrc117.includes('String(newId).startsWith(asked)'),
+  )
+  check(
+    '取代: 短 id 撞上刚写的那条时用排除法认人（候选只剩一条才办，并把「为什么是这条」写进回执）',
+    remSrc117.includes('const CANDIDATE_ID = /0m[0-9a-z]+-[0-9a-f]{32}/g') &&
+      remSrc117.includes('function candidateIdsOf(v) {') &&
+      remSrc117.includes('const others = ids.filter((one) => one !== newId)') &&
+      remSrc117.includes('if (ids.length > 0 && others.length === 1) {') &&
+      remSrc117.includes('把它排除后只剩') &&
+      remSrc117.includes('if (via) lines.push('),
+  )
+  check(
+    '取代: 短 id 多命中就说多命中，不替 caller 挑一条（挑错等于悄悄处置了另一条）',
+    remSrc117.includes('if (v && v.ambiguous === true) {') &&
+      remSrc117.includes('function ambiguousCountOf(v, ids) {') &&
+      remSrc117.includes('短 id 命中 ${n} 条，没替你挑一条——换成完整 id 再来一次') &&
+      remSrc117.includes('这 ${n} 条都还没动'),
+  )
+  check(
+    '取代: 四种「没改成」各说各话——找不到 / 已作废 / 已经标过 / 写库失败都不许回成成功',
+    remSrc117.includes('没找到（可能已归档或删除）——它没有被改') &&
+      remSrc117.includes('已经是 archived（作废），没动它') &&
+      remSrc117.includes('正文里已经有一句「已被取代」，没重复追加') &&
+      remSrc117.includes('找到了但没写进库') &&
+      remSrc117.includes('它还是原样，别当成已经处置'),
+  )
+  check(
+    '取代: 改成了分两种说法（本来是 stale 的只补一句），且都明确写了新状态',
+    remSrc117.includes('本来就是 stale，只补了一句「已被取代」') &&
+      remSrc117.includes('已标 stale，正文末尾补了一句「已被取代」') &&
+      remSrc117.includes("{ id: v.id, content: next, status: 'stale' }"),
+  )
+  check(
+    '取代: 抬头就把「一条都没删」说清，尾注给反悔办法，超上限的单独一行交代',
+    remSrc117.includes('接管这些条目的位置；旧条目一条都没删，只是不再算「在用」') &&
+      remSrc117.includes('超出 ${SUPERSEDE_MAX} 条上限的 ${extra.length} 条这次没有处理') &&
+      remSrc117.includes('反悔办法：旧条目都还在库里，memory_update 把 status 改回 active、再删掉那句取代话就恢复原样。'),
+  )
+  check(
+    '取代: 新条目没写进去（回执空 / 没 id）时，取代一条都不做——不能把旧的指向不存在的新条目',
+    remSrc117.includes('取代这次一条都没做：新条目连 id 都没拿到') &&
+      remSrc117.includes('取代这次一条都没做：新条目没拿到 id（上游只回了文字）') &&
+      remSrc117.includes('先用 memory_search 找到这条的新 id，再逐条 memory_update。'),
+  )
+  check(
+    '取代: dream 的催办不再只劝，还给出一行能照抄的调用样子（劝办要给得起的动作）',
+    ledgerSrc117.includes('一次做完：memory_remember(…, supersedes: ["') &&
+      ledgerSrc117.includes('旧条目不会消失，反悔可改回 active。') &&
+      ledgerSrc117.includes('同一对不会因为多报几次变得清楚'),
+  )
+  check(
+    '取代·探针进线：SS1–SS12，且必须在自己的临时工作区里跑（写进共用库会顶掉后面「零命中」这类唯一性断言）',
+    fusionSrc117.includes("mkdtempSync(join(tmpdir(), 'macro-probe-supersede-'))") &&
+      fusionSrc117.includes('const ssRun = (name, args) => tools.get(name).execute(args, ssExec)') &&
+      fusionSrc117.includes("const ssDb = Meow.getDb(ssWs, '.dsh-meow')") &&
+      fusionSrc117.includes('SS2 回执报出取代段') &&
+      fusionSrc117.includes('SS3 旧条目状态变 stale') &&
+      fusionSrc117.includes('SS5 正文里取代句只有一句') &&
+      fusionSrc117.includes('SS6 找不到的旧 id 说清没改') &&
+      fusionSrc117.includes('SS7 已作废的不动') &&
+      fusionSrc117.includes('SS8 本来就 stale 的只补一句') &&
+      fusionSrc117.includes('SS9 归一后为空就不起取代段') &&
+      fusionSrc117.includes('SS10 超出上限就报出没处理的那几条') &&
+      fusionSrc117.includes('SS11 短 id 命中多条时不挑，只报条数') &&
+      fusionSrc117.includes('SS12 一条记忆不能取代自己'),
+  )
+  check(
+    '取代: 版本与文档一起走（9.123 / 129）',
+    (() => {
+      const pkg117 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const v = pkg117.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 117)
+      return atLeast && readFileSync(join(root, 'lib/index.js'), 'utf8').includes(`export const version = '${pkg117.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.123') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 129'),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

@@ -284,6 +284,81 @@ try {
   const dreamNoWs = text(await tools.get('memory_admin').execute({ action: 'dream' }, {}))
   check('D14 没有会话工作区时说清没有账本', dreamNoWs.includes('没有工作区'), dreamNoWs.split('\n').slice(1, 2).join(''))
 
+  // ── SS. 取代关系（0.2.117）：写新的同时把旧的降格，不删 ─────────────────────
+  // 主人在这一版定的口径：记忆插件不需要「遗忘」，需要的是对过期/错误的**矫正**。
+  // 这一串会真写十几条记忆，所以给它自己的临时工作区——写进共用库会污染后面那些
+  // 「零命中」「库里只有一条可比较」的断言（0.2.117 第一版就是这么把 AC2 / AH4 / AH5 / AM7 弄红的）。
+  const ssWs = mkdtempSync(join(tmpdir(), 'macro-probe-supersede-'))
+  // 信任门（#64）：新工作区必须在**第一次写之前**先建一次库——meow 建库时会把「空目录」记进信任
+  // 名单（registerCreatedWorkspace），没有会话钩子的探针得手动等价这一步（主工作区在 164 行也是这么做的）。
+  // 反过来，先写再建库会被当成「外部记忆库」拒掉，所以这一行必须留在第一个 ssRun 之前。
+  const ssDb = Meow.getDb(ssWs, '.dsh-meow')
+  const ssExec = { agent: { session: { header: { cwd: ssWs, id: 'sess-ss' } } } }
+  const ssRun = (name, args) => tools.get(name).execute(args, ssExec)
+  const ssIdOf = (like) => String(ssDb.db.prepare('SELECT id FROM fact WHERE content LIKE ?').get(like)?.id ?? '')
+  const ssA = { project: '取代探针', keywords: ['取代', 'supersede', '旧条目', '矫正', '不删除', 'stale', '探针', '口径', '发布节奏'], importance: 2, level: 'fact' }
+  const ssB = { project: '取代探针', keywords: ['取代', 'supersede', '新条目', '接管', '版本', '探针', '口径', '发布节奏', '变更'], importance: 2, level: 'fact' }
+
+  const ssOld = text(await ssRun('memory_remember', { ...ssA, content: '取代探针甲：旧规则是每周一固定发布。' }))
+  check('SS1 旧条目先写进去（没被合并）', !ssOld.includes('已合并'), ssOld.split('\n')[0])
+  const ssOldId = ssIdOf('%取代探针甲%')
+  check('SS1 拿到旧条目 id', ssOldId.length >= 8, ssOldId)
+
+  const ssNew = text(await ssRun('memory_remember', { ...ssB, content: '取代探针甲：改成分支合并即发布，周一这条取消。', supersedes: [ssOldId] }))
+  check('SS2 回执报出取代段', ssNew.includes('取代（新写的') && ssNew.includes('已标 stale'), ssNew.split('\n').slice(-1)[0])
+  check('SS2 回执点明不删、可反悔', ssNew.includes('旧条目一条都没删') && ssNew.includes('反悔办法'), '')
+
+  const ssOldRead = text(await ssRun('memory_read', { id: ssOldId, neighbors: 0 }))
+  check('SS3 旧条目正文留下取代句', ssOldRead.includes('（已被取代：') && ssOldRead.includes('每周一'), ssOldRead.split('\n')[0])
+  check('SS3 旧条目状态变 stale', ssOldRead.includes('（stale）'), ssOldRead.split('\n')[0])
+  check('SS4 旧条目没被删，正文还在', ssOldRead.includes('每周一固定发布'), '')
+
+  const ssAgain = text(await ssRun('memory_remember', { ...ssB, content: '取代探针甲：第三次改口径，还是指向同一条旧的。', supersedes: [ssOldId] }))
+  check('SS5 重复取代不重复追加', ssAgain.includes('已经有一句「已被取代」，没重复追加'), ssAgain.split('\n').find((l) => l.includes('没重复追加')) ?? '')
+  const ssOldRead2 = text(await ssRun('memory_read', { id: ssOldId, neighbors: 0 }))
+  const ssMarks = (ssOldRead2.match(/（已被取代：/g) ?? []).length
+  check('SS5 正文里取代句只有一句', ssMarks === 1, String(ssMarks))
+
+  const ssMiss = text(await ssRun('memory_remember', { ...ssB, content: '取代探针乙：指向一个查不到的旧 id。', supersedes: ['ffff0000'] }))
+  check('SS6 找不到的旧 id 说清没改', ssMiss.includes('没找到（可能已归档或删除）——它没有被改'), '')
+  check('SS6 新条目照样写成', ssIdOf('%取代探针乙%').length >= 8, '')
+
+  await ssRun('memory_remember', { ...ssA, content: '取代探针丙：这条等一下会被作废。' })
+  const ssArcId = ssIdOf('%取代探针丙%')
+  await ssRun('memory_update', { id: ssArcId, status: 'archived' })
+  const ssArc = text(await ssRun('memory_remember', { ...ssB, content: '取代探针丁：指向一条已经作废的。', supersedes: [ssArcId] }))
+  check('SS7 已作废的不动', ssArc.includes('已经是 archived（作废），没动它'), ssArc.split('\n').find((l) => l.includes('archived')) ?? '')
+
+  await ssRun('memory_remember', { ...ssA, content: '取代探针戊：这条先标 stale 再被接管。' })
+  const ssStaleId = ssIdOf('%取代探针戊%')
+  await ssRun('memory_update', { id: ssStaleId, status: 'stale' })
+  const ssStale = text(await ssRun('memory_remember', { ...ssB, content: '取代探针己：接管一条本来就 stale 的。', supersedes: [ssStaleId] }))
+  check('SS8 本来就 stale 的只补一句', ssStale.includes('本来就是 stale，只补了一句'), ssStale.split('\n').find((l) => l.includes('本来就 stale')) ?? '')
+
+  const ssEmpty = text(await ssRun('memory_remember', { ...ssB, content: '取代探针庚：supersedes 给的全是空白。', supersedes: ['   '] }))
+  check('SS9 归一后为空就不起取代段', !ssEmpty.includes('取代（新写的'), ssEmpty.split('\n')[0])
+
+  const ssOver = text(
+    await ssRun('memory_remember', {
+      ...ssB,
+      content: '取代探针辛：一次给八条，看它报不报没处理的那几条。',
+      supersedes: ['aaaa0001', 'aaaa0002', 'aaaa0003', 'aaaa0004', 'aaaa0005', 'aaaa0006', 'aaaa0007', 'aaaa0008'],
+    }),
+  )
+  check('SS10 超出上限就报出没处理的那几条', ssOver.includes('超出 5 条上限的 3 条这次没有处理'), ssOver.split('\n').find((l) => l.includes('超出')) ?? '')
+  check('SS10 上限内那五条各有一句交代', (ssOver.match(/没找到（可能已归档或删除）/g) ?? []).length === 5, String((ssOver.match(/没找到（可能已归档或删除）/g) ?? []).length))
+
+  // SS11：短 id 给得太短（这里给 '0m'——库里的 id 全都以它开头）时，只能报歧义，不能替我挑一条。
+  const ssWide = text(await ssRun('memory_remember', { ...ssB, content: '取代探针壬：短 id 给得太短，命中不止一条。', supersedes: ['0m'] }))
+  check('SS11 短 id 命中多条时不挑，只报条数', /短 id 命中 \d+ 条，没替你挑一条——换成完整 id 再来一次/.test(ssWide), ssWide.split('\n').find((l) => l.includes('短 id 命中')) ?? '')
+  check('SS11 报的条数不是 0（candidates 是给人看的字符串，条数得从里面数出来）', !/短 id 命中 0 条/.test(ssWide), '')
+
+  // SS12：自己取代自己——同一条内容再写一次会合回原条目，这时 supersedes 指的正是刚拿到的新 id。
+  await ssRun('memory_remember', { ...ssA, content: '取代探针癸：这条会被写两遍。' })
+  const ssSelfId = ssIdOf('%取代探针癸%')
+  const ssSelf = text(await ssRun('memory_remember', { ...ssA, content: '取代探针癸：这条会被写两遍。', supersedes: [ssSelfId] }))
+  check('SS12 一条记忆不能取代自己', ssSelf.includes('就是这次刚写的那一条，跳过了（一条记忆不能取代自己）'), ssSelf.split('\n').find((l) => l.includes('不能取代自己')) ?? '')
+
   // [macro-fusion 0.2.98] 趋势行：五条带 plan 的账（重复详写 3→2→2→1→1，缺词 2→1→1→0→0），
   // 面板要给合计并说「在变少」；只有一条时一行都不许出（一条没有走势）。
   const trendWs = mkdtempSync(join(tmpdir(), 'macro-probe-trend-'))
