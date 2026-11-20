@@ -628,5 +628,55 @@ check(
   `dreamed=${states.dreamed.length} dreaming=${states.dreaming.join(',')} plans=${JSON.stringify(states.plans['sess-live'] ?? null)}`,
 )
 
+// J 段（0.2.100）：账本分页与单条展开的底座——「第 k 近」是唯一对外的编号口径。
+const pageWs = mkdtempSync(join(tmpdir(), 'ruler-page-'))
+const pageDb = V.getDb(pageWs, '.dsh-meow')
+for (let i = 1; i <= 7; i += 1) {
+  pageDb.logDream(`window dream done: sess-p${i} stamped=true`, {
+    stamped: true,
+    plan: { rounds: 1, groups: 1, rows: i, dup: 0, cover: 0, missing: 0, projects: ['p'] },
+  }, '')
+}
+const J1 = V.readDreamLedger(pageWs, '.dsh-meow', 5, 0)
+check(
+  'J1 第一页：给 5 条、总数照实说（total 不是「这一页几条」）',
+  J1.rows.length === 5 && J1.total === 7 && J1.rows[0].changes?.plan?.rows === 7,
+  `${J1.rows.length} 条 · total=${J1.total}`,
+)
+const J2 = V.readDreamLedger(pageWs, '.dsh-meow', 5, 5)
+check(
+  'J2 第二页：只剩 2 条，且接着第一页往后读（不重不漏）',
+  J2.rows.length === 2 && J2.rows[0].changes?.plan?.rows === 2 && J2.total === 7,
+  `${J2.rows.length} 条 · 首行 rows=${J2.rows[0]?.changes?.plan?.rows}`,
+)
+const J3 = V.getDb(pageWs, '.dsh-meow')
+const J3rows = J3.recentDreamsPage(3, 0)
+check(
+  'J3 分页上限自己收紧（0 走默认 5、超大夹到 50、offset 负数当 0）',
+  J3.recentDreamsPage(0, 0).length === 5 && J3.recentDreamsPage(9999, 0).length === 7 && J3.recentDreamsPage(3, -5).length === 3,
+  `0→${J3.recentDreamsPage(0, 0).length} 9999→${J3.recentDreamsPage(9999, 0).length} -5→${J3.recentDreamsPage(3, -5).length}`,
+)
+check('J3 行里带内部句柄 id，但面板对外只讲「第几近」', J3rows.every((r) => Number.isInteger(r.id) && r.id > 0), `ids=${J3rows.map((r) => r.id).join(',')}`)
+
+const J4 = V.readDreamRecord(pageWs, '.dsh-meow', 2)
+check(
+  'J4 展开第 2 近：row 是它、prev 是更早的第 3 近（差要跟谁比有出处）',
+  J4.missing === '' && J4.row?.changes?.plan?.rows === 6 && J4.prev?.changes?.plan?.rows === 5 && J4.total === 7,
+  `row=${J4.row?.changes?.plan?.rows} prev=${J4.prev?.changes?.plan?.rows} total=${J4.total}`,
+)
+const J5 = V.readDreamRecord(pageWs, '.dsh-meow', 99)
+check(
+  'J5 要第 99 近：missing=no-row 并报出总数（不是「账本读不出来」）',
+  J5.missing === 'no-row' && J5.row === null && J5.total === 7,
+  `missing="${J5.missing}" total=${J5.total}`,
+)
+const J6 = V.readDreamRecord('', '.dsh-meow', 1)
+const J6b = V.readDreamRecord(join(tmpdir(), `no-such-page-ws-${process.pid}`), '.dsh-meow', 1)
+check(
+  'J6 展开也是三态分开：没工作区 / 没建库（不合并成「没有这一条」）',
+  J6.missing === 'no-workspace' && J6b.missing === 'no-db',
+  `a="${J6.missing}" b="${J6b.missing}"`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

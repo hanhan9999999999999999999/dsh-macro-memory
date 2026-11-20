@@ -143,6 +143,11 @@ else {
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
   {
+    marker: '[macro-fusion 0.2.100]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: '账本一长就只看得见最近五条：0.2.97–0.2.99 三版回答了「最近几次整理长什么样」，但面板永远只念 5 条、每行只有一句规模，问不出「那一次到底写了什么」、也看不出还有多少条更早。现在①MemoryDb.recentDreamsPage(limit, offset) 带 OFFSET，排序 ORDER BY run_at DESC, rowid DESC（同一毫秒的两条也有稳定次序，翻页不漏不重），行里带内部 id；dreamCount() 单独给总数——最后一页天然短，不拿页面长度当账本长度；②模块级 readDreamRecord(workspace, dir, rank) 在原来四态之外多一个 no-row（账本在、就是没有第 k 条），并顺手带出「更早一条」供比较；③readDreamLedger 多收 offset、返回 total；④对外的句柄只有一种口径「第几近」（1 = 最新，跨页连续），rowid 只当内部句柄不进正文；⑤面板 readDreamPanel 支持 page 与 id：翻页编号跨页连续、页越界退到最后一页并说清、趋势行与「整理进行中」只在第 1 页出；展开把 summary / note / changes JSON 原文摊开（超 1200 字符截断并报真实长度），老记录明说没有 changes.plan，坏行只说读不出来不拿摘要凑规模，并给「比更早一条」的差（只报真变了的段）；⑥page / id 给脏了当面打回（page=0 不悄悄当第一页、id=abc 不退回整本账），错误里写清「这次什么都没按你说的做」。基准在 tools/probe-ruler.mjs 的 J1–J6 与 tools/probe-fusion.mjs 的 D20–D25（含「总数不是本页条数」「第二页编号接上」「页越界不返回空白页」「展开第 99 条说没有」「脏参数打回」五条阴性对照）',
+  },
+  {
     marker: '[macro-fusion 0.2.99]',
     file: 'vendor/meow-memory/lib/index.js',
     what: '整理正在进行时面板只剩空账本：0.2.96–0.2.98 三版都在回答「已经发生过的整理」，dream 正在跑时 SSE 只有 state、面板只能念历史，而 dreamdigest:<sid> 早在 claim 成功那一步就写进了 dream_meta。现在①DreamStateBroadcast.broadcast(sessionId, state, detail) 与 host 侧 signalDreamState 都把 detail 并进事件（加法，老消费方只认 state 照样工作），startWindowDream 在算完 digest 后用 onDreamState?.(sessionId, "dreaming", { plan: digest }) 广播同一份摘要，不另立口径；②collectDreamStates 返回 {dreamed, dreaming, plans}，plans 只对活 lease 解析 dreamdigest，解析失败静默跳过、两个老字段原样；③新增模块级 readLiveDream(workspace, dir)：只认 Date.now() - lease.progress_at <= DREAM_LEASE_MS（看 progress_at 不看 T，心跳会推它），三态 no-workspace / no-db / read-failed 与 readDreamLedger 分开说，规模只从 dreamdigest 读、没有就报「规模还没落 meta」绝不现算；④融合层面板把它排成第一行、不编 #k 序号、不进趋势，空账本时先说进行中再说「账本还是空的」，多会话只念第一条并报「还有 N 个在排队」。基准在 tools/probe-ruler.mjs 的 I0–I5 与 tools/probe-fusion.mjs 的 D18–D19（含「lease 放掉立刻不再报」「只有 lease 没有 digest 不编规模」「没有工作区与没建库分开」三条阴性对照）',

@@ -767,6 +767,36 @@ var MemoryDb = class {
       return { runAt: Number(r.run_at) || 0, summary: String(r.summary ?? ""), changes, note: String(r.note ?? "") };
     });
   }
+  /** [macro-fusion 0.2.100] 账本分页：一页几条、从第几条开始。行里带 rowid（面板只当内部句柄，
+   *  对外仍按「第 k 近」说话），并给同 run_at 一个稳定的次序（rowid DESC），否则翻页会漏条/重条。 */
+  recentDreamsPage(limit = 5, offset = 0) {
+    const askedLimit = Math.trunc(Number(limit));
+    const n = Math.min(50, Math.max(1, Number.isFinite(askedLimit) && askedLimit > 0 ? askedLimit : 5));
+    const askedOffset = Math.trunc(Number(offset));
+    const skip = Number.isFinite(askedOffset) && askedOffset > 0 ? askedOffset : 0;
+    const rows = this.db
+      .prepare("SELECT rowid AS id, run_at, summary, changes, note FROM dream_log ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?")
+      .all(n, skip);
+    return rows.map((r) => {
+      let changes = null;
+      try {
+        changes = JSON.parse(String(r.changes ?? ""));
+      } catch {
+        changes = null;
+      }
+      return {
+        id: Number(r.id) || 0,
+        runAt: Number(r.run_at) || 0,
+        summary: String(r.summary ?? ""),
+        changes,
+        note: String(r.note ?? ""),
+      };
+    });
+  }
+  dreamCount() {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM dream_log").get();
+    return Number(row?.n) || 0;
+  }
   close() {
     try {
       this.db.close();
@@ -3434,14 +3464,39 @@ function dreamLog(ws, dir, msg) {
 /** [macro-fusion 0.2.97] 读某个工作区的 dream 账本：面板要说的每一句都从这里出，别的地方不许自己猜。
  *  missing 分四种：'' 正常；'no-workspace' 会话没有 cwd；'no-db' 这个工作区还没建记忆库；
  *  'read-failed: …' 库在但读不出来（原因原样带出）——「没账本」和「读不出来」不能合成一句话。 */
-function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5) {
-  if (typeof workspace !== "string" || workspace.length === 0) return { rows: [], path: "", missing: "no-workspace" };
+function readDreamLedger(workspace, dir = ".dsh-meow", limit = 5, offset = 0) {
+  const empty = { rows: [], path: "", missing: "no-workspace", total: 0 };
+  if (typeof workspace !== "string" || workspace.length === 0) return empty;
   const path = memoryDbPath(workspace, dir);
-  if (!existsSync8(path)) return { rows: [], path, missing: "no-db" };
+  if (!existsSync8(path)) return { rows: [], path, missing: "no-db", total: 0 };
   try {
-    return { rows: getDb(workspace, dir).recentDreams(limit), path, missing: "" };
+    const db = getDb(workspace, dir);
+    // [macro-fusion 0.2.100] 分页要一个总数：翻到第几页、还有几条更早，只能从这里来，
+    // 不许拿「这一页返回了几条」凑（最后一页会短，那是页面短，不是账本短）。
+    return { rows: db.recentDreamsPage(limit, offset), path, missing: "", total: db.dreamCount() };
   } catch (e) {
-    return { rows: [], path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}` };
+    return { rows: [], path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0 };
+  }
+}
+
+/** [macro-fusion 0.2.100] 单条账：面板要摊开一条的原文时走这里。
+ *  rank 是「第几近」（1 = 最新，和面板上的 #k 同一个编号），不暴露 rowid——
+ *  对外的句柄只有一种口径，内部 id 只用来定位，免得同一个位置有两种叫法。
+ *  missing 在 readDreamLedger 四态之外多一个 'no-row'：账本在、就是没有第 rank 条。 */
+function readDreamRecord(workspace, dir = ".dsh-meow", rank = 1) {
+  if (typeof workspace !== "string" || workspace.length === 0) return { row: null, prev: null, path: "", missing: "no-workspace", total: 0 };
+  const path = memoryDbPath(workspace, dir);
+  if (!existsSync8(path)) return { row: null, prev: null, path, missing: "no-db", total: 0 };
+  const asked = Math.trunc(Number(rank));
+  const k = Number.isFinite(asked) && asked > 0 ? asked : 1;
+  try {
+    const db = getDb(workspace, dir);
+    const total = db.dreamCount();
+    if (k > total) return { row: null, prev: null, path, missing: "no-row", total };
+    const rows = db.recentDreamsPage(2, k - 1);
+    return { row: rows[0] ?? null, prev: rows[1] ?? null, path, missing: "", total };
+  } catch (e) {
+    return { row: null, prev: null, path, missing: `read-failed: ${e instanceof Error ? e.message : String(e)}`, total: 0 };
   }
 }
 
@@ -6312,6 +6367,7 @@ export {
   dreamPlanDigest,
   dreamReceipt,
   readDreamLedger,
+  readDreamRecord,
   readLiveDream,
   dreamSweepOnce,
   dreamSweepTick,

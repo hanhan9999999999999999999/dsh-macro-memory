@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 参数覆盖审计：证明「没有砍掉 meow / nebula 原有的任何一个参数」。
  *
  * coverage-audit.mjs 证明的是「17 个工具都有去处」；
@@ -127,7 +127,7 @@ const EXTRA = {
   'memory_search': ['mode', 'expand', 'id', 'memory_ids', 'limit', 'hops', 'chars', 'min_weight'],
   'memory_read': ['neighbors'],
   'memory_link': ['action', 'a', 'b', 'note', 'maxHops'],
-  'memory_admin': ['action', 'target', 'limit', 'kind', 'hubs', 'verbose', 'provider', 'items'],
+  'memory_admin': ['action', 'target', 'limit', 'kind', 'hubs', 'verbose', 'provider', 'items', 'page'],
   'memory_remember': ['links'],
   'memory_update': ['links'],
 }

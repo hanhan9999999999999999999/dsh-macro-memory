@@ -343,6 +343,81 @@ try {
   )
 
 
+  // [macro-fusion 0.2.100] 页与条：账本长了要能翻，某一条要看原文。
+  // 三条口径在这里钉死：编号「第几近」跨页连续、总数不是「这一页几条」、展开只念原文不重算。
+  const pageWs = mkdtempSync(join(tmpdir(), 'macro-probe-page-'))
+  const pageDb = Meow.getDb(pageWs, '.dsh-meow')
+  for (let i = 1; i <= 7; i += 1) {
+    pageDb.logDream(`window dream done: sess-p${i} 第${i}次 stamped=true`, {
+      stamped: true,
+      plan: { rounds: 1, groups: 1, rows: i, dup: i % 3, cover: i % 2, missing: i % 2, projects: ['翻页项目'] },
+    }, i === 2 ? '第 2 次那次写了备注' : '')
+  }
+  const pageCtx = { agent: { session: { header: { cwd: pageWs } } } }
+  const p1 = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 3, page: 1 }, pageCtx))
+  check(
+    'D20 第一页：列出 3 条、编号从 #1 起、并报出账本共 7 条（总数不是本页条数）',
+    p1.includes('#1 ') && p1.includes('#3 ') && !p1.includes('#4 ') && p1.includes('共 7 条'),
+    p1.split('\n').slice(0, 2).join(' | '),
+  )
+  check('D20 第一页给前进入口，不给「上一页」', p1.includes('下一页 page=2') && !p1.includes('上一页'), p1.split('\n').slice(-1)[0])
+  const p2 = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 3, page: 2 }, pageCtx))
+  check(
+    'D21 第二页：编号接上（#4–#6，不重不漏），且这一页不再出趋势行',
+    p2.includes('#4 ') && p2.includes('#5 ') && p2.includes('#6 ') && !p2.includes('#1 ') && !p2.includes('趋势：'),
+    p2.split('\n').slice(0, 2).join(' | '),
+  )
+  check('D21 第二页：上一页/下一页都给，页码口径写在抬头里', p2.includes('上一页 page=1') && p2.includes('下一页 page=3') && p2.includes('第 2 页'), '')
+  const p99 = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 3, page: 99 }, pageCtx))
+  check(
+    'D22 页码越过最后一页：退到最后一页并说清（不返回空白页）',
+    p99.includes('#7 ') && p99.includes('早过最后一页') && !p99.includes('#8 '),
+    p99.split('\n').slice(-1)[0],
+  )
+  const one = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5, id: '#2' }, pageCtx))
+  check(
+    'D23 展开第 2 近：摊开摘要与 changes 原文，并给出与更早一条的差（比的是 #3）',
+    one.includes('#2 ') && one.includes('第6次') && one.includes('变化原文') && one.includes('比更早一条（#3）'),
+    one.split('\n').slice(1, 2).join(''),
+  )
+  const withNote = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5, id: '6' }, pageCtx))
+  check(
+    'D23 备注原样念出来（有就念，没有就不编）',
+    withNote.includes('第 2 次那次写了备注') && withNote.includes('#6 '),
+    withNote.split('\n').find((l) => l.includes('备注')) ?? '',
+  )
+  check('D23 展开也是「只念账本」：明说数字来自 changes.plan', one.includes('全部来自 changes.plan'), '')
+  const oldOne = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5, id: '4' }, { agent: { session: { header: { cwd: trendOldWs } } } }))
+  check(
+    'D24 展开一条老记录：明说它写在 0.2.96 之前（不给它编规模）',
+    oldOne.includes('没有 changes.plan') && oldOne.includes('0.2.96 之前'),
+    oldOne.split('\n').slice(1, 2).join(''),
+  )
+  const missingOne = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5, id: '99' }, pageCtx))
+  check(
+    'D24 要一条不存在的：说清「没有第 99 条」并报总数（不是「账本读不出来」）',
+    missingOne.includes('没有第 99 条') && missingOne.includes('一共 7 条'),
+    missingOne.split('\n')[0],
+  )
+  let dirtyId = ''
+  try {
+    await tools.get('memory_admin').execute({ action: 'dream', id: 'abc' }, pageCtx)
+  } catch (e) {
+    dirtyId = String(e.message)
+  }
+  check(
+    'D25 id 给脏了当面打回（不静默退回整本账）',
+    dirtyId.includes('只认「3」或「#3」') && dirtyId.includes('这次没有展开任何一条'),
+    dirtyId.split('\n')[0],
+  )
+  let dirtyPage = ''
+  try {
+    await tools.get('memory_admin').execute({ action: 'dream', page: 0 }, pageCtx)
+  } catch (e) {
+    dirtyPage = String(e.message)
+  }
+  check('D25 page 给脏了也打回（0 不悄悄当第一页）', dirtyPage.includes('从 1 起的整数') && dirtyPage.includes('这次没有列账'), dirtyPage.split('\n')[0])
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {

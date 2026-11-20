@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 自检：不启动 DSH，验证融合后的两个半侧都能成立。
  *
  *   A. 宿主侧：import('./lib/index.js') 拿到的必须是「融合层」的形状——
@@ -817,7 +817,7 @@ function makeHostCtx() {
   check('口径: 条数默认值只写在表里', /defaultLimit: 200/.test(adminSrc) && /defaultLimit: 20/.test(adminSrc) && !/\? 200 :/.test(adminSrc) && !/\? 20 :/.test(adminSrc))
   check('口径: 默认值读取只有 limitOf 一条路径', /export function limitOf/.test(panelSrc) && /limitOf\(ACTIONS\.(cost|links), args\)/.test(adminSrc))
   // 7) 参数说明与实际读参数的落点对得上（limit 以前漏了 links）
-  check('口径: limit 的说明包含了真正会用它的面板', adminSrc.includes('action=hygiene/cost/links 的条数'))
+  check('口径: limit 的说明包含了真正会用它的面板', adminSrc.includes('action=hygiene/cost/dream/links 的条数'))
   // 9) 抬头是契约，不是排版：剥抬头的函数只有一份，按行读数据的探针必须用它
   const graphProbe = read(join('tools', 'probe-graph.mjs'))
   check('口径: 按行读正文的探针用 stripHead 剥抬头，不靠猜行号', /export function stripHead/.test(panelSrc) && graphProbe.includes('panelMod.stripHead(') && !/text\(await run\('memory_admin', \{ action: 'stats' \}\)\)\.split/.test(graphProbe))
@@ -6408,7 +6408,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'dream 进行中: 面板对「没在整理」与「读不出来」不合并（沿用 readLiveDream 的三态）',
-    panelSrc.includes('const live = Meow.readLiveDream(workspace, dir)') && !/live\.missing === 'no-db'/.test(panelSrc),
+    panelSrc.includes('const live = wantPage === 1 ? Meow.readLiveDream(workspace, dir)') && !/live\.missing === 'no-db'/.test(panelSrc),
   )
   check(
     'dream 进行中: 探针进线（probe-ruler I0–I5、probe-fusion D18–D19）',
@@ -6420,11 +6420,111 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       fusionSrc.includes('D19 lease 放掉后第一行消失'),
   )
   check(
-    'dream 进行中: 版本 0.2.99 两处一致，文档 9.105 / 111 在位',
-    pkg.version === '0.2.99' &&
-      idxSrc.includes("export const version = '0.2.99'") &&
+    'dream 进行中: 版本不早于 0.2.99（两处一致；具体版本号由 doctor 的单一来源那条守）',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 99)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.105') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 111'),
+  )
+}
+
+// [macro-fusion 0.2.100] 0.2.97 起面板能念账本，但账本一长就只看得见最近 5 条，而且每条只有一行——
+// 「那一条当时到底写了什么、跟上一比是多了还是少了」问不出来。这里钉四件事：
+// ①读口能翻页（LIMIT/OFFSET + 总数由 COUNT 给，不是「这一页几条」）；
+// ②对外只有一个编号口径「第几近」，跨页连续；内部 rowid 只当句柄，不进正文；
+// ③单条展开念 summary/note/changes 原文，老记录明说没有规模，超长截断要报真实长度；
+// ④page / id 给脏了当面打回——静默退回第 1 页最容易让人以为「账本就这几条」。
+{
+  const vSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const panelSrc = readFileSync(join(root, 'lib', 'macro', 'dreamledger.js'), 'utf8')
+  const adminSrc = readFileSync(join(root, 'lib', 'macro', 'defs', 'admin.js'), 'utf8')
+  const checkAllSrc = readFileSync(join(root, 'tools', 'check-all.mjs'), 'utf8')
+  const rulerSrc = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  check(
+    'dream 翻页: 读口带 OFFSET，总数由 dreamCount 给（不拿本页条数冒充总数）',
+    vSrc.includes('ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?') &&
+      vSrc.includes('recentDreamsPage(limit = 5, offset = 0)') &&
+      vSrc.includes('dreamCount() {') &&
+      vSrc.includes('total: db.dreamCount()'),
+  )
+  check(
+    'dream 翻页: 同一个 run_at 也有稳定次序（rowid DESC），翻页不会漏条/重条',
+    vSrc.includes('ORDER BY run_at DESC, rowid DESC LIMIT ? OFFSET ?') &&
+      vSrc.includes('  recentDreamsPage(limit = 5, offset = 0) {'),
+  )
+  check(
+    'dream 展开: readDreamRecord 是模块级读口，多一个 no-row 态，并把「更早一条」一起带出来',
+    /function readDreamRecord\(workspace, dir = "\.dsh-meow", rank = 1\)/.test(vSrc) &&
+      vSrc.includes('missing: "no-row"') &&
+      vSrc.includes('const rows = db.recentDreamsPage(2, k - 1);') &&
+      /^\s{2}readDreamRecord,$/m.test(vSrc),
+  )
+  check(
+    'dream 翻页: 面板的编号跨页连续（firstRank），趋势行只在第 1 页出',
+    panelSrc.includes('const firstRank = (effectivePage - 1) * want + 1') &&
+      panelSrc.includes('const lines = rows.map((row, i) => rowLine(row, firstRank + i))') &&
+      panelSrc.includes("const live = wantPage === 1 ? Meow.readLiveDream(workspace, dir) : { sessionIds: [] }") &&
+      panelSrc.includes('趋势行只在第 1 页出'),
+  )
+  check(
+    'dream 翻页: 页码越过最后一页时退到最后一页并说清（不返回空白页）',
+    panelSrc.includes('const lastPage = Math.max(1, Math.ceil(total / want))') &&
+      panelSrc.includes('const effectivePage = Math.min(wantPage, lastPage)') &&
+      panelSrc.includes('早过最后一页'),
+  )
+  check(
+    'dream 展开: 原文照账本念（摘要 / 备注 / changes JSON），超长截断并报真实长度',
+    panelSrc.includes('变化原文：') &&
+      panelSrc.includes('const CAP = 1200') &&
+      panelSrc.includes('（前 ${CAP} 字符，共 ${raw.length} 字符）') &&
+      panelSrc.includes("'（这一条没有摘要）'") &&
+      panelSrc.includes("'（这一条没写备注）'"),
+  )
+  check(
+    'dream 展开: 老记录明说没有 changes.plan；与更早一条的差只报真变了的段',
+    panelSrc.includes('它写在 0.2.96 之前，当时还没有记规模') &&
+      panelSrc.includes('function compareLine(row, prev, prevRank)') &&
+      panelSrc.includes('都没变') &&
+      panelSrc.includes('两边都没有规模数字，不比较'),
+  )
+  check(
+    'dream 参数: page / id 给脏了当面打回，不静默退回默认',
+    adminSrc.includes('function pageOf(raw)') &&
+      adminSrc.includes('function idOf(raw)') &&
+      adminSrc.includes('这次没有列账——别把「没列」读成「账本里只有这几条」') &&
+      adminSrc.includes('这次没有展开任何一条') &&
+      adminSrc.includes("params: ['limit', 'page', 'id']") &&
+      adminSrc.includes('page: { type: \'integer\''),
+  )
+  check(
+    'dream 参数: schema 里 page / id 有独立说明（参数说明也是产品的一部分）',
+    adminSrc.includes('action=dream 翻到第几页') && adminSrc.includes('action=dream 展开第几近的一条'),
+  )
+  check(
+    'dream 翻页: 探针进线（probe-ruler J1–J6、probe-fusion D20–D25）',
+    checkAllSrc.includes("['tools/probe-ruler.mjs'") &&
+      rulerSrc.includes('J1 第一页：给 5 条、总数照实说') &&
+      rulerSrc.includes('J2 第二页：只剩 2 条，且接着第一页往后读') &&
+      rulerSrc.includes('J5 要第 99 近：missing=no-row') &&
+      fusionSrc.includes('D20 第一页：列出 3 条、编号从 #1 起') &&
+      fusionSrc.includes('D22 页码越过最后一页') &&
+      fusionSrc.includes('D25 id 给脏了当面打回'),
+  )
+  check(
+    'dream 翻页: 版本不早于 0.2.100（两处一致），文档 9.106 / 112 在位',
+    (() => {
+      const v = pkg.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 100)
+      return atLeast && idxSrc.includes(`export const version = '${pkg.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.106') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 112'),
   )
 }
 
