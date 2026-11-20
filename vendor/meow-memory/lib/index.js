@@ -2892,7 +2892,11 @@ function rememberTool(dir) {
 //      原文更长时标一句「已截断」，指向 memory_read 取全文（截断要可追溯，不是悄悄少给）。
 //   ② 日期：keywords 里带 `YYYY-MM-DD`（写入端/评测侧都这么塞日期）就在抬头补一天，因为
 //      relativeTime 只在 30 天前才落到绝对日期，「5 分钟前」回答不了「那天是几号」。
-// 两样都只在回执层面加，不改排序、不改分数。
+//   ③ [0.2.128] 命中自己那行精确到分（stampWhen），邻居行仍只到天。依据是 1,193 题同题对照
+//      （omni10）：把会话时间归一成 `2023-05-08 13:56` 之后整体 41.2% → 44.3%、时间题
+//      18.1% → 27.4%（+3.1pt，p<0.0001）；而把时间铺到每一行反而 40.4%（多花 334 字符）——
+//      读者要的是「能不能比大小」，不是「每一行都有时间」。所以只加一次，加在最该看的那行。
+// 三样都只在回执层面加，不改排序、不改分数。
 var DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 function dayOfKeywords(keywords) {
   if (!Array.isArray(keywords)) return "";
@@ -2910,6 +2914,19 @@ function stampDay(ms) {
   if (Number.isNaN(d.getTime())) return "";
   const p = (v) => String(v).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+/** 同上，但精确到分：写入时间本身带时刻时给 `YYYY-MM-DD HH:MM`，整点 00:00 只给日期。
+ *  为什么只给命中行：0.2.128 的 1,193 题对照里，时间只出现在命中自己那行是 44.3%，
+ *  铺到每一行是 40.4%——多出来的字没换来分，反而把正文挤走。 */
+function stampWhen(ms) {
+  const day = stampDay(ms);
+  if (!day) return "";
+  const d = new Date(Number(ms));
+  const p = (v) => String(v).padStart(2, "0");
+  const hh = d.getHours();
+  const mm = d.getMinutes();
+  if (hh === 0 && mm === 0) return day;
+  return `${day} ${p(hh)}:${p(mm)}`;
 }
 function searchTool(dir) {
   return {
@@ -3144,7 +3161,7 @@ function searchTool(dir) {
             title: h.title ?? "",
             content: contentMax > 0 ? h.content.slice(0, contentMax) : h.content,
             ...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {},
-            day: dayOfKeywords(row?.keywords) || stampDay(row?.updated_at),
+            day: dayOfKeywords(row?.keywords) || stampWhen(row?.updated_at),
             ...ctxMap !== null && ctxMap.has(String(h.id)) ? { context: ctxMap.get(String(h.id)) } : {},
             keywords: row?.keywords ?? [],
             project: row?.project ?? "",

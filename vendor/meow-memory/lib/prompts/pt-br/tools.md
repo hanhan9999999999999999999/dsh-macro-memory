@@ -36,7 +36,7 @@
 - memory_search.out.hits.project: Projeto ao qual a entrada pertence; ""=sem rótulo; entradas aplicáveis globalmente mostram "global".
 - memory_search.out.hits.updated_at: Timestamp da memória (última atualização, em milissegundos).
 - memory_search.out.hits.truncated: Se o content foi cortado em content_max; true significa que o original é maior — leia o texto completo com memory_read.
-- memory_search.out.hits.day: A data que a entrada carrega (uma palavra-chave YYYY-MM-DD); string vazia quando não tem.
+- memory_search.out.hits.day: O horário da entrada: a palavra-chave YYYY-MM-DD quando existe, senão o horário de escrita com minutos (`YYYY-MM-DD HH:MM`; só a data quando é exatamente meia-noite). As ocorrências vão até o minuto; os vizinhos (context) só até o dia.
 - memory_search.out.hits.context: memórias adjacentes {before, after} (no máximo 200 caracteres cada, só linhas active); aparece apenas quando context foi pedido.
 - memory_search.out.hits.explain: Pontuação bruta BM25 de palavras-chave (importance/recencyWeight/status voltam juntos no mesmo objeto).
 

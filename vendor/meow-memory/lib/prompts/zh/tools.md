@@ -36,7 +36,7 @@
 - memory_search.out.hits.project: 项目归属；""=未标记；全局信息为"全局"。
 - memory_search.out.hits.updated_at: 记忆时间戳（最后更新时间，毫秒）。
 - memory_search.out.hits.truncated: content 是否按 content_max 截断；true 表示原文更长，全文用 memory_read 读。
-- memory_search.out.hits.day: 条目自带的日期（keywords 里的 YYYY-MM-DD）；没有就是空串。
+- memory_search.out.hits.day: 条目的时间：keywords 里带 YYYY-MM-DD 就用它；没带就用写入时间，精确到分（`YYYY-MM-DD HH:MM`，恰好零点只给日期）。命中行到分，邻居行（context）只到天。
 - memory_search.out.hits.context: 同层相邻记忆 {before, after}（每条最多 200 字，只含 active 行）；只在传了 context 时出现。
 - memory_search.out.hits.explain: bm25 关键词原始分（importance/recencyWeight/status 随行返回，不单独描述）。
 

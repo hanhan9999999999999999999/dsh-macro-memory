@@ -6321,6 +6321,27 @@ check(
 
   const plain = render(await dtRun('memory_search', { query: '潜水 装备', k: 3, project: '去重探针' }), {})
   check('DT3 context 默认 0：回执里一个 ↑ / ↓ 都没有', !plain.includes('\u2191') && !plain.includes('\u2193'), `${plain.length} 字`)
+
+  // DT4/DT5（0.2.128）：命中行的时间到分，邻居行只到天。
+  // 期望值在这里照同一套规则现算一份（写入时间整点零点时才只有日期），
+  // 这样「改用 stampDay」会立刻红，又不依赖跑探针的时刻。
+  const expectWhen = (ms) => {
+    const d = new Date(Number(ms))
+    const p2 = (v) => String(v).padStart(2, '0')
+    const day = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+    return d.getHours() === 0 && d.getMinutes() === 0 ? day : `${day} ${p2(d.getHours())}:${p2(d.getMinutes())}`
+  }
+  const whenHit = two.hits.find((h) => String(h.content).includes('潜水装备'))
+  check(
+    'DT4 命中行的时间到分（比「哪条更早」时看得出先后）',
+    !!whenHit && whenHit.day === expectWhen(whenHit.updated_at),
+    `${String(whenHit?.day ?? '空')} vs 期望 ${expectWhen(whenHit?.updated_at ?? 0)}`,
+  )
+  check(
+    'DT5 邻居行只到天（不给每一行都加分钟，字省下来留给正文）',
+    /\u2191 \d{4}-\d{2}-\d{2} /.test(txTwo) && !/\u2191 \d{4}-\d{2}-\d{2} \d{2}:\d{2} /.test(txTwo),
+    (txTwo.split('\n').find((l) => l.includes('\u2191')) ?? '').slice(0, 60),
+  )
   try {
     rmSync(dtHome, { recursive: true, force: true })
   } catch {

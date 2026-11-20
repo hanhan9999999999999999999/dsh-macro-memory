@@ -8372,7 +8372,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     meowSrc121.includes('truncated: { type: "boolean"') &&
       meowSrc121.includes('day: { type: "string"') &&
       meowSrc121.includes('...contentMax > 0 && h.content.length > contentMax ? { truncated: true } : {}') &&
-      meowSrc121.includes('day: dayOfKeywords(row?.keywords) || stampDay(row?.updated_at),'),
+      meowSrc121.includes('day: dayOfKeywords(row?.keywords) || stampWhen(row?.updated_at),'),
   )
   check(
     '检索自答·探针进线：SR0–SR6（含阴性对照与「空旋钮」那条硬断言）',
@@ -8588,7 +8588,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'DW 日期: stampDay 存在且 day 有关键词回退（关键词没日期也有日子）',
     meowSrc125.includes('function stampDay(ms) {') &&
-      meowSrc125.includes('day: dayOfKeywords(row?.keywords) || stampDay(row?.updated_at),'),
+      meowSrc125.includes('day: dayOfKeywords(row?.keywords) || stampWhen(row?.updated_at),') &&
+      meowSrc125.includes('function stampWhen(ms) {'),
   )
   check(
     'DW 日期: 邻居窗口带 updated_at 并落 day（↑↓ 行才有日期可印）',
@@ -8675,6 +8676,84 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.130 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 136 '),
+  )
+}
+
+// ── 命中行到分、邻居行只到天（0.2.128）──────────────────────────────────────
+{
+  const meowSrc128 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const probeSrc128 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  check(
+    'DW 命中行: stampWhen 存在且恰好零点只给日期',
+    meowSrc128.includes('function stampWhen(ms) {') &&
+      meowSrc128.includes('if (hh === 0 && mm === 0) return day;'),
+  )
+  check(
+    'DW 命中行: 命中用 stampWhen、邻居仍走 it?.day（两条路不一样）',
+    meowSrc128.includes('day: dayOfKeywords(row?.keywords) || stampWhen(row?.updated_at),') &&
+      meowSrc128.includes('return `  ${arrow} ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`;'),
+  )
+  check(
+    'DW 命中行: 三语 prompt 都说清「命中到分、邻居到天」',
+    ['zh', 'en', 'pt-br'].every((lang) => {
+      const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lang, 'tools.md'), 'utf8')
+      return t.includes('memory_search.out.hits.day') && /HH:MM/.test(t)
+    }),
+  )
+  {
+    const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const dwHome = mkdtempSync(join(tmpdir(), 'macro-dw-'))
+    const db = Meow.getDb(dwHome, '.dsh-meow')
+    const T = new Map()
+    Meow.registerMemoryTools((t) => T.set(t.name, t), '.dsh-meow')
+    const stamp = (ms) => {
+      const d = new Date(Number(ms))
+      const p2 = (v) => String(v).padStart(2, '0')
+      const day = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+      return d.getHours() === 0 && d.getMinutes() === 0 ? day : `${day} ${p2(d.getHours())}:${p2(d.getMinutes())}`
+    }
+    // 钉一个确定的时间：2023-05-08 13:56（同一天里两条差 4 分钟，用来验分钟真的进了回执）
+    const base = new Date(2023, 4, 8, 13, 56, 0, 0).getTime()
+    const a = db.insert({ level: 'fact', content: 'Dana: 我们周六去潜水。', project: '全局', keywords: [], importance: 1 })
+    const b = db.insert({ level: 'fact', content: 'Dana: 潜水装备要提前租。', project: '全局', keywords: [], importance: 1 })
+    db.update('fact', a.id, { updated_at: base })
+    db.update('fact', b.id, { updated_at: base + 4 * 60 * 1000 })
+    const tool = T.get('memory_search')
+    const hits = [
+      { id: b.id, level: 'fact', content: 'Dana: 潜水装备要提前租。', project: '全局', updated_at: base + 4 * 60 * 1000, score: 2 },
+      { id: a.id, level: 'fact', content: 'Dana: 我们周六去潜水。', project: '全局', updated_at: base, score: 1 },
+    ]
+    const wins = db.adjacentWindows(hits.map((h) => ({ level: h.level, id: h.id })), 1)
+    const value = { note: '', hits: hits.map((h) => ({ ...h, day: stamp(h.updated_at), context: wins.get(String(h.id)) ?? { before: [], after: [] } })) }
+    const tx = tool.output.render({ context: 1, content_max: 300 }, value).map((x) => x.text).join('\n')
+    check(
+      'DW 命中行·行为: 同一天两条命中带着各自的分钟（13:56 / 14:00）',
+      tx.includes('2023-05-08 14:00') && tx.includes('2023-05-08 13:56'),
+      tx.split('\n').filter((l) => l.includes('2023-05-08')).slice(0, 3).join(' / ').slice(0, 120),
+    )
+    check(
+      'DW 命中行·行为: 邻居行不带分钟（只到天）',
+      !/\u2191 \d{4}-\d{2}-\d{2} \d{2}:\d{2} /.test(tx),
+      (tx.split('\n').find((l) => l.includes('\u2191')) ?? '').slice(0, 60),
+    )
+    try {
+      rmSync(dwHome, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  check(
+    'DW 命中行·探针进线：DT4 / DT5',
+    probeSrc128.includes('DT4 命中行的时间到分') && probeSrc128.includes('DT5 邻居行只到天'),
+  )
+  check(
+    'DW 命中行: 版本与文档一起走（9.132 / 138）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      return pkg.version.split('.').map((x) => Number(x))[2] >= 128
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.132 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 138 '),
   )
 }
 
