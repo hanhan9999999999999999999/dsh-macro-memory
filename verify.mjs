@@ -3495,7 +3495,7 @@ function makeHostCtx() {
   )
   check(
     'search: 模式名不合法时一句都不查（先挡住，再谈检索）',
-    /const mode = modeOf\(args\)[\s\S]{0,200}?if \(mode\.bad\) return badModeText\(mode\)[\s\S]{0,400}?const text = await runSearch\(flow, args, exec, flags\)/.test(
+    /const mode = modeOf\(args\)[\s\S]{0,400}?if \(mode\.bad\) return badModeText\(mode\)[\s\S]{0,600}?const text = await runSearch\(flow, args, exec, flags, budget\)/.test(
       searchSrc,
     ),
     'badMode',
@@ -3517,15 +3517,16 @@ function makeHostCtx() {
     'modeNotes',
   )
   check(
-    'search: 尾注只在薄壳里拼一次（十个出口不必各写一遍）',
-    /const notes = modeNotes\(mode\.name, args, flags\)\s*\n\s*return notes\.length > 0 \? `\$\{text\}\\n\\n\$\{notes\.join\('\\n'\)\}` : text/.test(
+    'search: 尾注与成本账都在薄壳里各拼一次（十几个出口不必各写一遍）',
+    /const notes = modeNotes\(mode\.name, args, flags\)\s*\n\s*const body = notes\.length > 0 \? `\$\{text\}\\n\\n\$\{notes\.join\('\\n'\)\}` : text\s*\n\s*return costTail\(body, \{ mode: mode\.name, budget, flags \}\)/.test(
       searchSrc,
     ),
     'wrapper',
   )
   check(
     'search: 老的「不认识就当 local」写法一行都不剩（注释里提一句可以，代码里不行）',
-    !/^\s*const mode = String\(args\.mode/m.test(searchSrc) && /async function runSearch\(flow, args, exec, flags = \{\}\)/.test(searchSrc),
+    !/^\s*const mode = String\(args\.mode/m.test(searchSrc) &&
+      /async function runSearch\(flow, args, exec, flags = \{\}, budget = \{ value: null, note: '' \}\)/.test(searchSrc),
     'legacy',
   )
   check(
@@ -7286,6 +7287,113 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.114') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 120'),
+  )
+}
+
+// [macro-fusion 0.2.109] 回执成本 + budget：六个维度里「效率」以前唯一没有数——
+// 有条数、有耗时，没有「这一问占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
+{
+  const searchSrc109 = readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8')
+  const readSrc109 = readFileSync(join(root, 'lib', 'macro', 'defs', 'read.js'), 'utf8')
+  const promptSrc109 = readFileSync(join(root, 'lib', 'macro', 'prompt.js'), 'utf8')
+  const prompt109 = await import(pathToFileURL(join(root, 'lib', 'macro', 'prompt.js')).href)
+  const pkg109 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const idxSrc109 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const rulerSrc109 = readFileSync(join(root, 'tools', 'probe-ruler.mjs'), 'utf8')
+  const fusionSrc109 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
+  const tok109 = await import(pathToFileURL(join(root, 'lib', 'macro', 'tokencost.js')).href)
+
+  check(
+    '成本: 估算口径可复算（CJK 一字 1、其余 4 字符 1、空串 0），报数是量级不是账单',
+    tok109.estTokens('中文四个字') === 5 &&
+      tok109.estTokens('hello world') === 3 &&
+      tok109.estTokens('') === 0 &&
+      tok109.fmtTokens(1234) === '1.2k' &&
+      tok109.fmtTokens(2000) === '2k' &&
+      tok109.costSentence('中文').includes('是量级不是账单'),
+  )
+  check(
+    '成本: 三个阈值集中一处（够大才报 500 / 才建议收紧 1200 / 预算下限 80），不在调用处各写一个数',
+    tok109.COST_SHOW_MIN === 500 && tok109.COST_HINT_MIN === 1200 && tok109.BUDGET_MIN === 80,
+  )
+  check(
+    '预算: 四态分开（没给 / 不像数 / 太小 / 超上界），装不下绝不假装装下',
+    tok109.budgetOf(undefined).value === null &&
+      tok109.budgetOf(undefined).note === '' &&
+      tok109.budgetOf('abc').note.includes('不是数字') &&
+      tok109.budgetOf(20).value === null &&
+      tok109.budgetOf(20).note.includes('最小可用预算 80') &&
+      tok109.budgetOf(30000).value === 20000 &&
+      tok109.budgetOf(30000).note.includes('超出上界') &&
+      tok109.budgetOf(400).value === 400 &&
+      tok109.budgetOf(400).note === '',
+  )
+  check(
+    '预算: 进 schema（描述里写明「先砍字、再砍条数」），出口只解析一次',
+    searchSrc109.includes('budget: {') &&
+      searchSrc109.includes('先砍每条的字、再砍条数') &&
+      searchSrc109.includes('const budget = budgetOf(args.budget)') &&
+      searchSrc109.split('budgetOf(args.budget)').length - 1 === 1,
+  )
+  check(
+    '预算: 收缩顺序先砍 content_max 再砍 k（成本更低的那一步先动）',
+    (() => {
+      const seg = searchSrc109.slice(searchSrc109.indexOf('async function fitBudget('))
+      const cmAt = seg.indexOf('if (cm > 60) cm = Math.max(60, Math.floor(cm / 2))')
+      const kAt = seg.indexOf('else if (k > 1) k = Math.max(1, Math.floor(k / 2))')
+      return cmAt > 0 && kAt > cmAt
+    })(),
+  )
+  check(
+    '预算: 报「最小一份」之前真的去拿一次 k=1/content_max=60（不许靠第四级的估计冒充最小）',
+    searchSrc109.includes('const { r: smallest, est: smallestEst } = await take({ ...baseArgs, k: 1, content_max: 60 })') &&
+      searchSrc109.includes('（k=1、content_max=60）实测') &&
+      searchSrc109.includes('收到了最小的一份'),
+  )
+  check(
+    '预算: 排在 expand 之前生效（否则星图那段会加在已超预算的结果后面）',
+    (() => {
+      const fitAt = searchSrc109.indexOf('await fitBudget(flow, exec, localArgs, main, budget.value)')
+      const expAt = searchSrc109.indexOf('const wantExpand =')
+      return fitAt > 0 && expAt > fitAt
+    })(),
+  )
+  check(
+    '预算: 星图退回本地兜底的两条路也过 maybeFit（兜底也是真检索，没理由超预算）',
+    searchSrc109.split('await maybeFit(').length - 1 === 2 && searchSrc109.includes('async function maybeFit('),
+  )
+  check(
+    '成本: 小回执一个字不加（省 token 的工具自己先要省），星图两路不吃预算但要说清',
+    searchSrc109.includes('if (budget.value !== null || est >= COST_SHOW_MIN)') &&
+      searchSrc109.includes('budget 只有本地检索能收紧') &&
+      readSrc109.includes('return readCostTail(') &&
+      tok109.readCostTail('短') === '短',
+  )
+  check(
+    '成本: 手册里告诉模型有这个旋钮，且手册仍未触顶（余量 ≥ 下限）',
+    prompt109.GUIDE_TEXT.length > 0 &&
+      prompt109.GUIDE_TEXT.includes('想省上下文就给 budget=N') &&
+      prompt109.clampGuide() === prompt109.GUIDE_TEXT &&
+      prompt109.GUIDE_MAX_CHARS - prompt109.GUIDE_TEXT.length >= prompt109.GUIDE_MIN_HEADROOM,
+  )
+  check(
+    '成本: 探针进线（probe-ruler L27/L28 钉口径与预算四态、probe-fusion D58–D61 钉出口与两条阴性对照）',
+    rulerSrc109.includes('L27 估算口径可复算') &&
+      rulerSrc109.includes('L28 预算四态不压成一态') &&
+      fusionSrc109.includes('D58 大回执自带成本尾注') &&
+      fusionSrc109.includes('D59 给了预算就自己收紧') &&
+      fusionSrc109.includes('D60 缩到底也装不下就直说') &&
+      fusionSrc109.includes('D61 小回执不报成本'),
+  )
+  check(
+    '成本: 版本不早于 0.2.109（两处一致），文档 9.115 / 121 在位',
+    (() => {
+      const v = pkg109.version.split('.').map((x) => Number(x))
+      const atLeast = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 109)
+      return atLeast && idxSrc109.includes(`export const version = '${pkg109.version}'`)
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.115') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 121'),
   )
 }
 

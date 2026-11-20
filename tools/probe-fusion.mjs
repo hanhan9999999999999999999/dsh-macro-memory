@@ -934,6 +934,84 @@ try {
     lvFlatLine,
   )
 
+  // D58–D61（0.2.109）：回执成本 + budget。六个维度里「效率」以前没有数——
+  // 有条数、有耗时，没有「这次检索占了多少上下文」，于是「多查几次也无所谓」永远是一句空话。
+  const { createUnifiedTools: costTools } = await import(pathToFileURL(join(root, 'lib/macro/tools.js')).href)
+  const costStore = { calls: [], rigid: false }
+  function costTool() {
+    const entries = new Map()
+    const add = (name, fn) => entries.set(name, { name, vendor: 'stub', def: { name, execute: fn }, options: {} })
+    add('memory_search', async (a) => {
+      costStore.calls.push({ k: a.k, content_max: a.content_max })
+      // rigid：回执体量不跟着参数走（模拟「引擎自己给的体量」），用来验「装不下就直说」。
+      if (costStore.rigid) return `固定长回执：${'内容'.repeat(1000)}`
+      const k = Number(a.k ?? 10)
+      const cm = Number(a.content_max ?? 300)
+      let out = ''
+      for (let i = 0; i < k; i += 1) out += `- ${i + 1}. ${'内容'.repeat(Math.max(1, Math.ceil((cm || 300) / 2)))}\n`
+      return out
+    })
+    add('memory_read', async () => `【标题】长记忆\n\n${'正文一句。'.repeat(300)}`)
+    add('nebula_recall', async () => '沿关联：A → B')
+    const bridge = {
+      has: (n) => entries.has(n),
+      get: (n) => entries.get(n),
+      names: () => [...entries.keys()],
+      awaitTool: async (n) => entries.get(n),
+      async call(name, args) {
+        const e = entries.get(name)
+        if (!e) throw new Error(`stub 没有 ${name}`)
+        const value = await e.def.execute(args)
+        return { entry: e, def: e.def, value, text: typeof value === 'string' ? value : JSON.stringify(value) }
+      },
+      async tryCall(name, args) {
+        try {
+          return await bridge.call(name, args)
+        } catch (err) {
+          return { entry: undefined, def: undefined, value: undefined, text: `${name}未完成：${err.message}` }
+        }
+      },
+      promptDeclarations: () => [],
+    }
+    return costTools({ bridge, config: { toolWaitMs: 10, linkWaitMs: 10 } }).find(
+      (t) => t.name === 'memory_search',
+    )
+  }
+  const costSearch = costTool()
+  const costRun = async (args) => String((await costSearch.execute(args, {})) ?? '')
+
+  const costBig = await costRun({ query: '大', k: 10, content_max: 300, expand: false })
+  check(
+    'D58 大回执自带成本尾注，并说过 1200 才建议收紧：省 token 先要知道花了多少',
+    costBig.includes('成本 ≈') && costBig.includes('是量级不是账单') && costBig.includes('只想看骨架就加 budget=400'),
+    costBig.slice(-120),
+  )
+  costStore.calls = []
+  const costFit = await costRun({ query: '大', k: 10, content_max: 300, expand: false, budget: 400 })
+  check(
+    'D59 给了预算就自己收紧，并交代砍了什么（先砍字、再砍条数）',
+    costStore.calls.length > 1 &&
+      costFit.includes('按 400 token 预算收紧了') &&
+      costFit.includes('content_max 300→') &&
+      /实际 ≈[\d.]+k? token/.test(costFit),
+    `调用 ${costStore.calls.length} 次 · ${costFit.slice(-140)}`,
+  )
+  costStore.rigid = true
+  const costTiny = await costRun({ query: '大', k: 10, content_max: 300, expand: false, budget: 80 })
+  costStore.rigid = false
+  check(
+    'D60 缩到底也装不下就直说，并给实测最小值：报「最小」之前必须真的试过最小',
+    costTiny.includes('预算 80 token 装不下') && costTiny.includes('（k=1、content_max=60）实测') && !costTiny.includes('收紧了'),
+    costTiny.slice(-160),
+  )
+  const costSmall = await costRun({ query: '小', k: 1, content_max: 40, expand: false })
+  const costGraph = await costRun({ mode: 'graph', query: 'x', budget: 400 })
+  check(
+    'D61 小回执不报成本、星图那两路不吃预算但要说清：省 token 的工具自己先要省',
+    !costSmall.includes('成本 ≈') && costGraph.includes('budget 只有本地检索能收紧'),
+    `small=${costSmall.slice(0, 30)} | graph=${costGraph.slice(-80)}`,
+  )
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {

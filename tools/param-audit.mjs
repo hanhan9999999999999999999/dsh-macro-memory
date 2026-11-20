@@ -124,7 +124,9 @@ const ROUTE = {
 
 const EXTRA = {
   // 统一工具自己加的能力：不属于「原本功能」，单独列出，避免审计误判
-  'memory_search': ['mode', 'expand', 'id', 'memory_ids', 'limit', 'hops', 'chars', 'min_weight'],
+  // [macro-fusion 0.2.109] budget：回执的 token 预算，是统一工具自己加的能力
+  // （vendor 的 search 口只有 k / content_max，没有「按总预算自己收紧」这一层），登记在这里才算「有出处」。
+  'memory_search': ['mode', 'expand', 'id', 'memory_ids', 'limit', 'hops', 'chars', 'min_weight', 'budget'],
   'memory_read': ['neighbors'],
   'memory_link': ['action', 'a', 'b', 'note', 'maxHops'],
   // [macro-fusion 0.2.105] since / until：按日期筛 dream 账本，是统一工具自己加的能力

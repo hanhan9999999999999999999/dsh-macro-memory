@@ -1098,5 +1098,32 @@ check(
   `scale=${JSON.stringify(qScale2)}`,
 )
 
+// Q 段（0.2.109）：回执成本的口径是「估算」，不是账单——所以先把它钉成一条可复算的尺子：
+// 同一句话算两遍必须一样，中英混排不许按字符数糊过去，空串算 0。
+const tok = await import(pathToFileURL(join(root, 'lib/macro/tokencost.js')).href)
+check(
+  'L27 估算口径可复算：CJK 一字 1、其余 4 字符 1，空串 0，两次一样',
+  tok.estTokens('中文四个字') === 5 &&
+    tok.estTokens('hello world') === 3 &&
+    tok.estTokens('') === 0 &&
+    tok.estTokens('中文') === tok.estTokens('中文') &&
+    tok.estTokens('中文abc') === 2 + 1,
+  `中文四个字=${tok.estTokens('中文四个字')} hello world=${tok.estTokens('hello world')} 中文abc=${tok.estTokens('中文abc')}`,
+)
+check(
+  'L28 预算四态不压成一态：没给 / 不像数 / 太小 / 超上界 各说各的（装不下绝不假装装下）',
+  tok.budgetOf(undefined).value === null &&
+    tok.budgetOf(undefined).note === '' &&
+    tok.budgetOf('abc').value === null &&
+    tok.budgetOf('abc').note.includes('不是数字') &&
+    tok.budgetOf(20).value === null &&
+    tok.budgetOf(20).note.includes(`最小可用预算 ${tok.BUDGET_MIN}`) &&
+    tok.budgetOf(30000).value === 20000 &&
+    tok.budgetOf(30000).note.includes('超出上界') &&
+    tok.budgetOf(400).value === 400 &&
+    tok.budgetOf(400).note === '',
+  JSON.stringify([tok.budgetOf('abc').note, tok.budgetOf(20).note, tok.budgetOf(30000).note]),
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

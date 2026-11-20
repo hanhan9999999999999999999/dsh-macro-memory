@@ -6096,3 +6096,143 @@ function levelsText(store) {
 2. **不算每层的净流动**（涨了几条、掉了几条、其中多少是改层）。要算得让写侧记「这一轮升降层明细」，现在只有快照。
 3. **不画图**。面板是文本，箭头串已经是能读的最简形式。
 4. **不给「健康区间」**。多少条 fact 算正常取决于项目，硬给阈值等于编标准。
+
+## 9.115 回执也报成本，预算让工具自己收紧（0.2.109）
+
+### 9.115.0 六维里「效率」是唯一没有数的一维
+
+记忆系统好不好，主人列了六条：准确性、相关性、可追溯性、可更新性、效率、抗噪性。前五条到 0.2.108 为止都有对应的数与文案——准确性有 `min_rel` 与零回执守，相关性有 mode 与 expand 的口径句，可追溯性有 reference 与 `refOfRow`，可更新性有 `memory_update` 的三态与账本的 `stamped`，抗噪性有 `dedupe` 与去重计数。只有效率没有数：探针知道每条断言跑多少毫秒，可「这一次 `memory_search` 往上下文里塞了多少字」没人知道。
+
+这不是「面板少一行」的问题。一次本地检索默认 `k=10`、`content_max=300`，十条各带标题、层名、关键词、日期、项目与一段正文，回执轻易两三万字符；模型拿到的每一条都在吃上下文窗口，而窗口是这一轮做完事的弹药。看不见成本，就没有省的动作——调用方只能凭感觉少给 `k`，给多了怕漏、给少了怕不够，最后总是给多。
+
+于是 0.2.109 做两件事：**回执自己报成本**，以及**给一个 `budget` 让工具自己收紧并交代缩了什么**。前者让成本可见，后者让成本可控；两件都不改检索本身的排序与打分，只在「说多少」这一层动手。
+
+### 9.115.1 估算口径：CJK 一字算 1，其余 4 字符算 1
+
+新文件 `lib/macro/tokencost.js`，只做三件事：估、格式化、判预算。
+
+`estTokens(text)` 的规则一句话能背下来：**CJK 与全角标点一个字符算 1 token，其余字符四个算 1 token**（向上取整），空串 0。CJK 的字符类覆盖 `\u3000-\u303f`（中文标点）、`\u3040-\u30ff`（日文假名）、`\u3400-\u4dbf`（扩展 A）、`\u4e00-\u9fff`（基本区）、`\uac00-\ud7af`（谚文）、`\uff00-\uffef`（全角形式）。
+
+为什么不接真 tokenizer：真 tokenizer 要下载词表、要跟模型版本绑定、要在插件里多背几十兆，而这里要的只是「够不够大」的判断，不是账单。误差方向也得说清：这个估法对中文偏保守（BPE 常把一个常见汉字压进一个 token 的不到一个），对英文也偏保守（四个字符一个 token 是经验中位数，真实在 3.5 到 4.5 之间摆）。所以尾注写的是 `成本 ≈N token（CJK 一字算 1、其余 4 字符算 1，是量级不是账单）`——**「是量级不是账单」这半句不是客套，是口径**：读者若拿它对账，会差一截；拿它比较两次检索谁更贵，方向不会错。
+
+`fmtTokens(n)`：1000 以下给整数，1000 以上给一位小数加 k（`1.2k`），`1.0k` 收成 `1k`——尾注里出现的数字必须能一眼扫过去，`1234` 与 `1.2k` 的信息量一样，后者更省一次眼球移动。
+
+### 9.115.2 三个阈值，集中在一处
+
+`COST_SHOW_MIN = 500`、`COST_HINT_MIN = 1200`、`BUDGET_MIN = 80`（预算上限 20000）。
+
+- **500 以下不念成本**：一条记忆的 `memory_read` 回执常常两三百 token，每句都缀一句「成本 ≈240 token」等于拿噪声盖住正文。500 是「这段已经值得看一眼花了多少」的下限。
+- **1200 以上才劝骨架**：`；只想看骨架就加 budget=400（工具会自己砍字、砍条数，并交代砍了什么）`。中间那段（500 到 1200）报成本但不劝——劝得太早，读者会以为工具在推销参数。
+- **80 是预算的地板**：低于 80 的预算连一条标题都装不舒服，与其硬缩成一句废话，不如直接说「太小了，最小给 80」。上限 20000 是防手滑（`budget=200000` 等于没设预算，但会让人误以为设了）。
+
+三个数与两处文案都放在 `tokencost.js` 一处，`verify.mjs` 的 0.2.109 块专门钉「三阈值集中一处」——散落在 `search.js`、`read.js`、`prompt.js` 里各写一遍，改一个忘两个是迟早的事。
+
+### 9.115.3 预算四态：没给就静默，给了就必须交代
+
+`budgetOf(raw, { max = 20000 })` 返回 `{ value, note }`：
+
+| 输入 | `value` | `note` |
+| --- | --- | --- |
+| 没给（`undefined`） | `null` | `''`（静默，只报成本） |
+| 非数字（`'abc'`） | `null` | `预算要是数字：给了 abc，这次按没给预算处理。` |
+| 小于 80 | `null` | `预算 20 太小了：最小给 80，这次按没给预算处理。` |
+| 大于 20000 | `null` | `预算 30000 超出上限：最多按 20000 算。`（`value = 20000`） |
+
+四态里只有第一态静默，其余三态都要说话——**给了参数而参数没生效，却什么都不说，是最坏的一种**：调用方以为省了 token，实际拿回一份三万字符的回执，而且下次还会这么给。
+
+`budget` 在 `execute` 出口只解析一次（`const budget = budgetOf(args.budget)`），然后一路传进 `runSearch` / `fitBudget` / `costTail`。`verify.mjs` 钉了 `budgetOf(args.budget)` 在 `search.js` 里只出现一次——第二次解析就会得到两个不一致的 `note`。
+
+### 9.115.4 收紧的顺序：先砍每条的字，再砍条数
+
+`fitBudget(flow, exec, baseArgs, main, budget)` 的做法不是截字符串，而是**改参数重查**：
+
+1. 先量第一份：`first = estTokens(main.text)`，装得下就返回 `按 ${budget} token 预算给：实际 ≈N token，没缩。`——装得下也要说一句，否则调用方不知道预算是生效了还是被忽略了。
+2. 最多四级：`if (cm > 60) cm = Math.max(60, Math.floor(cm / 2)); else if (k > 1) k = Math.max(1, Math.floor(k / 2)); else break`。**先砍 `content_max`，砍到 60 再砍 `k`**。
+3. 每一级都真调一次 `flow.call('memory_search', args2, exec)` 并重新量（`tried += 1`），装下就停，返回 `按 ${budget} token 预算收紧了 ${tried} 次：k ${k0}→${k}、content_max ${cmLabel0}→${cm}，实际 ≈N token。`
+4. `content_max = 0`（全文）进预算时从 2400 起砍，标签写 `全文`——`全文→1200→600→300…` 读起来比 `0→1200` 明白。
+
+为什么先砍字后砍条数：**条数是召回的覆盖面，字数是每条的详略**。十条各 30 字还能看出「有这十条、分别是什么」，三条各 300 字则只看到三条、另七条等于没召回——对记忆检索来说，漏召回比看不全更贵，因为漏掉的那条你不知道它存在。
+
+为什么必须重查而不是截断文本：截断会把一条记忆的正文拦腰砍断，读者看到的是一句没有下半句的话，而工具还在尾注里说「收紧了」——那是在骗人。重查拿到的是引擎真正按参数给出的结果，条数、排序、摘要都是完整的一份。
+
+### 9.115.5 「最小」必须量到，不能拿估计冒充
+
+四级之后还装不下，得回答「最小能给多少」。第一版写的是拿第四级的估计值当最小值——**报「最小」却从没试过最小**，这是本次唯一一处自己抓出来的错。
+
+改法：装不下之后**再真取一次最小一份**：
+
+```
+const { r: smallest, est: smallestEst } = await take({ ...baseArgs, k: 1, content_max: 60 })
+```
+
+装得下就说 `收到了最小的一份：k ${k0}→1、content_max ${cmLabel0}→60，实际 ≈N token（再砍就只剩标题）。`；还装不下就说 `预算 ${budget} token 装不下：最小一份（k=1、content_max=60）实测 ≈N token——再小就只剩标题，那就不是检索了。`
+
+注意 `实测` 两个字：这句话里的数必须是量出来的。`probe-fusion.mjs` 的 D60 专门用一个「回执体量与参数无关」的 stub（`rigid` 模式）造出「怎么砍都不变」的情形，断言尾注含 `（k=1、content_max=60）实测`、且**不含**「收紧了」——两条一起才排得掉「拿估计冒充实测」与「明明没缩却说缩了」。
+
+### 9.115.6 收缩必须发生在星图段之前
+
+`runSearch` 里 `budget` 的收紧插在本地检索之后、`const wantExpand = …` 之前：
+
+```
+let main = await flow.call('memory_search', localArgs, exec)
+// 零回执守（原有）
+if (budget.value !== null) {
+  const fit = await fitBudget(flow, exec, localArgs, main, budget.value)
+  main = fit.main
+  flags.budgetNote = fit.note
+}
+// 之后才是 const wantExpand = …
+```
+
+顺序反了会怎样：星图段（`nebula_inspect` 的邻居段落）加在已经缩到预算的那份后面，读者看到的回执仍然超预算，而尾注信誓旦旦说「按 400 token 收紧了」——**数字对不上文案，整条尾注作废**。
+
+星图退回本地兜底的两条路（`graphFellBack`）也过同一道预算：新增 `maybeFit(flow, exec, baseArgs, got, budget, flags)`，把 `got.text` / `got.value` 换成收紧后的那份（`probe`/`verify` 钉了 `await maybeFit(` 在 `search.js` 里出现 2 次）。漏一条路，就等于「同一句 budget 在一半情况下不生效」。
+
+### 9.115.7 出口：尾注只拼一次，小回执一个字不加
+
+`costTail(body, { mode, budget, flags })` 按固定顺序拼：
+
+1. `budget.note`（预算四态里那三句说明）
+2. `flags.budgetNote`（`fitBudget` 的交代表）
+3. 非本地 mode 且给了预算：`budget 只有本地检索能收紧：星图 / 相似两路的体量由引擎自己的 limit / chars 说了算，这次没缩。`
+4. 本地且没有 `budgetNote`（预算给了但一开始就不用缩）：`budget N 这次没派上用场：你给的条件下一开始就没有可缩的东西，回执本来就是这么多。`
+5. 成本行：`budget.value !== null || est >= COST_SHOW_MIN` 时加 `costSentence(body)`；`budget.value === null && est >= COST_HINT_MIN` 时再缀骨架提示。
+
+第 3、4 条的差别是「能不能缩」与「需不需要缩」：前者是能力边界（星图路的体量不归这个工具管），后者是事实交代（本来就不大）。两句都写清楚，读者才不会以为预算坏了。
+
+`read.js` 那边只接成本、不接预算：`return readCostTail([said, section, gap, nb.note].filter(Boolean).join('\n\n'))`，`readCostTail` 在 500 以下原样返回、1200 以上追加 `；只要骨架就少给几条邻居（neighbors=0 或 3）`——单条记忆的体量由这条记忆本身决定，能砍的只有邻居条数，所以这里给的是旋钮而不是自动预算。
+
+`execute` 里的薄壳保持「各拼一次」：`modeNotes` 的注在 `body` 里拼一次，`costTail` 在外层拼一次，两处都在 `search.js` 的 `execute` 内。`verify.mjs` 把这三行的相对位置钉成了断言（尾注与成本账都在薄壳里各拼一次），因为把 `costTail` 挪进 `runSearch` 就会在「零回执」那条提前返回里丢掉成本行。
+
+### 9.115.8 手册加一个旋钮，余量还剩 144
+
+`prompt.js` 的 `GUIDE_TEXT` 第 23 行改成：
+
+```
+memory_search（query, budget）：…；回执够大时自带成本尾注（≈N token）；想省上下文就给 budget=N，工具自己砍字、砍条数并交代砍了什么。
+```
+
+`GUIDE_TEXT` 1091 → **1156** 字符，`GUIDE_MAX_CHARS = 1300`，余量 **144**，仍高于 `GUIDE_MIN_HEADROOM = 120`，`clampGuide() === GUIDE_TEXT` 成立。手册是模型唯一会读的说明书，新参数不进手册等于没这个参数；但手册也不能无限长（`clampGuide` 会截断，截断的位置不可控），所以每加一句都要报余量。
+
+### 9.115.9 顺手修掉的四处老断言
+
+签名与薄壳改形会让老断言红，四处都要改**而且要保持还能被打红**（放宽到永远为真的正则等于删断言）：
+
+1. `tools/criteria.mjs` 的 `search-mode-whitelist`：`/const text = await runSearch\(flow, args, exec, flags\)/` → `(?:, budget)?`。
+2. `verify.mjs` A55 的 badMode 正则：`{0,400}` / `{0,600}`，并要求调用点写成 `runSearch(flow, args, exec, flags, budget)`。
+3. wrapper 断言：改成 `const notes = modeNotes(...)` / `const body = …` / `return costTail(body, { mode: mode.name, budget, flags })` 三段，label 改「尾注与成本账都在薄壳里各拼一次」。
+4. legacy 断言：`/async function runSearch\(flow, args, exec, flags = \{\}, budget = \{ value: null, note: '' \}\)/`。
+
+### 9.115.10 探针进线
+
+- `tools/probe-ruler.mjs` L27（估算口径：`estTokens('中文四个字') === 5`、`'hello world' === 3`、`'' === 0`、`'中文abc' === 3`）、L28（预算四态：没给 / `abc` / `20` / `30000` / `400`）→ 92 → **94 条**。
+- `tools/probe-fusion.mjs` D58–D61（stub 桥 + 真 `createUnifiedTools` 装配）：D58 大回执报成本且 1200 以上劝骨架；D59 给预算真的重取多次（`costStore.calls.length > 1`）；D60 `rigid` 下「装不下」且带「（k=1、content_max=60）实测」、不含「收紧了」（阴性对照）；D61 小回执不报成本、graph 模式不收预算而是说清（阴性对照）→ 534 → **538 条**。
+- `verify.mjs` 新增 `[macro-fusion 0.2.109]` 块 13 条：口径可复算、三阈值集中一处、预算四态、`budgetOf` 只解析一次、收缩顺序（cm 在 k 前）、最小必须实测、收紧排在 `const wantExpand` 之前、`maybeFit` 两处、小回执不加 + `readCostTail` + graph 说明、手册含 `budget` 且未触顶、探针进线、版本与文档在位。
+
+### 9.115.11 没做的事
+
+1. **不接真 tokenizer**。理由在 9.115.1：要的是量级，不是账单。
+2. **面板不记历史成本**。`dream_log` 记的是整理前后的库规模，不是检索花了多少；要记就得在写侧加一张检索流水表，那是另一个功能（且高频写会拖慢检索）。
+3. **预算只管单次调用**。跨工具的累计预算（这一轮总共允许多少 token）需要会话级状态，现在没有这个容器。
+4. **预算不砍星图段**。星图段的体量由 `nebula_recall` 的 `limit` / `chars` 决定，工具只说清「这次没缩」，不擅自改别的工具的引擎参数。
+5. **不改 `content_max` 的语义**。`0` 仍是全文，预算内部把全文按 2400 起砍，但用户在 schema 里看到的行为不变——参数语义一变，所有已有调用都会静默改变行为。
