@@ -269,6 +269,46 @@ try {
   const dreamNoWs = text(await tools.get('memory_admin').execute({ action: 'dream' }, {}))
   check('D14 没有会话工作区时说清没有账本', dreamNoWs.includes('没有工作区'), dreamNoWs.split('\n').slice(1, 2).join(''))
 
+  // [macro-fusion 0.2.98] 趋势行：五条带 plan 的账（重复详写 3→2→2→1→1，缺词 2→1→1→0→0），
+  // 面板要给合计并说「在变少」；只有一条时一行都不许出（一条没有走势）。
+  const trendWs = mkdtempSync(join(tmpdir(), 'macro-probe-trend-'))
+  const trendDb = Meow.getDb(trendWs, '.dsh-meow')
+  const P = (dup, cover, missing) => ({ rounds: 2, groups: 2, rows: 2, dup, cover, missing, projects: ['p'] })
+  for (const [dup, cover, missing] of [
+    [1, 3, 2],
+    [1, 2, 1],
+    [0, 2, 1],
+    [0, 1, 0],
+    [0, 1, 0],
+  ]) {
+    trendDb.logDream('window dream done: sess-trend groups=2 stamped=true', { stamped: true, groups: 2, plan: P(dup, cover, missing) })
+  }
+  const trendPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, { agent: { session: { header: { cwd: trendWs } } } }))
+  check(
+    'D15 趋势行给合计并报走向',
+    trendPanel.includes('趋势：最近 5 次') &&
+      trendPanel.includes('重复详写 合计 9 对，在变少') &&
+      trendPanel.includes('缺词 合计 4 个，在变少'),
+    trendPanel.split('\n').slice(-1)[0],
+  )
+  check('D15 每条账带序号且最新是 #1', trendPanel.includes('#1 ') && trendPanel.includes('#5 ') && !trendPanel.includes('#6 '), '')
+  check('D15 账本行说清落库了没有', trendPanel.includes('落库 是'), '')
+  check('D15 趋势行不混进账本行', !/^趋势：/.test(trendPanel.split('\n').slice(0, 5).join('\n')), '')
+
+  const trendOnePanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 1 }, { agent: { session: { header: { cwd: trendWs } } } }))
+  check('D16 只有一条账时不编走势', !trendOnePanel.includes('趋势：'), trendOnePanel)
+
+  const trendOldWs = mkdtempSync(join(tmpdir(), 'macro-probe-trendold-'))
+  const trendOldDb = Meow.getDb(trendOldWs, '.dsh-meow')
+  trendOldDb.logDream('window dream done: sess-old groups=1 stamped=true', { stamped: true, groups: 1 })
+  for (const cover of [2, 1, 1]) {
+    trendOldDb.logDream('window dream done: sess-new groups=1 stamped=true', { stamped: true, groups: 1, plan: { rounds: 2, groups: 1, rows: 2, dup: 0, cover, missing: 0, projects: ['p'] } })
+  }
+  const trendOldPanel = text(await tools.get('memory_admin').execute({ action: 'dream', limit: 5 }, { agent: { session: { header: { cwd: trendOldWs } } } }))
+  check('D17 老记录不进趋势，但说清跳过几条', trendOldPanel.includes('1 条记录早于 0.2.96') && trendOldPanel.includes('重复详写 合计 4 对'), trendOldPanel.split('\n').slice(-1)[0])
+  check('D17 样本不足时明说别当走势', trendOldPanel.includes('样本太少'), '')
+
+
   if (process.env.PROBE_LINK === '1' && id) {
     // 星图靠 12s 巡检重建：等它把上面那条记忆建成节点，再验证 links 联动。
     const w3 = await run('memory_remember', {

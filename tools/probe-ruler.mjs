@@ -559,5 +559,15 @@ check(
   `首行 changes=${String(H5.rows[0]?.changes)} 共 ${H5.rows.length} 条`,
 )
 
+// H6：条数上限自己收紧（0/负数走默认 5，超大夹到 50），不许把「随便给个数」变成全表扫描。
+const clampDb = V.getDb(logWs, '.dsh-meow')
+const zeroRows = clampDb.recentDreams(0)
+const hugeRows = clampDb.recentDreams(9999)
+check(
+  'H6 limit 自己收紧：0 走默认 5、超大夹到 50（不把整本账一次拖出来）',
+  zeroRows.length <= 5 && hugeRows.length <= 50 && zeroRows.length >= 1,
+  `0→${zeroRows.length} 条 / 9999→${hugeRows.length} 条`,
+)
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)
