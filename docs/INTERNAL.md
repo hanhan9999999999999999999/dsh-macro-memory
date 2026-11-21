@@ -8947,3 +8947,49 @@ const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t)
 - `tools/probe-cost.mjs` 新增（八支，进 check-all）；
 - `verify.mjs` XA1–XA10（常量 / 指纹组成 / 倒排开关 / 缓存开关 / 四个导出 / 三条行为 / 文档锚 / 量具在位）；
 - 顺带修一处旧伤：0.2.152 的 WZ 段原本排在 `process.exit()` 之后，等于一条都没跑——总结与退出已挪到文件末尾。
+
+## 9.160 「比了就是一条断言」：计数型基线不能跟运行时刻耦合（0.2.153 收尾）
+
+`node tools/check-all.mjs --update-baselines` 记完基线，下一次干净树跑出来永远比基线**少一条**，
+再记一次又多一条，来回抖。这不是脚本坏了，是**断言条数与输入状态耦合**：
+
+- `check-all.mjs` 的 `countPass` 只数行首 `PASS`（`/^PASS/gm`），`FAIL` 不计；
+- `tools/baselines.json` 是 `check-all` **收尾时才写**的产物；
+- 而 `doctor.mjs` 的两树比较原本写成
+  `if (drift.length === 0 && extra.length === 0) pass('两处字节一致') else fail('两处不一致')`。
+
+于是「记基线的那一趟」看到的树必然不一致（`baselines.json` 还没同步到 profile 副本），
+那一趟少一条 `PASS`；下一趟树干净了、`PASS` 回来了——基线永远差一，而且**差的方向还取决于先改哪边**。
+
+### 9.160.1 处方
+
+比较本身**永远算一条 `PASS`**（它说的是「比较跑完了」），不一致另起一条 `FAIL`：
+
+```js
+const clean = pair.drift.length === 0 && pair.extra.length === 0
+pass('两处比较跑完了', clean ? `字节一致 / ${pair.count} 个文件`
+  : `${pair.drift.length} 个漂移 / ${pair.extra.length} 个多余（见下，判红在下一行）`)
+if (!clean) { fail('两处不一致', ...); for (const d of pair.drift.slice(0, 12)) console.log(`      drift: ${d}`) }
+```
+
+判红逻辑一个字没动（`makeVerdict` 只看 tag：`FAIL` 就是失败），变的只是**条数**：
+干净树 1 条 `PASS`，漂移树 1 条 `PASS` + 1 条 `FAIL`，`countPass` 两边都读到 1。
+
+### 9.160.2 同一条原则的老判例
+
+- 0.2.55：待补连队列「有排队」与「没排队」都打一条 `PASS`；
+- 0.2.86：备份「建成之前」与「建成之后」都走 `pass`，不走 `warn`；
+- 0.2.103 收尾同理：成本账本在不在都算一条断言。
+
+凡是「有问题才少打一行 / 多打一行」的写法，都会让基线与**运行时刻**耦合。
+反过来也成立：想加一条只在特定状态才出现的断言，就得同时给它一条「另一态」的断言，
+否则这支脚本的条数就是它的状态数。
+
+### 9.160.3 验收与读数
+
+- 手动往 profile 副本里塞一行注释造漂移：`doctor` 两种状态都是 **155 条 `PASS`**，漂移态多一条 `FAIL`（`1 个漂移 / 0 个多余`）；改回去即恢复 `字节一致 / 168 个文件`。
+- `check-all` 三趟：记录基线一趟、同步后干净树两趟，全部 **23/23 通过、2,999 条**。
+- `tools/baselines.json` 的 `version` 与 `counts`、`README.md` 两处「2,999 条断言 / 191s」同源。
+
+**教训**：基线是「这支脚本应该跑出多少条」，它必须只跟**代码**有关，不能跟「此刻磁盘上是什么」有关——
+把状态写进条数，等于把一把会自己伸缩的尺子钉在墙上。
