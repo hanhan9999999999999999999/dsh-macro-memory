@@ -9809,8 +9809,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
-// HC（0.2.163）：覆盖度是内容证据——问句里那些词，这条到底占了几成。
-// 这一组量的是「证据强度」：抬覆盖度能掰过词频堆积，但三池一条不亏；幂次是凸的，得当场测出来。
+// HC（0.2.163 / 口径纠正 0.2.164）：覆盖度是内容证据——问句里那些词，这条到底占了几成。
+// 这一组量的是「证据强度」：抬覆盖度能把分差拉开，但三池一条不亏；幂次只是旋钮，默认线性。
+// 0.2.164 追加一条更狠的：喂给 search 的库行必须过 fromRow——否则 keywords 是 JSON 文本、
+// 引擎三处按数组判空，关键词通道整条静默失效（三版真库读数就是这么错的）。
 {
   const eng = readFileSync(
     join(root, 'vendor', 'meow-memory', 'lib', 'index.js'),
@@ -9818,8 +9820,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'HC 单一来源: 覆盖度的权重与幂次各定义一次，别的模块不许自己写一份「覆盖度算多重」',
-    eng.split('var COORD_W_DEF = 0.5;').length - 1 === 1 &&
-      eng.split('var COORD_POW_DEF = 1.2;').length - 1 === 1 &&
+    eng.split('var COORD_W_DEF = 0.45;').length - 1 === 1 &&
+      eng.split('var COORD_POW_DEF = 1;').length - 1 === 1 &&
       !readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8').includes('COORD_') &&
       !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('COORD_'),
   )
@@ -9839,12 +9841,19 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       !/coverOf\[di\] = Math\.min\(1, cover \/ qIdfSum\)[^\n]*COORD_/.test(eng),
   )
   check(
-    'HC 常量导出: 探针与验收都得能读到真值，不许在测试里另写一份 0.5',
+    'HC 常量导出: 探针与验收都得能读到真值，不许在测试里另写一份 0.45',
     eng.includes('  COORD_W_DEF,\n  COORD_POW_DEF,'),
+  )
+  check(
+    'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
+    eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
+      eng.includes('keywords = JSON.parse(String(r.keywords ?? "[]"))') &&
+      eng.split('Array.isArray(d.keywords)').length - 1 >= 2 &&
+      eng.split('Array.isArray(d?.keywords)').length - 1 >= 1,
   )
   const MeowHC = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
   check(
-    'HC 行为: 受控语料里「高覆盖/低覆盖」的分差随覆盖度权重变宽，幂次再把它拉宽一点',
+    'HC 行为: 受控语料里「高覆盖/低覆盖」的分差随覆盖度权重变宽，幂次再把它拉宽一点（旋钮还活着，但不当默认）',
     (() => {
       const mk = (id, content) => ({ id, level: 'fact', content, title: '', keywords: [], importance: 1, status: 'active' })
       const pad = 'zeta zeta zeta zeta zeta'
@@ -9857,29 +9866,44 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
         return m.get('hv-hi') / m.get('hv-lo')
       }
       const narrow = ratio({ coordW: 0.35, coordPow: 1 })
-      const wide = ratio({ coordW: 0.5, coordPow: 1 })
-      const pow = ratio({ coordW: 0.5, coordPow: 1.2 })
-      return wide > narrow * 1.2 && pow > wide * 1.01
+      const wide = ratio({ coordW: 0.45, coordPow: 1 })
+      const pow = ratio({ coordW: 0.45, coordPow: 1.2 })
+      return wide > narrow * 1.1 && pow > wide * 1.01 && pow < wide * 1.2
     })(),
   )
-  const probe163 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
   check(
-    'HC 自带阴性对照: 探针里五条改坏的路都写死了对照串（回旧口径 / 去幂次 / 改线性 / cover 跟权重 / 常量不导出）',
-    probe163.includes('G22 覆盖度') &&
-      probe163.includes('幂次没让低覆盖罚得更狠') &&
-      probe163.includes('cover 跟着权重变了') &&
-      probe163.includes('只在 keywords 里的压过了正文命中的'),
+    'HC 行为·关键词通道只认数组: 同样的词装成 keywords 数组就能命中，装成 JSON 文本则整条失效（raw row 的坑）',
+    (() => {
+      const base = { id: 'kw-probe', level: 'fact', title: '', content: '这条正文一个问句词都没有。', importance: 2, status: 'active' }
+      const asArray = MeowHC.search('舵轮校准', [{ ...base, keywords: ['舵轮校准'] }], { k: 1 })
+      const asText = MeowHC.search('舵轮校准', [{ ...base, keywords: '["舵轮校准"]' }], { k: 1 })
+      return asArray.length === 1 && asArray[0].cover > 0.9 && (asText.length === 0 || asText[0].cover < 0.01)
+    })(),
   )
-  const int163 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
-  const des163 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  const probe164 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
   check(
-    'HC 有记: INTERNAL 9.170 写清缺口/网格/三好一坏，DESIGN 175 写清「先问占了几成」',
-    int163.includes('## 9.170') &&
-      int163.includes('0.873') &&
-      int163.includes('0.357') &&
-      int163.includes('三好一坏') &&
-      des163.includes('## 175') &&
-      des163.includes('先问「这条答了几成」'),
+    'HC 自带阴性对照: 探针里五条改坏的路都写死了对照串（回旧口径 / 去幂次 / 改线性 / cover 跟权重 / 不解析 keywords）',
+    probe164.includes('G22 覆盖度是证据') &&
+      probe164.includes('幂次旋钮失效') &&
+      probe164.includes('cover 跟着权重变了') &&
+      probe164.includes('只在 keywords 里的压过了正文命中的') &&
+      probe164.includes('取数口径没有「fromRow 解析 keywords」这条线'),
+  )
+  const int164 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des164 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  check(
+    'HC 有记: INTERNAL 9.170 写清缺口/网格/三好一坏，9.171 写清口径纠正与干净读数，DESIGN 175/176 写清两条原则',
+    int164.includes('## 9.170') &&
+      int164.includes('0.873') &&
+      int164.includes('0.357') &&
+      int164.includes('三好一坏') &&
+      int164.includes('## 9.171') &&
+      int164.includes('148/150') &&
+      int164.includes('raw row') &&
+      des164.includes('## 175') &&
+      des164.includes('先问「这条答了几成」') &&
+      des164.includes('## 176') &&
+      des164.includes('读数工具自己也是被测对象'),
   )
 }
 
@@ -10155,8 +10179,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.163（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.163'"),
+    'GV 版本: 代码里是 0.2.164（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.164'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10284,8 +10308,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.163（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.163'"),
+    'GW 版本: 代码里是 0.2.164（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.164'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10432,8 +10456,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.163（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.163'"),
+    'VV 版本: 代码里是 0.2.164（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.164'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10610,9 +10634,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.163（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.163' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.163'"),
+    'GX19 版本已到 0.2.164（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.164' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.164'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10712,10 +10736,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.163',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.163' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.163'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.163'),
+    'VY15 版本三处一致 0.2.164',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.164' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.164'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.164'),
   )
 }
 
@@ -10763,10 +10787,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.163（三处一致）',
-    pkgWz.version === '0.2.163' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.163'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.163'),
+    'WZ9 版本已到 0.2.164（三处一致）',
+    pkgWz.version === '0.2.164' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.164'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.164'),
   )
 }
 
