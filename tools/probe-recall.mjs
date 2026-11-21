@@ -14,7 +14,7 @@
  */
 import { root } from './_root.mjs'
 import { registerHooks } from 'node:module'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -592,6 +592,58 @@ check(
   JSON.stringify(r6Ids(r6Default)) === JSON.stringify(r6Ids(r6Explicit)),
   `${r6Ids(r6Default).length} vs ${r6Ids(r6Explicit).length}`,
 )
+
+// ── R7 语义补位的两条闸（0.2.169）：补几条有上限，折掉的也要报 ─────────────
+// 这条路只在稠密模型在的时候走（`denseRescueWanted`），所以自检机上它是关的：
+// 行为测不了，就测契约——常量、限量、折数累加、报名口径，一样是判据。
+// [macro-fusion 0.2.169] 0.2.154 的闸和 0.2.166 的兜底在本机从来没真跑过一次：
+// 模块加载那行把「包名里有斜杠」当成「路径」，`@huggingface/transformers` 被拼成
+// `file:///@huggingface/transformers`，抛错、被 catch 成 off，一声不响地降级了半年。
+// 所以这里还要钉住那行判据本身：只有「真的像路径」才按路径 import。
+const SRC = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+const countOf = (needle) => SRC.split(needle).length - 1
+check(
+  'R7 补位有上限：DENSE_RESCUE_MAX 存在且只此一处（不封顶时回执从 4.54 条涨到 8.23 条，一条正解换四条陪跑）',
+  SRC.includes('var DENSE_RESCUE_MAX = 2;') && countOf('DENSE_RESCUE_MAX') === 2,
+  `出现 ${countOf('DENSE_RESCUE_MAX')} 次（定义 1 + 引用 1）`,
+)
+check(
+  'R7 上限真在循环里生效：数到上限就 break，真正 push 时才 +1（不是数候选，是数补进来的）',
+  SRC.includes('if (added >= maxRescue) break;') && SRC.includes('added += 1;') && SRC.includes('const maxRescue = Number.isFinite(opts.rescueMax)'),
+  'break / added+=1 / rescueMax 三处都在',
+)
+check(
+  'R7 折数要累加：上游折掉的不能被这一层的 slice 抹平（0.2.167 只报当次这刀，救援路径折了也不说）',
+  SRC.includes('const upstreamTrim = Number(hits.trimmed) || 0;') &&
+    SRC.includes('const dropped = sliced.length - out.length + upstreamTrim;'),
+  'upstreamTrim 与 dropped 累加都在',
+)
+check(
+  'R7 折数按来路分开记：词法尾部折的另记 rescueTrimmed（混进 band 那笔账会报出「折了 11 条」其实只折 1 条）',
+  countOf('"rescueTrimmed"') === 2 && countOf('"rescueAdded"') === 2,
+  `rescueTrimmed ${countOf('"rescueTrimmed"')} 处 / rescueAdded ${countOf('"rescueAdded"')} 处`,
+)
+check(
+  'R7 补位要自己报名：note 里有 rescue 这一句，并且真进了 note 数组（补来的条目分数低，不说明会被当噪声删掉）',
+  countOf('"search.rescue"') === 1 && SRC.includes('relNote, rescueNote, bandNote'),
+  `search.rescue ${countOf('"search.rescue"')} 处`,
+)
+check(
+  'R7 稠密模块加载判据：包名不当路径（这条一错，闸门与兜底会静默降级成 off，谁都看不出来）',
+  SRC.includes("spec.startsWith('file:') || spec.startsWith('.') || spec.startsWith('/') || /^[A-Za-z]:[\\\\/]/.test(spec)") &&
+    !SRC.includes("const asPath = /[\\\\/]/.test(spec)"),
+  'asPath 判据在位，旧的「含斜杠就当路径」已不在',
+)
+// 幂等：救援这条路只按分数补位，不带随机——同一问句两次调用，id 顺序必须逐位相同。
+const callR7 = (tag) => T.get('memory_search').execute({ query: '盘口偏好', k: 10 }, { agent: { session: { header: { cwd: workspace, id: `sess-r7-${tag}` } } } })
+const r7a = (await callR7('a')).hits.map((h) => h.id)
+const r7b = (await callR7('b')).hits.map((h) => h.id)
+check(
+  'R7 同一问句两次调用逐位相同：补位与折数都不带随机（换 session 也一样）',
+  JSON.stringify(r7a) === JSON.stringify(r7b) && r7a.length > 0,
+  `${r7a.length} vs ${r7b.length}`,
+)
+
 
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。

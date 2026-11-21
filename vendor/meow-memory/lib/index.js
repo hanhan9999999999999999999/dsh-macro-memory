@@ -2232,10 +2232,28 @@ function trimByBand(hits, k, opts = {}) {
   // 但切完什么都不说——读者只看到「只给了 5 条」，不知道自己还少看了几条，
   // 也判断不出该不该要全量。挂在数组上的非枚举属性：JSON.stringify 看不见它，
   // Object.keys / for...of 也不受影响，旧调用方一个字节都不用改。
-  const dropped = sliced.length - out.length;
+  // [macro-fusion 0.2.169] 上游已经折过一批时（语义补位那条路会折掉词法尾部），这里要**累加**：
+  // 0.2.167 只报「这一刀折了几条」，上游折的全被这一层的 slice 悄悄抹平——于是救援路径
+  // 明明折了 1 条，回执里一个字都不提。
+  const upstreamTrim = Number(hits.trimmed) || 0;
+  const dropped = sliced.length - out.length + upstreamTrim;
   if (dropped > 0) {
     try {
       Object.defineProperty(out, "trimmed", { value: dropped, enumerable: false, configurable: true });
+    } catch {
+    }
+  }
+  const upstreamRescue = Number(hits.rescueAdded) || 0;
+  if (upstreamRescue > 0) {
+    try {
+      Object.defineProperty(out, "rescueAdded", { value: upstreamRescue, enumerable: false, configurable: true });
+    } catch {
+    }
+  }
+  const upstreamRescueTrim = Number(hits.rescueTrimmed) || 0;
+  if (upstreamRescueTrim > 0) {
+    try {
+      Object.defineProperty(out, "rescueTrimmed", { value: upstreamRescueTrim, enumerable: false, configurable: true });
     } catch {
     }
   }
@@ -4048,9 +4066,11 @@ function searchTool(dir) {
       const statusDownNote = offNow.length === 0
         ? ""
         : safeKeyed("search.statusDown", "这次命中有 {n} 条不是在用的（stale=已完结或被取代，archived=作废）：它们已按 {stale} / {arch} 降权排在后面，别当成现在的结论用；只要在用的就在参数里加 status:\"active\"。", { n: String(offNow.length), stale: String(STATUS_WEIGHT.stale), arch: String(STATUS_WEIGHT.archived) });
-      // [macro-fusion 0.2.155] 闸门挡下来的要单独解释：零命中可能是「库里没有」，也可能是「这一问跟库不沾边」。
-      // [macro-fusion 0.2.160] 弱命中就说清：强命中时这句是空串，一个字节都不多花。
-      const weakNote = gate.fired ? "" : weakNoteOf(ranked, { query });
+      // [macro-fusion 0.2.169] 语义补位要自己报名：那条分数 0.55 的条目长相就是噪声，
+      // 不说是补进来的，读者第一反应是删掉它——而它常常是这次唯一答对的那一条。
+      // 救援这条路径上「弱命中」「回执没给满」两句话说的都是同一件事，一律让位给它（见下）。
+      const rescued = gate.fired ? 0 : Number(ranked.rescueAdded) || 0;
+      const weakNote = gate.fired || rescued > 0 ? "" : weakNoteOf(ranked, { query });
       const gateNote = gate.fired
         ? `这次零命中不是「库里没有」，是这条问句跟记忆库不沾边：${gate.why}；最近的那条是 ${String(gate.nearest ?? '').slice(0, 8)}。真要硬看候选，就把这道闸关掉（环境里设 MEOW_DENSE_ABSTAIN=0），或者把门槛调低（MEOW_DENSE_ABSTAIN=0.3）。`
         : "";
@@ -4063,10 +4083,18 @@ function searchTool(dir) {
       // 回执已经给满 k 条时，收口对读者没有任何影响，一个字符都不花。
       const bandTrimmed = gate.fired ? 0 : Number(ranked.trimmed) || 0;
       const bandShort = bandTrimmed > 0 && hits.length < k;
-      const bandNote = bandShort
+      // [macro-fusion 0.2.169] 补了几条、词法尾部折了几条，由补位这一条 note 一次说清：
+      // 那条分数 0.55 的条目长相就是噪声，不说是补进来的，读者第一反应是删掉它——
+      // 而它常常是这次唯一答对的那一条。救援这条路径上「弱命中」「回执没给满」
+      // 说的都是同一件事，都已经让位给它了（上面 weakNote、下面 bandNote）。
+      const rescueTrimmed = gate.fired ? 0 : Number(ranked.rescueTrimmed) || 0;
+      const rescueNote = rescued > 0
+        ? safeKeyed("search.rescue", "\u8FD9\u6B21\u8BCD\u6CD5\u6CA1\u628A\u63E1\uFF08\u699C\u9996\u53EA\u8986\u76D6\u4E86\u8FD9\u6761\u95EE\u53E5\u7684 {pct}%\uFF09\uFF1A\u5DF2\u6309\u8BED\u4E49\u8865\u4E86 {n} \u6761\uFF08\u4F59\u5F26 \u2265 {cos}\uFF0C\u5206\u6570\u4E0E\u8BCD\u6CD5\u4E0D\u662F\u540C\u4E00\u5957\u91CF\u7EB2\uFF0C\u522B\u62FF\u5206\u6570\u8DDF\u699C\u9996\u6BD4\uFF09\uFF1B\u8BCD\u6CD5\u91CC\u6CA1\u628A\u63E1\u7684 {m} \u6761\u6CA1\u5C55\u5F00\uFF08\u5B83\u4EEC\u672C\u6765\u5C31\u6Cbe\u4E0D\u4E0A\u95EE\u53E5\uFF0C\u5C55\u5F00\u53EA\u4F1A\u628A\u56DE\u6267\u6491\u957F\uFF09\u3002\u8981\u5168\u91CF\u4F20 band_keep: false\u3002", { pct: String(Math.round((Number(ranked[0]?.cover) || 0) * 100)), n: String(rescued), cos: String(DENSE_RESCUE_COS), m: String(rescueTrimmed) })
+        : "";
+      const bandNote = bandShort && rescued === 0
         ? safeKeyed("search.bandTrim", "\u8fd9\u6b21\u56de\u4e86 {n} \u6761\uff0c\u6ca1\u5230\u4f60\u8981\u7684 {k} \u6761\uff1a\u548c\u699c\u9996\u4e0d\u662f\u4e00\u4e2a\u91cf\u7ea7\u7684\u5019\u9009\uff08\u5206\u6570\u4e0d\u5230 {pct}%\uff0c\u591a\u534a\u53ea\u6cbe\u4e00\u4e24\u4e2a\u8bcd\uff09\u6ca1\u5c55\u5f00\uff0c\u76f8\u5173\u5ea6\u5730\u677f\u4e0e\u53bb\u91cd\u4e5f\u4f1a\u6298\u6389\u4e00\u4e9b\u3002\u8981\u8fde\u4f4e\u5206\u5019\u9009\u4e00\u8d77\u770b\uff1a\u4f20 band_keep: false\uff08\u914d\u5408 min_rel: 0 \u624d\u662f\u771f\u5168\u91cf\uff09\u3002", { n: String(hits.length), k: String(k), pct: String(Math.round(IMP_BAND * 100)) })
         : "";
-      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, bandNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
+      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, rescueNote, bandNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {
@@ -8675,7 +8703,14 @@ async function denseLoad(opts = {}) {
     const dir = candidates.find((c) => fs.existsSync(pathMod.join(c, 'config.json')));
     if (dir === void 0) throw new Error('候选目录里没有 config.json：' + candidates.join(' | '));
     const spec = String(opts?.vecModule ?? (typeof process !== 'undefined' ? process.env?.[DENSE_MODULE_ENV] : '') ?? '').trim() || '@huggingface/transformers';
-    const mod = /[\\/]/.test(spec) || spec.startsWith('file:')
+    // [macro-fusion 0.2.169] 「带斜杠就是路径」这个判据把 scoped 包名一起判死了：
+    // `@huggingface/transformers` 里有 "/"，于是被拼成 `file:///@huggingface/transformers`，
+    // 动态 import 报 `File URL path must be absolute`——这个错被 catch 成 state='off'，
+    // 于是稠密通道在本机**从未真正加载过一次**（denseStatus() 一直是 unloaded/off，
+    // 0.2.154 的闸门、0.2.166 的兜底全都在空转，而且一声不响）。
+    // 只有「真的像路径」的才按路径处理：file: 前缀、./ ../ 开头、盘符、或以 / 开头的绝对路径。
+    const asPath = spec.startsWith('file:') || spec.startsWith('.') || spec.startsWith('/') || /^[A-Za-z]:[\\/]/.test(spec);
+    const mod = asPath
       ? await import(spec.startsWith('file:') ? spec : 'file:///' + spec.replace(/\\/g, '/'))
       : await import(spec);
     const pipe = mod?.pipeline ?? mod?.default?.pipeline;
@@ -8931,10 +8966,16 @@ function fuseDenseHits(lexHits, denseRes, docs, opts = {}) {
 var DENSE_RESCUE_COVER = 0.2;
 var DENSE_RESCUE_HEAD = 4;
 var DENSE_RESCUE_COS = 0.45;
+// [macro-fusion 0.2.169] 兜底也要限量：0.2.166 只写了「尾按余弦重排」，没写「补几条」，
+// 于是一路参考 DENSE_TOP_DOCS=30 地往里塞——真库换说池实测回执从 4.54 条 / 943 字
+// 涨到 8.23 条 / 1746 字，等于用一条正解换三四条陪跑。补位是「把话说得下去」，
+// 不是「把库倒出来」：只补稠密序列里最靠前的两条（cos 已过门槛），其余原样。
+var DENSE_RESCUE_MAX = 2;
 
 function rescueByDense(lexHits, denseRes, docs, opts = {}) {
   const head = Number.isFinite(opts.rescueHead) ? Math.max(0, Math.round(opts.rescueHead)) : DENSE_RESCUE_HEAD;
   const minCos = Number.isFinite(opts.rescueCos) ? opts.rescueCos : DENSE_RESCUE_COS;
+  const maxRescue = Number.isFinite(opts.rescueMax) ? Math.max(0, Math.round(opts.rescueMax)) : DENSE_RESCUE_MAX;
   const prefix = lexHits.slice(0, head);
   const seen = new Set(prefix.map((h) => String(h.id)));
   const byId = new Map();
@@ -8942,12 +8983,15 @@ function rescueByDense(lexHits, denseRes, docs, opts = {}) {
   const docById = new Map();
   for (const d of docs) docById.set(String(d.id), d);
   const out = prefix.slice();
+  let added = 0;
   for (const r of denseRes.ranked) {
     // ranked 已按余弦降序：跌破门槛就可以停，别把「不相关的」当兜底塞回来。
     if (!(r.cos >= minCos)) break;
+    if (added >= maxRescue) break;
     const id = String(r.id);
     if (seen.has(id)) continue;
     seen.add(id);
+    added += 1;
     const hit = byId.get(id);
     if (hit !== void 0) { out.push(hit); continue; }
     // 词法一个字都没沾上的条目：从语料里把正文捞回来，不能只回一个 id —— 那条对调用方没用。
@@ -8970,12 +9014,33 @@ function rescueByDense(lexHits, denseRes, docs, opts = {}) {
       ...opts.explain === true ? { explain: { cover: 0, dense: Math.round(r.cos * 1e3) / 1e3, rescue: true, score: Math.round(r.cos * 1e3) / 1e3 } } : {}
     });
   }
-  // 词法里排在 head 之后、稠密没提到的，按原顺序接到末尾——兜底不许把词法找到的东西弄丢。
+  // 词法里排在 head 之后的，默认不再整段接回来：救援这条路径本来就是因为「词法这题没把握」
+  // 才走的，把没把握的尾巴原样铺在后面等于既没修好、又更长。折掉的条数照 0.2.167 的规矩
+  // 挂在 trimmed 上报出来（要全量仍可 band_keep:false）。
+  let tailDropped = 0;
   for (const h of lexHits.slice(head)) {
     const id = String(h.id);
     if (seen.has(id)) continue;
     seen.add(id);
-    out.push(h);
+    if (opts.rescueDropTail === false) { out.push(h); continue; }
+    tailDropped += 1;
+  }
+  if (tailDropped > 0) {
+    try {
+      Object.defineProperty(out, "trimmed", { value: tailDropped, enumerable: false, configurable: true });
+      // 单独记一笔：这刀折的是「词法尾部」，和下面 band 那刀折的「同档之外」不是一回事，
+      // 混在一个数里，note 里就会出现「折了 11 条」却只有 1 条真的被折掉这种自相矛盾。
+      Object.defineProperty(out, "rescueTrimmed", { value: tailDropped, enumerable: false, configurable: true });
+    } catch {
+    }
+  }
+  // 补了几条也要跟着回执走：读者看到一条分数只有 0.55、榜首 14.1 的条目，
+  // 不说明来路就会当成噪声删掉——它恰恰是这次唯一答对的那条。
+  if (added > 0) {
+    try {
+      Object.defineProperty(out, "rescueAdded", { value: added, enumerable: false, configurable: true });
+    } catch {
+    }
   }
   return out;
 }

@@ -964,7 +964,11 @@ if (denseUsable) {
   const meow = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
   const wrong = []
   // 源码：一个来源、非枚举、只在「回执短于 k」时报、有出口
-  if ((meow.match(/Object\.defineProperty\(out, "trimmed"/g) || []).length !== 1) wrong.push('trimmed 的挂载点不唯一')
+  // [macro-fusion 0.2.169] 挂载点变成两处：trimByBand 报「同档之外折了几条」，
+  // rescueByDense 报「词法尾部折了几条」——两笔账来路不同，不能混成一个数。
+  const trimMounts = (meow.match(/Object\.defineProperty\(out, "trimmed"/g) || []).length
+  if (trimMounts !== 2) wrong.push(`trimmed 的挂载点是 ${trimMounts} 处，应为 2（trimByBand + rescueByDense）`)
+  if (!meow.includes('const dropped = sliced.length - out.length + upstreamTrim;')) wrong.push('上游折数没累加（trimByBand 会把救援那刀抹平）')
   if (!meow.includes('enumerable: false')) wrong.push('trimmed 是枚举属性（会漏进 Object.keys / JSON）')
   if (!meow.includes('const bandShort = bandTrimmed > 0 && hits.length < k;')) wrong.push('没有「回执短于 k 才报」的判据')
   if (!meow.includes('search.bandTrim')) wrong.push('回执里没有这句（safeKeyed 键不在）')

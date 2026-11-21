@@ -9613,9 +9613,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       eng.includes('const gap = gapRaw > 1 ? 1 : gapRaw;'),
   )
   check(
-    'HA 强命中零字节: 不弱就返回空串，闸门挡下的那次也不再重复说',
+    'HA 强命中零字节: 不弱就返回空串；闸门挡下的那次、以及语义补位那次也不再重复说（同一件事只说一句）',
     eng.includes('  if (!w.weak) return "";') &&
-      eng.includes('const weakNote = gate.fired ? "" : weakNoteOf(ranked, { query });') &&
+      eng.includes('const weakNote = gate.fired || rescued > 0 ? "" : weakNoteOf(ranked, { query });') &&
       eng.split('weakNoteOf(').length - 1 === 2,
   )
   check(
@@ -9969,7 +9969,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     const occur = (t) => eng.split(t).length - 1
     check(
       'HZ2 源码: 折掉的条数挂在返回数组上（非枚举，不进 JSON / Object.keys），且只在「回执短于 k」时报',
-      occur('Object.defineProperty(out, "trimmed"') === 1 &&
+      // [macro-fusion 0.2.169] 挂载点变成两处：trimByBand 报「同档之外」、rescueByDense 报「词法尾部」。
+      occur('Object.defineProperty(out, "trimmed"') === 2 &&
+        occur('const upstreamTrim = Number(hits.trimmed) || 0;') === 1 &&
         eng.includes('enumerable: false') &&
         eng.includes('const bandShort = bandTrimmed > 0 && hits.length < k;') &&
         occur('search.bandTrim') === 1 &&
@@ -10076,6 +10078,64 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ3 文档锚：9.175 写下 545 条真库读数与 0.30，180 写下「隐形的一层比排错的题更贵」',
       hz3Int.includes('## 9.175') && hz3Int.includes('545') && hz3Int.includes('0.30') &&
         hz3Des.includes('## 180') && hz3Des.includes('隐形的一层'),
+    )
+  }
+
+  // ── HZ4（0.2.169）：稠密那条路第一次真跑起来，四件事一起钉住 ──────────────
+  // 教训（写进 DESIGN 181）：契约断言只能防「代码被删」，防不了「路径根本没走到」。
+  // 所以这里既钉源码判据，也钉「加载判据本身没错」——那条错判让功能静默降级了半年。
+  {
+    const meow169 = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+    const cnt = (needle) => meow169.split(needle).length - 1
+    check(
+      'HZ4 稠密加载判据：只有真的像路径才按路径 import（包名里有斜杠不算路径——这条一错，闸门与兜底会静默降级成 off）',
+      meow169.includes("spec.startsWith('file:') || spec.startsWith('.') || spec.startsWith('/') || /^[A-Za-z]:[\\\\/]/.test(spec)") &&
+        !meow169.includes("const asPath = /[\\\\/]/.test(spec)"),
+    )
+    check(
+      'HZ4 补位有上限：DENSE_RESCUE_MAX = 2，且数的是补进来的不是扫过的候选',
+      cnt('var DENSE_RESCUE_MAX = 2;') === 1 &&
+        meow169.includes('const maxRescue = Number.isFinite(opts.rescueMax)') &&
+        meow169.includes('if (added >= maxRescue) break;') &&
+        meow169.includes('added += 1;'),
+      `DENSE_RESCUE_MAX ${cnt('var DENSE_RESCUE_MAX = 2;')} 处`,
+    )
+    check(
+      'HZ4 账平：上游折掉的要累加（0.2.167 只报当次这刀，救援那刀会被 trimByBand 的 slice 抹平）',
+      meow169.includes('const upstreamTrim = Number(hits.trimmed) || 0;') &&
+        meow169.includes('const dropped = sliced.length - out.length + upstreamTrim;'),
+    )
+    check(
+      'HZ4 来路分开记：词法尾部折的记 rescueTrimmed、补进来的记 rescueAdded，两笔都非枚举透传',
+      cnt('"rescueTrimmed"') === 2 && cnt('"rescueAdded"') === 2 && cnt('enumerable: false') >= 4,
+      `rescueTrimmed ${cnt('"rescueTrimmed"')} / rescueAdded ${cnt('"rescueAdded"')}`,
+    )
+    check(
+      'HZ4 补位要报名：note 里有 search.rescue，且这条路径上弱命中与「没给满」让位（一句话说清，不留三句同义话）',
+      cnt('"search.rescue"') === 1 &&
+        meow169.includes('relNote, rescueNote, bandNote') &&
+        meow169.includes('const weakNote = gate.fired || rescued > 0 ? "" : weakNoteOf(ranked, { query });') &&
+        meow169.includes('const bandNote = bandShort && rescued === 0'),
+    )
+    const recall169 = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
+    const gold169 = readFileSync(join(root, 'tools/probe-gold.mjs'), 'utf8')
+    check(
+      'HZ4 行为探针在：R7 六条契约 + 幂等，G25 的 trimmed 挂载点已按「两处、来路不同」改口径',
+      recall169.includes('R7 补位有上限') &&
+        recall169.includes('R7 上限真在循环里生效') &&
+        recall169.includes('R7 折数要累加') &&
+        recall169.includes('R7 折数按来路分开记') &&
+        recall169.includes('R7 补位要自己报名') &&
+        recall169.includes('R7 稠密模块加载判据') &&
+        recall169.includes('R7 同一问句两次调用逐位相同') &&
+        gold169.includes('trimMounts !== 2'),
+    )
+    const hz4Int = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+    const hz4Des = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    check(
+      'HZ4 文档锚：9.176 写下 8.23 字的陪跑读数与 DENSE_RESCUE_MAX，181 写下「静默降级比错误的默认更贵」',
+      hz4Int.includes('## 9.176') && hz4Int.includes('DENSE_RESCUE_MAX') && hz4Int.includes('8.23') &&
+        hz4Des.includes('## 181') && hz4Des.includes('静默降级'),
     )
   }
 
@@ -10414,8 +10474,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.168（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.168'"),
+    'GV 版本: 代码里是 0.2.169（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.169'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10544,8 +10604,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.168（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.168'"),
+    'GW 版本: 代码里是 0.2.169（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.169'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10692,8 +10752,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.168（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.168'"),
+    'VV 版本: 代码里是 0.2.169（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.169'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10870,9 +10930,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.168（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.168' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.168'"),
+    'GX19 版本已到 0.2.169（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.169' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.169'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10972,10 +11032,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.168',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.168' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.168'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.168'),
+    'VY15 版本三处一致 0.2.169',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.169' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.169'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.169'),
   )
 }
 
@@ -11023,10 +11083,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.168（三处一致）',
-    pkgWz.version === '0.2.168' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.168'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.168'),
+    'WZ9 版本已到 0.2.169（三处一致）',
+    pkgWz.version === '0.2.169' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.169'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.169'),
   )
 }
 
