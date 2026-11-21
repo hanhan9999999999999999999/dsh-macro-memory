@@ -959,6 +959,51 @@ if (denseUsable) {
   )
 }
 
+// ── G25（0.2.167）：收口折掉的条数必须报得出来，且不许污染序列化 ────────────────
+{
+  const meow = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const wrong = []
+  // 源码：一个来源、非枚举、只在「回执短于 k」时报、有出口
+  if ((meow.match(/Object\.defineProperty\(out, "trimmed"/g) || []).length !== 1) wrong.push('trimmed 的挂载点不唯一')
+  if (!meow.includes('enumerable: false')) wrong.push('trimmed 是枚举属性（会漏进 Object.keys / JSON）')
+  if (!meow.includes('const bandShort = bandTrimmed > 0 && hits.length < k;')) wrong.push('没有「回执短于 k 才报」的判据')
+  if (!meow.includes('search.bandTrim')) wrong.push('回执里没有这句（safeKeyed 键不在）')
+  if (!meow.includes('const bandKeep = parsed.band_keep !== false;')) wrong.push('band_keep 开关没接进 rankForSearch 调用')
+  if (!/if \(dropped > 0\) \{/.test(meow)) wrong.push('dropped=0 时也在记账（会报「另有 0 条」）')
+
+  // 行为：账要平（保留 + 折掉 = 关掉时的全量），名次一位不动，JSON 里看不见
+  const docs = fx.docs
+  const q = '时间戳算出来总是差八个小时'
+  const a = V.search(q, docs, { k: 10 })
+  const b = V.search(q, docs, { k: 10, bandKeep: false })
+  const t = Number(a.trimmed) || 0
+  if (a.length + t !== b.length) wrong.push(`账不平：${a.length}+${t} ≠ ${b.length}`)
+  if (JSON.stringify(a).includes('trimmed')) wrong.push('trimmed 漏进了序列化')
+  if ((Number(b.trimmed) || 0) !== 0) wrong.push('关掉收口时还在报折掉的条数')
+  if (t > 0 && a.map((h) => h.id).join() !== b.slice(0, a.length).map((h) => h.id).join()) {
+    wrong.push('保留下来的不是全量排序的前缀（收口动了名次）')
+  }
+  // 边界：k 小于下限时不越界
+  const small = V.search(q, docs, { k: 3 })
+  if (small.length > 3) wrong.push('k=3 越界')
+  // 工具层：参数在 schema 里（统一工具与 meow 原工具都要）
+  const plugin = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
+  if (!plugin.includes('band_keep: { type: \'boolean\'')) wrong.push('统一工具 schema 里没有 band_keep')
+  if (!meow.includes('band_keep: {')) wrong.push('meow 原工具 schema 里没有 band_keep')
+
+  // 文档在案
+  const int167 = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+  const des167 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  if (!(int167.includes('## 9.174') && int167.includes('band_keep') && int167.includes('2.35'))) wrong.push('INTERNAL 9.174 没写读数与出口')
+  if (!(des167.includes('## 179') && des167.includes('欠账'))) wrong.push('DESIGN 179 没写原则')
+
+  check(
+    'G25 回执的欠账要报出来：账平、名次不动、非枚举、有出口',
+    wrong.length === 0,
+    wrong.length === 0 ? `折掉 ${t} 条，保留 ${a.length} 条（关掉收口 ${b.length} 条），名次一位不动` : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

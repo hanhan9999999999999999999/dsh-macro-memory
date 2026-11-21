@@ -5645,10 +5645,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 0.2.126：判据的量换成 schema（parameters + output），整字面量只留粗胖警戒线。
   // 理由：render 去重让 memory_search 字面量长了 1.3 KB，schema 一字节没动——拿字面量当判据，
   // 会把「改实现」误判成「塞描述」，人就开始抬上界。
+  // 0.2.167：memory_search 加了 band_keep，单项上界 6,500 → 7,500（实测 6,852）。
   check(
-    '脚本: 体积判据量的是 schema（24,000 + 单项 6,500），整字面量另有粗胖线 105,000',
+    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 105,000',
     probeSrc.includes('const BUDGET_BYTES = 24000') &&
-      probeSrc.includes('const TOOL_BUDGET = { memory_search: 6500 }') &&
+      probeSrc.includes('const TOOL_BUDGET = { memory_search: 7500 }') &&
       probeSrc.includes('const LITERAL_CEIL = 105000') &&
       probeSrc.includes('ok(sum <= BUDGET_BYTES') &&
       probeSrc.includes("'体积：单项 schema ' + name + ' 没有膨胀'"),
@@ -5962,7 +5963,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const searchDefSrc = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
   check(
     '跨层重复: 融合层三处参数白名单都带 dedupe（不然 macro 侧传下去也被丢掉），schema 也有',
-    (searchDefSrc.match(/'dedupe'\]/g) || []).length >= 3 && /dedupe: \{ type: 'boolean'/.test(searchDefSrc),
+    (searchDefSrc.match(/'dedupe'/g) || []).length >= 3 && /dedupe: \{ type: 'boolean'/.test(searchDefSrc),
   )
 }
 
@@ -9959,6 +9960,58 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
   }
 
+  // ── HZ2（0.2.167）：收口折掉的条数要报得出来（欠账不许静默）───────────────
+  // 0.2.165 那道刀一直在切，切完什么都不说：读者只看到「只给了 5 条」。
+  // 三件事必须同时成立：账平（保留 + 折掉 = 关掉时的全量）、名次一位不动、有不花钱的出口。
+  {
+    const occur = (t) => eng.split(t).length - 1
+    check(
+      'HZ2 源码: 折掉的条数挂在返回数组上（非枚举，不进 JSON / Object.keys），且只在「回执短于 k」时报',
+      occur('Object.defineProperty(out, "trimmed"') === 1 &&
+        eng.includes('enumerable: false') &&
+        eng.includes('const bandShort = bandTrimmed > 0 && hits.length < k;') &&
+        occur('search.bandTrim') === 1 &&
+        eng.includes('if (dropped > 0) {'),
+    )
+    check(
+      'HZ2 出口: band_keep 两处 schema（统一工具 + meow 原工具）+ 一路接进 rankForSearch，缺一处就等于没有出口',
+      eng.includes('band_keep: {') &&
+        readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8').includes("band_keep: { type: 'boolean'") &&
+        eng.includes('const bandKeep = parsed.band_keep !== false;') &&
+        eng.includes('{ k: docs.length, explain, bandKeep }'),
+    )
+    const MeowHZ2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const hz2Corpus = []
+    const d = (id, c, kws) => hz2Corpus.push({ id, level: 'fact', content: c, title: '', keywords: kws || [], importance: 2, status: 'active' })
+    d('s0', '舵轮校准要先把液压油温升到四十度，再逐格对零位。', ['舵轮', '校准', '零位'])
+    d('s1', '舵轮校准的零位漂移多半来自编码器线松了。', ['舵轮', '漂移', '零位'])
+    d('s2', '舵轮液压油的更换周期是一年。', ['舵轮', '液压油'])
+    d('s3', '压载水的排放记录必须保留三年。', ['压载水'])
+    d('s4', '甲板照明在夜航时降到最低档。', ['照明'])
+    const q2 = '舵轮 校准 零位'
+    const keep = MeowHZ2.search(q2, hz2Corpus, { k: 10 })
+    const full = MeowHZ2.search(q2, hz2Corpus, { k: 10, bandKeep: false })
+    const trimmed = Number(keep.trimmed) || 0
+    check(
+      'HZ2 账平: 保留 + 折掉 = 关掉收口时的全量，且保留的必须是全量排序的前缀（收口不许动名次）',
+      keep.length + trimmed === full.length &&
+        (trimmed === 0 || keep.map((h) => h.id).join(',') === full.slice(0, keep.length).map((h) => h.id).join(',')) &&
+        (Number(full.trimmed) || 0) === 0,
+      `保留 ${keep.length} + 折掉 ${trimmed} = ${full.length}`,
+    )
+    check(
+      'HZ2 不污染: trimmed 是数组上的非枚举属性——JSON.stringify 里看不见，旧调用方一个字节都不用改',
+      !JSON.stringify(keep).includes('trimmed') && !Object.keys(keep).includes('trimmed'),
+    )
+    const hz2Int = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+    const hz2Des = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    check(
+      'HZ2 文档锚：9.174 写下工具回执实际 2.35 条与 band_keep 出口，179 写下「欠账要报」',
+      hz2Int.includes('## 9.174') && hz2Int.includes('band_keep') && hz2Int.includes('2.35') &&
+        hz2Des.includes('## 179') && hz2Des.includes('欠账'),
+    )
+  }
+
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10181,7 +10234,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const meowMod = await import('./vendor/meow-memory/lib/index.js')
   check('GA 源码: 下限裁完先回看接班者，再交给折叠', meowSrc.includes('const lifted = minRel > 0 ? liftSuccessors(aboveFloor, cutRows) : [];') && meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(floorKept, byId)'))
   check('GA 源码: 认不出是谁就不提（同前缀多条、开头对不上 → 不动）', meowSrc.includes('function liftSuccessors(shown, cut)') && meowSrc.includes('if (sure.length !== 1) continue;'))
-  check('GA 源码: 提上来的有上限，且要进回执', meowSrc.includes('var LIFT_MAX = 3;') && meowSrc.includes('search.floorLift') && meowSrc.includes('relNote, liftNote,'))
+  check('GA 源码: 提上来的有上限，且要进回执', meowSrc.includes('var LIFT_MAX = 3;') && meowSrc.includes('search.floorLift') && /relNote,[^)]*liftNote,/.test(meowSrc))
   const gaShown = [{ id: 'old11111-1', content: '口径（已被取代：new22222「新说法正文」，2026-11-21）' }]
   const gaCut = [{ id: 'new22222-9', content: '新说法正文' }]
   check('GA 行为: 被裁的接班者提上来', meowMod.liftSuccessors(gaShown, gaCut).length === 1 && meowMod.liftSuccessors(gaShown, gaCut)[0].id === 'new22222-9')
@@ -10294,8 +10347,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.166（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.166'"),
+    'GV 版本: 代码里是 0.2.167（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.167'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10424,8 +10477,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.166（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.166'"),
+    'GW 版本: 代码里是 0.2.167（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.167'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10572,8 +10625,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.166（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.166'"),
+    'VV 版本: 代码里是 0.2.167（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.167'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10750,9 +10803,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.166（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.166' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.166'"),
+    'GX19 版本已到 0.2.167（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.167' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.167'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10852,10 +10905,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.166',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.166' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.166'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.166'),
+    'VY15 版本三处一致 0.2.167',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.167' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.167'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.167'),
   )
 }
 
@@ -10903,10 +10956,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.166（三处一致）',
-    pkgWz.version === '0.2.166' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.166'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.166'),
+    'WZ9 版本已到 0.2.167（三处一致）',
+    pkgWz.version === '0.2.167' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.167'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.167'),
   )
 }
 

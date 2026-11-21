@@ -9957,3 +9957,50 @@ return trimByBand(fuseDenseHits(lex, denseRes, docs, opts), opts.k, opts);
 **代价**：预热是显式的（`denseWarm`），这是搜索之外的一次性开销；没有模型时整条路径一次都不触发，
 回执与 0.2.165 逐位相同（`denseStatus().state === 'off'`）。**这个功能只在装了模型的环境里存在**，
 没装就当它不存在——可选层不许在缺席时改变任何东西。
+
+### 9.174 回执的欠账要报出来，并且要有一个关得掉的出口（0.2.167）
+
+**问题**：0.2.165 的「按置信档收口」上线两版，一直在切回执，切完一声不响。读者看到「只给了 5 条」，
+既不知道同档之外还有多少条，也不知道该不该要全量——这正是 rules 里
+「任何对用户输入的上限都不许做成静默截断」那一条。而这次把两条路的长度都量出来之后，
+还发现了一件比「没报」更值得写下来的事。
+
+**第一件事：两条路的回执长度差一倍**（`E:\Temp\ps183.mjs`，真库 540 条，20 个关键词问句，
+真调 `memory_search.execute`，k=10）：
+
+| 路径 | 平均条数 |
+| --- | --- |
+| 工具回执（默认） | **2.35** |
+| 工具回执 `band_keep:false` | 3.05 |
+| 工具回执 `band_keep:false` + `min_rel:0` | 9.70 |
+| API `search(q, docs, {k:10})` | 4.97 |
+
+工具回执上叠着三把刀：置信档收口（2.35 → 3.05 的那 0.7 条）、**相关度地板 `min_rel=0.35`
+（3.05 → 9.70 的主体）**、近重复折叠。**主导的是地板，不是 band 收口**——这纠正了 9.172
+「回执从 9.80 收到 4.97」在工具路径上的归因：那里根本没有 9.80 条可收，收口只占其中的 0.7 条。
+（下一步的候选因此变了：要调的是 `min_rel` 的默认值，不是再动 band。）
+
+**做法**：
+
+① `trimByBand` 记账——`const dropped = sliced.length - out.length;`，>0 时挂成
+`Object.defineProperty(out, "trimmed", { value: dropped, enumerable: false, configurable: true })`。
+**非枚举是有意的**：`JSON.stringify`、`Object.keys`、`for...of` 全都看不见它，
+`bandKeep:false` 与旧版调用方的逐位相同性因此一个字都不用改（HZ/HY 那些 `JSON.stringify(a) === JSON.stringify(b)`
+的断言一条没动）。
+
+② 工具回执只报**一种**情况：`bandShort = bandTrimmed > 0 && hits.length < k`。
+候选池本身有多大（内部排序拿的是 `{k: docs.length}` 全量，500 上下）不印给读者——
+那只说明库大，不说明少看了什么。第一版把 78、500 这种数字直接印出来，读感是噪声，
+量完工具口径（单题最多的「折掉」是 256 条）当场改成现在这样。回执给满 k 条时一个字符都不花。
+
+③ 出口 `band_keep: false` 写进两处 schema（统一工具 `lib/macro/defs/search.js` 与 meow 原工具），
+并一路接进 `rankForSearch` 的 opts。真要全量还得配 `min_rel: 0`——这句话写进回执本身，
+不指望读者自己把两把刀都想到。
+
+**读数（`E:\Temp\ps181.mjs`，真库 150 问，k=10）**：默认 hit@1 149 / hit@3 150 / hit@5 150、
+条目均值 4.97，**148/150 题报出收口、合计 731 条、单题最多 5 条**；`bandKeep:false` 同名次、
+均值 9.85、报数 0。账平：每题的「保留 + 折掉」都等于关掉时的条数（脚本内置断言，无一例外）。
+`JSON.stringify` 里查不到 `trimmed`。
+
+**代价**：`memory_search` 的 schema 6,852 B（单项上界 6,500 → 7,500，按老规矩只给实测值 +9.5%）；
+回执多一行，且只在回执短于 k 时出现。

@@ -2228,6 +2228,17 @@ function trimByBand(hits, k, opts = {}) {
     delete h._band;
     delete h._dense;
   }
+  // [macro-fusion 0.2.167] 折掉的条数要跟着回执走：0.2.165 那道收口一直在切，
+  // 但切完什么都不说——读者只看到「只给了 5 条」，不知道自己还少看了几条，
+  // 也判断不出该不该要全量。挂在数组上的非枚举属性：JSON.stringify 看不见它，
+  // Object.keys / for...of 也不受影响，旧调用方一个字节都不用改。
+  const dropped = sliced.length - out.length;
+  if (dropped > 0) {
+    try {
+      Object.defineProperty(out, "trimmed", { value: dropped, enumerable: false, configurable: true });
+    } catch {
+    }
+  }
   return out;
 }
 
@@ -3773,7 +3784,12 @@ function searchTool(dir) {
         context: { type: "integer", minimum: 0, maximum: 3, default: 0, description: T("memory_search.param.context") },
         min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35, description: T("memory_search.param.min_rel") },
         dedupe: { type: "boolean", default: true, description: T("memory_search.param.dedupe") },
-        explain: { type: "boolean", default: false, description: T("memory_search.param.explain") }
+        explain: { type: "boolean", default: false, description: T("memory_search.param.explain") },
+        band_keep: {
+          type: "boolean",
+          default: true,
+          description: "\u9ed8\u8ba4\u53ea\u7ed9\u548c\u699c\u9996\u540c\u4e00\u91cf\u7ea7\u7684\u547d\u4e2d\uff08\u5206\u6570\u4e0d\u5230\u699c\u9996 85% \u7684\u6574\u6279\u6536\u53e3\uff09\uff1b\u4f20 false = \u8fde\u4f4e\u5206\u5019\u9009\u4e00\u5e76\u5c55\u5f00\u3002"
+        }
       }
     },
     output: {
@@ -3958,7 +3974,10 @@ function searchTool(dir) {
       }));
       // [macro-fusion 0.2.154] 稠密能上就上：模型 / 依赖缺一个立刻退回词法，
       // 答案与 0.2.153 逐位相同（这条由 probe-cost 的 C5 快照守着）。
-      const ranked = await rankForSearch(query, docs, { k: docs.length, explain });
+      // [macro-fusion 0.2.167] band_keep：默认按置信档收口（0.2.165 的刀），
+      // 但收了几条必须报得出来（见下面 bandNote），并且要有一个显式出口能关掉它。
+      const bandKeep = parsed.band_keep !== false;
+      const ranked = await rankForSearch(query, docs, { k: docs.length, explain, bandKeep });
       // [macro-fusion 0.2.155] 闸门在排序之后、裁剪之前：命中长得像，不等于问的是库里的事。
       const gate = await denseGate(query, docs, { k: docs.length, explain });
       if (gate.fired) ranked.length = 0;
@@ -4027,7 +4046,19 @@ function searchTool(dir) {
       const gateNote = gate.fired
         ? `这次零命中不是「库里没有」，是这条问句跟记忆库不沾边：${gate.why}；最近的那条是 ${String(gate.nearest ?? '').slice(0, 8)}。真要硬看候选，就把这道闸关掉（环境里设 MEOW_DENSE_ABSTAIN=0），或者把门槛调低（MEOW_DENSE_ABSTAIN=0.3）。`
         : "";
-      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
+      // [macro-fusion 0.2.167] 收口折掉的条数要报出来。0.2.165 那道刀一直在切，
+      // 但切完一声不响：读者看到「只给了 5 条」，既不知道同档之外还有 17 条，
+      // 也判断不出该不该要全量——这正是 rules 里「上限不许静默截断」那一条。
+      // 闸门挡下来时 ranked 已被清空，那是「不沾边」不是「收口」，不能算在这笔账上。
+      // [macro-fusion 0.2.167] 只报「回执短于你要的 k」这一种情况：候选池本身有多大
+      // （这次内部排序拿了 {k: docs.length} 条全量）不该印给读者——那只说明库大，不说明少看了什么。
+      // 回执已经给满 k 条时，收口对读者没有任何影响，一个字符都不花。
+      const bandTrimmed = gate.fired ? 0 : Number(ranked.trimmed) || 0;
+      const bandShort = bandTrimmed > 0 && hits.length < k;
+      const bandNote = bandShort
+        ? safeKeyed("search.bandTrim", "\u8fd9\u6b21\u56de\u4e86 {n} \u6761\uff0c\u6ca1\u5230\u4f60\u8981\u7684 {k} \u6761\uff1a\u548c\u699c\u9996\u4e0d\u662f\u4e00\u4e2a\u91cf\u7ea7\u7684\u5019\u9009\uff08\u5206\u6570\u4e0d\u5230 {pct}%\uff0c\u591a\u534a\u53ea\u6cbe\u4e00\u4e24\u4e2a\u8bcd\uff09\u6ca1\u5c55\u5f00\uff0c\u76f8\u5173\u5ea6\u5730\u677f\u4e0e\u53bb\u91cd\u4e5f\u4f1a\u6298\u6389\u4e00\u4e9b\u3002\u8981\u8fde\u4f4e\u5206\u5019\u9009\u4e00\u8d77\u770b\uff1a\u4f20 band_keep: false\uff08\u914d\u5408 min_rel: 0 \u624d\u662f\u771f\u5168\u91cf\uff09\u3002", { n: String(hits.length), k: String(k), pct: String(Math.round(IMP_BAND * 100)) })
+        : "";
+      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, bandNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {

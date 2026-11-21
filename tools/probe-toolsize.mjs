@@ -125,7 +125,10 @@ const NEBULA_TOOLS = [
 // 实测（0.2.126）：schema 合计 21,973 B（meow 16,415 + 星图 5,558），memory_search 单项 5,927 B。
 // 上界留 ~9% 余量抓「悄悄长胖」，不是等于实测值。
 const BUDGET_BYTES = 24000
-const TOOL_BUDGET = { memory_search: 6500 }
+// [0.2.167] 6500 → 7500：memory_search 新增 band_keep（一整个参数：类型 + 默认值 + 描述，
+// 统一工具与 meow 原工具各一份），实测 5,927 → 6,852 B。抬上界按老规矩只给实测值加 ~9.5%，
+// 不按「反正还没到合计线」随口放宽——上界贴着实测值才抓得住下一次悄悄长胖。
+const TOOL_BUDGET = { memory_search: 7500 }
 // 整字面量只当粗胖警戒线（含 render 闭包、局部引用）：真有人塞一段长代码时它也拦得住。
 const LITERAL_CEIL = 105000
 
