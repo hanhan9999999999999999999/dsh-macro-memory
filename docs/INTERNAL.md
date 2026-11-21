@@ -9387,7 +9387,7 @@ function hintWordsOf(hit, query) { ... } // 从榜首 keywords 里挑 2–3 个�
 
 ### 9.167.4 验收：G19 一条聚合 + 三条阴性对照
 
-`tools/probe-gold.mjs` 新增 **G19**（一条聚合，11 项判据）：最弱那条必须说、强命中必须闭嘴（零字节）、版本号问句必须 `why:"anchor"`、`cover` 全在 0..1 且 explain 里点得出来、阈值可被 `opts.cover/opts.gap` 覆盖（同一个问句门槛放到极低就闭嘴、极高就说）、抽词三种 keywords 写法（数组 / JSON 串 / 逗号串）结果一致且剔数字剔问句原词、句长上限 200 字、不许每条都说。
+`tools/probe-gold.mjs` 新增 **G19**（一条聚合，10 项判据）：最弱那条必须说、强命中必须闭嘴（零字节）、版本号问句必须 `why:"anchor"`、`cover` 全在 0..1 且 explain 里点得出来、阈值可被 `opts.cover/opts.gap` 覆盖（同一个问句门槛放到极低就闭嘴、极高就说）、抽词三种 keywords 写法（数组 / JSON 串 / 逗号串）结果一致且剔数字剔问句原词、句长上限 200 字、不许每条都说。
 
 三条阴性对照（`E:\Temp\neg160.py`，改一处跑一次、跑完自动还原）全部变红：
 
