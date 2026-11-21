@@ -59,7 +59,7 @@ II. As ferramentas de memória que você tem
 - query é obrigatória: passe palavras-chave ou uma frase (ex.: "implantação do plugin de memória"). Nunca pesquise com query vazia.
 - Retorna uma visão de metadados, não o texto completo; use as palavras-chave para julgar qual entrada tem o que você precisa, depois leia a entrada inteira com memory_read.
 - Top 10 padrão = as 5 primeiras puramente por relevância (nada excluído, incluindo entradas já injetadas/pesquisadas/criadas nesta sessão) + 5 mais que pulam entradas já injetadas/já pesquisadas.
-- Pesquisa fact/lesson/topic/rules por padrão;
+- Pesquisa fact/lesson/topic/rules/user por padrão (o level user guarda as preferências e o ambiente do dono);
 - Você pode restringi-la a um level/project/status (múltipla escolha, separados por vírgula).
 - Você pode restringir por tempo, ex.: days: 30 = apenas entradas criadas nos últimos 30 dias.
 - Top k padrão = 10; k pode ser 1-50.

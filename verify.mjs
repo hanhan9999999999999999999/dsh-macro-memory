@@ -2736,7 +2736,7 @@ function makeHostCtx() {
     /const levelAsked = typeof parsed\.level === "string"/.test(meowIndex48) &&
       /const levelBad = levelAsked\.filter\(\(s\) => !LEVELS\.includes\(s\)\)/.test(meowIndex48) &&
       /const levelValid = levelAsked\.filter\(\(s\) => LEVELS\.includes\(s\)\)/.test(meowIndex48) &&
-      /const levels = levelValid\.length > 0 \? levelValid : levelAsked\.length === 0 \? \["fact", "lesson", "topic", "rules"\] : \[\]/.test(
+      /const levels = levelValid\.length > 0 \? levelValid : levelAsked\.length === 0 \? \["fact", "lesson", "topic", "rules", "user"\] : \[\]/.test(
         meowIndex48,
       ),
     'levelAsked / levelBad / levelValid',
@@ -2752,9 +2752,10 @@ function makeHostCtx() {
   // 老话在那行模板串里是 \uXXXX 转义的，断言前先还原（0.2.48 的教训：别把中文写成转义再去 includes）。
   const unesc48 = (s) => s.replace(/\\u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
   check(
-    'search: 没给 level 的老话一个字不变（本次零命中：默认检索范围是 fact/lesson/topic/rules）',
+    'search: 没给 level 的零命中老话在（0.2.168 起默认范围含 user：fact/lesson/topic/rules/user，点名的只剩 soul 与 project）',
     /hits\.length === 0 && !explicitLevels && !statusDead(?: && !gate\.fired)? \? `\$\{BASE_NOTE\}/.test(meowIndex48) &&
-      unesc48(meowIndex48).includes('本次零命中：默认检索范围是 fact/lesson/topic/rules'),
+      unesc48(meowIndex48).includes('本次零命中：默认检索范围是 fact/lesson/topic/rules/user') &&
+      unesc48(meowIndex48).includes('soul 与 project 层不参与关键词检索'),
     '原有默认支',
   )
   check(
@@ -5816,7 +5817,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
 // ── A86. 检索的相关度下限：尾巴要收、但不能把结果收空（0.2.86）──
 // 30 条语料实测的分数断崖：榜首 14.08 分时，第 3 条起只有 0.33——那些是「只沾一个词」的条目，
-// 照样占 k 名额、照样被当成相关读。所以给 memory_search 加 min_rel（默认 0.35）。
+// 照样占 k 名额、照样被当成相关读。所以给 memory_search 加 min_rel（0.2.86 起默认 0.35，
+// 0.2.168 起 0.30：真库难句上 0.35 会砍到正解，见 INTERNAL 9.175）。
 // 这里钉三件事：下限真的在滤、排序第一位永远不被滤掉、收掉的东西要说出来并且能关掉。
 {
   const meowSrc = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
@@ -5824,8 +5826,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const recallSrc = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
 
   check(
-    '下限: memory_search 有 min_rel（默认 0.35、限 0–1、夹边界时说清按多少算）',
-    meowSrc.includes('min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35') &&
+    '下限: memory_search 有 min_rel（0.2.168 起默认 0.30、限 0–1、夹边界时说清按多少算）',
+    meowSrc.includes('min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.3') &&
       meowSrc.includes('const minRel = relRaw !== void 0') &&
       meowSrc.includes('const relClamped = relGiven && (relRaw === void 0 || relRaw < 0 || relRaw > 1)') &&
       meowSrc.includes('不在 0–1 里'),
@@ -10012,6 +10014,71 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
   }
 
+  // ── HZ3（0.2.168）：默认检索范围要含 user，soul / project 仍要显式 ────────────
+  {
+    const meowHZ3 = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+    const pluginHZ3 = readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8')
+    const toolsZh = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/zh/tools.md'), 'utf8')
+    const toolsEn = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/en/tools.md'), 'utf8')
+    const toolsPt = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/pt-br/tools.md'), 'utf8')
+    const guideZh = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/zh/system-guide.md'), 'utf8')
+    const guideEn = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/en/system-guide.md'), 'utf8')
+    const guidePt = readFileSync(join(root, 'vendor/meow-memory/lib/prompts/pt-br/system-guide.md'), 'utf8')
+
+    check(
+      'HZ3 默认层: 默认检索范围含 user（主人的偏好就在这层），且这里只有一个来源',
+      (meowHZ3.match(/\? \["fact", "lesson", "topic", "rules", "user"\] : \[\]/g) || []).length === 1 &&
+        !meowHZ3.includes('["fact", "lesson", "topic", "rules"]'),
+    )
+    check(
+      'HZ3 边界: soul 与 project 没被顺手塞进默认（实测掺进来换说池首位 5 → 4）',
+      !/\? \["fact", "lesson", "topic", "rules", "user", "(soul|project)"\]/.test(meowHZ3) &&
+        !meowHZ3.includes('"rules", "user", "soul"') &&
+        !meowHZ3.includes('"rules", "user", "project"'),
+    )
+    check(
+      'HZ3 地板: min_rel 默认 0.30（execute 内联值与 schema default 两处同源，缺一处就等于没改）',
+      (meowHZ3.match(/const minRel = relRaw !== void 0 \? Math\.max\(0, Math\.min\(1, relRaw\)\) : 0\.3;/g) || []).length === 1 &&
+        meowHZ3.includes('min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.3') &&
+        !meowHZ3.includes('Math.max(0, Math.min(1, relRaw)) : 0.35'),
+    )
+    check(
+      'HZ3 口径一致: 三语 tools.md / system-guide.md 与统一工具 schema 都写了同一个默认范围（口径不一致比没写更糟）',
+      toolsZh.includes('默认 fact,lesson,topic,rules,user') &&
+        toolsEn.includes('default fact,lesson,topic,rules,user') &&
+        toolsPt.includes('padrão fact,lesson,topic,rules,user') &&
+        guideZh.includes('fact/lesson/topic/rules/user') &&
+        guideEn.includes('fact/lesson/topic/rules/user') &&
+        guidePt.includes('fact/lesson/topic/rules/user') &&
+        pluginHZ3.includes('默认 fact,lesson,topic,rules,user'),
+    )
+    check(
+      'HZ3 零命中老话跟着改: 点名的只剩 soul 与 project（边界从「不说的默认」变成「说清的不查」）',
+      meowHZ3.includes('\\u9ED8\\u8BA4\\u68C0\\u7D22\\u8303\\u56F4\\u662F fact/lesson/topic/rules/user') &&
+        meowHZ3.includes('soul \\u4E0E project \\u5C42\\u4E0D\\u53C2\\u4E0E\\u5173\\u952E\\u8BCD\\u68C0\\u7D22'),
+    )
+    check(
+      'HZ3 行为探针在: R6 五条（默认含 user / 关掉就一条不剩 / 边界没破 / 显式查得到 / 默认值逐位相同）',
+      (() => {
+        const recallHZ3 = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
+        return (
+          recallHZ3.includes('R6 默认检索范围含 user') &&
+          recallHZ3.includes('R6 阴性对照：显式只查 fact/lesson/topic/rules') &&
+          recallHZ3.includes('R6 边界没破') &&
+          recallHZ3.includes('R6 只是不默认，不是查不到') &&
+          recallHZ3.includes('R6 默认值就是这两个数')
+        )
+      })(),
+    )
+    const hz3Int = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+    const hz3Des = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    check(
+      'HZ3 文档锚：9.175 写下 545 条真库读数与 0.30，180 写下「隐形的一层比排错的题更贵」',
+      hz3Int.includes('## 9.175') && hz3Int.includes('545') && hz3Int.includes('0.30') &&
+        hz3Des.includes('## 180') && hz3Des.includes('隐形的一层'),
+    )
+  }
+
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10347,8 +10414,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.167（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.167'"),
+    'GV 版本: 代码里是 0.2.168（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.168'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10477,8 +10544,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.167（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.167'"),
+    'GW 版本: 代码里是 0.2.168（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.168'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10625,8 +10692,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.167（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.167'"),
+    'VV 版本: 代码里是 0.2.168（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.168'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10803,9 +10870,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.167（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.167' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.167'"),
+    'GX19 版本已到 0.2.168（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.168' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.168'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10905,10 +10972,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.167',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.167' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.167'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.167'),
+    'VY15 版本三处一致 0.2.168',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.168' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.168'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.168'),
   )
 }
 
@@ -10956,10 +11023,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.167（三处一致）',
-    pkgWz.version === '0.2.167' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.167'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.167'),
+    'WZ9 版本已到 0.2.168（三处一致）',
+    pkgWz.version === '0.2.168' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.168'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.168'),
   )
 }
 

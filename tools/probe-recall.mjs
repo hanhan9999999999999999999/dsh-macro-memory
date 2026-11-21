@@ -212,7 +212,7 @@ const r5Default = await call('memory_search', { query: '部署 备份', k: 10, e
 const hitsR5 = r5Default.hits
 const noteR5 = String(r5Default.note ?? '')
 const relOf = (h) => (hitsR5[0]?.score ? Math.round((h.score / hitsR5[0].score) * 100) / 100 : 0)
-check('R5 默认按 0.35 收窄：只沾「备份」一个词的 tail1 没展开', !hitsR5.some((h) => h.id === ids.tail1), hitsR5.map((h) => `${h.id.slice(0, 6)}@${relOf(h)}`).join(' '))
+check('R5 默认按 0.30 收窄：只沾「备份」一个词的 tail1 没展开', !hitsR5.some((h) => h.id === ids.tail1), hitsR5.map((h) => `${h.id.slice(0, 6)}@${relOf(h)}`).join(' '))
 check('R5 收窄要说出来：note 报了条数并给了 min_rel=0 的出口', /另有 \d+ 条/.test(noteR5) && noteR5.includes('min_rel=0'), noteR5.replace(/\n/g, ' / ').slice(0, 120))
 const r5All = await call('memory_search', { query: '部署 备份', k: 10, min_rel: 0 })
 const hitsAll = r5All.hits
@@ -544,6 +544,53 @@ check(
   'VT7 剔完只剩一个内容词照样打分：只有一个真词命中时不许空手（那是「沾了一点」，不是噪声）',
   V.search('publishTimestamp 该写什么值', [mkDoc('vt-p', 'publishTimestamp 该写这个字段，别写时间。', 's-vt-p')], { k: 3 }).length === 1,
   `${V.search('publishTimestamp 该写什么值', [mkDoc('vt-p', 'publishTimestamp 该写这个字段，别写时间。', 's-vt-p')], { k: 3 }).length} 条`,
+)
+
+// ── R6（0.2.168）默认层要含 user：主人的偏好就在这一层，问「我习惯怎样」必须想起来 ──────────
+// 背景：真库 545 条里 user 层只有 8 条，而这 8 条在工具路径上 8 题全漏（API 层每题都是第 1 名——
+// 说明不是排序问题，是根本没进候选池）。soul 与 project 仍不默认：前者是 AI 自身人格，
+// 后者放整个项目的概览，实测掺进来会抢首位。
+const R6 = [
+  { key: 'r6u', level: 'user', content: '盘口偏好：收尾先给读数再说话，每版都要能复核的数字。', keywords: ['盘口偏好', '读数', '收尾'] },
+  { key: 'r6s', level: 'soul', content: '盘口偏好的语气：句首用海洋意象起头，别生硬。', keywords: ['盘口偏好', '语气', '鲸鱼娘'] },
+  { key: 'r6j', level: 'project', content: '盘口偏好项目：这一轮只做检索，别的先不碰。', keywords: ['盘口偏好', '项目', '检索'] },
+  { key: 'r6f', level: 'fact', content: '盘口偏好的记账口径：按条数算，不按字数。', keywords: ['盘口偏好', '记账', '条数'] },
+]
+for (const d of R6) {
+  const r = await call('memory_remember', { content: d.content, project: '召回探针', keywords: d.keywords, importance: 1, level: d.level })
+  ids[d.key] = r.id
+}
+// 每条断言用独立 session id：seen 会把「本会话已给过」的条目从第 6 条之后剔掉，混着量会串味。
+const callR6 = (args, tag) => T.get('memory_search').execute(args, { agent: { session: { header: { cwd: workspace, id: `sess-r6-${tag}` } } } })
+const R6Q = '盘口偏好'
+const r6Default = await callR6({ query: R6Q, k: 10 }, 'def')
+const r6Ids = (r) => (r.hits || []).map((h) => String(h.id))
+const r6Has = (r, k) => r6Ids(r).some((id) => id.startsWith(ids[k]))
+check(
+  'R6 默认检索范围含 user：主人的偏好条目默认就该被召回（0.2.168 之前它是隐形的一层）',
+  r6Has(r6Default, 'r6u'),
+  `${r6Ids(r6Default).length} 条`,
+)
+check(
+  'R6 阴性对照：显式只查 fact/lesson/topic/rules 时那条 user 条目一条都不剩（默认含它是真在起效）',
+  !r6Has(await callR6({ query: R6Q, k: 10, level: 'fact,lesson,topic,rules' }, 'nouser'), 'r6u'),
+  `关掉后 ${r6Ids(await callR6({ query: R6Q, k: 10, level: 'fact,lesson,topic,rules' }, 'nouser')).length} 条`,
+)
+check(
+  'R6 边界没破：soul 与 project 仍不进默认（它们是「要查请显式说」的两层）',
+  !r6Has(r6Default, 'r6s') && !r6Has(r6Default, 'r6j'),
+  `默认命中：${r6Ids(r6Default).map((id) => id.slice(0, 6)).join(',')}`,
+)
+check(
+  'R6 只是不默认，不是查不到：显式传 level:soul 时那条语气条目照样回来',
+  r6Has(await callR6({ query: R6Q, k: 10, level: 'soul' }, 'soul'), 'r6s'),
+  `${r6Ids(await callR6({ query: R6Q, k: 10, level: 'soul' }, 'soul2')).length} 条`,
+)
+const r6Explicit = await callR6({ query: R6Q, k: 10, level: 'fact,lesson,topic,rules,user', min_rel: 0.3 }, 'explicit')
+check(
+  'R6 默认值就是这两个数：不传参数与显式 {level:…user, min_rel:0.3} 逐位相同（默认值改没改一眼看得出）',
+  JSON.stringify(r6Ids(r6Default)) === JSON.stringify(r6Ids(r6Explicit)),
+  `${r6Ids(r6Default).length} vs ${r6Ids(r6Explicit).length}`,
 )
 
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——

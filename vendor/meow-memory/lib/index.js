@@ -3691,7 +3691,7 @@ function rememberTool(dir) {
 //   ② 可解释：explain 里补上 importanceWeight（打分侧在 search() 里加），三个因子 bm25 ×
 //      recencyWeight × importanceWeight 缺一个，读者就没法判断「它为什么排前面」。
 // 注释刻意放在字面量外面：tools/probe-toolsize.mjs 是按源码切片量工具字面量的，注释不该算进「膨胀」。
-// [macro-fusion 0.2.86] 相关度下限 min_rel（默认 0.35）：
+// [macro-fusion 0.2.86] 相关度下限 min_rel（0.2.168 起默认 0.30，原来是 0.35）：
 // 实测 30 条语料下，查询「数据库连接池 上限」返回 5 条，第 3 条起分数只有榜首的 33%/33%/31%
 // （内容是「数据库备份每天凌晨三点」这种只沾到「数据库」一个词的条目）。这类尾巴有三个代价：
 // 模型要读、要用 k 个名额、还会把「沾边」误当「相关」。这里按「分数 < 榜首 × min_rel」收掉，
@@ -3782,7 +3782,7 @@ function searchTool(dir) {
         k: { type: "integer", minimum: 1, maximum: 50, default: 10, description: T("memory_search.param.k") },
         content_max: { type: "integer", minimum: 0, maximum: 5e3, default: 300, description: T("memory_search.param.content_max") },
         context: { type: "integer", minimum: 0, maximum: 3, default: 0, description: T("memory_search.param.context") },
-        min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.35, description: T("memory_search.param.min_rel") },
+        min_rel: { type: "number", minimum: 0, maximum: 1, default: 0.3, description: T("memory_search.param.min_rel") },
         dedupe: { type: "boolean", default: true, description: T("memory_search.param.dedupe") },
         explain: { type: "boolean", default: false, description: T("memory_search.param.explain") },
         band_keep: {
@@ -3926,18 +3926,26 @@ function searchTool(dir) {
       const cmGiven = parsed.content_max !== void 0 && parsed.content_max !== null && String(parsed.content_max).trim().length > 0;
       const contentMax = cmRaw !== void 0 ? Math.max(0, Math.min(5e3, Math.round(cmRaw))) : 300;
       const cmClamped = cmGiven && (cmRaw === void 0 || cmRaw < 0 || cmRaw > 5e3);
-      // [macro-fusion 0.2.86] 相关度下限（详见 searchTool 上方说明）：0.35 = 只展开分数不低于榜首
-      // 35% 的条目。给 0 就关掉，给越界值夹住并说明。
+      // [macro-fusion 0.2.86] 相关度下限（详见 searchTool 上方说明）：只展开分数不低于榜首这个比例的条目。
+      // [macro-fusion 0.2.168] 0.35 → 0.30：0.35 是在 30 条受控语料上定的，到了真库（545 条）它在难句上
+      // 会砍掉正解——13 条换说法问句里 0.35 命中 9 条、0.30 命中 10 条，而回执只多 0.31 条（4.23 → 4.54）；
+      // 自找池（150 题，问句就是关键词）两档都是 142 题，一题不伤。0.25 与 0.30 同分，取条数更少的 0.30。
       const relRaw = coerceNumber(parsed.min_rel);
       const relGiven = parsed.min_rel !== void 0 && parsed.min_rel !== null && String(parsed.min_rel).trim().length > 0;
-      const minRel = relRaw !== void 0 ? Math.max(0, Math.min(1, relRaw)) : 0.35;
+      const minRel = relRaw !== void 0 ? Math.max(0, Math.min(1, relRaw)) : 0.3;
       const relClamped = relGiven && (relRaw === void 0 || relRaw < 0 || relRaw > 1);
       // [macro-fusion 0.2.51] 层名过滤原来是静默的：拼错 / 复数 / 一个都不认识 → 过滤后数组变空
       // → 零命中，回执只说「以最新的为准」，读者会把它读成「记忆里没有」。这里把「哪些层名没对上」留住。
       const levelAsked = typeof parsed.level === "string" && parsed.level.trim() ? parsed.level.split(",").map((s) => s.trim()).filter((s) => s.length > 0) : [];
       const levelBad = levelAsked.filter((s) => !LEVELS.includes(s));
       const levelValid = levelAsked.filter((s) => LEVELS.includes(s));
-      const levels = levelValid.length > 0 ? levelValid : levelAsked.length === 0 ? ["fact", "lesson", "topic", "rules"] : [];
+      // [macro-fusion 0.2.168] 默认层补上 user：默认范围原来只有 fact/lesson/topic/rules，而 user 层
+      // 存的正是「主人的偏好与设备环境」——真库 8 条 user 条目，在工具路径上 8 题全漏（API 层每题都是第 1 名，
+      // 说明不是排序问题，是根本没进候选池）。补上之后自找池 142/150 → 150/150、首位 141 → 149，
+      // 回执反而更短（2.18 → 2.01 条）：正解进榜把弱候选挤出了地板。
+      // soul 与 project 仍不默认：soul 是 AI 自身人格（7 层里唯一「不该在被问事实时出现」的），
+      // project 层放的是一整个项目的概览，实测掺进来会抢首位（换说池首位 5 → 4、top3 9 → 9）。
+      const levels = levelValid.length > 0 ? levelValid : levelAsked.length === 0 ? ["fact", "lesson", "topic", "rules", "user"] : [];
       const levelNote = levelAsked.length > 0 && levelValid.length === 0 ? `这次一条都没查：你给的层名「${levelAsked.join("、")}」不在七层里（${LEVELS.join(" / ")}）。这不是「记忆里没有」，是层名没对上——换成真实层名再查一次。` : levelBad.length > 0 ? `这几个层名没生效：${levelBad.join("、")}（不在七层里）——这次只查了 ${levelValid.join(" / ")} 层。` : "";
       // [macro-fusion 0.2.56] 状态值 / 时段 / 条数 / 截断长度给错了，各说各的——别混进「本次零命中」里。
       const statusNote = statusDead
@@ -4033,7 +4041,7 @@ function searchTool(dir) {
       const explicitLevels = typeof parsed.level === "string" && parsed.level.trim().length > 0;
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
       const scopeNote = hits.length === 0 && levelValid.length > 0 ? `这次只在 ${levelValid.join(" / ")} 层里查了，零命中：别的层就算有同关键词也看不到——要全层查就去掉 level 参数（默认 fact / lesson / topic / rules）。` : "";
-      const plain = hits.length === 0 && !explicitLevels && !statusDead && !gate.fired ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules\uFF0Csoul \u4E0E user \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"soul,user"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
+      const plain = hits.length === 0 && !explicitLevels && !statusDead && !gate.fired ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules/user\uFF0Csoul \u4E0E project \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"project"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
       // [macro-fusion 0.2.140] 降权是藏在分数里的，读者看不见——那就把它说出来：
       // 有几条不是在用的、它们被降到多重、想只看在用的该加什么参数。没有这类命中时一个字符都不多花。
       const offNow = reordered.filter((h) => String(byId.get(h.id)?.status ?? "active") !== "active");

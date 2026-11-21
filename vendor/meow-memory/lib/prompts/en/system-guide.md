@@ -59,7 +59,7 @@ II. The memory tools you have
 - query is required: pass keywords or a sentence (e.g. "memory plugin deployment"). Never search with an empty query.
 - Returns a metadata view, not full text; use the keywords to judge which entry holds what you need, then read the full entry with memory_read.
 - Default top 10 = the first 5 purely by relevance (nothing excluded, including entries already injected/searched/created this session) + 5 more that skip already-injected/already-searched entries.
-- Searches fact/lesson/topic/rules by default;
+- Searches fact/lesson/topic/rules/user by default (the user level holds the owner's preferences and environment facts);
 - You can restrict it to a level/project/status (multi-select, comma-separated).
 - You can restrict by time, e.g. days: 30 = only entries created in the last 30 days.
 - Default top k = 10; k can be 1-50.
