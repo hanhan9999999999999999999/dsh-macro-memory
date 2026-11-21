@@ -66,6 +66,7 @@ const STEPS = [
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
   ['tools/check-market.mjs', '市场索引：宿主校验器真读一遍 + commit 是真提交'],
   ['tools/probe-load.mjs', 'DSH 自己的加载器判据说能不能加载（含装配后的条目）'],
+  ['tools/probe-nebula.mjs', '星图面板层：引力换算、局部图 N 跳、标签淡出与面板接线'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 

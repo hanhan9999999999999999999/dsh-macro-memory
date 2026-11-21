@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 23 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 24 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -9462,6 +9462,65 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 }
 
 
+// FR（0.2.158）：面板层——引力可调、局部图 N 跳、标签随距离淡出。
+// 这一组钉三件事：纯函数与面板接线是真的（不是写在文档里）、默认值只有一个来源、
+// 以及「面板改了什么，请求前缀一个字节都没变」。第三件是这一版敢做的全部理由。
+{
+  const webDir = join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'web')
+  const s3d = readFileSync(join(webDir, 'space3d.js'), 'utf8')
+  const app158 = readFileSync(join(webDir, 'app.js'), 'utf8')
+  const css158 = readFileSync(join(webDir, 'style.css'), 'utf8')
+  const checkAll158 = readFileSync(join(root, 'tools', 'check-all.mjs'), 'utf8')
+
+  check(
+    'FR 纯函数: 局部图与引力换算、标签淡出都是从 create() 外面导出的（面板与探针共用一份）',
+    s3d.includes('function neighborhoodIds(edges, id, depth)') &&
+      s3d.includes('function forceParams(ui)') &&
+      s3d.includes('function labelAlpha(dist, near, far)') &&
+      s3d.includes('window.NebulaSpace = { create, LEVEL_COLOR, TYPE_COLOR, neighborhoodIds, forceParams, labelAlpha, FORCE_BASE }'),
+  )
+  check(
+    'FR 收口: 局部图只在 visible() 里裁（检索、计数不走它，所以「看得见」和「算得到」不会打架）',
+    s3d.includes('if (state.local && !state.local.has(n.id)) return false') &&
+      (s3d.match(/state\.local && !state\.local\.has/g) || []).length === 1,
+  )
+  check(
+    'FR 单一来源: 面板优先读渲染器导出的 FORCE_BASE（渲染器还没加载时才用兜底，兜底由 probe-nebula 逐位比对）',
+    app158.includes('const base = (NS && NS.FORCE_BASE)') &&
+      app158.includes('window.NebulaSpace.FORCE_BASE') === false &&
+      readFileSync(join(root, 'tools', 'probe-nebula.mjs'), 'utf8').includes('面板兜底值与 FORCE_BASE 同数'),
+  )
+  check(
+    'FR 手感: 拖动只改数字，松手（change）才重排——不让每一像素都触发一次收敛',
+    /inp\.onchange = \(\) => \{[\s\S]{0,400}saveForceUI\(forceUI\)\n\s+applyForceToStage\(\)/.test(app158.replace(/\r\n/g, '\n')) &&
+      !/inp\.oninput[\s\S]{0,200}applyForceToStage/.test(app158.replace(/\r\n/g, '\n')),
+  )
+  check(
+    'FR 退路: 局部图 0 跳＝回全图（传 null，不是空集合）；没选中就说一句而不是静默不动',
+    app158.includes('state.space3d.setLocal(null, 0)') &&
+      app158.includes('先点一颗星，局部图才知道从谁出发'),
+  )
+  check(
+    'FR 零成本: 这一版只动 iframe 里的静态文件——lib/macro 与工具 schema 一个字都没改',
+    !readFileSync(join(root, 'lib', 'macro', 'defs', 'update.js'), 'utf8').includes('nebula.force') &&
+      !s3d.includes('memory_') &&
+      /\.slider \.k \{/.test(css158),
+  )
+  check(
+    'FR 登记: 新探针进 check-all（放在 doctor 之前，doctor 必须最后跑）',
+    checkAll158.includes("['tools/probe-nebula.mjs'") &&
+      checkAll158.indexOf("tools/probe-nebula.mjs") < checkAll158.indexOf("tools/doctor.mjs"),
+  )
+  const probeNeb = readFileSync(join(root, 'tools', 'probe-nebula.mjs'), 'utf8')
+  check(
+    'FR 对照: 探针自带三条阴性对照（删收口 / oninput 塞重排 / 兜底数字漂一位都要当场红）',
+    ['局部图收口', '松手才重排', '兜底数字漂一位'].every((one) => probeNeb.includes(one)) &&
+      probeNeb.includes('阴性对照：') &&
+      /broken !== one\.src && one\.judge\(broken\) === false/.test(probeNeb),
+  )
+}
+
+
 // FE（0.2.139）：链是 8 位前缀近似出来的——接手者可能已不在库里，前缀也可能撞车。
 // 这一组钉住「近似要说清楚」：三态、两句新文案、以及全库只扫一遍。
 {
@@ -9734,8 +9793,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.157（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.157'"),
+    'GV 版本: 代码里是 0.2.158（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.158'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9863,8 +9922,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.157（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.157'"),
+    'GW 版本: 代码里是 0.2.158（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.158'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10011,8 +10070,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.157（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.157'"),
+    'VV 版本: 代码里是 0.2.158（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.158'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10189,9 +10248,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.157（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.157' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.157'"),
+    'GX19 版本已到 0.2.158（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.158' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.158'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10291,10 +10350,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.157',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.157' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.157'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.157'),
+    'VY15 版本三处一致 0.2.158',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.158' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.158'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.158'),
   )
 }
 
@@ -10334,10 +10393,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.157（三处一致）',
-    pkgWz.version === '0.2.157' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.157'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.157'),
+    'WZ9 版本已到 0.2.158（三处一致）',
+    pkgWz.version === '0.2.158' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.158'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.158'),
   )
 }
 

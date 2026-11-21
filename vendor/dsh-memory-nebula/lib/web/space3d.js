@@ -123,6 +123,79 @@
     return out
   }
 
+  /* ---------- 纯函数：Node 里能直接 require 出来测 ---------- */
+
+  /**
+   * 局部图：从 id 出发沿边走 depth 跳，返回 id 集合（含它自己）。
+   * id 空或 depth <= 0 返回 null —— 意思是「不裁剪」，而不是「空图」。
+   * 只读边表，不碰 state：同一个函数在面板里是视图过滤，在探针里是纯计算。
+   */
+  function neighborhoodIds(edges, id, depth) {
+    const d = Number(depth) || 0
+    if (!id || d <= 0) return null
+    const adj = new Map()
+    for (const e of edges || []) {
+      if (!e || e.a == null || e.b == null) continue
+      if (!adj.has(e.a)) adj.set(e.a, [])
+      if (!adj.has(e.b)) adj.set(e.b, [])
+      adj.get(e.a).push(e.b)
+      adj.get(e.b).push(e.a)
+    }
+    const seen = new Set([id])
+    let frontier = [id]
+    for (let step = 0; step < d && frontier.length; step += 1) {
+      const next = []
+      for (const cur of frontier) {
+        for (const nb of adj.get(cur) || []) {
+          if (seen.has(nb)) continue
+          seen.add(nb)
+          next.push(nb)
+        }
+      }
+      frontier = next
+    }
+    return seen
+  }
+
+  /** 引力的四个默认值。界面滑杆给的就是真单位，这里只负责夹上限。 */
+  const FORCE_BASE = { repulse: 6200, springRest: 90, clusterPull: 0.02, damping: 0.86 }
+
+  /**
+   * 把界面给的四个数收敛成合法的力常数。
+   * 越界不报错、夹回来：滑杆的边界已经写死了，这里防的是手改 localStorage 或者旧版本存的值。
+   */
+  function forceParams(ui) {
+    const u = ui || {}
+    const num = (v, lo, hi, dft) => {
+      // null / 空串不算 0：Number(null) 是 0，落到夹取下限就等于「把阻尼拧到底」，不是默认
+      if (v === null || v === undefined || v === '') return dft
+      const n = Number(v)
+      if (!Number.isFinite(n)) return dft
+      return Math.min(hi, Math.max(lo, n))
+    }
+    return {
+      repulse: num(u.repulse, 1200, 20000, FORCE_BASE.repulse),
+      springRest: num(u.springRest, 30, 200, FORCE_BASE.springRest),
+      clusterPull: num(u.clusterPull, 0, 0.08, FORCE_BASE.clusterPull),
+      damping: num(u.damping, 0.6, 0.96, FORCE_BASE.damping),
+    }
+  }
+
+  /**
+   * 标签透明度：近处 1、远处 0，中间线性。
+   * Obsidian 的 text fade threshold 也是一段曲线而不是开关 —— 离散阈值会在缩放时「啪」地跳一下。
+   */
+  function labelAlpha(dist, near, far) {
+    const d = Number(dist)
+    const n = Number(near)
+    const f = Number(far)
+    if (!Number.isFinite(d)) return 0
+    if (!Number.isFinite(n) || !Number.isFinite(f) || f <= n) return d <= n ? 1 : 0
+    if (d <= n) return 1
+    if (d >= f) return 0
+    return (f - d) / (f - n)
+  }
+
   function create(canvas, labelCanvas, opts) {
     opts = opts || {}
     // 三维一帧最多画这么多：再多就不是「星空」，是一团发光的雾，
@@ -159,11 +232,17 @@
       hover: null,
       selected: null,
       highlightSet: null,
+      // 局部图：null = 全图；Set = 只看这几条（点一颗星、N 跳以内）
+      local: null,
+      localId: null,
       pathIds: null,
       pathEdges: null,
       pulse: new Map(),
       filter: { ws: null, levels: null, types: null, minW: 0, minImp: 0 },
       timeCut: 0, // 时间回放：只显示 createdAt <= timeCut 的记忆（0 = 不过滤）
+      // 标签窗口：相机距离 <= labelNear 全亮、>= labelFar 全灭，中间线性淡出
+      labelNear: 1100,
+      labelFar: 1900,
       pad: { left: 16, right: 16, top: 76, bottom: 48 },
       cam: { yaw: 0.62, pitch: 0.28, dist: 2400, tx: 0, ty: 0, tz: 0, panX: 0, panY: 0 },
       inertia: { yaw: 0, pitch: 0 },
@@ -719,6 +798,8 @@
       // 取样之外的不画、也不参与拾取：省下来的不只是绘制，还有每帧的顶点打包
       if (state.drawSet && !state.drawSet.has(n.id)) return false
       if (state.timeCut && (Number(n.createdAt) || 0) > state.timeCut) return false
+      // 局部图只收画布上的东西：检索、计数、导出都走别的口，不受它影响
+      if (state.local && !state.local.has(n.id)) return false
       // 工作区筛选的键是 chip 上的 ws 名（带空格，如 'Liberty Of Code'），
       // 而 n.cluster 是压掉空格的 id（'LibertyOfCode'）。早先只比 cluster，
       // 于是「只留一个工作区」在 3D 里会把整张图筛空。两个都认。
@@ -926,6 +1007,65 @@
       if (state.layout === 'spiral') drawSpiralLabels()
       else drawClusterLabels()
       drawFocusLabel()
+      drawNodeLabels()
+    }
+
+
+    /**
+     * 节点自己的名字：鼠标指到的那颗永远写出来，其余按「重要度 → 度数」取前 14 颗，
+     * 并且只在放大到一定距离之内才出现（alpha 随距离淡出）。
+     * 为什么不是全画：三万颗星星每颗配一行字，画面就成了一片字。
+     */
+    function drawNodeLabels() {
+      if (!lctx) return
+      const { w, h } = state.size
+      const focus = state.hover || state.selected
+      const alpha = labelAlpha(state.cam.dist, state.labelNear, state.labelFar)
+      const cands = []
+      let rank = 0
+      if (alpha > 0.02) {
+        const pool = state.nodes.filter(visible)
+        pool.sort((a, b) => (b.importance || 0) - (a.importance || 0) || (b.degree || 0) - (a.degree || 0))
+        for (const n of pool) {
+          if (rank >= 14) break
+          rank += 1
+          cands.push(n)
+        }
+      }
+      if (focus) {
+        const f = state.byId.get(focus)
+        if (f && cands.indexOf(f) < 0) cands.push(f)
+      }
+      if (!cands.length) return
+      lctx.textAlign = 'center'
+      lctx.font = '500 11px Inter, "PingFang SC", "Microsoft YaHei", sans-serif'
+      const taken = []
+      for (const n of cands) {
+        if (!visible(n)) continue
+        const a = n.id === focus ? 1 : alpha
+        if (a <= 0.02) continue
+        project(n.x3, n.y3, n.z3, tmp)
+        if (tmp[2] <= 1) continue
+        const x = tmp[0]
+        const y = tmp[1] - (tmp[3] || 0) * 0.9 - 10
+        if (x < 8 || x > w - 8 || y < 64 || y > h - 20) continue
+        const text = clipLabel(n.label || n.title || n.id)
+        const tw = lctx.measureText(text).width
+        if (taken.some((t) => Math.abs(t.x - x) < (t.w + tw) / 2 + 8 && Math.abs(t.y - y) < 13)) continue
+        taken.push({ x, y, w: tw })
+        lctx.globalAlpha = a
+        lctx.fillStyle = 'rgba(4,6,12,0.55)'
+        roundRect(lctx, x - tw / 2 - 6, y - 6, tw + 12, 15, 7)
+        lctx.fill()
+        lctx.fillStyle = n.id === focus ? '#ffffff' : n.color || '#9fd4ff'
+        lctx.fillText(text, x, y + 5)
+        lctx.globalAlpha = 1
+      }
+    }
+
+    function clipLabel(text) {
+      const s = String(text || '')
+      return s.length > 18 ? s.slice(0, 17) + '…' : s
     }
 
     function drawClusterLabels() {
@@ -1459,6 +1599,46 @@
         return state.edges.filter(visibleEdge)
       },
 
+      /**
+       * 局部图：只看 id 周围 depth 跳以内。
+       * depth <= 0 或没有 id 就是「恢复全图」——和 Obsidian 的 local graph 一样是个视图开关，
+       * 检索结果、计数、导出都不受影响（那些走 visibleNodes() 之外的路径）。
+       */
+      setLocal(id, depth) {
+        state.local = neighborhoodIds(state.edges, id, depth)
+        state.localId = state.local ? id : null
+        state.cacheDirty = true
+        state.needDraw = true
+        return api
+      },
+
+      /** 局部图当前裁多少人：面板上那句「只看 N 条」用它，不自己再算一遍。 */
+      localInfo() {
+        return state.local ? { id: state.localId, count: state.local.size } : null
+      },
+
+      /**
+       * 引力四个参数（真单位：斥力 / 弹簧长度 / 项目向心 / 阻尼）。
+       * 改完必须丢掉这份缓存布局重新收敛——否则滑杆动了，画面上一点变化都没有，
+       * 人会以为这功能是坏的。
+       */
+      setForce(ui) {
+        const p = forceParams(ui)
+        FORCE.repulse = p.repulse
+        FORCE.springRest = p.springRest
+        FORCE.clusterPull = p.clusterPull
+        FORCE.damping = p.damping
+        try {
+          localStorage.removeItem(cacheKey())
+        } catch (err) {
+          /* 隐私模式里 localStorage 会抛：缓存丢不掉就照旧，至少参数已经生效 */
+        }
+        state.cacheDirty = true
+        layout()
+        api.fit()
+        return api
+      },
+
       /** 时间回放：传 0 或 null 表示解除时间闸门。 */
       setTimeCut(ms) {
         const v = Number(ms) || 0
@@ -1699,5 +1879,5 @@
     return api
   }
 
-  window.NebulaSpace = { create, LEVEL_COLOR, TYPE_COLOR }
+  window.NebulaSpace = { create, LEVEL_COLOR, TYPE_COLOR, neighborhoodIds, forceParams, labelAlpha, FORCE_BASE }
 })()

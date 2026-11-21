@@ -87,6 +87,10 @@
     filter: { ws: null, levels: null, types: null, providers: null, minW: 0, minImp: 0 },
     selected: null,
     detail: null,
+    // 引力四个参数（三维视图）与局部图深度：都只活在面板里，不进请求前缀
+    forceUI: null,
+    localDepth: 0,
+    localCount: 0,
     query: '',
     hits: [],
     timer: 0,
@@ -181,6 +185,78 @@
   // ---------------- 筛选面板 ----------------
   /* 左栏折叠：记住上次收起的分组（小屏上把「连接类型」收起来就能看见图） */
   const FOLD_KEY = 'nebula.fold'
+
+  /* ---------- 引力（三维视图）：滑杆 0..4 根，参数存在本机 ---------- */
+
+  const FORCE_KEY = 'nebula.force'
+
+  /**
+   * 四个滑杆的定义。fix 是小数位，step 是最小步长。
+   * 上下限和 space3d.js 的 forceParams() 是同一组数——那边负责夹，这边负责不许拖出界。
+   */
+  const FORCE_SPEC = [
+    { key: 'repulse', label: '斥力', min: 1200, max: 20000, step: 200, fix: 0 },
+    { key: 'springRest', label: '弹簧长度', min: 30, max: 200, step: 5, fix: 0 },
+    { key: 'clusterPull', label: '项目向心', min: 0, max: 0.08, step: 0.002, fix: 3 },
+    { key: 'damping', label: '阻尼', min: 0.6, max: 0.96, step: 0.01, fix: 2 },
+  ]
+
+  /** 默认值从渲染器那边取，面板里不另写一份数字（两份数字早晚会分叉）。 */
+  function forceDefaults() {
+    const NS = window.NebulaSpace
+    const base = (NS && NS.FORCE_BASE) || { repulse: 6200, springRest: 90, clusterPull: 0.02, damping: 0.86 }
+    const out = {}
+    for (const f of FORCE_SPEC) out[f.key] = base[f.key]
+    return out
+  }
+
+  function readForceUI() {
+    let saved = {}
+    try {
+      saved = JSON.parse(localStorage.getItem(FORCE_KEY) || '{}') || {}
+    } catch (err) {
+      saved = {} // 存坏了就当没存过：一组画不好看的引力不该让整个面板打不开
+    }
+    const out = forceDefaults()
+    for (const f of FORCE_SPEC) {
+      const v = Number(saved[f.key])
+      if (Number.isFinite(v)) out[f.key] = v
+    }
+    return out
+  }
+
+  function saveForceUI(ui) {
+    try {
+      localStorage.setItem(FORCE_KEY, JSON.stringify(ui))
+    } catch (err) {
+      /* 隐私模式里写不进去：这一轮照样生效，下次打开回默认 */
+    }
+  }
+
+  /** 把四个参数交给三维渲染器。2D 星云不吃这组参数，所以只在三维视图里有效。 */
+  function applyForceToStage() {
+    if (!state.forceUI) state.forceUI = readForceUI()
+    if (state.space3d && typeof state.space3d.setForce === 'function') state.space3d.setForce(state.forceUI)
+  }
+
+  /**
+   * 局部图：选中一颗星就只看它 depth 跳以内的邻居。
+   * depth = 0 或者没选中 → 传 null 回全图（空集合会被渲染器理解成「什么都别画」）。
+   */
+  function applyLocal(id) {
+    if (!state.space3d || typeof state.space3d.setLocal !== 'function') return null
+    const depth = Number(state.localDepth) || 0
+    const target = id === undefined ? state.selected : id
+    if (!(depth > 0) || !target) {
+      state.space3d.setLocal(null, 0)
+      state.localCount = 0
+      return null
+    }
+    state.space3d.setLocal(target, depth)
+    const info = typeof state.space3d.localInfo === 'function' ? state.space3d.localInfo() : null
+    state.localCount = (info && Number(info.count)) || 0
+    return info
+  }
   function foldSet() {
     try {
       return new Set(JSON.parse(localStorage.getItem(FOLD_KEY) || '[]'))
@@ -395,6 +471,72 @@
     slider2.appendChild(val2)
     sect2.appendChild(slider2)
     root.appendChild(sect2)
+
+    // 引力：只影响三维视图。2D 星云用固定参数，改这里不会有反应，所以把范围写进标题
+    const sectF = el('div', 'sect')
+    const h4f = el('h4', null, T('引力（三维视图）'))
+    h4f.appendChild(attachFold(sectF, 'f:force'))
+    sectF.appendChild(h4f)
+    const forceUI = (state.forceUI = readForceUI())
+    for (const f of FORCE_SPEC) {
+      const row = el('div', 'slider')
+      const inp = document.createElement('input')
+      inp.type = 'range'
+      inp.min = String(f.min)
+      inp.max = String(f.max)
+      inp.step = String(f.step)
+      inp.value = String(forceUI[f.key])
+      inp.setAttribute('data-zh-aria', T(f.label))
+      inp.setAttribute('aria-label', T(f.label))
+      const out = el('span', 'val', Number(forceUI[f.key]).toFixed(f.fix))
+      // 拖动只改数字，松手（change）才重排：每动一像素重算三百轮布局，画面会卡成幻灯片
+      inp.oninput = () => {
+        out.textContent = Number(inp.value).toFixed(f.fix)
+      }
+      inp.onchange = () => {
+        forceUI[f.key] = Number(inp.value)
+        out.textContent = Number(inp.value).toFixed(f.fix)
+        saveForceUI(forceUI)
+        applyForceToStage()
+      }
+      row.appendChild(el('span', 'k', T(f.label)))
+      row.appendChild(inp)
+      row.appendChild(out)
+      sectF.appendChild(row)
+    }
+    const sectL = el('div', 'sect')
+    const h4l = el('h4', null, T('局部图（三维视图）'))
+    h4l.appendChild(attachFold(sectL, 'f:local'))
+    sectL.appendChild(h4l)
+    const rowL = el('div', 'slider')
+    const rangeL = document.createElement('input')
+    rangeL.type = 'range'
+    rangeL.min = '0'
+    rangeL.max = '4'
+    rangeL.step = '1'
+    rangeL.value = String(Number(state.localDepth) || 0)
+    rangeL.setAttribute('data-zh-aria', T('只看这几跳以内'))
+    rangeL.setAttribute('aria-label', T('只看这几跳以内'))
+    const valL = el('span', 'val', rangeL.value === '0' ? T('全图') : rangeL.value + T(' 跳'))
+    rangeL.oninput = () => {
+      valL.textContent = rangeL.value === '0' ? T('全图') : rangeL.value + T(' 跳')
+    }
+    rangeL.onchange = () => {
+      state.localDepth = Number(rangeL.value) || 0
+      const info = applyLocal()
+      if (state.localDepth > 0 && !state.selected) {
+        toast(T('先点一颗星，局部图才知道从谁出发'))
+      } else if (info) {
+        toast(T('局部图：') + state.localCount + T(' 条在 ') + state.localDepth + T(' 跳以内'))
+      }
+    }
+    rowL.appendChild(el('span', 'k', T('看得见')))
+    rowL.appendChild(rangeL)
+    rowL.appendChild(valL)
+    sectL.appendChild(rowL)
+    sectL.appendChild(el('div', 'filter-hint', T('以选中的那颗星为中心，只留 N 跳以内的邻居；拖回「全图」恢复')))
+    root.appendChild(sectF)
+    root.appendChild(sectL)
 
     function syncWsFilter() {
       const on = wsChips.filter((c) => c.classList.contains('on')).map((c) => c.dataset.ws)
@@ -3216,6 +3358,8 @@
     state.stage2d = window.Nebula.stage(canvas, {})
     if (window.__NEBULA_DEBUG__) window.__NEBULA_STAGE2D__ = state.stage2d
     state.space3d = (await waitSpace()) ? window.NebulaSpace.create($('#sky3d'), $('#sky3dlbl')) : null
+    // 上一轮拖过的引力在这一刻生效：不调这一下，滑杆位置和画面就是两回事
+    if (state.space3d) applyForceToStage()
     state.modeKey = 'nebula'
     // 快照启动时先核对校验和：坏文件要立刻说出来，而不是渲染出一张缺角的图
     verifySnapshotIntegrity().catch(() => {})
@@ -3231,7 +3375,11 @@
       }
     )
     for (const r of [state.stage2d, state.space3d].filter(Boolean)) {
-      r.on('select', (id) => showDetail(id))
+      r.on('select', (id) => {
+        showDetail(id)
+        // 局部图只对三维视图有效；2D 星云没有 setLocal，直接跳过
+        if (r === state.space3d) applyLocal(id)
+      })
       r.on('hover', (hit) => onHover(hit))
       // 点 LOD 光斑＝钻进那个项目。镜头会飞过去，但得说一声，别让人以为「怎么突然变了」
       r.on('lod', (ws) => {
