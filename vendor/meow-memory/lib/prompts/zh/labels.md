@@ -50,6 +50,12 @@
 - dream.chain.ambiguous: 写着被 {who} 接手（{day}），可这个前缀在库里有 {hits} 条（同一秒写入的前 8 位必然相同）——按开头「{head}」自己去核对是谁，别照着前缀改错人。
 - dream.chain.more: 还有 {n} 条同样断了，先按上面几条处理。
 - dream.chain.rule: 判据：正文里有取代句 + 前缀命中 0 条（absent）或 ≥2 条且开头对不上（ambiguous）。命中 1 条、或撞车但开头能对上的不报（链是好的）。这两类都不是「该整理」，是「已经整理坏了」：接手关系要么重写一次，要么把这条改成「它现在是什么」，别留一条指向虚空的谱系。
+- dream.repeat.title: 这轮写的东西，库里已经有了 {n} 条（不是新知识）：
+- dream.repeat.line: {id} · {level} ⇔ {oid} · {olevel}（{day}，{status}）重复度 {pct}%
+- dream.repeat.keep: 对方还在用：把这条的内容并进 {oid}（并集、别整条覆盖），再把这条标 stale 并写一句「已被 {oid} 取代」——别留两条平行条目。
+- dream.repeat.revive: {oid} 已退位，这轮又写了一条几乎一样的：确认是复活（把 {oid} 改回 active 并合并）还是新结论（写清与它的差别，而不是重写一遍）。
+- dream.repeat.more: 还有 {n} 条同类没列（按重复度从高到低）。
+- dream.repeat.rule: 重复的两条只留一条：先并入，再用 supersedes 指过去；「已经写过」不等于「再写一遍会更清楚」。
 - project.unlabeled: 未标记
 - project.header: 【项目：{name}】
 - project.empty: 【项目：{name}】该项目暂无记忆条目。

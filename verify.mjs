@@ -6150,7 +6150,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'dream 重复: 清单里真的用上了（算 / 渲染 / 并进 list 三处缺一不可）',
     vSrc.includes('const dupPairs = dreamDupPairs(allRows)') &&
       vSrc.includes('const shortOf = uniqueShortIdsAmong(allRows);') &&
-      vSrc.includes('list: listBlock + dupBlock'),
+      vSrc.includes('listBlock + dupBlock + repeatBlock'),
   )
   check(
     'dream 重复: 没有对子就一个字不加（干净清单不加噪音），门槛数字由常量算出、不是写死的 80',
@@ -6270,7 +6270,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'dream 详写对: 清单在整窗口范围算详写对，只由先出现的那一轮印，且拼在 list 末尾',
     vSrc.includes('const coverPairs = dreamCoverPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);') &&
-      vSrc.includes('list: listBlock + dupBlock + coverBlock'),
+      vSrc.includes('dupBlock + repeatBlock + coverBlock'),
   )
   check(
     'dream 详写对: 没对子一个字不加，门槛文案由常量算出来（不许把 90 写死在文案里）',
@@ -7839,7 +7839,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     '冲突: 清单块按「先出现的那一轮」归轮，另一条不在本组时标「另一组」，块本身插在详写块之后',
     meowSrc114.includes('const conflictPairs = dreamConflictPairs(allRows).filter((p) => dreamPairOwner(rounds, p) === idx);') &&
       meowSrc114.includes('dream.conflict.more') &&
-      meowSrc114.includes('list: listBlock + dupBlock + coverBlock + conflictBlock'),
+      meowSrc114.includes('dupBlock + repeatBlock + coverBlock + conflictBlock'),
   )
   check(
     '冲突: 三语标签各 8 键（标题 / 关键词 / 独有 / 更多 / 谁更新 / 分不出 / 判据 / 回执）',
@@ -9479,7 +9479,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'FZ 源码: 这一块是清单的第四块，紧跟冲突块，且按「这条落在哪一轮就由哪一轮说」分摊',
-    meowSrc.includes('listBlock + dupBlock + coverBlock + conflictBlock + chainBlock') &&
+    meowSrc.includes('dupBlock + repeatBlock + coverBlock + conflictBlock + chainBlock') &&
       meowSrc.includes('const chainHere = chainAll.list.filter((it) => roundIds.has(String(it.id)));'),
   )
   check('FZ 源码: 条数有上限，超出的说「还有几条」（不刷屏也不静默）', meowSrc.includes('var DREAM_CHAIN_MAX = 6;') && meowSrc.includes('dreamChainBlock({ list: chainHere, total: chainAll.total }, shortOf, lbl3)'))
@@ -9540,6 +9540,48 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'GA 文案: 一句话说清「它们才是接班者、上面那条别再当结论」（三语）',
     ['zh', 'en', 'pt-br'].every((lang) => readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8').includes('- search.floorLift:')),
+  )
+}
+
+
+// GB（0.2.144）：dream 前三块只在本轮行里互相比，全库从不参与——新写一条与旧条目一字不差，也没人说话。
+// 补的是「本轮某条 ⇔ 全库某条」这一侧，且候选必须从索引里取（不做 N×M 全比）。
+{
+  const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const meowMod = await import('./vendor/meow-memory/lib/index.js')
+  check('GB 源码: 全库参与比较（前三块只看本轮）', meowSrc.includes('function dreamRepeatIssues(allRows, db)') && meowSrc.includes('if (here.has(String(r.id))) continue;'))
+  check('GB 源码: 本轮内部不重复报，交给 dupPairs', meowSrc.includes('const here = new Set(allRows.map((r) => String(r.id)));'))
+  check('GB 源码: 候选从关键字 / 正文前缀索引里取，不做全库两两比', meowSrc.includes('const byHead = /* @__PURE__ */ new Map();') && meowSrc.includes('const byKw = /* @__PURE__ */ new Map();') && meowSrc.includes('if (n++ >= DREAM_REPEAT_SCAN) break;'))
+  check('GB 源码: 接进 dream 清单（第五块）', meowSrc.includes('listBlock + dupBlock + repeatBlock + coverBlock + conflictBlock + chainBlock'))
+  check('GB 源码: 有上限、有门槛', meowSrc.includes('var DREAM_REPEAT_MAX = 4;') && meowSrc.includes('var DREAM_REPEAT_MIN = 0.8;'))
+
+  const gbOld = { id: '0mgb0001', level: 'fact', status: 'active', updated_at: Date.now() - 3e9, keywords: ['甲'], content: '探针甲：这条在库里躺了很久了，写法完全一样' }
+  const gbNew = { id: '0mgb0002', level: 'fact', status: 'active', updated_at: Date.now(), keywords: ['甲'], content: '探针甲：这条在库里躺了很久了，写法完全一样' }
+  const gbStub = (rows, counter) => ({ list: (level) => { counter.n++; return rows.filter((r) => r.level === level) } })
+  const gbC = { n: 0 }
+  const gbHit = meowMod.dreamRepeatIssues([gbNew], gbStub([gbOld], gbC))
+  check('GB 行为: 库里那条被点出来（本轮只有它）', gbHit.list.length === 1 && String(gbHit.list[0].otherId) === '0mgb0001' && gbHit.list[0].repeat >= 0.8)
+  check('GB 行为: 干净时也真查了库（scanned>0）', gbHit.scanned === 1)
+  check('GB 行为: 两条都在本轮 → 不报、也不扫库', meowMod.dreamRepeatIssues([gbOld, gbNew], gbStub([gbOld], { n: 0 })).list.length === 0)
+  check('GB 零成本: 本轮为空时一次库调用都不做', (() => { const c = { n: 0 }; const r = meowMod.dreamRepeatIssues([], gbStub([gbOld], c)); return c.n === 0 && r.list.length === 0 })())
+  check('GB 行为: 只是关键字撞上、正文不同 → 不当重复', meowMod.dreamRepeatIssues([{ ...gbNew, id: '0mgb0005', updated_at: Date.now() + 1, content: '完全另一件事：验证码要先切图' }], gbStub([gbOld], { n: 0 })).list.length === 0)
+  check('GB 行为: 关键字为空也靠正文前缀认得出', meowMod.dreamRepeatIssues([{ ...gbNew, id: '0mgb0003', keywords: [] }], gbStub([gbOld], { n: 0 })).list.length === 1)
+  check('GB 行为: 对方已退位也要报', meowMod.dreamRepeatIssues([gbNew], gbStub([{ ...gbOld, status: 'stale' }], { n: 0 })).list[0]?.otherStatus === 'stale')
+  const gbLbl = (key, vars = {}) => {
+    const line = readFileSync(new URL('./vendor/meow-memory/lib/prompts/zh/labels.md', import.meta.url), 'utf8').split('\n').find((one) => one.startsWith(`- ${key}:`))
+    if (line === void 0) return ''
+    return line.slice(key.length + 3).trim().replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m))
+  }
+  const gbShort = new Map([['0mgb0001', '0mgb0001'], ['0mgb0002', '0mgb0002']])
+  const gbBlock = meowMod.dreamRepeatBlock({ list: gbHit.list, total: 3 }, gbShort, gbLbl)
+  check('GB 文案: 标题报总数、不拿「列了几条」冒充', gbBlock.includes('库里已经有了 3 条'))
+  check('GB 文案: 每条都念出对方 id 与重复度', gbBlock.includes('0mgb0001') && gbBlock.includes('重复度 100%'))
+  check('GB 文案: 对方在用 → 并进它 + 标 stale；对方退位 → 问是复活还是新结论', gbBlock.includes('并进 0mgb0001') && gbBlock.includes('标 stale') && meowMod.dreamRepeatBlock({ list: meowMod.dreamRepeatIssues([gbNew], gbStub([{ ...gbOld, status: 'stale' }], { n: 0 })).list, total: 1 }, gbShort, gbLbl).includes('复活'))
+  check('GB 克制: 没有重复时整段是空串', meowMod.dreamRepeatBlock({ list: [], total: 0 }, gbShort, gbLbl) === '')
+  check('GB 不建表: 只读现有行', !/ALTER TABLE|CREATE INDEX/.test(meowSrc.slice(meowSrc.indexOf('function dreamRepeatIssues('), meowSrc.indexOf('function dreamRepeatBlock('))))
+  check(
+    'GB 文案: 六键三语齐全',
+    ['zh', 'en', 'pt-br'].every((lang) => ['dream.repeat.title', 'dream.repeat.line', 'dream.repeat.keep', 'dream.repeat.revive', 'dream.repeat.more', 'dream.repeat.rule'].every((key) => readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8').includes(`- ${key}:`))),
   )
 }
 

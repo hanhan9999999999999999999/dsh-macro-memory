@@ -4495,6 +4495,103 @@ function dreamChainIssues(allRows, db) {
   out.sort((x, y) => y.at - x.at);
   return { list: out.slice(0, DREAM_CHAIN_MAX), total: out.length };
 }
+// [macro-fusion 0.2.144] dream 的三块检测器（逐字重复 / 重复详写 / 疑似冲突）都只在本轮行里互相比，
+// 全库从不参与：新写一条与三个月前那条一字不差，dream 一句话都不说——冗余就这么一层层叠上去。
+// 这里补「这轮写的，库里早有了」：候选只从关键字与正文前缀建的索引里取（不做 N×M 全比），
+// 重复度按 token 集合覆盖算，与本轮内部那两块互不重叠（同为逐字重复时只由 dupPairs 负责）。
+var DREAM_REPEAT_MAX = 4;
+var DREAM_REPEAT_MIN = 0.8;
+var DREAM_REPEAT_SCAN = 40;
+function dreamRepeatIssues(allRows, db) {
+  if (allRows.length === 0) return { list: [], total: 0, scanned: 0 };
+  if (db === undefined || typeof db.list !== "function") return { list: [], total: 0, scanned: 0 };
+  const here = new Set(allRows.map((r) => String(r.id)));
+  const byHead = /* @__PURE__ */ new Map();
+  const byKw = /* @__PURE__ */ new Map();
+  let scanned = 0;
+  for (const level of LEVELS) {
+    let rows = [];
+    try {
+      rows = db.list(level, {}) || [];
+    } catch {
+      rows = [];
+    }
+    for (const r of rows) {
+      if (here.has(String(r.id))) continue;
+      scanned++;
+      const head = String(r.content ?? "").slice(0, 8);
+      if (head.length >= 4) {
+        const arr = byHead.get(head);
+        if (arr === void 0) byHead.set(head, [r]);
+        else arr.push(r);
+      }
+      for (const kw of Array.isArray(r.keywords) ? r.keywords : []) {
+        const k = String(kw).slice(0, 12);
+        if (k.length === 0) continue;
+        const arr = byKw.get(k);
+        if (arr === void 0) byKw.set(k, [r]);
+        else arr.push(r);
+      }
+    }
+  }
+  const out = [];
+  for (const row of allRows) {
+    const set = rowTokenSet(row);
+    if (set.size === 0) continue;
+    const cands = /* @__PURE__ */ new Map();
+    for (const r of byHead.get(String(row.content ?? "").slice(0, 8)) ?? []) cands.set(String(r.id), r);
+    for (const kw of Array.isArray(row.keywords) ? row.keywords : []) {
+      for (const r of byKw.get(String(kw).slice(0, 12)) ?? []) cands.set(String(r.id), r);
+    }
+    if (cands.size === 0) continue;
+    let best = null;
+    let n = 0;
+    for (const r of cands.values()) {
+      if (n++ >= DREAM_REPEAT_SCAN) break;
+      const rep = overlapOfSets(set, rowTokenSet(r));
+      if (rep < DREAM_REPEAT_MIN) continue;
+      if (best === null || rep > best.repeat) best = { other: r, repeat: Math.round(rep * 1e3) / 1e3 };
+    }
+    if (best === null) continue;
+    out.push({
+      id: row.id,
+      level: row.level,
+      otherId: best.other.id,
+      otherLevel: best.other.level,
+      otherStatus: String(best.other.status ?? "active"),
+      otherDay: formatTime(Number(best.other.updated_at) || 0),
+      repeat: best.repeat,
+      at: Number(row.updated_at ?? 0) || 0
+    });
+  }
+  out.sort((a, b) => b.repeat - a.repeat || b.at - a.at);
+  return { list: out.slice(0, DREAM_REPEAT_MAX), total: out.length, scanned };
+}
+// 渲染这一段：没有「库里已经有了」就返回空串。
+function dreamRepeatBlock(result, shortOf, lbl3) {
+  const list = Array.isArray(result?.list) ? result.list : [];
+  if (list.length === 0) return "";
+  const short = (id) => (shortOf instanceof Map ? String(shortOf.get(String(id)) ?? String(id).slice(0, 8)) : String(id).slice(0, 8));
+  const lines = list.map((it) => {
+    const head = lbl3("dream.repeat.line", {
+      id: short(it.id),
+      level: String(it.level ?? ""),
+      oid: short(it.otherId),
+      olevel: String(it.otherLevel ?? ""),
+      day: String(it.otherDay ?? ""),
+      status: String(it.otherStatus ?? "active"),
+      pct: String(Math.round(Number(it.repeat) * 100))
+    });
+    const verdict = it.otherStatus === "active" ? lbl3("dream.repeat.keep", { oid: short(it.otherId) }) : lbl3("dream.repeat.revive", { oid: short(it.otherId) });
+    return `- ${head}\n  ${verdict}`;
+  });
+  const total = Number(result?.total ?? list.length) || list.length;
+  const more = total > list.length ? `\n${lbl3("dream.repeat.more", { n: String(total - list.length) })}` : "";
+  return `
+${lbl3("dream.repeat.title", { n: String(total) })}
+${lines.join("\n")}${more}
+${lbl3("dream.repeat.rule", {})}`;
+}
 // [macro-fusion 0.2.143] 相关度下限按分数裁，可分数排的是「措辞贴不贴这次提问」，不是「谁接了班」：
 // 一条退位的旧说法字面很贴、分很高进了榜，接手它的新说法措辞朴素、掉到下限以下被裁掉——
 // 于是读者只看到已经作废的那条，越照着它改越错。所以下限裁完之后要回看一眼：被裁的那几条里，
@@ -4795,7 +4892,11 @@ ${lbl3("dream.conflict.rule", {})}`;
     const chainAll = dreamChainIssues(allRows, db);
     const chainHere = chainAll.list.filter((it) => roundIds.has(String(it.id)));
     const chainBlock = dreamChainBlock({ list: chainHere, total: chainAll.total }, shortOf, lbl3);
-    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock + conflictBlock + chainBlock, groupMarker }).split("\n"));
+    // [macro-fusion 0.2.144] 「这轮写的，库里早有了」——duplicate 那两块只看本轮，全库从不参与。
+    const repeatAll = dreamRepeatIssues(allRows, db);
+    const repeatHere = repeatAll.list.filter((it) => roundIds.has(String(it.id)));
+    const repeatBlock = dreamRepeatBlock({ list: repeatHere, total: repeatAll.total }, shortOf, lbl3);
+    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + repeatBlock + coverBlock + conflictBlock + chainBlock, groupMarker }).split("\n"));
   }
   return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }
@@ -7780,6 +7881,8 @@ export {
   disableWorkspaceTrust,
   dreamChainBlock,
   liftSuccessors,
+  dreamRepeatIssues,
+  dreamRepeatBlock,
   dreamChainIssues,
   dreamCommandDefinition,
   dreamPlanDigest,

@@ -50,6 +50,12 @@
 - dream.chain.ambiguous: diz que {who} assumiu ({day}), mas esse prefixo casa com {hits} entradas do acervo (entradas gravadas no mesmo segundo sempre compartilham os 8 primeiros caracteres) — confira você mesmo o início「{head}」e escolha a certa; não edite a entrada errada só pelo prefixo.
 - dream.chain.more: mais {n} quebradas do mesmo jeito; resolva as de cima primeiro.
 - dream.chain.rule: Régua — o corpo traz uma linha de sucessão, e o prefixo casa com 0 entradas (absent) ou ≥2 sem casar o início (ambiguous). Uma única correspondência, ou colisão cujo início casa, não é reportada (a cadeia está boa). Nenhum dos dois casos é "precisa organizar": é "já foi organizado errado" — ou reescreva a sucessão uma vez, ou diga o que esta entrada é agora; não deixe uma linhagem apontando para o vazio.
+- dream.repeat.title: O que esta rodada escreveu já existe na biblioteca ({n} entradas) — isso não é conhecimento novo:
+- dream.repeat.line: {id} · {level} ⇔ {oid} · {olevel} ({day}, {status}) sobreposição {pct}%
+- dream.repeat.keep: A outra continua ativa: mescle este conteúdo em {oid} (união, não sobrescreva), marque esta como stale e escreva "substituída por {oid}" — não deixe duas entradas paralelas.
+- dream.repeat.revive: {oid} foi aposentada e esta rodada escreveu quase a mesma coisa: decida se é um retorno (volte {oid} para active e mescle) ou uma conclusão nova (explique a diferença em vez de reescrever).
+- dream.repeat.more: mais {n} do mesmo tipo não listadas (ordenadas por sobreposição).
+- dream.repeat.rule: Das duplicatas fica uma: mescle primeiro, depois aponte para ela com supersedes; "já escrito" não quer dizer "escrever de novo fica mais claro".
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.

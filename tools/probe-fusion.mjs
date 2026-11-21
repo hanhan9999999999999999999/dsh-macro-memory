@@ -7140,6 +7140,144 @@ check(
   check('RT6 文案三语都在', rtMissing.length === 0, rtMissing.join(' '))
 }
 
+// ── RU. 这轮写的，库里早有了（0.2.144）──────────────────────────────────────────
+// dream 前三块（逐字重复 / 重复详写 / 疑似冲突）都只在本轮行里互相比：新写一条与三个月前那条一字不差，
+// dream 一句话都不说。这一段验的是「本轮某条 ⇔ 全库某条」这一侧。
+{
+  const ruOld = {
+    id: '0mru0001',
+    level: 'fact',
+    project: '重复探针',
+    status: 'active',
+    updated_at: Date.now() - 40 * 864e5,
+    keywords: ['重复', '探针'],
+    content: '重复探针：记忆写入之前要先用关键字把库查一遍，别把同一条存第二次',
+  }
+  const ruNew = {
+    id: '0mru0002',
+    level: 'fact',
+    project: '重复探针',
+    status: 'active',
+    updated_at: Date.now(),
+    keywords: ['重复', '探针'],
+    content: '重复探针：记忆写入之前要先用关键字把库查一遍，别把同一条存第二次',
+  }
+  const ruStub = (rows, counter) => ({
+    list: (level) => {
+      counter.n++
+      return rows.filter((r) => r.level === level)
+    },
+  })
+
+  const ruC1 = { n: 0 }
+  const ruRep = Meow.dreamRepeatIssues([ruNew], ruStub([ruOld], ruC1))
+  check(
+    'RU0 库里那条被点出来（本轮只有新条）',
+    ruRep.list.length === 1 && String(ruRep.list[0].otherId) === '0mru0001' && ruRep.list[0].repeat >= 0.8,
+    JSON.stringify(ruRep),
+  )
+  check('RU0b 干净时也走了一遍库（scanned>0），不是没查就报没事', ruRep.scanned === 1, String(ruRep.scanned))
+
+  const ruC2 = { n: 0 }
+  const ruSame = Meow.dreamRepeatIssues([ruOld, ruNew], ruStub([ruOld, ruNew], ruC2))
+  check(
+    'RU1 两条都在本轮时不算「库里早有了」：本轮内部交给 dupPairs，这里不重复报',
+    ruSame.list.length === 0 && ruSame.scanned === 0,
+    JSON.stringify(ruSame),
+  )
+
+  const ruC3 = { n: 0 }
+  const ruEmpty = Meow.dreamRepeatIssues([], ruStub([ruOld], ruC3))
+  check('RU2 本轮一行都没有时一次库调用都不做', ruEmpty.list.length === 0 && ruC3.n === 0, JSON.stringify(ruEmpty))
+
+  const ruKwOnly = {
+    id: '0mru0003',
+    level: 'fact',
+    project: '重复探针',
+    status: 'active',
+    updated_at: Date.now(),
+    keywords: ['重复', '探针'],
+    content: '完全不同的一句话：验证码识别要先切图再做模板匹配',
+  }
+  const ruC4 = { n: 0 }
+  const ruNo = Meow.dreamRepeatIssues([ruKwOnly], ruStub([ruOld], ruC4))
+  check('RU3 只是关键字撞上、正文不一样，不当重复', ruNo.list.length === 0, JSON.stringify(ruNo.list))
+
+  const ruNoKw = { ...ruNew, id: '0mru0004', keywords: [] }
+  const ruC5 = { n: 0 }
+  const ruHead = Meow.dreamRepeatIssues([ruNoKw], ruStub([ruOld], ruC5))
+  check(
+    'RU3b 一条关键字都没有时，靠正文前缀也认得出',
+    ruHead.list.length === 1 && String(ruHead.list[0].otherId) === '0mru0001',
+    JSON.stringify(ruHead.list),
+  )
+
+  const ruStaleOther = Meow.dreamRepeatIssues([ruNew], ruStub([{ ...ruOld, status: 'stale' }], { n: 0 }))
+  check('RU3c 对方已退位也要报（这轮是重写还是复活，得有人问）', ruStaleOther.list.length === 1 && ruStaleOther.list[0].otherStatus === 'stale', JSON.stringify(ruStaleOther.list))
+
+  const ruShort = new Map([
+    ['0mru0001', '0mru0001'],
+    ['0mru0002', '0mru0002'],
+  ])
+  const ruLbl = (key, vars = {}) => {
+    const line = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'zh', 'labels.md'), 'utf8')
+      .split('\n')
+      .find((one) => one.startsWith(`- ${key}:`))
+    if (line === void 0) return ''
+    return line.slice(key.length + 3).trim().replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m))
+  }
+  const ruBlock = Meow.dreamRepeatBlock({ list: ruRep.list, total: ruRep.total + 2 }, ruShort, ruLbl)
+  check('RU4 块标题报总数、不是「列了几条」', ruBlock.includes('库里已经有了 3 条'), ruBlock.split('\n')[1] ?? '')
+  check('RU4b 每条都有重复度与对方 id', ruBlock.includes('0mru0002') && ruBlock.includes('0mru0001') && ruBlock.includes('重复度 100%'), ruBlock.replace(/\s+/g, ' ').slice(0, 200))
+  check('RU4c 对方还在用时给的是「并进它 + 标 stale」', ruBlock.includes('并进 0mru0001') && ruBlock.includes('标 stale'), '')
+  check('RU4d 多出来的条数要说出来', ruBlock.includes('还有 2 条'), '')
+
+  const ruRevive = Meow.dreamRepeatBlock({ list: ruStaleOther.list, total: 1 }, ruShort, ruLbl)
+  check('RU5 对方已退位时换另一套说法（复活 or 新结论）', ruRevive.includes('已退位') && ruRevive.includes('复活'), ruRevive.replace(/\s+/g, ' ').slice(0, 160))
+  check('RU5b 没有重复时这一整段是空串', Meow.dreamRepeatBlock({ list: [], total: 0 }, ruShort, ruLbl) === '', '')
+
+  // 真库一遍：走真的 db.list（不是 stub），索引必须建得起来、认得出现有条目。
+  const ruWs = mkdtempSync(join(tmpdir(), 'macro-probe-repeat-'))
+  const ruDb = Meow.getDb(ruWs, '.dsh-meow')
+  const ruExec = { agent: { session: { header: { cwd: ruWs, id: 'sess-ru' } } } }
+  const ruRun = (name, args) => tools.get(name).execute(args, ruExec)
+  const ruText = (res) => text(res)
+  await ruRun('memory_remember', {
+    content: '重复探针真库：这条清单里叫 0.99 版口径，写入前先查库',
+    project: '重复探针',
+    keywords: ['重复', '真库', '探针'],
+    importance: 2,
+    level: 'fact',
+  })
+  const ruRealId = String(ruDb.db.prepare('SELECT id FROM fact WHERE content LIKE ?').get('%重复探针真库%')?.id ?? '')
+  const ruRealRows = ruDb.list('fact', {})
+  const ruRealRow = ruRealRows.find((r) => String(r.id) === ruRealId) ?? {}
+  const ruReal = Meow.dreamRepeatIssues([{ ...ruRealRow, id: '0mru9999', keywords: [] }], ruDb)
+  check(
+    'RU6 真库：现有条目被索引起来、能认出来（不靠 stub）',
+    ruReal.list.length === 1 && String(ruReal.list[0].otherId) === ruRealId && ruReal.scanned > 0,
+    JSON.stringify(ruReal),
+  )
+  const ruRealBlock = Meow.dreamRepeatBlock({ list: ruReal.list, total: ruReal.total }, ruShort, ruLbl)
+  check('RU6b 真库那一遍的标题也说得出来', ruRealBlock.length > 0, ruRealBlock.replace(/\s+/g, ' ').slice(0, 160))
+
+  try {
+    rmSync(ruWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+
+  const ruMissing = []
+  for (const lang of ['zh', 'en', 'pt-br']) {
+    const body = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lang, 'labels.md'), 'utf8')
+    for (const key of ['dream.repeat.title', 'dream.repeat.line', 'dream.repeat.keep', 'dream.repeat.revive', 'dream.repeat.more', 'dream.repeat.rule']) {
+      if (!body.includes(`- ${key}:`)) ruMissing.push(`${lang}:${key}`)
+    }
+  }
+  check('RU7 文案六键三语都在（中文标题已含「库里已经有了」）', ruMissing.length === 0, ruMissing.join(' '))
+  check('RU7b 中文标题确实是这一句', readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'zh', 'labels.md'), 'utf8').includes('- dream.repeat.title: 这轮写的东西，库里已经有了'), '')
+}
+
 for (const d of disposers) {
   try {
     d()

@@ -50,6 +50,12 @@
 - dream.chain.ambiguous: it says {who} took over ({day}), but that prefix matches {hits} entries in the store (entries written in the same second always share the first 8 characters) — check the opening「{head}」yourself and pick the right one; do not edit the wrong entry from the prefix alone.
 - dream.chain.more: {n} more are broken the same way; handle the ones above first.
 - dream.chain.rule: Ruler — the body carries a supersede line, and the prefix matches 0 entries (absent) or ≥2 with no opening match (ambiguous). Exactly one match, or a collision whose opening does match, is not reported (the chain is fine). Neither case is "needs tidying": it is "already tidied wrong" — either rewrite the succession once, or restate what this entry is now; do not leave a lineage pointing at nothing.
+- dream.repeat.title: What this round wrote already exists in the library ({n} entries) — that is not new knowledge:
+- dream.repeat.line: {id} · {level} ⇔ {oid} · {olevel} ({day}, {status}) overlap {pct}%
+- dream.repeat.keep: The other one is still active: merge this content into {oid} (union, do not overwrite it), then mark this one stale and write "superseded by {oid}" — do not keep two parallel entries.
+- dream.repeat.revive: {oid} was retired, and this round wrote almost the same thing again: decide whether it is a revival (set {oid} back to active and merge) or a new conclusion (spell out the difference instead of restating it).
+- dream.repeat.more: {n} more of the same kind are not listed (sorted by overlap, highest first).
+- dream.repeat.rule: Keep one of the duplicates: merge first, then point at it with supersedes; "already written" does not mean "writing it again is clearer".
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.
