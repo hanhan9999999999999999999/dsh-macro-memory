@@ -9544,7 +9544,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'GZ 只免两样: 词分与覆盖度一个字没动（动了就是改判据，不是改口径）',
-    eng.split('s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1 &&
+      !/COORD_W[^\n]*anchored/.test(eng) &&
       eng.split('const coverage = len > 0 ? overlap / len : 0;').length - 1 === 1 &&
       eng.split('w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));').length - 1 === 2 &&
       eng.split('anchorHit').length - 1 === 1,
@@ -9805,6 +9806,80 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       int162.includes('0.798') &&
       des162.includes('## 174') &&
       des162.includes('同义'),
+  )
+}
+
+// HC（0.2.163）：覆盖度是内容证据——问句里那些词，这条到底占了几成。
+// 这一组量的是「证据强度」：抬覆盖度能掰过词频堆积，但三池一条不亏；幂次是凸的，得当场测出来。
+{
+  const eng = readFileSync(
+    join(root, 'vendor', 'meow-memory', 'lib', 'index.js'),
+    'utf8',
+  )
+  check(
+    'HC 单一来源: 覆盖度的权重与幂次各定义一次，别的模块不许自己写一份「覆盖度算多重」',
+    eng.split('var COORD_W_DEF = 0.5;').length - 1 === 1 &&
+      eng.split('var COORD_POW_DEF = 1.2;').length - 1 === 1 &&
+      !readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8').includes('COORD_') &&
+      !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('COORD_'),
+  )
+  check(
+    'HC 兜底同源: 两个旋钮都能被 opts 覆盖，默认值来自常量，幂次带 >0 守卫',
+    eng.includes('const COORD_W = Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF;') &&
+      eng.includes('const COORD_POW = Number.isFinite(opts.coordPow) && opts.coordPow > 0 ? opts.coordPow : COORD_POW_DEF;'),
+  )
+  check(
+    'HC 只动一处: 协调因子在打分路径里出现一次，线性旧写法一处不剩',
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1 &&
+      eng.split('s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);').length - 1 === 0,
+  )
+  check(
+    'HC 覆盖度不跟权重走: cover 只算一遍、算式里没有 COORD_（权重只用来乘，不改「占了几成」）',
+    eng.split('coverOf[di] = Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
+      !/coverOf\[di\] = Math\.min\(1, cover \/ qIdfSum\)[^\n]*COORD_/.test(eng),
+  )
+  check(
+    'HC 常量导出: 探针与验收都得能读到真值，不许在测试里另写一份 0.5',
+    eng.includes('  COORD_W_DEF,\n  COORD_POW_DEF,'),
+  )
+  const MeowHC = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  check(
+    'HC 行为: 受控语料里「高覆盖/低覆盖」的分差随覆盖度权重变宽，幂次再把它拉宽一点',
+    (() => {
+      const mk = (id, content) => ({ id, level: 'fact', content, title: '', keywords: [], importance: 1, status: 'active' })
+      const pad = 'zeta zeta zeta zeta zeta'
+      const corpus = [
+        mk('hv-hi', `alpha beta gamma ${pad}`),
+        mk('hv-lo', `alpha ${pad} omega omega`),
+      ]
+      const ratio = (opts) => {
+        const m = new Map(MeowHC.search('alpha beta gamma', corpus, { k: 2, ...opts }).map((h) => [String(h.id), h.score]))
+        return m.get('hv-hi') / m.get('hv-lo')
+      }
+      const narrow = ratio({ coordW: 0.35, coordPow: 1 })
+      const wide = ratio({ coordW: 0.5, coordPow: 1 })
+      const pow = ratio({ coordW: 0.5, coordPow: 1.2 })
+      return wide > narrow * 1.2 && pow > wide * 1.01
+    })(),
+  )
+  const probe163 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+  check(
+    'HC 自带阴性对照: 探针里五条改坏的路都写死了对照串（回旧口径 / 去幂次 / 改线性 / cover 跟权重 / 常量不导出）',
+    probe163.includes('G22 覆盖度') &&
+      probe163.includes('幂次没让低覆盖罚得更狠') &&
+      probe163.includes('cover 跟着权重变了') &&
+      probe163.includes('只在 keywords 里的压过了正文命中的'),
+  )
+  const int163 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des163 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  check(
+    'HC 有记: INTERNAL 9.170 写清缺口/网格/三好一坏，DESIGN 175 写清「先问占了几成」',
+    int163.includes('## 9.170') &&
+      int163.includes('0.873') &&
+      int163.includes('0.357') &&
+      int163.includes('三好一坏') &&
+      des163.includes('## 175') &&
+      des163.includes('先问「这条答了几成」'),
   )
 }
 
@@ -10080,8 +10155,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.162（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.162'"),
+    'GV 版本: 代码里是 0.2.163（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.163'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10209,8 +10284,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.162（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.162'"),
+    'GW 版本: 代码里是 0.2.163（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.163'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10357,8 +10432,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.162（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.162'"),
+    'VV 版本: 代码里是 0.2.163（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.163'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10535,9 +10610,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.162（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.162' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.162'"),
+    'GX19 版本已到 0.2.163（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.163' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.163'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10637,10 +10712,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.162',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.162' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.162'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.162'),
+    'VY15 版本三处一致 0.2.163',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.163' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.163'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.163'),
   )
 }
 
@@ -10688,10 +10763,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.162（三处一致）',
-    pkgWz.version === '0.2.162' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.162'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.162'),
+    'WZ9 版本已到 0.2.163（三处一致）',
+    pkgWz.version === '0.2.163' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.163'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.163'),
   )
 }
 

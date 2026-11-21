@@ -2059,6 +2059,16 @@ function timeAnchorOf(q, opts) {
 // 真库 59 问上量过——触发 25 条里 18 条确实没中（覆盖 75%），误报 7 条。
 var WEAK_COVER = 0.2;
 var WEAK_GAP = 0.95;
+// [macro-fusion 0.2.163] 覆盖度是「问句里那些词，这条到底占了几成」，属于内容证据；
+// 而它此前只在协调因子里按 0.35 轻轻乘一下（缺一半词只掉 17%），挡不住「长文档靠词频
+// 堆积压过精准短文档」。实测把它抬到 0.5 并给一个 1.2 的幂（缺口越大掉得越快）：
+// 照抄/换说法/锚点三池读数一位不动，真库上 150 问自找回 hit@1 0.860 → 0.873、
+// 14 条换说法问句 hit@1 0.286 → 0.357 / MRR 0.413 → 0.455（3 好 1 坏）。
+// 0.5 是「三池不亏、真库有赚」的唯一平台起点——再往上（0.55/0.6）照抄池就掉条目了。
+var COORD_W_DEF = 0.5;
+// 幂次不是装饰：cover 直接乘进去是线性的，缺一半词 = 掉一半；而这批数据里「只对上一半词」
+// 的条目往往是话题沾边、答非所问。1.2 让缺口比线性更疼一点，正好把真库那三条拽上来。
+var COORD_POW_DEF = 1.2;
 // [macro-fusion 0.2.161] 关键词字段被低估：真库 569 条 title 全空，keywords 是唯一的结构化桥，
 // 而它只按 0.25 倍词频、+0.35 加成参与打分。抬到 0.35 / 0.6——读数与 tf 0.5/0.6 完全相同，
 // 但 0.5 会把「只在 keywords 里提到的条目」压过「正文命中的条目」，破坏 0.2.152 立下的「标签不是正文」。
@@ -2429,7 +2439,8 @@ function search(query, docs, opts = {}) {
   const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings } = index;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
-  const COORD_W = 0.35;
+  const COORD_W = Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF;
+  const COORD_POW = Number.isFinite(opts.coordPow) && opts.coordPow > 0 ? opts.coordPow : COORD_POW_DEF;
   const k1 = 1.5;
   const b = 0.75;
   // 实体先验要逐条查「这条描述里有没有那个专名」——集合建在索引建立时最省，
@@ -2488,7 +2499,8 @@ function search(query, docs, opts = {}) {
       let cover = 0;
       for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);
       coverOf[di] = Math.min(1, cover / qIdfSum);
-      if (cover > 0) s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);
+      const cvr = Math.pow(Math.min(1, cover / qIdfSum), COORD_POW);
+      if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
     }
     if (entSets) {
       let hit = 0;
@@ -9016,6 +9028,8 @@ export {
   hintWordsOf,
   WEAK_COVER,
   WEAK_GAP,
+  COORD_W_DEF,
+  COORD_POW_DEF,
   KW_TF_W,
   FIELD_KW_W_DEF,
   verbatimOf,

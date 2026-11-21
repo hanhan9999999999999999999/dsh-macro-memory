@@ -710,6 +710,102 @@ if (denseUsable) {
   )
 }
 
+// G22（0.2.163）：覆盖度是内容证据，不是装饰——问句里那些词，这条到底占了几成。
+// 这一组量的是「证据强度」：抬覆盖度权重必须三池不亏，且只在真库上赚；顺手钉住幂次是凸的。
+{
+  const eng = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const wrong = []
+  // ① 单一来源：两个常量各一处定义，别的模块不许再写一份「覆盖度算多重」
+  const shapeOk =
+    eng.split('var COORD_W_DEF = ').length - 1 === 1 &&
+    eng.split('var COORD_POW_DEF = ').length - 1 === 1 &&
+    !readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8').includes('COORD_') &&
+    !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('COORD_')
+  if (!shapeOk) wrong.push('覆盖度的两个常量不是一处定义（或别的模块自己写了一份）')
+  if (!(V.COORD_W_DEF === 0.5 && V.COORD_POW_DEF === 1.2)) wrong.push(`常量值不对：${V.COORD_W_DEF}/${V.COORD_POW_DEF}`)
+  // ② 兜底同源：旋钮能覆盖，但默认值必须来自常量
+  const knobOk =
+    eng.includes('Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF') &&
+    eng.includes('Number.isFinite(opts.coordPow) && opts.coordPow > 0 ? opts.coordPow : COORD_POW_DEF') &&
+    eng.split('const cvr = Math.pow(Math.min(1, cover / qIdfSum), COORD_POW);').length - 1 === 1 &&
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1
+  if (!knobOk) wrong.push('覆盖度没真正进打分路径（幂次或协调因子写偏了）')
+  // ③ 行为：覆盖度真的能把分差拉开（受控语料：等长、同 important、只有覆盖度不同）
+  const pad = 'zeta zeta zeta zeta zeta'
+  const mk = (id, content) => ({ id, level: 'fact', content, title: '', keywords: [], importance: 1, status: 'active' })
+  const covDocs = [
+    mk('cov-hi', `alpha beta gamma ${pad}`),
+    mk('cov-mid', `alpha beta ${pad} omega`),
+    mk('cov-lo', `alpha ${pad} omega omega`),
+  ]
+  const pairRatio = (a, b, opts) => {
+    const hits = V.search('alpha beta gamma', covDocs, { k: 3, ...opts })
+    const m = new Map(hits.map((h) => [String(h.id), h.score]))
+    return m.get(a) / m.get(b)
+  }
+  const rNarrow = pairRatio('cov-hi', 'cov-lo', { coordW: 0.35, coordPow: 1 })
+  const rWide = pairRatio('cov-hi', 'cov-lo', { coordW: 0.5, coordPow: 1 })
+  if (!(rWide > rNarrow * 1.2)) wrong.push(`抬覆盖度没把分差拉开（${rNarrow.toFixed(2)} → ${rWide.toFixed(2)}）`)
+  // ④ 幂次是凸的：同一个协调权重下，覆盖更少的那条被罚得更狠
+  const mPow1 = pairRatio('cov-hi', 'cov-lo', { coordW: 0.5, coordPow: 1 })
+  const mPow12 = pairRatio('cov-hi', 'cov-lo', { coordW: 0.5, coordPow: 1.2 })
+  if (!(mPow12 > mPow1 * 1.01)) wrong.push(`幂次没让低覆盖罚得更狠（${mPow1.toFixed(3)} → ${mPow12.toFixed(3)}）`)
+  // ⑤ 三池不亏：新口径不许比旧口径低一条
+  const curQ = measure(fx.queries, docs)
+  const curP = measure(fx.paraphrase, docs)
+  const curA = measure(fx.anchor, docs)
+  const cnt = (m, key) => Math.round(m[key] * m.n)
+  if (!(cnt(curQ, 'hit1') >= 42 && cnt(curQ, 'hit3') >= 44)) wrong.push(`照抄池掉了（${cnt(curQ, 'hit1')}/${cnt(curQ, 'hit3')}，底线 42/44）`)
+  if (!(cnt(curP, 'hit1') >= 10 && cnt(curP, 'hit3') >= 13 && curP.mrr >= 0.797)) wrong.push(`换说法池掉了（${cnt(curP, 'hit1')}/${cnt(curP, 'hit3')}，MRR ${curP.mrr.toFixed(3)}）`)
+  if (!(cnt(curA, 'hit1') >= 8)) wrong.push(`锚点池掉了（${cnt(curA, 'hit1')}，底线 8）`)
+  // ⑥ 关掉就回旧口径：0.35/1 三个池的读数必须与新默认逐池同值（说明「只抬了覆盖度」）
+  const oldQ = measure(fx.queries, docs, { coordW: 0.35, coordPow: 1 })
+  const oldP = measure(fx.paraphrase, docs, { coordW: 0.35, coordPow: 1 })
+  const oldA = measure(fx.anchor, docs, { coordW: 0.35, coordPow: 1 })
+  const same = (a, b) => a.toFixed(3) === b.toFixed(3)
+  if (!(same(oldQ.hit1, curQ.hit1) && same(oldQ.hit3, curQ.hit3) && same(oldQ.mrr, curQ.mrr))) wrong.push('照抄池与旧口径不同值')
+  if (!(same(oldP.hit1, curP.hit1) && same(oldP.hit3, curP.hit3) && same(oldP.mrr, curP.mrr))) wrong.push('换说法池与旧口径不同值')
+  if (!(same(oldA.hit1, curA.hit1) && same(oldA.mrr, curA.mrr))) wrong.push('锚点池与旧口径不同值')
+  // ⑦ 覆盖度本身不被协调因子改动：cover 说的还是「占了几成词」，不跟着权重走
+  const coversAt = (opts) => {
+    const m = new Map()
+    for (const { q } of fx.queries) {
+      for (const h of V.search(q, docs, { k: K, ...opts })) m.set(`${q}|${h.id}`, h.cover)
+    }
+    return m
+  }
+  const c0 = coversAt({ coordW: 0, coordPow: 1 })
+  const c1 = coversAt({})
+  let coverMoved = 0
+  let coverShared = 0
+  for (const [k, v] of c0) {
+    if (!c1.has(k)) continue
+    coverShared++
+    if (c1.get(k) !== v) coverMoved++
+  }
+  if (coverMoved !== 0 || coverShared < 20) wrong.push(`cover 跟着权重变了 ${coverMoved} 处（只比到 ${coverShared} 条）`)
+  // ⑧ 老规矩不破：正文命中的压过只在 keywords 里提到的（标签不是正文）
+  const tagDocs = [
+    mk('body-hit', '甲组乙组丙组都在这条正文里'),
+    { id: 'kw-only', level: 'fact', content: '另一件事，什么都没提', title: '', keywords: ['甲组', '乙组', '丙组'], importance: 1, status: 'active' },
+  ]
+  const tagRank = V.search('甲组乙组丙组', tagDocs, { k: 2 }).map((h) => String(h.id))
+  if (tagRank[0] !== 'body-hit') wrong.push('只在 keywords 里的压过了正文命中的（破 0.2.152 的规矩）')
+  // ⑨ 有记：文档写清读数与代价
+  const int163 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des163 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  if (!(int163.includes('## 9.170') && int163.includes('0.873') && int163.includes('0.357'))) wrong.push('INTERNAL 9.170 没写读数')
+  if (!(des163.includes('## 175') && des163.includes('覆盖度'))) wrong.push('DESIGN 175 没写原则')
+
+  check(
+    'G22 覆盖度是证据：抬它能把分差拉开、三池一条不亏、关掉精确回旧口径，自带四道阴性对照',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `COORD_W=${V.COORD_W_DEF} POW=${V.COORD_POW_DEF}；分差 ${rNarrow.toFixed(2)} → ${rWide.toFixed(2)}（幂次 ${mPow1.toFixed(3)} → ${mPow12.toFixed(3)}）；照抄 ${curQ.hit1.toFixed(3)}/${curQ.hit3.toFixed(3)}/${curQ.mrr.toFixed(3)} · 换说法 ${curP.hit1.toFixed(3)}/${curP.hit3.toFixed(3)}/${curP.mrr.toFixed(3)} · 锚点 ${curA.hit1.toFixed(3)}/${curA.hit3.toFixed(3)}/${curA.mrr.toFixed(3)}`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
