@@ -7073,6 +7073,73 @@ check(
   check('RS8 文案三语都在（zh / en / pt-br 各 5 条链体检键）', rsMissing.length === 0, rsMissing.join(' '))
 }
 
+// RT0-RT5（0.2.143）：相关度下限按分数裁，可分数排的是「措辞贴不贴这次提问」，不是「谁接了班」。
+// 退位的旧说法字面很贴就能进榜，接手它的新说法措辞朴素、掉到下限以下被裁掉——读者只看到作废的那条。
+// 这一组验「被裁的接班者要提上来、提上来要说出来、认不出就不动、min_rel=0 时不多此一举」。
+{
+  const rtShown = [{ id: 'old11111-1', content: '口径（已被取代：new22222「新说法正文」，2026-11-21）' }]
+  const rtCut = [{ id: 'new22222-9', content: '新说法正文' }]
+  check('RT0 纯函数：被裁的那条正是榜上某条的接手者 → 提上来', Meow.liftSuccessors(rtShown, rtCut).length === 1 && Meow.liftSuccessors(rtShown, rtCut)[0].id === 'new22222-9')
+  const rtAmb = [
+    { id: 'new22222-9', content: '完全不同的甲' },
+    { id: 'new22222-8', content: '完全不同的乙' },
+  ]
+  check('RT1 认不出是谁就不动：同前缀多条、开头都对不上 → 一条都不提（提错人比不提更坏）', Meow.liftSuccessors(rtShown, rtAmb).length === 0)
+  const rtMany = [
+    { id: 'a1111111-1', content: 'x（已被取代：b1111111「甲」，2026-11-21）' },
+    { id: 'a2222222-1', content: 'y（已被取代：b2222222「乙」，2026-11-21）' },
+    { id: 'a3333333-1', content: 'z（已被取代：b3333333「丙」，2026-11-21）' },
+    { id: 'a4444444-1', content: 'w（已被取代：b4444444「丁」，2026-11-21）' },
+  ]
+  const rtCut4 = [
+    { id: 'b1111111-9', content: '甲' },
+    { id: 'b2222222-9', content: '乙' },
+    { id: 'b3333333-9', content: '丙' },
+    { id: 'b4444444-9', content: '丁' },
+  ]
+  check('RT2 有上限：四对也只提三条（下限是省 token 的旋钮，不是越多越好）', Meow.liftSuccessors(rtMany, rtCut4).length === 3)
+  const rtWs = mkdtempSync(join(tmpdir(), 'meow-lift-'))
+  Meow.trustWorkspace(rtWs)
+  const rtExec = { agent: { session: { header: { cwd: rtWs, id: 'sess-lift' } } } }
+  const rtRun = (name, args) => tools.get(name).execute(args, rtExec)
+  const rtText = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+  const rtDb = Meow.getDb(rtWs, '.dsh-meow')
+  const rtOld = rtDb.insert({
+    level: 'fact',
+    content: '海沟折叠口径 三档权重 排序 结论 海沟折叠口径 三档权重 排序 结论 海沟折叠口径 三档权重 排序 结论 这一段故意写很长，用来把榜首压住。',
+    keywords: ['海沟折叠口径', '三档权重', '排序', '结论'],
+    importance: 3,
+    project: '探针提升',
+  })
+  const rtNew = rtDb.insert({ level: 'fact', content: '新说法：口径已改成按状态排。', keywords: ['结论'], importance: 2, project: '探针提升' })
+  rtDb.update('fact', rtOld.id, {
+    status: 'stale',
+    content: `海沟折叠口径 三档权重 排序 结论 海沟折叠口径 三档权重 排序 结论 海沟折叠口径 三档权重 排序 结论 这一段故意写很长，用来把榜首压住。（已被取代：${String(rtNew.id).slice(0, 8)}「新说法：口径已改成按状态排。」，2026-11-21）`,
+  })
+  const rtOldShort = String(rtOld.id).slice(0, 8)
+  const rtNewShort = String(rtNew.id).slice(0, 8)
+  const rtSearch = rtText(await rtRun('memory_search', { query: '海沟折叠口径 三档权重 排序 结论', status: 'all', k: 5, content_max: 200 }))
+  check(
+    'RT3 真工具：接手者本来在下限以下，这次被提上来（榜上不只那条退位的）',
+    rtSearch.includes(rtOldShort) && rtSearch.includes(rtNewShort) && rtSearch.includes('并展开'),
+    rtSearch.replace(/\s+/g, ' ').slice(0, 300),
+  )
+  check('RT4 真工具：提上来时明说「上面那条已被取代，别再当结论用」', rtSearch.includes('别再当结论用') && rtSearch.includes(rtNewShort))
+  const rtAll = rtText(await rtRun('memory_search', { query: '海沟折叠口径 三档权重 排序 结论', status: 'all', k: 5, content_max: 200, min_rel: 0 }))
+  check('RT5 min_rel=0 时不多此一举：没有东西被裁，也就没有「一并展开」这句', !rtAll.includes('并展开'))
+  try {
+    rmSync(rtWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+  const rtMissing = []
+  for (const lang of ['zh', 'en', 'pt-br']) {
+    const body = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lang, 'labels.md'), 'utf8')
+    if (!body.includes('- search.floorLift:')) rtMissing.push(lang)
+  }
+  check('RT6 文案三语都在', rtMissing.length === 0, rtMissing.join(' '))
+}
+
 for (const d of disposers) {
   try {
     d()

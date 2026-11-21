@@ -3357,9 +3357,13 @@ function searchTool(dir) {
       const ranked = search(query, docs, { k: docs.length, explain });
       const topScore = ranked.length > 0 ? ranked[0].score : 0;
       const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
-      const belowFloor = ranked.length - aboveFloor.length;
+      // [macro-fusion 0.2.143] 裁之前先问一句「被裁的是不是榜上某条的接手者」——是就提上来。
+      const cutRows = ranked.slice(aboveFloor.length);
+      const lifted = minRel > 0 ? liftSuccessors(aboveFloor, cutRows) : [];
+      const floorKept = lifted.length === 0 ? aboveFloor : [...aboveFloor, ...lifted];
+      const belowFloor = cutRows.length - lifted.length;
       const dedupeOn = parsed.dedupe !== false;
-      const foldedRes = dedupeOn ? foldNearDupes(aboveFloor, byId) : { kept: aboveFloor, folded: 0, dropped: [] };
+      const foldedRes = dedupeOn ? foldNearDupes(floorKept, byId) : { kept: floorKept, folded: 0, dropped: [] };
       const unique = foldedRes.kept;
       // [macro-fusion 0.2.141] 折了谁、留下的是谁，都要点名——否则「另一条更该信」这件事永远看不见。
       const foldKept = [...new Set((foldedRes.dropped ?? []).map((d) => String(d.keep).slice(0, 8)))].join("、");
@@ -3372,6 +3376,15 @@ function searchTool(dir) {
           dropped: foldDropped
         })
         : "";
+      // [macro-fusion 0.2.143] 提上来的要说出来：读者得知道「上面那条已退位，接它班的是这条」。
+      const liftIds = lifted.map((h) => String(h.id).slice(0, 8)).join("\u3001");
+      const liftNote = lifted.length === 0
+        ? ""
+        : safeKeyed("search.floorLift", "\u53e6\u6709 {n} \u6761\u76f8\u5173\u5ea6\u4f4e\u4e8e\u9996\u699c\u7684 {pct}%\uff0c\u4f46\u5b83\u4eec\u6b63\u662f\u699c\u4e0a\u67d0\u6761\u7684\u63a5\u624b\u6761\u76ee\uff08{ids}\uff09\uff0c\u8fd9\u6b21\u4e00\u5e76\u5c55\u5f00\u2014\u2014\u4e0a\u9762\u5199\u7740\u300c\u5df2\u88ab\u53d6\u4ee3\u300d\u7684\u90a3\u6761\u522b\u518d\u5f53\u7ed3\u8bba\u7528\u3002", {
+          n: String(lifted.length),
+          pct: String(Math.round(minRel * 100)),
+          ids: liftIds
+        });
       const relNote = belowFloor > 0
         ? `另有 ${belowFloor} 条相关度不到榜首的 ${Math.round(minRel * 100)}%（最高的 ${Math.round(ranked[aboveFloor.length].score * 100) / 100} 分，榜首 ${Math.round(topScore * 100) / 100} 分）没展开：它们多半只沾到一两个词，展开会挤掉真正相关的条目、也让回执变长。要看全量就传 min_rel=0。`
         : "";
@@ -3401,7 +3414,7 @@ function searchTool(dir) {
       const statusDownNote = offNow.length === 0
         ? ""
         : safeKeyed("search.statusDown", "这次命中有 {n} 条不是在用的（stale=已完结或被取代，archived=作废）：它们已按 {stale} / {arch} 降权排在后面，别当成现在的结论用；只要在用的就在参数里加 status:\"active\"。", { n: String(offNow.length), stale: String(STATUS_WEIGHT.stale), arch: String(STATUS_WEIGHT.archived) });
-      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
+      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {
@@ -4481,6 +4494,31 @@ function dreamChainIssues(allRows, db) {
   }
   out.sort((x, y) => y.at - x.at);
   return { list: out.slice(0, DREAM_CHAIN_MAX), total: out.length };
+}
+// [macro-fusion 0.2.143] 相关度下限按分数裁，可分数排的是「措辞贴不贴这次提问」，不是「谁接了班」：
+// 一条退位的旧说法字面很贴、分很高进了榜，接手它的新说法措辞朴素、掉到下限以下被裁掉——
+// 于是读者只看到已经作废的那条，越照着它改越错。所以下限裁完之后要回看一眼：被裁的那几条里，
+// 有没有哪条正是榜上某条的接手者？有就提上来（最多 LIFT_MAX 条，顺序仍按分数排）。
+// 认不出是谁（同前缀多条、开头都对不上）就不动——提错人比不提更坏。
+var LIFT_MAX = 3;
+function liftSuccessors(shown, cut) {
+  if (shown.length === 0 || cut.length === 0) return [];
+  const out = [];
+  for (const h of shown) {
+    const mark = chainMarkOf(h.content);
+    if (mark === null) continue;
+    const cand = cut.filter((c) => String(c.id ?? "").slice(0, 8) === mark.id8);
+    if (cand.length === 0) continue;
+    const sure = cand.length > 1 && mark.head !== ""
+      ? cand.filter((c) => chainHeadMatch(chainHeadOf(c.content), mark.head))
+      : cand;
+    if (sure.length !== 1) continue;
+    const one = sure[0];
+    if (out.some((x) => String(x.id) === String(one.id))) continue;
+    if (out.length >= LIFT_MAX) break;
+    out.push(one);
+  }
+  return out;
 }
 // 渲染这一段：没有断链就返回空串（干净清单一个字不加）。抽成纯函数是为了探针能直接验文案，
 // 不用为了看一句话去造一整个 dream 轮次。
@@ -7741,6 +7779,7 @@ export {
   consecutiveToolSteps,
   disableWorkspaceTrust,
   dreamChainBlock,
+  liftSuccessors,
   dreamChainIssues,
   dreamCommandDefinition,
   dreamPlanDigest,

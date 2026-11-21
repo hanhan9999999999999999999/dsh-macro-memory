@@ -5832,11 +5832,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     '下限: 排序第一位永远留着（下限再高也不许把结果收空），且先按分数线滤再折叠（折叠只动尾巴不动榜首）',
     meowSrc.includes(
       'const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;',
-    ) && meowSrc.indexOf('const aboveFloor') < meowSrc.indexOf('foldNearDupes(aboveFloor, byId)'),
+    ) && meowSrc.indexOf('const aboveFloor') < meowSrc.indexOf('foldNearDupes(floorKept, byId)'),
   )
   check(
     '下限: 被收掉的尾巴要报数（还剩几条、最高几分），并给出 min_rel=0 的出路',
-    meowSrc.includes('const belowFloor = ranked.length - aboveFloor.length') &&
+    meowSrc.includes('const belowFloor = cutRows.length - lifted.length') &&
       meowSrc.includes('要看全量就传 min_rel=0'),
   )
   check(
@@ -5934,7 +5934,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     '跨层重复: 检索侧折叠逐字级重复，且只折在分数排序之后（保留榜首那条）',
     meowSrc.includes('function foldNearDupes(hits, byId) {') &&
       meowSrc.includes('similarity(one.head.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD') &&
-      meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(aboveFloor, byId) : { kept: aboveFloor, folded: 0, dropped: [] };'),
+      meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(floorKept, byId) : { kept: floorKept, folded: 0, dropped: [] };'),
   )
   check(
     '跨层重复: 折叠报条数、说清常见成因，并给 dedupe: false 出口（收窄必带出口）',
@@ -9515,6 +9515,32 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     }),
   )
   check('FZ 不建表: 只读现有行，不加列不加索引', !/ALTER TABLE|CREATE INDEX/.test(meowSrc.slice(meowSrc.indexOf('function dreamChainIssues('), meowSrc.indexOf('function dreamChainBlock('))))
+}
+
+// GA（0.2.143）：相关度下限按分数裁，可分数排的是措辞，不是「谁接了班」。
+// 退位旧说法字面很贴就能进榜，接手它的新说法掉到下限以下被裁掉——读者只看到作废的那条。
+{
+  const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const meowMod = await import('./vendor/meow-memory/lib/index.js')
+  check('GA 源码: 下限裁完先回看接班者，再交给折叠', meowSrc.includes('const lifted = minRel > 0 ? liftSuccessors(aboveFloor, cutRows) : [];') && meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(floorKept, byId)'))
+  check('GA 源码: 认不出是谁就不提（同前缀多条、开头对不上 → 不动）', meowSrc.includes('function liftSuccessors(shown, cut)') && meowSrc.includes('if (sure.length !== 1) continue;'))
+  check('GA 源码: 提上来的有上限，且要进回执', meowSrc.includes('var LIFT_MAX = 3;') && meowSrc.includes('search.floorLift') && meowSrc.includes('relNote, liftNote,'))
+  const gaShown = [{ id: 'old11111-1', content: '口径（已被取代：new22222「新说法正文」，2026-11-21）' }]
+  const gaCut = [{ id: 'new22222-9', content: '新说法正文' }]
+  check('GA 行为: 被裁的接班者提上来', meowMod.liftSuccessors(gaShown, gaCut).length === 1 && meowMod.liftSuccessors(gaShown, gaCut)[0].id === 'new22222-9')
+  const gaAmb = [
+    { id: 'new22222-9', content: '完全不同的甲' },
+    { id: 'new22222-8', content: '完全不同的乙' },
+  ]
+  check('GA 行为: 撞车且开头对不上 → 一条都不提', meowMod.liftSuccessors(gaShown, gaAmb).length === 0)
+  const gaMany = ['1', '2', '3', '4'].map((n) => ({ id: `a${n}${n}${n}${n}${n}${n}${n}-1`, content: `x（已被取代：b${n}${n}${n}${n}${n}${n}${n}「甲${n}」，2026-11-21）` }))
+  const gaCut4 = ['1', '2', '3', '4'].map((n) => ({ id: `b${n}${n}${n}${n}${n}${n}${n}-9`, content: `甲${n}` }))
+  check('GA 行为: 四对也只提三条（上限 3）', meowMod.liftSuccessors(gaMany, gaCut4).length === 3)
+  check('GA 克制: min_rel=0 时不算、不拼这句话', meowSrc.includes('const liftNote = lifted.length === 0') && meowMod.liftSuccessors([], gaCut).length === 0)
+  check(
+    'GA 文案: 一句话说清「它们才是接班者、上面那条别再当结论」（三语）',
+    ['zh', 'en', 'pt-br'].every((lang) => readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8').includes('- search.floorLift:')),
+  )
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
