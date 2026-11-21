@@ -52,7 +52,7 @@
                                                       "order":  "desc"
                                                   }
                                   },
-                     "publishTimestamp":  1795244280
+                     "publishTimestamp":  1795245464
                  },
     "plugins":  [
                     {
@@ -97,20 +97,20 @@
                                      },
                         "versions":  [
                                          {
-                                             "version":  "0.2.142",
-                                             "publishTimestamp":  1795244280,
+                                             "version":  "0.2.143",
+                                             "publishTimestamp":  1795245464,
                                              "source":  {
                                                             "type":  "git",
                                                             "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                                            "commit":  "fd5c49aeee3b886f8b3d201dbc76c69cbbeda848"
+                                                            "commit":  "5689e74bc5568944ac05ad89ead14349e34a3d80"
                                                         }
                                          }
                                      ],
-                        "version":  "0.2.142",
+                        "version":  "0.2.143",
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit":  "fd5c49aeee3b886f8b3d201dbc76c69cbbeda848"
+                                       "commit":  "5689e74bc5568944ac05ad89ead14349e34a3d80"
                                    }
                     }
                 ]
