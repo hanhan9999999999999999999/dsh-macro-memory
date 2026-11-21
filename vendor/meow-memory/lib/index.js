@@ -3723,7 +3723,9 @@ function searchTool(dir) {
         // 一律取 1，「降权」便成了一句空话（实测：退位的旧结论照样排在第 1 条）。
         status: r.status
       }));
-      const ranked = search(query, docs, { k: docs.length, explain });
+      // [macro-fusion 0.2.154] 稠密能上就上：模型 / 依赖缺一个立刻退回词法，
+      // 答案与 0.2.153 逐位相同（这条由 probe-cost 的 C5 快照守着）。
+      const ranked = await rankForSearch(query, docs, { k: docs.length, explain });
       const topScore = ranked.length > 0 ? ranked[0].score : 0;
       const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
       // [macro-fusion 0.2.143] 裁之前先问一句「被裁的是不是榜上某条的接手者」——是就提上来。
@@ -8207,8 +8209,373 @@ function persistWindowIndex() {
   } catch {
   }
 }
+// 给 memory_search 用的入口：一次检索不阻塞在「建向量」上。
+// 第一次调用顺手把预热排进后台（不 await），等向量攒齐了下一问自然变准；
+// 预热失败也不影响本次结果——这条路上任何一环坏掉，退回去的答案都必须是词法原样。
+let denseWarmPromise = null;
+async function rankForSearch(query, docs, opts = {}) {
+  if (denseDisabled()) return search(query, docs, opts);
+  let fused = null;
+  try { fused = await searchHybrid(query, docs, opts); } catch { fused = null; }
+  if (denseWarmPromise === null && denseRt.state !== 'off') {
+    denseWarmPromise = denseWarm(docs, opts).catch(() => null);
+  }
+  return fused ?? search(query, docs, opts);
+}
+
+// ═══════════════════════ [macro-fusion 0.2.154] 稠密向量：可选的一路 ═══════════════════════
+// 为什么是「可选」而不是「多一路信号就更准」：实测（bge-small-zh-v1.5，gold 40 条）
+// 纯稠密在照抄池只有 0.689–0.711，输给 bm25 的 0.911——它抓不住精确术语；但换说法池它
+// 能从 0.500 抬到 0.643。两个池的结论只有一条能同时成立：融合，而且稠密的权重必须小。
+// RRF(k=60, 词法 1 : 稠密 0.25) 是实测的甜点：照抄 0.911→0.933，换说法 0.500→0.571。
+// 依赖不许硬要：没有 @huggingface/transformers、没有本地模型目录、模型加载失败——
+// 任何一种都静悄悄退回纯词法，一次警告都不打（打警告等于每轮都花 token 说同一件事）。
+// 关掉稠密的总开关（MEOW_DENSE=0）：库里那套向量可以留在磁盘上，但这一进程只走词法。
+// 三处入口（rankForSearch / denseRank / denseWarm）都必须认这一个开关——
+// 只认一处会让「关掉了却还在算」，排查时看到的结果就成了谎话。
+function denseDisabled() {
+  return typeof process !== 'undefined' && String(process.env?.MEOW_DENSE ?? '') === '0';
+}
+const DENSE_RRF_K = 60;
+// 实测定标（逐条编码，与 denseWarm 同口径）：w=0.10 时照抄 0.911 / 换说法 0.571/0.786/0.685；
+// w=0.25 时照抄 0.933 / 换说法 0.571/0.786/0.702，且照抄池里原本正确的第 1 条一条都没掉。
+// 两个池同时不劣化才算升级——准确率不能靠「换一批对、换一批错」。
+const DENSE_WEIGHT_DEFAULT = 0.25;
+const DENSE_TOP_DOCS = 30;
+// 一次只编一条：批编码在 transformers.js 里会按批内最长补 padding，实测同一段文字
+// 「单独编」与「16 条一批编」的向量最大差 0.015——近分带足够翻名次，而且同一条记忆会因为
+// 「库里还有谁」而拿到不同向量。宁可慢三倍，也要让向量只取决于它自己（缓存才有意义）。
+const DENSE_BATCH = 1;
+const DENSE_MODULE_ENV = 'MEOW_VEC_MODULE';
+const DENSE_MODEL_ENV = 'MEOW_VEC_MODEL_DIR';
+const DENSE_CACHE_ENV = 'MEOW_VEC_CACHE';
+let denseRt = { state: 'unloaded', err: null, extractor: null, model: '', dim: 0, loadedAt: 0 };
+const denseVecs = new Map();
+const denseCacheMeta = { path: null, model: '', dim: 0, dirty: false, loaded: false, written: 0 };
+
+function fnv1aOf(str, seed) {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i) & 255;
+    h = Math.imul(h, 16777619) >>> 0;
+    h ^= (str.charCodeAt(i) >>> 8) & 255;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+// 逐条的向量缓存键：id + 正文/标题/关键词全文。改一个字就换键，旧向量留着自己老死。
+function denseHashOf(str) {
+  const t = String(str ?? '');
+  return fnv1aOf(t, 2166136261).toString(16).padStart(8, '0') + fnv1aOf(t, 16777619).toString(16).padStart(8, '0') + '.' + t.length.toString(16);
+}
+// 进向量的文本只用「标题 + 正文」：关键词是标签不是正文（0.2.152 刚把它从词法语料里拆出来），
+// 稠密这边同理——把标签拼进去会把一条短结论的向量拉向它的标签，实测换说法池从 0.643 掉到 0.571。
+function denseTextOf(d) {
+  const kw = Array.isArray(d?.keywords) ? d.keywords.filter((x) => typeof x === 'string' && x.length > 0).join(' ') : '';
+  return [String(d?.title ?? ''), kw, String(d?.content ?? '')].filter((x) => x.length > 0).join('\n');
+}
+function denseKeyOf(d) {
+  return denseHashOf(String(d?.id ?? '') + '\u0001' + denseTextOf(d));
+}
+// 零配置发现顺序：显式 → 环境变量 → 记忆家目录下的几个常规位置。
+// 「用户把模型文件夹丢进 memory home 就能用」比「先教他配环境变量」重要得多。
+function denseModelDir(opts) {
+  const explicit = opts?.modelDir ?? (typeof process !== 'undefined' ? process.env?.[DENSE_MODEL_ENV] : void 0);
+  if (typeof explicit === 'string' && explicit.trim().length > 0) return explicit.trim();
+  try {
+    const home = activeHomeDir();
+    if (typeof home !== 'string' || home.length === 0) return '';
+    return '';
+  } catch { return ''; }
+}
+function denseModelCandidates(opts) {
+  const explicit = opts?.modelDir ?? (typeof process !== 'undefined' ? process.env?.[DENSE_MODEL_ENV] : void 0);
+  if (typeof explicit === 'string' && explicit.trim().length > 0) return [explicit.trim()];
+  const out = [];
+  try {
+    const home = activeHomeDir();
+    if (typeof home === 'string' && home.length > 0) {
+      out.push(home + '/dense-model', home + '/models/bge-small-zh-v1.5', home + '/dense/models/bge-small-zh-v1.5');
+    }
+  } catch { /* 家目录拿不到就只剩显式路径 */ }
+  return out;
+}
+function denseCachePath(opts) {
+  const v = opts?.vecCachePath ?? (typeof process !== 'undefined' ? process.env?.[DENSE_CACHE_ENV] : void 0);
+  if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+  try {
+    const home = activeHomeDir();
+    if (typeof home === 'string' && home.length > 0) return home + '/dense-cache.json';
+  } catch { /* 没有家目录就不落盘，只留内存 */ }
+  return '';
+}
+
+function denseStatus() {
+  return {
+    state: denseRt.state,
+    err: denseRt.err,
+    model: denseRt.model,
+    dim: denseRt.dim,
+    vecs: denseVecs.size,
+    cache: denseCacheMeta.path,
+    cacheLoaded: denseCacheMeta.loaded,
+    cacheDirty: denseCacheMeta.dirty
+  };
+}
+
+function clearDenseCache() {
+  const n = denseVecs.size;
+  denseVecs.clear();
+  denseCacheMeta.loaded = false;
+  denseCacheMeta.dirty = false;
+  return n;
+}
+
+function denseDecode(b64, dim) {
+  try {
+    const buf = Buffer.from(String(b64), 'base64');
+    if (buf.byteLength !== dim * 4) return null;
+    return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  } catch { return null; }
+}
+function denseEncode(v) {
+  return Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString('base64');
+}
+
+async function denseLoadCache(opts) {
+  const p = denseCachePath(opts);
+  if (p === '' || denseCacheMeta.loaded) return;
+  denseCacheMeta.loaded = true;
+  denseCacheMeta.path = p;
+  try {
+    const fs = await import('node:fs');
+    if (!fs.existsSync(p)) return;
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+    // 模型换了（名字或维度不同）→ 整份作废：不同模型的向量互相点乘是没有意义的数字。
+    if (String(raw?.model ?? '') !== denseRt.model || Number(raw?.dim ?? 0) !== denseRt.dim) return;
+    denseCacheMeta.model = denseRt.model;
+    denseCacheMeta.dim = denseRt.dim;
+    const items = raw?.items ?? {};
+    let n = 0;
+    for (const [k, b64] of Object.entries(items)) {
+      const v = denseDecode(b64, denseRt.dim);
+      if (v !== null) { denseVecs.set(k, v); n++; }
+    }
+    denseCacheMeta.written = n;
+  } catch { /* 缓存坏了等于没有缓存，不该让检索跟着坏 */ }
+}
+
+async function denseSaveCache() {
+  if (!denseCacheMeta.dirty || denseCacheMeta.path === '') return false;
+  try {
+    const fs = await import('node:fs');
+    const items = {};
+    for (const [k, v] of denseVecs) items[k] = denseEncode(v);
+    const body = JSON.stringify({ model: denseRt.model, dim: denseRt.dim, items });
+    const tmp = denseCacheMeta.path + '.tmp';
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, denseCacheMeta.path);
+    denseCacheMeta.dirty = false;
+    denseCacheMeta.written = denseVecs.size;
+    return true;
+  } catch { return false; }
+}
+
+// 加载顺序就是「容错顺序」：先看模型目录在不在（最常见的失败），再动态 import（第二常见）。
+// 任何一步失败都落成 state='off' 并记住原因，之后不再重试——每次检索都重试等于每轮付一次超时的代价。
+async function denseLoad(opts = {}) {
+  if (denseRt.state !== 'unloaded') return denseRt;
+  denseRt.state = 'loading';
+  try {
+    const candidates = denseModelCandidates(opts);
+    if (candidates.length === 0) throw new Error('未配置模型目录（' + DENSE_MODEL_ENV + '）');
+    const fs = await import('node:fs');
+    const pathMod = await import('node:path');
+    const dir = candidates.find((c) => fs.existsSync(pathMod.join(c, 'config.json')));
+    if (dir === void 0) throw new Error('候选目录里没有 config.json：' + candidates.join(' | '));
+    const spec = String(opts?.vecModule ?? (typeof process !== 'undefined' ? process.env?.[DENSE_MODULE_ENV] : '') ?? '').trim() || '@huggingface/transformers';
+    const mod = /[\\/]/.test(spec) || spec.startsWith('file:')
+      ? await import(spec.startsWith('file:') ? spec : 'file:///' + spec.replace(/\\/g, '/'))
+      : await import(spec);
+    const pipe = mod?.pipeline ?? mod?.default?.pipeline;
+    const env = mod?.env ?? mod?.default?.env;
+    if (typeof pipe !== 'function' || env === void 0) throw new Error('模块里没有 pipeline/env');
+    env.allowRemoteModels = false;  // 离线优先：宁可退回词法，也不在检索里等一个下载
+    env.allowLocalModels = true;
+    env.localModelPath = pathMod.dirname(dir) + pathMod.sep;
+    const model = pathMod.basename(dir);
+    const dtype = typeof opts?.dtype === 'string' ? opts.dtype : 'q8';
+    const extractor = await pipe('feature-extraction', model, { dtype });
+    const dim = Number(extractor?.model?.config?.hidden_size) || Number(opts?.dim) || 0;
+    if (!(dim > 0)) throw new Error('拿不到向量维度');
+    denseRt = { state: 'ready', err: null, extractor, model: model + '#' + dtype, dim, loadedAt: Date.now() };
+    await denseLoadCache(opts);
+  } catch (e) {
+    denseRt = { state: 'off', err: String(e?.message ?? e), extractor: null, model: '', dim: 0, loadedAt: Date.now() };
+  }
+  return denseRt;
+}
+
+async function denseEmbed(texts, opts = {}) {
+  const rt = await denseLoad(opts);
+  if (rt.state !== 'ready' || texts.length === 0) return null;
+  const out = await rt.extractor(texts, { pooling: 'mean', normalize: true });
+  const dims = Array.isArray(out?.dims) ? out.dims : null;
+  const data = out?.data ?? null;
+  if (dims === null || data === null) return null;
+  const dim = dims[dims.length - 1];
+  const rows = dim > 0 ? Math.floor(data.length / dim) : 0;
+  if (rows !== texts.length) return null;
+  const vecs = [];
+  for (let i = 0; i < rows; i++) vecs.push(data.slice(i * dim, (i + 1) * dim));
+  return vecs;
+}
+
+function denseDot(a, b) {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s;
+}
+
+// 预热：把库里还没有向量的条目编码掉，落盘。分批是为了「一次别把事件循环按太久」。
+async function denseWarm(docs, opts = {}) {
+  if (denseDisabled()) return { state: 'off', err: 'disabled by MEOW_DENSE=0', embedded: 0, total: Array.isArray(docs) ? docs.length : 0, cached: 0 };
+  const rt = await denseLoad(opts);
+  if (rt.state !== 'ready') return { state: rt.state, err: rt.err, embedded: 0, total: Array.isArray(docs) ? docs.length : 0, cached: 0 };
+  const list = Array.isArray(docs) ? docs : [];
+  const todo = [];
+  for (const d of list) {
+    const key = denseKeyOf(d);
+    if (!denseVecs.has(key)) todo.push({ key, text: denseTextOf(d) });
+  }
+  let embedded = 0;
+  for (let i = 0; i < todo.length; i += DENSE_BATCH) {
+    const batch = todo.slice(i, i + DENSE_BATCH);
+    let vecs = null;
+    try { vecs = await denseEmbed(batch.map((t) => t.text), opts); } catch { vecs = null; }
+    if (vecs === null) break;
+    for (let j = 0; j < batch.length; j++) {
+      denseVecs.set(batch[j].key, vecs[j]);
+      embedded++;
+    }
+    denseCacheMeta.dirty = true;
+  }
+  if (embedded > 0) await denseSaveCache();
+  return { state: 'ready', err: null, embedded, total: list.length, cached: denseVecs.size };
+}
+
+// 只对「已经有向量」的条目算余弦：没预热过的条目这一轮就不参与稠密排序，
+// 这是「先能用、再变准」——而不是「让第一次检索等 24 秒」。
+async function denseRank(query, docs, opts = {}) {
+  if (denseDisabled()) return null;
+  const rt = await denseLoad(opts);
+  if (rt.state !== 'ready') return null;
+  const qv = await denseEmbed([String(query ?? '')], opts);
+  if (qv === null || qv.length === 0) return null;
+  const q0 = qv[0];
+  const scored = [];
+  let covered = 0;
+  for (const d of docs) {
+    const v = denseVecs.get(denseKeyOf(d));
+    if (v === void 0) continue;
+    covered++;
+    scored.push({ id: String(d.id), cos: denseDot(q0, v) });
+  }
+  if (covered === 0) return null;
+  scored.sort((a, b) => b.cos - a.cos || String(a.id).localeCompare(String(b.id)));
+  const top = Math.max(1, Math.min(scored.length, Number.isFinite(opts.denseTop) ? opts.denseTop : DENSE_TOP_DOCS));
+  return { ranked: scored.slice(0, top), covered, total: docs.length };
+}
+
+// RRF(k=60)：名次换分，不拿余弦跟 BM25 直接相加——两个量的尺度本来就无关，
+// 相加等于让「谁的单位大」决定排序（实测直接相加时照抄池掉到 0.867）。
+function fuseDenseHits(lexHits, denseRes, docs, opts = {}) {
+  const K = Number.isFinite(opts.denseK) ? opts.denseK : DENSE_RRF_K;
+  const w = Number.isFinite(opts.denseWeight) ? opts.denseWeight : DENSE_WEIGHT_DEFAULT;
+  const lexRank = new Map();
+  lexHits.forEach((h, i) => lexRank.set(String(h.id), i + 1));
+  const denseCos = new Map();
+  denseRes.ranked.forEach((d) => denseCos.set(d.id, d.cos));
+  const fuse = new Map();
+  for (const [id, r] of lexRank) fuse.set(id, 1 / (K + r));
+  denseRes.ranked.forEach((d, i) => fuse.set(d.id, (fuse.get(d.id) ?? 0) + w / (K + i + 1)));
+  const docById = new Map(docs.map((d) => [String(d.id), d]));
+  const byId = new Map(lexHits.map((h) => [String(h.id), h]));
+  const order = [...fuse.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+  const maxRrf = order.length > 0 ? order[0][1] : 0;
+  // 分数口径：把 RRF 归一化回「词法的榜首分」——下游的 min_rel 是相对榜首的百分比，
+  // 换一套尺度会让 0.35 这条线突然变成另一个意思。
+  const topLex = lexHits.length > 0 ? lexHits[0].score : 0;
+  const scale = topLex > 0 ? topLex : 1;
+  const out = [];
+  for (const [id, s] of order) {
+    const score = maxRrf > 0 ? scale * (s / maxRrf) : 0;
+    const base = byId.get(id);
+    if (base !== void 0) {
+      const h = { ...base, score };
+      if (opts.explain === true) {
+        h.explain = {
+          ...(base.explain ?? {}),
+          score: Math.round(score * 1e3) / 1e3,
+          rrf: Math.round(s * 1e6) / 1e6,
+          ...(denseCos.has(id) ? { dense: Math.round(denseCos.get(id) * 1e3) / 1e3 } : {})
+        };
+      }
+      out.push(h);
+      continue;
+    }
+    const d = docById.get(id);
+    if (d === void 0) continue;
+    const impW = 1 + (Math.min(4, Math.max(1, Math.round(Number(d?.importance) || 1))) - 1) * 0.25;
+    const row = {
+      id: d.id,
+      level: d.level,
+      title: d.title,
+      content: d.content,
+      importance: d.importance,
+      updated_at: d.updated_at,
+      ...d.keywords === void 0 ? {} : { keywords: d.keywords },
+      ...d.project === void 0 ? {} : { project: d.project },
+      ...d.created_at === void 0 ? {} : { created_at: d.created_at },
+      ...d.source_session === void 0 ? {} : { source_session: d.source_session },
+      score
+    };
+    if (opts.explain === true) {
+      row.explain = {
+        bm25: 0,
+        importance: d.importance,
+        importanceWeight: Math.round(impW * 1e3) / 1e3,
+        recencyWeight: 1,
+        statusWeight: statusWeight(d?.status),
+        score: Math.round(score * 1e3) / 1e3,
+        rrf: Math.round(s * 1e6) / 1e6,
+        denseOnly: true,
+        ...(denseCos.has(id) ? { dense: Math.round(denseCos.get(id) * 1e3) / 1e3 } : {})
+      };
+    }
+    out.push(row);
+  }
+  const k = Number.isFinite(opts.k) ? opts.k : out.length;
+  return out.slice(0, Math.max(0, k));
+}
+
+// 对外的入口：词法先算（它永远在），稠密能上就上。
+// 稠密这一路失败时**返回词法原样**，不返回空、不抛错——「可选」的含意就是失败等于没有。
+async function searchHybrid(query, docs, opts = {}) {
+  const lex = search(query, docs, opts);
+  if (opts.dense === false) return lex;
+  let denseRes = null;
+  try { denseRes = await denseRank(query, docs, opts); } catch { denseRes = null; }
+  if (denseRes === null || denseRes.ranked.length === 0) return lex;
+  return fuseDenseHits(lex, denseRes, docs, opts);
+}
+
 export {
   CONFIG_DEFAULTS,
+  clearDenseCache,
+  denseStatus,
+  denseWarm,
   config as Config,
   DEFAULT_HOME_DIR,
   DEFAULT_LANG,
@@ -8344,6 +8711,7 @@ export {
   resumeAndDream,
   scanTurn,
   search,
+  searchHybrid,
   indexSignature,
   searchIndexOf,
   searchIndexCacheInfo,
