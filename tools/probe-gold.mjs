@@ -816,6 +816,87 @@ if (denseUsable) {
   )
 }
 
+// ── G23（0.2.165）：回执按置信档收口 ─────────────────────────────────────────
+// 这一组只问一件事：bandize 早就判断过「这条和榜首是不是一个量级」，回执有没有用它。
+// 判据必须同时说清三件事——省了多少、有没有丢东西、关得掉吗。
+{
+  const eng = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const wrong = []
+  const occur = (t) => eng.split(t).length - 1
+  if (occur('var RESULT_MIN_KEEP = 5;') !== 1) wrong.push('常量 RESULT_MIN_KEEP=5 不是唯一来源')
+  if (occur('function trimByBand(') !== 1) wrong.push('trimByBand 没有唯一实现')
+  if (occur('return trimByBand(') < 3) wrong.push('search / hybrid / dense 退路没有共用同一个裁剪口径')
+  if (!eng.includes('if (opts.keepBand === true) return hits.slice(0,')) wrong.push('hybrid 拿不到带档位的中间结果')
+  if (!eng.includes('h._band = b;')) wrong.push('bandize 没有把档位留在 hit 上')
+
+  // 行为：默认回执 = 同档 + 至少 5 条，且绝不越过 k
+  const lens = []
+  const sameBandOk = []
+  for (const { q } of fx.queries.slice(0, 20)) {
+    const all = V.search(q, docs, { k: 10, bandKeep: false }).length
+    const kept = V.search(q, docs, { k: 10 })
+    lens.push(kept.length)
+    // 下限只能补到「库里有几条」，不许凭空造：命中不足 5 条时就回那几条。
+    sameBandOk.push(kept.length >= Math.min(5, all) && kept.length <= 10)
+  }
+  if (!sameBandOk.every(Boolean)) wrong.push('默认回执不是「至少 5、最多 k」')
+
+  // 省：默认比关掉裁剪少得多（fixture 照抄池）
+  const avgOf = (opts, list = fx.queries) => list.reduce((a, x) => a + V.search(x.q, docs, { k: 10, ...opts }).length, 0) / list.length
+  const avgTrim = avgOf({})
+  const avgAll = avgOf({ bandKeep: false })
+  if (!(avgTrim < avgAll - 0.8)) wrong.push(`没省下多少：${avgTrim.toFixed(2)} vs ${avgAll.toFixed(2)}`)
+
+  // 不丢东西：三池 hit@1 / top5 与关掉裁剪逐池相同
+  const rankOf = (list, opts) => list.map(({ q, want }) => {
+    const ids = V.search(q, docs, { k: 10, ...opts }).map((h) => String(h.id))
+    return ids.findIndex((id) => want.includes(id))
+  })
+  const pools3 = [['照抄', fx.queries], ['换说法', fx.paraphrase], ['锚点', fx.anchor]]
+  const loss = []
+  for (const [name, list] of pools3) {
+    const a = rankOf(list, {})
+    const b = rankOf(list, { bandKeep: false })
+    const a5 = a.filter((r) => r >= 0 && r < 5).length
+    const b5 = b.filter((r) => r >= 0 && r < 5).length
+    const a1 = a.filter((r) => r === 0).length
+    const b1 = b.filter((r) => r === 0).length
+    if (a5 !== b5 || a1 !== b1) loss.push(`${name} ${a1}/${a5} vs ${b1}/${b5}`)
+  }
+  if (loss.length > 0) wrong.push('裁剪丢了正解：' + loss.join('；'))
+
+  // 关得掉：minKeep:0 与 bandKeep:false 逐位相同
+  let offOk = 0
+  for (const { q } of fx.queries.slice(0, 12)) {
+    const x = V.search(q, docs, { k: 10, bandKeep: false }).map((h) => h.id).join(',')
+    const y = V.search(q, docs, { k: 10, minKeep: 0 }).map((h) => h.id).join(',')
+    if (x === y) offOk++
+  }
+  if (offOk !== 12) wrong.push(`minKeep:0 与 bandKeep:false 不等价（${offOk}/12）`)
+
+  // k 更小时不许越界补
+  const small = V.search(fx.queries[0].q, docs, { k: 3 })
+  if (small.length > 3) wrong.push(`k=3 时回了 ${small.length} 条`)
+
+  // 下限确实在起作用（minKeep 抬高到 12 也不许越过 k）
+  const big = V.search(fx.queries[0].q, docs, { k: 10, minKeep: 12 })
+  if (big.length > 10) wrong.push('minKeep 大于 k 时越界')
+
+  // 文档在案
+  const int165 = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+  const des165 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  if (!(int165.includes('## 9.172') && int165.includes('RESULT_MIN_KEEP') && int165.includes('9.80'))) wrong.push('INTERNAL 9.172 没写读数与口径')
+  if (!(des165.includes('## 177') && des165.includes('回执'))) wrong.push('DESIGN 177 没写原则')
+
+  check(
+    'G23 回执按档收口：同档才回、至少 5 条、三池一条不丢、关得掉、doc 在案',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `默认 ${avgTrim.toFixed(2)} 条 vs 关掉 ${avgAll.toFixed(2)} 条（省 ${(100 * (1 - avgTrim / avgAll)).toFixed(0)}%）；三池 hit@1/top5 未变`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

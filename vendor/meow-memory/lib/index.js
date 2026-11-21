@@ -2036,6 +2036,16 @@ var IDENT_STEM_CREDIT = 0.5;
 // 这两个数跟 recency 豁免用的是同一个 85% 带——口径本来就该是一件事。
 var IMP_BAND = 0.85;
 var RECENCY_FLOOR = 0.6;
+// [macro-fusion 0.2.165] 回执按置信档裁剪：bandize 早就把候选按「和榜首是一个量级吗」分好了档，
+// 可回执一条不看它，照样按死 k 往回捞——真库 150 问上返回均值 9.80 条，而**正解 100% 落在
+// band <= 0**（照抄池 95.5%、换说法 84.6%、锚点 90%），band0 平均只有 1.08 条。
+// 也就是说默认回 10 条时，八条是同一批「沾边但不该看」的尾货，却要照价付 token。
+// 这里只做一件事：回执 = 与榜首同档的那几条，但最少 RESULT_MIN_KEEP 条（免得一句话都没有）。
+// 不改分数、不改排序、不改分档门槛；`opts.bandKeep:false` 或 `opts.minKeep:0` 一键回旧口径。
+// 实测 minKeep=5：五池 hit@1 与 top5 与 k=10 **完全一致**（42/44、10/13、8/10、148/150、5/11），
+// 回执均值 9.80 → 4.97（真库）、6.13 → 4.40（照抄）——省一半，一条不丢。
+// minKeep=3 会更省（2.99）但真库换说池掉 2 条（11 → 9），所以 5 是「零损失」的那一格。
+var RESULT_MIN_KEEP = 5;
 
 // [macro-fusion 0.2.159] 时间锚：问句自己指了一个具体时刻（版本号 / 日期），它问的就是
 // 「那一刻发生了什么」。这类问句上，新鲜度折扣与 stale 惩罚是在帮倒忙——被取代的是「现在的
@@ -2200,6 +2210,26 @@ function weakNoteOf(hits, opts) {
 
 // 按证据分档：先按词分排，再从头扫，凡是掉到本档锚点 85% 以下就开新档。
 // 档号升序即证据强度降序；权重只在同档内比较，跨档永远不许越级。
+// [macro-fusion 0.2.165] 回执裁剪的唯一落点：按 band 收口，最少 RESULT_MIN_KEEP 条。
+// 单独成函数是为了「词法一路」和「稠密融合一路」用同一个口径——两条路各裁一次会变成两套规矩。
+// hits 必须已 bandize（每条带 _band）；返回前把 _raw / _ident / _band 一并摘掉，别漏进回执。
+function trimByBand(hits, k, opts = {}) {
+  const minKeep = Number.isFinite(opts.minKeep) && opts.minKeep >= 0 ? Math.round(opts.minKeep) : RESULT_MIN_KEEP;
+  const want = Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length;
+  const sliced = hits.slice(0, want);
+  const keepAll = opts.bandKeep === false || minKeep === 0;
+  let sameBand = 0;
+  for (const h of sliced) if (!(h._band > 0)) sameBand++;
+  const keep = keepAll ? sliced.length : Math.min(sliced.length, Math.max(minKeep, sameBand));
+  const out = sliced.slice(0, keep);
+  for (const h of out) {
+    delete h._raw;
+    delete h._ident;
+    delete h._band;
+  }
+  return out;
+}
+
 function bandize(hits, rawKey) {
   if (hits.length < 2) return hits;
   const byRaw = hits.slice().sort((a, b) => b[rawKey] - a[rawKey]);
@@ -2219,7 +2249,7 @@ function bandize(hits, rawKey) {
     }
     bandOf.set(h, band);
   }
-  for (const [h, b] of bandOf) if (h.explain !== void 0) h.explain.band = b;
+  for (const [h, b] of bandOf) { h._band = b; if (h.explain !== void 0) h.explain.band = b; }
   hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score));
   return hits;
 }
@@ -2614,11 +2644,9 @@ function search(query, docs, opts = {}) {
   }
   // [macro-fusion 0.2.150] 分档排序：权重只能改判同档内的顺序，跨档不许越级。
   bandize(hits, '_raw');
-  for (const h of hits) {
-    delete h._raw;
-    delete h._ident;
-  }
-  return hits.slice(0, k);
+  // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
+  if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
+  return trimByBand(hits, k, opts);
 }
 function keywordHitScore(query, docs, opts = {}) {
   const k = opts.k ?? 2;
@@ -8848,12 +8876,13 @@ function fuseDenseHits(lexHits, denseRes, docs, opts = {}) {
 // 对外的入口：词法先算（它永远在），稠密能上就上。
 // 稠密这一路失败时**返回词法原样**，不返回空、不抛错——「可选」的含意就是失败等于没有。
 async function searchHybrid(query, docs, opts = {}) {
-  const lex = search(query, docs, opts);
-  if (opts.dense === false) return lex;
+  const lex = search(query, docs, { ...opts, keepBand: true });
+  // [0.2.165] 退路也要走同一个裁剪口径，否则「关掉稠密」和「纯词法」两条路的条数不一样。
+  if (opts.dense === false) return trimByBand(lex, opts.k, opts);
   let denseRes = null;
   try { denseRes = await denseRank(query, docs, opts); } catch { denseRes = null; }
-  if (denseRes === null || denseRes.ranked.length === 0) return lex;
-  return fuseDenseHits(lex, denseRes, docs, opts);
+  if (denseRes === null || denseRes.ranked.length === 0) return trimByBand(lex, opts.k, opts);
+  return trimByBand(fuseDenseHits(lex, denseRes, docs, opts), opts.k, opts);
 }
 
 export {

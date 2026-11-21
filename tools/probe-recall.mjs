@@ -299,7 +299,8 @@ const NF_DOCS = [
 // 噪声词单独成段（空格隔开）：剔掉它之后词表与「不含噪声词的那一问」逐字相同，NF6 才量得准。
 const NF_Q = '怎么 星图建图的延迟调下来'
 const nfOn = V.search(NF_Q, NF_DOCS, { k: 12 })
-const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false, funcFloor: false })
+// 同上：这条测噪声地板，回执裁剪（0.2.165）与它无关。
+const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false, funcFloor: false, bandKeep: false })
 const nfIds = (hits) => hits.map((h) => h.id).join(',')
 
 check(
@@ -501,7 +502,8 @@ const VT_DOCS = [
 ]
 const VT_Q = '怎么 把延迟调下来'
 const vtFuncOn = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, explain: true })
-const vtFuncOff = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, funcFloor: false })
+// 这条测的是虚词地板：回执裁剪（0.2.165 的 trimByBand）与它无关，所以要显式关掉。
+const vtFuncOff = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, funcFloor: false, bandKeep: false })
 const vtIds = (hits) => hits.map((h) => h.id).join(',')
 check(
   'VT1 虚词单独就能挡噪声：关掉噪声地板，只留虚词地板，六条只沾「怎么」的流水账进不了榜',
