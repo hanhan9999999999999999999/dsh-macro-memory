@@ -8961,5 +8961,45 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+
+// ── EY 调取精度三刀 + 反思闸门（0.2.133）
+{
+  const meowSrc133 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const searchSrc133 = readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8')
+  const M133 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const d133 = (id, content, keywords = []) => ({ id, level: 'fact', title: '', content, keywords, importance: 1, project: 'ey', updated_at: 1763e9, last_accessed_at: 1763e9 })
+  const sc133 = (hits, id) => hits.find((h) => h.id === id)?.score ?? 0
+
+  const covDocs = [d133('X', '口径面板都写错了'), d133('Y', '面板面板面板面板面板面板')]
+  const covOn = M133.search('口径 面板', covDocs, { k: 2 })
+  const covOff = M133.search('口径 面板', covDocs, { k: 2, coord: false })
+  check('EY 覆盖度·行为: 两个查询词都聊到的条目排第一（刷词频压不过它）', covOn[0]?.id === 'X')
+  check('EY 覆盖度·行为: 关掉 coord 之后刷词频的条目分数更高（闸确实在扣分）', sc133(covOff, 'Y') > sc133(covOn, 'Y'))
+
+  const fldDocs = [d133('P', '甲乙丙丁戊己', ['口径']), d133('Q', '口径甲乙丙丁')]
+  const fldOn = M133.search('口径', fldDocs, { k: 2 })
+  const fldOff = M133.search('口径', fldDocs, { k: 2, fieldBoost: false })
+  check('EY 字段权重·行为: keywords 命中的等长条目压过正文命中的条目', sc133(fldOn, 'P') > sc133(fldOn, 'Q'))
+  check('EY 字段权重·行为: 关掉后两者同分（差额只来自字段权重）', Math.abs(sc133(fldOff, 'P') - sc133(fldOff, 'Q')) < 1e-9)
+
+  const lenDocs = [d133('S', '记录打架'), d133('L', '记录一些旁枝末节的东西再说打架', ['冲突', '对不上', '不一致', '报表', '周报', '口径', '面板', '时间轴', '融合'])]
+  const lenNew = M133.search('记录 打架', lenDocs, { k: 2 })
+  const lenOld = M133.search('记录 打架', lenDocs, { k: 2, lengthOnBody: false })
+  check('EY 长度归一·行为: keywords 写得多的条目不再被正文长度稀释', sc133(lenNew, 'L') > sc133(lenOld, 'L') + 1e-9)
+  check('EY 长度归一·行为: 名次不变，短正文仍排在长正文前', sc133(lenNew, 'S') > sc133(lenNew, 'L'))
+  check('EY 三条补丁都能单独关掉回退', meowSrc133.includes('opts.coord === false') && meowSrc133.includes('opts.fieldBoost !== false') && meowSrc133.includes('opts.lengthOnBody === false'))
+  check('EY 星图扩散: 默认就扩散，只有 expand:false 才关', searchSrc133.includes('const wantExpand = args.expand !== false') && !searchSrc133.includes('args.expand === true || (args.expand !== false && hits === 0)'))
+
+  check('EY 反思·闸门: 不再因为「最后一步是 memory_* 」整轮免反思', !meowSrc133.includes('if (lastToolName !== void 0 && lastToolName.startsWith("memory_")) return;') && meowSrc133.includes('if (!sawNonMemory) return;'))
+  check('EY 反思·闸门: scanTurn 记下「有没有非记忆工具」和用户原话', meowSrc133.includes('let sawNonMemory = false;') && meowSrc133.includes('const userTexts = [];') && meowSrc133.includes('userText: userTexts.join("\\n").slice(-2e3)'))
+  check('EY 反思·事故信号: 主人发火 / 出错时阈值降到 1 步', meowSrc133.includes('var REFLECT_CUE = /(') && meowSrc133.includes('const NEED = CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns;'))
+  const pkg133 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'EY 检索精度: 版本与文档一起走（9.139 / 145）',
+    pkg133.version.split('.').map((x) => Number(x))[2] >= 133 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.139 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 145 '),
+  )
+}
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

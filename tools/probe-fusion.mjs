@@ -3792,12 +3792,19 @@ try {
     (aoK.includes('k 是本地检索的条数') || aoK.includes('k 这次真的用上了')) && !aoK.includes('k 这次没参与'),
     aoK.split('\n').slice(-1)[0].slice(0, 90),
   )
-  const aoLimit = String(await run('memory_search', { query: 'AG探针', limit: 20 }))
+  const aoLimit = String(await run('memory_search', { query: 'AG探针', limit: 20, expand: false }))
   check(
     'AO6 本地检索给了 limit：说清它是 graph / bridge 的条数（0.2.65 起不再一律说「这次没用上 limit」）',
     aoLimit.includes('limit 是 graph / bridge 的条数') &&
       !aoLimit.includes('limit 只在 graph / bridge 模式生效'),
     aoLimit.slice(-140),
+  )
+  // 0.2.133 起扩散默认开：同一句 limit 的说法必须跟着默认值走，不能说成「没用上」
+  const aoLimitOn = String(await run('memory_search', { query: 'AG探针', limit: 20 }))
+  check(
+    'AO6b 默认扩散下给了 limit：说清它这次真的被扩散用上了',
+    aoLimitOn.includes('这次扩散真的用了它') && !aoLimitOn.includes('这次没有扩散'),
+    aoLimitOn.slice(-140),
   )
   const aoWeight = String(await run('memory_search', { query: 'AG探针', min_weight: 0.3 }))
   check(
@@ -5361,7 +5368,7 @@ check(
     }
     // AV4: 本地有命中、没扩散 —— 这才该说「没用上 limit」
     {
-      const r = await runSearch({ hits: 3 }, { query: '泡泡', limit: 7 })
+      const r = await runSearch({ hits: 3 }, { query: '泡泡', limit: 7, expand: false })
       check(
         'AV4 本地有结果、没触发扩散时说「这次没有扩散，limit 没用上」才对',
         r.spreadCalls.length === 0 && r.text.includes('这次没有扩散，limit 没用上'),
@@ -5784,7 +5791,7 @@ check(
 
   // AZ1: local + memory_ids 但没扩散（命中 1 条、没给 expand）
   {
-    const r = await run({}, { query: '泡泡', memory_ids: ['aaaa1111'] })
+    const r = await run({}, { query: '泡泡', memory_ids: ['aaaa1111'], expand: false })
     check(
       'AZ1 local 命中后不扩散时给了 memory_ids：必须说「这次没有扩散，它没用上」',
       r.text.includes('memory_ids 只在扩散时当起点') && r.text.includes('这次没有扩散，它没用上'),

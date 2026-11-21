@@ -1968,6 +1968,15 @@ function search(query, docs, opts = {}) {
     return extra ? plainToks[i].concat(extra) : plainToks[i];
   }) : plainToks;
   const avgdl = docToks.reduce((s, t) => s + t.length, 0) / n || 1;
+  // [macro-fusion 0.2.133b] BM25 的长度归一原本拿 docToks 的长度当分母，而 docToks 里
+  // 混着 title、8~13 个 keywords 和会话扩词。于是「元数据写得越全的条目，正文越被稀释」——
+  // 越是好条目越吃亏。长度只该量正文。lengthOnBody:false 可回到旧口径做对照。
+  const bodyLen = docs.map((d) => {
+    const t = tokenize(String(d.content ?? ""));
+    return t.length > 0 ? t.length : 1;
+  });
+  const avgBody = bodyLen.reduce((s, x) => s + x, 0) / n || 1;
+
   const df = /* @__PURE__ */ new Map();
   const tf = [];
   for (const toks of docToks) {
@@ -1986,14 +1995,37 @@ function search(query, docs, opts = {}) {
   const b = 0.75;
   const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;
   const ENT_W = 0.8;
+  // [macro-fusion 0.2.133] 两条只做乘性加成、不改候选集的精度补丁。起因：本库的条目形态是
+  // 「短正文 + 8~13 个关键词」，而 docText 把 title / 正文 / keywords 平铺成一个字符串，三者等权——
+  // 一个词出现在 keywords（那正是「用户会怎么问」的逆向词）和出现在正文里，得分一模一样。
+  // 另一个洞是加法式 BM25 没有覆盖度概念：命中一个词十次，能压过命中五个词各一次，而记忆调取
+  // 要的恰恰是「这几个词都聊到了」。两条都可一键关（fieldBoost:false / coord:false），便于回退对照。
+  const FIELD_TITLE_W = 0.6;
+  const FIELD_KW_W = 0.35;
+  const COORD_W = 0.35;
+  const useField = opts.fieldBoost !== false;
+  const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? "")))) : null;
+  const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ""))))) : null;
+  const idfOf = (t) => Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+  const qTerms = [...new Set(q)];
+  const qIdfSum = opts.coord === false ? 0 : qTerms.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
   const raw = docs.map((_, di) => {
     let s = 0;
-    const len = docToks[di].length;
+    const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
+    const dl = opts.lengthOnBody === false ? avgdl : avgBody;
     for (const term of q) {
       const f = tf[di].get(term);
       if (!f) continue;
-      const idf = Math.log(1 + (n - (df.get(term) ?? 0) + 0.5) / ((df.get(term) ?? 0) + 0.5));
-      s += idf * (f * (k1 + 1) / (f + k1 * (1 - b + b * len / avgdl)));
+      const idf = idfOf(term);
+      let fw = 1;
+      if (titleSets !== null && titleSets[di].has(term)) fw += FIELD_TITLE_W;
+      if (kwSets !== null && kwSets[di].has(term)) fw += FIELD_KW_W;
+      s += idf * fw * (f * (k1 + 1) / (f + k1 * (1 - b + b * len / dl)));
+    }
+    if (qIdfSum > 0) {
+      let cover = 0;
+      for (const term of qTerms) if (tf[di].has(term)) cover += idfOf(term);
+      if (cover > 0) s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);
     }
     if (entSets) {
       let hit = 0;
@@ -5267,9 +5299,13 @@ function scanTurn(events) {
     }
   }
   let sawToolCall = false;
+  // [macro-fusion 0.2.133] 反差别的两个信号：这一轮到底有没有干过「不是记忆」的活
+  // （决定要不要反思），以及用户自己说了什么（决定要不要立刻反思）。
+  let sawNonMemory = false;
   let lastToolName;
   let sawReflect = false;
   const texts = [];
+  const userTexts = [];
   for (let i = startIdx; i < events.length; i++) {
     const e = events[i];
     if (e?.type === "user/message") {
@@ -5278,13 +5314,18 @@ function scanTurn(events) {
       if (isMeowSource(src) && msgText.includes(REFLECT_MARKER)) {
         sawReflect = true;
       } else {
-        for (const b of e.data?.content ?? []) if (b.type === "text" && b.text) texts.push(b.text);
+        for (const b of e.data?.content ?? []) if (b.type === "text" && b.text) {
+          texts.push(b.text);
+          userTexts.push(b.text);
+        }
+
       }
     } else if (e?.type === "assistant/message") {
       for (const block of e.data?.message?.content ?? []) {
         if (block.type === "tool-call") {
           sawToolCall = true;
           lastToolName = block.name;
+          if (!block.name.startsWith("memory_")) sawNonMemory = true;
         } else if (block.type === "text" && block.text) {
           texts.push(block.text);
         }
@@ -5294,10 +5335,11 @@ function scanTurn(events) {
       if (typeof name2 === "string") {
         sawToolCall = true;
         lastToolName = name2;
+        if (!name2.startsWith("memory_")) sawNonMemory = true;
       }
     }
   }
-  return { sawToolCall, lastToolName, sawReflect, turnText: texts.join("\n").slice(-2e3) };
+  return { sawToolCall, sawNonMemory, lastToolName, sawReflect, turnText: texts.join("\n").slice(-2e3), userText: userTexts.join("\n").slice(-2e3) };
 }
 function consecutiveToolSteps(events) {
   let startIdx = 0;
@@ -5326,6 +5368,14 @@ function consecutiveToolSteps(events) {
     }
   }
   return best;
+}
+// [macro-fusion 0.2.133] 事故触发的反思。原来的判定只看「连续干了几个非记忆工具步」，
+// 于是「没出错但干了很多活」会反思，「闯了祸但活不多」反而不反思——方向刚好拧着。
+// 这里把用户原话里的强信号单独算一遍：出现就立刻反思（阈值降到 1 步），不必攒够轮数。
+// 词表只收「明确的纠正/事故/支出」语气，不收泛泛的提问词，免得白天每轮都触发。
+var REFLECT_CUE = /(他妈|tmd|谁他妈|谁允许|擅自|不许|不允许|别再|求你了|搞坏|弄坏|删错|误删|亏了|花掉|花了|烧钱|翻车|回滚|怎么又|凭什么|说了多少遍|长点记性)/;
+function reflectCueHit(text) {
+  return REFLECT_CUE.test(String(text ?? "")) ? 1 : 0;
 }
 function buildReflectMessage(workspace, turnText, dir = ".dsh-meow") {
   const db = getDb(workspace, dir);
@@ -6722,15 +6772,20 @@ ${e.stack ?? ""}` : String(e)}
     if (!resolved.reflect) return;
     const ws = workspaceOfAgent(agent);
     if (!ws) return;
-    const { sawToolCall, lastToolName, sawReflect, turnText } = scanTurn(sessionEventsOf(agent.session));
+    const { sawToolCall, sawNonMemory, lastToolName, sawReflect, turnText, userText } = scanTurn(sessionEventsOf(agent.session));
     if (sawReflect) {
       reflectQueuedTurn.delete(sidTs);
       return;
     }
     if (turn !== void 0 && reflectQueuedTurn.get(sidTs) === turn) return;
     if (!sawToolCall) return;
-    if (lastToolName !== void 0 && lastToolName.startsWith("memory_")) return;
-    if (consecutiveToolSteps(sessionEventsOf(agent.session)) < resolved.reflectTurns) return;
+    // [macro-fusion 0.2.133] 老写法是「最后一步是 memory_* 就整轮免反思」——而一轮活干完，
+    // 收尾那步几乎总是 memory_remember / memory_update。等于「刚把记忆写进去的那一轮，
+    // 恰好不反思」，主人在 2026-11-21 明确点出了这个洞。改成只看整轮有没有非记忆的活。
+    if (!sawNonMemory) return;
+    const CUE = reflectCueHit(userText);
+    const NEED = CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns;
+    if (consecutiveToolSteps(sessionEventsOf(agent.session)) < NEED) return;
     const message = buildReflectMessage(ws, turnText, resolved.projectDir);
     if (sendMemoryTurn(agent, message, ws, resolved.projectDir, `reflect sid=${shortSessionId(sidTs)}`)) {
       if (turn !== void 0) {
@@ -6741,7 +6796,7 @@ ${e.stack ?? ""}` : String(e)}
           reflectQueuedTurn.delete(oldest);
         }
       }
-      ctx.logger.info(`meow-memory: reflect sent as standalone turn after ${resolved.reflectTurns}+ tool turns`);
+      ctx.logger.info(`meow-memory: reflect sent as standalone turn (cue=${CUE}, need=${NEED}, lastTool=${lastToolName ?? "none"})`);
     } else {
       ctx.logger.warn("meow-memory: reflect \u53D1\u9001\u5931\u8D25\uFF08\u672C\u8F6E\u4E0D\u53CD\u601D\uFF0C\u4E0B\u8F6E\u91CD\u8BD5\uFF09");
     }

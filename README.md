@@ -2,11 +2,11 @@
 
 > 一个记忆插件，接管全部记忆能力：**8 个工具、一段 1,235 字符的常驻注入**，主库仍是 meow 的七层 SQLite，星图退成可重建的索引。
 >
-> 适用：DeepSeek Harness（DSH）。版本 **0.2.132** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
+> 适用：DeepSeek Harness（DSH）。版本 **0.2.133** · 许可 MIT · 内置 meow-memory 与 dsh-memory-nebula 的完整副本（均为 MIT，见[第三方声明](#第三方声明与来源)）。
 
-| 指标 | 融合前（三插件并存） | 现在（0.2.132） | 变化 |
+| 指标 | 融合前（三插件并存） | 现在（0.2.133） | 变化 |
 | --- | --- | --- | --- |
-| 工具 schema 合计 | 17 个工具 / 56,759 B | **8 个工具 / 11,964 B** | **−78.9%** |
+| 工具 schema 合计 | 17 个工具 / 56,759 B | **8 个工具 / 11,939 B** | **−79.0%** |
 | 常驻注入 | 4,085 字符（meow 3,396 + nebula 689） | **1,235 字符（1 段）** | **−69.8%** |
 | 每轮固定开销 | 约 14–16K token | **约 2.2K token** | **−85%** |
 | 面板 / 工具来源 | 三个插件各一套 | 一个插件两个面板 | 口径统一 |
@@ -97,7 +97,7 @@ memory_search(query, mode=local|graph|bridge|similar)
 
 | 项 | 融合前 | 现在 | 说明 |
 | --- | --- | --- | --- |
-| 工具 schema | 56,759 B（17 个） | **11,964 B（8 个）** | `tools/probe-host.mjs` 实测 D2 判据 |
+| 工具 schema | 56,759 B（17 个） | **11,939 B（8 个）** | `tools/probe-host.mjs` 实测 D2 判据 |
 | 常驻注入 | 4,085 字符 | **1,235 字符** | 同一支探针 E2 判据，上限 1,400 |
 | 旧工具名残留在注入里 | 有（`nebula_recall` 等） | **0** | E4 判据 |
 | 别名工具 | — | 默认关闭 | 打开后 19 个工具，供老会话/老脚本过渡 |
@@ -255,7 +255,7 @@ docs/                 INTERNAL.md 逐轮开发日志、images/ 配图
 
 **Macro Memory** (DSH plugin, MIT) folds several memory plugins into one surface: **8 tools + a single 1,235-character standing injection**, while the storage engine stays meow-memory's seven-layer SQLite and the graph becomes a rebuildable index.
 
-- Tool schemas: 17 tools / 56,759 B → **8 tools / 11,964 B** (−78.9%).
+- Tool schemas: 17 tools / 56,759 B → **8 tools / 11,939 B** (−79.0%).
 - Standing prompt: 4,085 chars → **1,235 chars** (−69.8%).
 - Per-turn fixed cost: ~14–16K → **~2.2K tokens**.
 - Nothing was dropped: every original tool is reachable through the unified surface (audited by `tools/coverage-audit.mjs` and `tools/param-audit.mjs`).

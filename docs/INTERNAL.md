@@ -7985,3 +7985,59 @@ W vs A 净 +33（救 68 / 丢 35，p<0.0001）；N vs A 净 −4（p=0.8015）�
 非时间题、且调用方要了 `context ≥ 1` 时，邻居部分最多多花约 3.3k 字符（7,000 字封顶）。
 不想要这一档就传 `context: 0`（现状默认），或把 `CTX_LINES_DEEP` 改回 24——两处都是常量，
 没有数据迁移，回退是一次改值。
+
+## 9.139 调取精度三刀：覆盖度、字段权重、长度只量正文（0.2.133）
+
+这一版没加功能，只改打分器。起因是主人要求「先优化记忆调取准确率」，而离线对照台显示：
+库里 2,900 条条目，形态统一是「短正文 + 8~13 个 keywords」，可是 `docText(d)` =
+`[title, content, ...keywords].join(" ")` 把三样平铺成一个字符串喂给 BM25——于是
+「用户会怎么问」的逆向词（写在 keywords 里）和正文里顺手提到一次，得分一模一样；
+而关键词写得越全，正文被长度归一稀释得越厉害。
+
+### 9.139.1 三个洞
+
+1. **没有覆盖度概念**：加法式 BM25，一个词命中十次能压过五个词各命中一次。而记忆调取要的正是「这几个词都聊到了」。
+2. **字段不分权重**：title / keywords / 正文等权，等于把作者精心写的检索词当噪声。
+3. **长度归一分母算错**：`len = docToks[di].length` 把 title、keywords、会话扩词全算进正文长度——元数据越全的条目越吃亏，恰好和「好条目」负相关。
+
+### 9.139.2 三条补丁（都只做乘法层，不筛候选）
+
+- `FIELD_TITLE_W = 0.6` / `FIELD_KW_W = 0.35`：命中 title 或 keywords 时该词的 tf 权重乘以 `1 + w`。
+- `COORD_W = 0.35`：算完 BM25 后乘 `1 - COORD_W + COORD_W * min(1, cover / qIdfSum)`，`cover` = 命中的查询词的 idf 之和。
+- `bodyLen` / `avgBody`：长度只量 `content` 的 token 数，`len` 与分母同时换成它。
+
+三个都可以单独关掉对照：`fieldBoost:false` / `coord:false` / `lengthOnBody:false`。
+
+### 9.139.3 离线探针（0 LLM，`E:\Temp\omni-eval\omni45_probe.mjs`）
+
+| # | 对照 | 结果 |
+| --- | --- | --- |
+| 1 | X 正文两个查询词都在 vs Y 把一个词刷六遍 | 开 coord 后 X 0.9727 排第一 |
+| 2 | 同一对文档关掉 coord | Y 0.0282 > 0.0204，闸确实在扣分 |
+| 3 | P 只在 keywords 写「口径」 vs Q 写在正文（正文 token 数同为 5） | P 0.2461 > Q 0.0146 |
+| 4 | 同上关掉 fieldBoost | P = Q = 0.1823（差额只来自字段） |
+| 5 | L 正文长 + 9 个 keywords vs S 正文短 | 新口径 L 0.0226 > 旧口径 0.0215（不再被元数据稀释） |
+| 6 | 名次不变性 | S 仍排在 L 前（绝对分随语料均值微动是归一的正常行为） |
+| 7 | 单词查询 | 名次不变 |
+
+写探针时踩过一个坑：第一版 fixture 拿「短到只有 1 个 token 的正文」当对照，BM25 的长度项把补丁效果整个盖掉，
+七条里红了三条——**对照文档的正文 token 数必须相等，否则测的不是补丁**。
+
+### 9.139.4 顺带的反思闸门修复（主人在 m102992 点出来的）
+
+老闸门有两处把「该反思的那一轮」漏掉：
+
+- `if (lastToolName !== void 0 && lastToolName.startsWith("memory_")) return;` —— 一轮活干完，收尾那步几乎总是
+  `memory_remember` / `memory_update`，于是「刚把记忆写进去的那一轮恰好不反思」。
+- 判定只看「连续几个非记忆工具步」（`reflectTurns` 默认 7），`consecutiveToolSteps` 遇 `memory_*` 还把计数清零；
+  事故信号（主人发火、`endReason === "error"`）完全不参与。
+
+改成：`scanTurn` 多记 `sawNonMemory` 与用户原话 `userText`；闸门换成 `if (!sawNonMemory) return;`（整轮只有记忆工具才免反思），
+并加 `REFLECT_CUE`（他妈 / 谁允许 / 擅自 / 不许 / 烧钱 / 花掉 / 回滚 / 说了多少遍 …）——命中或 `endReason === "error"` 时
+`NEED = 1`，干过一步活就立刻反思。日志也随之带上 `cue=` / `need=` / `lastTool=`。
+
+### 9.139.5 代价与回退
+
+- 三条补丁都是乘法，不改变候选集与截断顺序，`memory_search` schema 一个字节没动（仍 6,494 B / 上限 6,500 B）。
+- 回退：`fieldBoost:false` + `coord:false` + `lengthOnBody:false` 三项全关 = 0.2.132 的排序（探针断言 4/7 已覆盖）。
+- 反思闸门回退：git 回滚 `vendor/meow-memory/lib/index.js` 单文件，或者把 `sawNonMemory` 那一行换成旧的一票否决。
