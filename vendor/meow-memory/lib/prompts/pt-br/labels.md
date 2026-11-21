@@ -68,6 +68,8 @@
 - reflect.incidentTurnError: · A rodada terminou em erro.
 - reflect.incidentCue: · O usuário usou tom de correção ou de incidente — algo que ele não quer ver de novo pode ter acabado de acontecer.
 - reflect.incidentAsk: Decida primeiro: incidente real ou oscilação que se recuperou sozinha? Incidente real vira lesson (sintoma → causa raiz → correção → como perceber antes da próxima vez); oscilação entra numa entrada existente, sem virar ruído novo.
+- reflect.incidentRepeat: · Não é a primeira vez: {detail}. Uma oscilação isolada não explica isso — escreva uma lesson (sintoma → causa raiz → correção → como perceber antes da próxima vez) em vez de mais uma frase solta.
+- reflect.incidentNoFollowup: · Você já refletiu antes e não escreveu nada na memória depois ({count} vez(es) no registro) — aquela reflexão foi perdida; não pare em impressões desta vez.
 - reflect.unknownTool: uma ferramenta
 - remember.error.content: memory_remember: content é obrigatório — acrescente o que você quer lembrar e tente de novo
 - remember.error.project: memory_remember: project é obrigatório — use "{global}" para informações aplicáveis globalmente, ou o nome do projeto (separe vários projetos por vírgula) — acrescente e tente de novo

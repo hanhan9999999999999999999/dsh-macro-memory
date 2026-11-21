@@ -9098,5 +9098,87 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── FA 反思闭环与事故账本（0.2.135）：同一件事第二次才算事故，反思完没落地要留痕。
+{
+  const meowPath135 = join(root, 'vendor', 'meow-memory', 'lib', 'index.js')
+  const meowSrc135 = readFileSync(meowPath135, 'utf8')
+  const M135 = await import(pathToFileURL(meowPath135).href)
+  const ws135 = mkdtempSync(join(tmpdir(), 'meow-verify-135-'))
+  const dir135 = '.dsh-meow'
+  const inc135 = { level: 2, kinds: ['retry-storm'], worstTool: 'pwsh', toolErrors: 2, memoryErrors: 0, failedTools: [['pwsh', 2]] }
+
+  // 账本：没有就不编，抖动的软档不写，硬档一行带得回工具名。
+  const empty = M135.readIncidentLedger(ws135, dir135)
+  check('FA 账本·行为: 没账本时给空账并说明原因（不假装一切正常）', empty.rows.length === 0 && empty.missing === 'no-ledger')
+  check('FA 账本·行为: 只挂一次的软档不记账（抖动不值得留痕）', M135.recordIncident(ws135, dir135, { ...inc135, level: 1, kinds: ['tool-error'] }) === false)
+  check('FA 账本·行为: 硬档写一行', M135.recordIncident(ws135, dir135, inc135, 'sess-verifysess') === true)
+  const rows135 = M135.readIncidentLedger(ws135, dir135).rows
+  check(
+    'FA 账本·行为: 行里留得住工具名与种类（跨轮才认得出是同一件事）',
+    rows135.length === 1 && rows135[0].tool === 'pwsh' && rows135[0].kinds.includes('retry-storm'),
+    JSON.stringify(rows135[0] ?? null),
+  )
+  const rep135 = M135.incidentRepeatOf(ws135, dir135, inc135)
+  check('FA 重复·行为: 同工具再来一次就数得到，窗口写明 24 小时', rep135?.count === 1 && rep135?.windowHours === 24, JSON.stringify(rep135))
+  check('FA 重复·行为: 换了工具不算同一件事（不然满屏「又不是第一次」）', M135.incidentRepeatOf(ws135, dir135, { ...inc135, worstTool: 'write_file' }) === undefined)
+  const lines135 = M135.incidentLines(inc135, rep135).join('\n')
+  check('FA 报文·行为: 点名「这不是第一次」并写出工具与次数', lines135.includes('pwsh') && lines135.includes('不是第一次'))
+  check('FA 报文·行为: 重复提醒排在「先判断」之前（先给事实再给做法）', lines135.indexOf('不是第一次') < lines135.indexOf('先判断'))
+  for (let k135 = 0; k135 < 210; k135++) M135.recordIncident(ws135, dir135, inc135)
+  check('FA 账本·行为: 只留最近 200 行，不会无限堆成拖累', M135.readIncidentLedger(ws135, dir135).rows.length === 200)
+  const file135 = join(ws135, dir135, 'incident-ledger.jsonl')
+  writeFileSync(file135, `not json\n{"t":"x"}\n{"t":0}\n${readFileSync(file135, 'utf8')}`)
+  check('FA 账本·行为: 坏行只丢那一行，不当成事故', M135.readIncidentLedger(ws135, dir135).rows.length === 200)
+  check('FA 窗口·行为: 25 小时前的账不再点名（旧账不能冤枉新事故）', M135.incidentRepeatOf(ws135, dir135, inc135, Date.now() + 25 * 60 * 60 * 1e3) === undefined)
+
+  // 闭环：反思发了却没写进记忆，本身就是一次事故。
+  check('FA 闭环·行为: 没有待验卡时不乱判', M135.settleReflect(ws135, dir135, 0) === undefined)
+  M135.writeReflectPending(ws135, dir135, inc135)
+  check('FA 闭环·行为: 反思后没写任何记忆 -> 判定没落地', M135.settleReflect(ws135, dir135, 0)?.ok === false)
+  check('FA 闭环·行为: 没落地写进账本，kinds=no-followup', M135.readIncidentLedger(ws135, dir135).rows.some((r) => r.kinds.includes('no-followup')))
+  const rep135b = M135.incidentRepeatOf(ws135, dir135, inc135)
+  check(
+    'FA 闭环·行为: 下次再出事故，报文能说「上次反思等于白做」',
+    rep135b?.unfixed === 1 && M135.incidentLines(inc135, rep135b).join('\n').includes('反思过'),
+    JSON.stringify(rep135b),
+  )
+  M135.writeReflectPending(ws135, dir135, inc135)
+  check('FA 闭环·行为: 反思后真写了记忆 -> 不留痕、清掉待验卡', M135.settleReflect(ws135, dir135, 1)?.ok === true && M135.readReflectPending(ws135, dir135) === undefined)
+  const writes135 = M135.scanTurn([{ type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'w1', name: 'memory_remember' }] } } }])
+  check('FA 闭环·行为: 写记忆那一步被单独数出来（判据靠它，不靠文本猜）', writes135.memoryWrites === 1 && writes135.sawNonMemory === false, `writes=${writes135.memoryWrites}`)
+
+  const miss135 = ['zh', 'en', 'pt-br'].filter((lg) => {
+    const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lg, 'labels.md'), 'utf8')
+    return !['incidentRepeat', 'incidentNoFollowup'].every((key) => t.includes(`- reflect.${key}:`))
+  })
+  check('FA 三语: 重复提醒与「反思白做」两句 zh/en/pt-br 都在', miss135.length === 0, miss135.join(',') || 'zh/en/pt-br 全在')
+
+  // 源码面：账本容量、软档不写、闸门先结算再判、硬档同时留卡。
+  check(
+    'FA 源码: 账本容量写在常量里，写账只在硬档',
+    meowSrc135.includes('var INCIDENT_LEDGER_MAX = 200;') &&
+      meowSrc135.includes('var REFLECT_PENDING = "reflect-pending.json";') &&
+      meowSrc135.includes('if (!incident || incident.level < 2) return false;'),
+  )
+  check(
+    'FA 源码: 闸门先结算上一轮的待验卡，再判这一轮的事故',
+    meowSrc135.includes('const SETTLED = settleReflect(ws, resolved.projectDir, turnInfo.memoryWrites);') &&
+      meowSrc135.indexOf('const SETTLED = settleReflect(') < meowSrc135.indexOf('const REP = incidentRepeatOf(ws, resolved.projectDir, INC);'),
+  )
+  check(
+    'FA 源码: 硬档既记账也留待验卡（没留卡就永远查不出「反思白做」）',
+    meowSrc135.includes('recordIncident(ws, resolved.projectDir, INC, sidTs);') &&
+      meowSrc135.includes('writeReflectPending(ws, resolved.projectDir, INC);'),
+  )
+
+  const pkg135 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'FA 版本与文档一起走（9.141 / 147）',
+    pkg135.version.split('.').map((x) => Number(x))[2] >= 135 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.141 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 147 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

@@ -6481,6 +6481,65 @@ check(
   check('RI10 三语：事故文案七个键在 zh/en/pt-br 都在（换语言不炸成 undefined）', missing.length === 0, missing.join(',') || 'zh/en/pt-br 全在')
 }
 
+// RJ0-RJ16（0.2.135）：一次事故可能是抖动，第二次就不是了；反思了却没写进任何东西更要命。
+{
+  const rjWs = mkdtempSync(join(tmpdir(), 'meow-incident-'))
+  const rjDir = '.dsh-meow'
+  const rjInc = { level: 2, kinds: ['retry-storm'], worstTool: 'pwsh', toolErrors: 2, memoryErrors: 0, failedTools: [['pwsh', 2]] }
+  const rjEmpty = Meow.readIncidentLedger(rjWs, rjDir)
+  check('RJ0 账本：还没有文件时给空账并说明是没账本', rjEmpty.rows.length === 0 && rjEmpty.missing === 'no-ledger')
+  check(
+    'RJ1 账本：软档（只挂一次）不记账——抖动不值得留痕',
+    Meow.recordIncident(rjWs, rjDir, { ...rjInc, level: 1, kinds: ['tool-error'] }) === false,
+  )
+  check('RJ2 账本：硬档写一行', Meow.recordIncident(rjWs, rjDir, rjInc, 'sess-abcdefghijkl') === true)
+  const rjRows = Meow.readIncidentLedger(rjWs, rjDir).rows
+  check(
+    'RJ3 账本：行里带工具名与事故种类（下一轮认得出是同一件事）',
+    rjRows.length === 1 && rjRows[0].tool === 'pwsh' && rjRows[0].kinds.includes('retry-storm'),
+    JSON.stringify(rjRows[0] ?? null),
+  )
+  const rjRep = Meow.incidentRepeatOf(rjWs, rjDir, rjInc)
+  check('RJ4 重复检测：同工具再来一次就数得到（24 小时窗）', rjRep?.count === 1 && rjRep?.windowHours === 24, JSON.stringify(rjRep))
+  check('RJ5 重复检测：换了工具不算同一件事', Meow.incidentRepeatOf(rjWs, rjDir, { ...rjInc, worstTool: 'write_file' }) === undefined)
+  const rjLines = Meow.incidentLines(rjInc, rjRep).join('\n')
+  check('RJ6 报文：点名「这不是第一次」并写出工具与次数', rjLines.includes('pwsh') && rjLines.includes('不是第一次'), rjLines.replace(/\n/g, ' / ').slice(0, 120))
+  check('RJ7 报文：重复提醒排在「先判断」之前（先给事实再给做法）', rjLines.indexOf('不是第一次') < rjLines.indexOf('先判断'))
+  for (let rjI = 0; rjI < 210; rjI++) Meow.recordIncident(rjWs, rjDir, rjInc)
+  check('RJ8 账本：只留最近 200 行，不会无限堆成拖累', Meow.readIncidentLedger(rjWs, rjDir).rows.length === 200)
+  const rjFile = join(rjWs, rjDir, 'incident-ledger.jsonl')
+  writeFileSync(rjFile, `not json\n{"t":"x"}\n{"t":0}\n${readFileSync(rjFile, 'utf8')}`)
+  check('RJ9 账本：坏行只丢那一行，不当成事故', Meow.readIncidentLedger(rjWs, rjDir).rows.length === 200)
+  check('RJ10 窗口：25 小时前的账不再点名', Meow.incidentRepeatOf(rjWs, rjDir, rjInc, Date.now() + 25 * 60 * 60 * 1e3) === undefined)
+  Meow.writeReflectPending(rjWs, rjDir, rjInc)
+  check('RJ11 闭环：反思发了、这一轮却没写记忆 -> 判定没落地', Meow.settleReflect(rjWs, rjDir, 0)?.ok === false)
+  check('RJ12 闭环：没落地进账本（kinds=no-followup）', Meow.readIncidentLedger(rjWs, rjDir).rows.some((r) => r.kinds.includes('no-followup')))
+  const rjRep2 = Meow.incidentRepeatOf(rjWs, rjDir, rjInc)
+  check(
+    'RJ13 闭环：下次再出事故，账本能说出「上次反思等于白做」',
+    rjRep2?.unfixed === 1 && Meow.incidentLines(rjInc, rjRep2).join('\n').includes('反思过'),
+    JSON.stringify(rjRep2),
+  )
+  Meow.writeReflectPending(rjWs, rjDir, rjInc)
+  check(
+    'RJ14 闭环：反思后真写了记忆 -> 不留痕、清掉待验卡',
+    Meow.settleReflect(rjWs, rjDir, 1)?.ok === true && Meow.readReflectPending(rjWs, rjDir) === undefined,
+  )
+  const rjKeys = ['incidentRepeat', 'incidentNoFollowup']
+  const rjMissing = ['zh', 'en', 'pt-br'].filter((lg) => {
+    const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lg, 'labels.md'), 'utf8')
+    return !rjKeys.every((k) => t.includes(`- reflect.${k}:`))
+  })
+  check('RJ15 三语：重复提醒与「反思白做」两句话 zh/en/pt-br 都在', rjMissing.length === 0, rjMissing.join(',') || 'zh/en/pt-br 全在')
+  const rjSoft = Meow.scanTurn([{ type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'm1', name: 'memory_remember' }] } } }])
+  check('RJ16 计数：写记忆的那一步被单独数出来（闭环判据靠它）', rjSoft.memoryWrites === 1 && rjSoft.sawNonMemory === false, `writes=${rjSoft.memoryWrites}`)
+  try {
+    rmSync(rjWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
 for (const d of disposers) {
   try {
     d()

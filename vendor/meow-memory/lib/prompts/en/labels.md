@@ -68,6 +68,8 @@
 - reflect.incidentTurnError: · The turn ended in an error.
 - reflect.incidentCue: · The user used a correction or incident tone — something they do not want to see again may have just happened.
 - reflect.incidentAsk: Decide first: a real incident, or a blip that recovered on its own? A real incident gets a lesson (symptom → root cause → fix → how to notice it earlier next time); a blip gets folded into an existing entry instead of becoming new noise.
+- reflect.incidentRepeat: · This is not the first time: {detail}. An isolated blip cannot explain it — write a lesson (symptom → root cause → fix → how to notice it earlier next time) instead of one more one-liner.
+- reflect.incidentNoFollowup: · You reflected before and wrote nothing into memory afterwards ({count} time(s) in the ledger) — that reflection was wasted; don't stop at impressions this time.
 - reflect.unknownTool: a tool
 - remember.error.content: memory_remember: content is required — add what you want remembered and try again
 - remember.error.project: memory_remember: project is required — use "{global}" for globally applicable information, or the project name (comma-separate several projects) — add it and try again

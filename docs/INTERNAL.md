@@ -8117,3 +8117,48 @@ hard 档再往 `<ws>/.dsh-meow/dream-debug.log` 补一行 `reflect incident="...
 - 回退：`vendor/meow-memory/lib/index.js` 单文件回滚，或把闸门两行换回
   `if (!sawNonMemory) return;` + `const NEED = CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns;`
   （标签多出来的七个键留着无害）。
+## 9.141 事故要看「第几次」：账本 + 反思闭环（0.2.135）
+
+主人接着上一版说「大幅度继续优化反思逻辑 让他更强大」（m103716）。0.2.134 解决了「什么时候醒」，
+这一版解决醒来之后的两件事：**这一次是不是重演**、**上一次醒了有没有真的动手**。
+
+### 9.141.1 单轮看不出的两件事
+
+反思发生在轮末，`scanTurn` 只看得到本轮事件窗口。于是：
+
+- 「同一个工具连着三轮挂」在本轮眼里只是一次 soft / 一次 burst，和头一回出的事长得一模一样。
+  报文的语气、要求、甚至是否当场打断都相同——**重演被当成新事故**。
+- 反思是发出去的一条消息，发完这一轮就结束了。模型下一轮说了句「明白了，下次注意」也算完成，
+  库里一个字没动，**下一个会话拿着同一份烂代码再来一遍**。没有任何机制发现「反思白做」。
+
+### 9.141.2 账本：`<ws>/.dsh-meow/incident-ledger.jsonl`
+
+一行一次**硬档**事故，字段 `{t, sid(前 12 位), kinds, tool, errors, memoryErrors}`。
+
+- 容量 `INCIDENT_LEDGER_MAX = 200`，超出只留最近 200 行（append 时 slice，不做整表重排）。
+- 窗口 `INCIDENT_WINDOW_MS = 24h`：读的时候按 `now - t > 24h` 丢弃，写的时候不清洗旧行。
+- 读坏行只丢那一行：非 JSON、`t` 非有限正数、行首尾空白都跳过——**账本坏了不能变成事故**。
+- 只看 `level >= 2` 且 `worstTool` 非空才查重：一个说不清是谁的失败，凑不出「同一件事」。
+- 查重结果 `{count, tool, first, last, kinds, windowHours, unfixed}`，报文里落成一行：
+  「这不是第一次：pwsh（同一工具 2 次，最近一次 8 分钟前）」——排在「先判断」之前，先给事实。
+
+### 9.141.3 闭环：`reflect-pending.json`
+
+发反思时留一张待验卡 `{t, kinds, tool}`；下一次进闸门先结算（`settleReflect`）：
+
+- 这一轮 `memoryWrites > 0`（`memory_remember` / `memory_update` 任一被调用）→ 落地，删卡。
+- 一步都没写 → 记一条 `kinds: ["no-followup"]`、`tool: "reflect"` 的账，删卡。
+- 卡超过 24h → 直接丢，不追责（中间可能换了别的会话）。
+- 空转、无卡、缺少目录一律返回 `undefined` 或 `false`，不抛异常（反省失败不该把整轮炸掉）。
+
+下次硬档事故读账时会数出 `unfixed`，报文补一句：
+「上一次也反思过，但事后什么都没写进记忆（账本记着 1 次）——那次反思等于白做，这次别只写感想。」
+`dream-debug.log` 里同步留一行 `reflect no-followup kinds="..."`，排障时能对上时间。
+
+### 9.141.4 三语与探针
+
+新增标签 `reflect.incidentRepeat` / `reflect.incidentNoFollowup`（zh / en / pt-br）。
+`probe-fusion` RJ0–RJ16 覆盖：软档不记账、硬档一行、同工具计数、换工具不误报、200 行截断、
+坏行容忍、24h 过期、闭环三种结局、`memoryWrites` 计数、三语键齐全。
+`verify.mjs` FA 段加了行为 + 源码锚点（`INCIDENT_LEDGER_MAX`、`settleReflect` 先于 `incidentRepeatOf`、
+硬档同时 `recordIncident` + `writeReflectPending`）。

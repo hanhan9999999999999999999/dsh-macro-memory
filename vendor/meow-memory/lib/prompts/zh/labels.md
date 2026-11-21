@@ -68,6 +68,8 @@
 - reflect.incidentTurnError: · 这一轮以错误收场。
 - reflect.incidentCue: · 用户用了纠正或事故语气，可能刚发生了他不想再见到的事。
 - reflect.incidentAsk: 先判断：这是真事故，还是一次能自己恢复的抖动？真事故写 lesson（现象 → 根因 → 修法 → 下次怎么早发现）；抖动把结论补进已有条目，别为它新建噪声。
+- reflect.incidentRepeat: · 这不是第一次：{detail}。孤立抖动解释不了它——写 lesson（现象 → 根因 → 修法 → 下次怎么早发现），不要只补一句结论。
+- reflect.incidentNoFollowup: · 上一次也反思过，但事后什么都没写进记忆（账本记着 {count} 次）——那次反思等于白做，这次别只写感想。
 - reflect.unknownTool: 某个工具
 - remember.error.content: memory_remember: content 参数必填，请补充要记住的内容后重试
 - remember.error.project: memory_remember: project 参数必填——全局信息填"{global}"，具体项目填项目名（多个项目用英文逗号分隔），请补充后重试

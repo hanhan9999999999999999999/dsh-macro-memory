@@ -5310,6 +5310,7 @@ function scanTurn(events) {
   let memoryErrors = 0;
   let worstFail = 0;
   let worstTool;
+  let memoryWrites = 0;
   const callNames = /* @__PURE__ */ new Map();
   const failByTool = /* @__PURE__ */ new Map();
   const texts = [];
@@ -5334,6 +5335,7 @@ function scanTurn(events) {
           sawToolCall = true;
           lastToolName = block.name;
           if (!block.name.startsWith("memory_")) sawNonMemory = true;
+          if (block.name === "memory_remember" || block.name === "memory_update") memoryWrites++;
           const callId = block.id ?? block.callId;
           if (typeof callId === "string") callNames.set(callId, block.name);
         } else if (block.type === "text" && block.text) {
@@ -5346,6 +5348,7 @@ function scanTurn(events) {
         sawToolCall = true;
         lastToolName = name2;
         if (!name2.startsWith("memory_")) sawNonMemory = true;
+        if (name2 === "memory_remember" || name2 === "memory_update") memoryWrites++;
       }
     } else if (e?.type === "tool/call") {
       const callId2 = e.data?.callId;
@@ -5376,6 +5379,7 @@ function scanTurn(events) {
     memoryErrors,
     worstFail,
     worstTool,
+    memoryWrites,
     failedTools: [...failByTool.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4),
     turnText: texts.join("\n").slice(-2e3),
     userText: userTexts.join("\n").slice(-2e3)
@@ -5463,7 +5467,7 @@ function safeKeyed(key, fallback, params) {
   }
   return fillTemplate(text, params ?? {});
 }
-function incidentLines(incident) {
+function incidentLines(incident, repeat) {
   if (!incident || incident.level === 0) return [];
   const lines = [safeKeyed("reflect.incidentHead", "\u26a0\ufe0f 这一轮出了事故，所以是插件自己把你叫来反思（不是攒够轮数）：")];
   if (incident.toolErrors > 0) {
@@ -5472,14 +5476,201 @@ function incidentLines(incident) {
   }
   if (incident.kinds.includes("turn-error")) lines.push(safeKeyed("reflect.incidentTurnError", "\u00b7 这一轮以错误收场（endReason=error）。"));
   if (incident.kinds.includes("user-cue")) lines.push(safeKeyed("reflect.incidentCue", "\u00b7 用户用了纠正或事故语气，可能刚发生了他不想再见到的事。"));
-  lines.push(safeKeyed("reflect.incidentAsk", "先判断：这是真事故，还是一次能自己恢复的抖动？真事故写 lesson（现象 \u2192 根因 \u2192 修法 \u2192 下次怎么早发现）；抖动把结论补进已有条目，别为它新建噪声。"));
+  if (repeat && repeat.count > 0) {
+    lines.push(safeKeyed("reflect.incidentRepeat", "\u00b7 这不是第一次：{detail} 已经被同一类故障撞过。孤立抖动解释不了它，写 lesson，不要只补一句结论。", { detail: describeRepeat(repeat) }));
+  }
+  if (repeat && repeat.unfixed > 0) {
+    lines.push(safeKeyed("reflect.incidentNoFollowup", "\u00b7 \u4e0a\u4e00\u6b21\u4e5f\u53cd\u601d\u8fc7\uff0c\u4f46\u4e8b\u540e\u4ec0\u4e48\u90fd\u6ca1\u5199\u8fdb\u8bb0\u5fc6\uff08\u8d26\u672c\u8bb0\u7740 {count} \u6b21\uff09\u2014\u2014\u90a3\u6b21\u53cd\u601d\u7b49\u4e8e\u767d\u505a\uff0c\u8fd9\u6b21\u522b\u53ea\u5199\u611f\u60f3\u3002", { count: repeat.unfixed }));
+  }
+  lines.push(safeKeyed("reflect.incidentAsk", "先判断：这是真事故，还是一次能自己恢复的抖动？真事故写 lesson（现象 → 根因 → 修法 → 下次怎么早发现）；抖动把结论补进已有条目，别为它新建噪声。"));
   return lines;
 }
-function buildReflectMessage(workspace, turnText, dir = ".dsh-meow", incident) {
+// [macro-fusion 0.2.135] 一次事故可能是抖动，同一件事第二次就不是了。可「第几次」没法从这一轮的
+// 上下文里看出来：反思发生在轮末，前几轮的失败早被窗口截断。所以落一本纯文本账（jsonl，一行一次
+// 硬档事故），下一轮硬档先翻 24 小时内的账，翻到了就在反思报文里点名。坏一行只丢一行，不当事故。
+var INCIDENT_LEDGER = "incident-ledger.jsonl";
+var INCIDENT_LEDGER_MAX = 200;
+var INCIDENT_WINDOW_MS = 24 * 60 * 60 * 1e3;
+var REFLECT_PENDING = "reflect-pending.json";
+var NO_FOLLOWUP = "no-followup";
+function incidentLedgerPath(workspace, dir) {
+  return join9(workspace, dir || ".dsh-meow", INCIDENT_LEDGER);
+}
+function readIncidentLedger(workspace, dir, now = Date.now()) {
+  const file = incidentLedgerPath(workspace, dir);
+  let raw;
+  try {
+    raw = readFileSync8(file, "utf8");
+  } catch {
+    return { rows: [], missing: "no-ledger" };
+  }
+  const rows = [];
+  for (const line of String(raw).split("\n")) {
+    const t = line.trim();
+    if (t === "") continue;
+    let row;
+    try {
+      row = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (!row || typeof row !== "object") continue;
+    const at = Number(row.t);
+    if (!Number.isFinite(at) || at <= 0) continue;
+    if (now - at > INCIDENT_WINDOW_MS) continue;
+    rows.push({
+      t: at,
+      kinds: Array.isArray(row.kinds) ? row.kinds.filter((k) => typeof k === "string") : [],
+      tool: typeof row.tool === "string" ? row.tool : void 0,
+      errors: Number(row.errors ?? 0)
+    });
+  }
+  rows.sort((a, b) => a.t - b.t);
+  return { rows, missing: void 0 };
+}
+function incidentRepeatOf(workspace, dir, incident, now = Date.now()) {
+  if (!incident || incident.level < 2) return void 0;
+  const tool = incident.worstTool;
+  const hasTool = typeof tool === "string" && tool !== "";
+  const { rows } = readIncidentLedger(workspace, dir, now);
+  const same = hasTool ? rows.filter((r) => r.tool === tool) : [];
+  const unfixed = rows.filter((r) => r.kinds.includes(NO_FOLLOWUP)).length;
+  if (same.length < 1 && unfixed === 0) return void 0;
+  const kinds = [];
+  for (const r of same) for (const k of r.kinds) if (!kinds.includes(k)) kinds.push(k);
+  return {
+    count: same.length,
+    tool: hasTool ? tool : void 0,
+    first: same.length > 0 ? same[0].t : void 0,
+    last: same.length > 0 ? same[same.length - 1].t : void 0,
+    kinds,
+    windowHours: Math.round(INCIDENT_WINDOW_MS / 36e5),
+    unfixed
+  };
+}
+function describeRepeat(repeat) {
+  const ago = Math.max(1, Math.round((Date.now() - repeat.last) / 6e4));
+  const gap = ago >= 60 ? `${Math.round(ago / 60)} 小时前` : `${ago} 分钟前`;
+  return `${repeat.tool}（同一工具 ${repeat.count} 次，最近一次 ${gap}）`;
+}
+function recordIncident(workspace, dir, incident, sid, now = Date.now()) {
+  if (!incident || incident.level < 2) return false;
+  const file = incidentLedgerPath(workspace, dir);
+  try {
+    mkdirSync6(join9(workspace, dir || ".dsh-meow"), { recursive: true });
+  } catch {
+  }
+  try {
+    const row = {
+      t: now,
+      sid: typeof sid === "string" ? sid.slice(0, 12) : void 0,
+      kinds: incident.kinds,
+      tool: incident.worstTool,
+      errors: incident.toolErrors,
+      memoryErrors: incident.memoryErrors
+    };
+    let prev = "";
+    try {
+      prev = readFileSync8(file, "utf8");
+    } catch {
+      prev = "";
+    }
+    const kept = String(prev).split("\n").filter((l) => l.trim() !== "");
+    kept.push(JSON.stringify(row));
+    writeFileSync5(file, `${kept.slice(-INCIDENT_LEDGER_MAX).join("\n")}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// [macro-fusion 0.2.135] 反思最怕「反思了，但什么也没改」：报文发出去了、模型点了个头、
+// 库里一字未动，下一个会话拿着同一份烂代码再来一遍。所以发反思时留一张待验卡，
+// 到下一轮收尾时查这一轮有没有真的写进记忆（memory_remember / memory_update）。
+// 没写就记一条 no-followup：下一轮再出事故时，报文里会直接点名「上次反思等于白做」。
+function reflectPendingPath(workspace, dir) {
+  return join9(workspace, dir || ".dsh-meow", REFLECT_PENDING);
+}
+function readReflectPending(workspace, dir) {
+  try {
+    const row = JSON.parse(readFileSync8(reflectPendingPath(workspace, dir), "utf8"));
+    const at = Number(row?.t);
+    if (!Number.isFinite(at) || at <= 0) return void 0;
+    return {
+      t: at,
+      kinds: Array.isArray(row.kinds) ? row.kinds.filter((k) => typeof k === "string") : [],
+      tool: typeof row.tool === "string" ? row.tool : void 0
+    };
+  } catch {
+    return void 0;
+  }
+}
+function writeReflectPending(workspace, dir, incident, now = Date.now()) {
+  try {
+    mkdirSync6(join9(workspace, dir || ".dsh-meow"), { recursive: true });
+    writeFileSync5(reflectPendingPath(workspace, dir), JSON.stringify({
+      t: now,
+      kinds: Array.isArray(incident?.kinds) ? incident.kinds : [],
+      tool: incident?.worstTool
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function clearReflectPending(workspace, dir) {
+  try {
+    unlinkSync(reflectPendingPath(workspace, dir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function appendLedgerRow(workspace, dir, row) {
+  const file = incidentLedgerPath(workspace, dir);
+  try {
+    mkdirSync6(join9(workspace, dir || ".dsh-meow"), { recursive: true });
+  } catch {
+  }
+  try {
+    let prev = "";
+    try {
+      prev = readFileSync8(file, "utf8");
+    } catch {
+      prev = "";
+    }
+    const kept = String(prev).split("\n").filter((l) => l.trim() !== "");
+    kept.push(JSON.stringify(row));
+    writeFileSync5(file, `${kept.slice(-INCIDENT_LEDGER_MAX).join("\n")}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function recordUnfixed(workspace, dir, pending, now = Date.now()) {
+  return appendLedgerRow(workspace, dir, {
+    t: now,
+    kinds: [NO_FOLLOWUP],
+    tool: "reflect",
+    errors: 0,
+    memoryErrors: 0,
+    after: Array.isArray(pending?.kinds) ? pending.kinds : []
+  });
+}
+function settleReflect(workspace, dir, memoryWrites, now = Date.now()) {
+  const pending = readReflectPending(workspace, dir);
+  if (!pending) return void 0;
+  clearReflectPending(workspace, dir);
+  if (now - pending.t > INCIDENT_WINDOW_MS) return void 0;
+  if (Number(memoryWrites ?? 0) > 0) return { ok: true, kinds: pending.kinds };
+  recordUnfixed(workspace, dir, pending, now);
+  return { ok: false, kinds: pending.kinds, tool: pending.tool };
+}
+function buildReflectMessage(workspace, turnText, dir = ".dsh-meow", incident, repeat) {
   const db = getDb(workspace, dir);
   const prompt = resolveSlotText("reflect", { projectList: projectNamesText(db.listProjectNames()) });
   const head = `${REFLECT_MARKER} ${prompt}`;
-  const extra = incidentLines(incident);
+  const extra = incidentLines(incident, repeat);
   const text = extra.length > 0 ? `${head}
 
 ${extra.join("\n")}` : head;
@@ -6892,7 +7083,20 @@ ${e.stack ?? ""}` : String(e)}
     if (!sawNonMemory && INC.level === 0) return;
     const NEED = reflectNeed(INC, resolved.reflectTurns);
     if (consecutiveToolSteps(sessionEventsOf(agent.session)) < NEED) return;
-    const message = buildReflectMessage(ws, turnText, resolved.projectDir, INC);
+    const SETTLED = settleReflect(ws, resolved.projectDir, turnInfo.memoryWrites);
+    if (SETTLED && SETTLED.ok === false) {
+      try {
+        appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] reflect no-followup kinds="${(SETTLED.kinds ?? []).join(",")}"
+`);
+      } catch {
+      }
+    }
+    const REP = incidentRepeatOf(ws, resolved.projectDir, INC);
+    const message = buildReflectMessage(ws, turnText, resolved.projectDir, INC, REP);
+    if (INC.level >= 2) {
+      recordIncident(ws, resolved.projectDir, INC, sidTs);
+      writeReflectPending(ws, resolved.projectDir, INC);
+    }
     if (sendMemoryTurn(agent, message, ws, resolved.projectDir, `reflect sid=${shortSessionId(sidTs)}`)) {
       if (turn !== void 0) {
         reflectQueuedTurn.set(sidTs, turn);
@@ -7329,6 +7533,14 @@ export {
   hourInTimeZone,
   incidentLines,
   incidentOf,
+  incidentRepeatOf,
+  readIncidentLedger,
+  recordIncident,
+  recordUnfixed,
+  readReflectPending,
+  writeReflectPending,
+  clearReflectPending,
+  settleReflect,
   inject,
   isDreamSuppressed,
   isGlobalProject,
