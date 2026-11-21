@@ -1978,16 +1978,92 @@ function noiseTermsOf(qTerms, df, n) {
   for (const t of qTerms) if ((df.get(t) ?? 0) >= gate) out.push(t);
   return out.length >= qTerms.length ? [] : out;
 }
+// [macro-fusion 0.2.147] 标识符原样匹配：问句里真正决定答案的，常常是「原样才算数」的东西——
+// 版本号（0.2.146）、路径（D:\dsh-home\vendor\...）、文件名（tools/probe-words.mjs）、
+// 短 id（0mwq5zzv）、commit（c12e4f6）。分词会把它们打碎：0.2.146 -> 0 / 2 / 146，
+// memory.db -> memori / db，tools/probe-words.mjs -> tools / probe / words / mjs。碎掉之后
+// 问「0.2.146 改了什么」，参加打分的只剩「改了 / 什么」——回执上全是噪声，真正讲 0.2.146 的那条
+// 根本不在榜上。所以在**原始字符串**这一层再认一次：只做加法补分、不改候选集也不改词口径。
+// 四件事说明白：
+//   ① 短于 4 个字符的不算标识符（`a/b`、`1.5` 太容易误中）；一条问句最多认 6 个。
+//   ② 同一处证据不许记两遍：`tools/probe-words.mjs` 已经包含 `probe-words`，后者不再独立计分。
+//   ③ 路径越短越可能是巧合：全串命中算 1，只命中 basename 算 0.7，再退到去掉扩展名的词干算 0.5。
+//   ④ 命中的是这条记忆的 **id** 时，那不是「相关」，是**指认**——权重给到一个半最高分。
+// 加法还顺带补了 BM25 的一个洞：原样命中但一个词都没接上的条目，先前连候选集都进不去。
+var IDENT_MIN = 4;
+var IDENT_MAX = 6;
+var IDENT_W = 0.6;
+var IDENT_ID_W = 1.5;
+var IDENT_BASE_CREDIT = 0.7;
+var IDENT_STEM_CREDIT = 0.5;
+var IDENT_RES = [
+  /[A-Za-z]:\\[^\s，。；、）)\]】]+/g,
+  /(?:[\w.@-]+\/){2,}[\w.@-]+/g,
+  /[\w.-]+\.(?:js|mjs|cjs|ts|tsx|json|md|db|py|ps1|yml|yaml|toml|txt|zip|exe|dll|log)\b/gi,
+  /\b\d+\.\d+\.\d+\b/g,
+  /\b\d{4}-\d{2}-\d{2}\b/g,
+  /\b0m[a-z0-9]{5,}\b/gi,
+  /\b[0-9a-f]{7,40}\b/gi,
+  /\b[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+\b/gi,
+  /\b[a-z][a-z0-9-]*\/[a-z][a-z0-9.-]+\b/gi
+];
+function identsOf(query) {
+  const src = String(query ?? "");
+  const out = [];
+  if (src.length === 0) return out;
+  for (const re of IDENT_RES) {
+    re.lastIndex = 0;
+    for (const m of src.matchAll(re)) {
+      const t = String(m[0]).toLowerCase();
+      if (t.length < IDENT_MIN) continue;
+      if (!out.includes(t)) out.push(t);
+    }
+  }
+  const kept = out.filter((t) => !out.some((u) => u !== t && u.length > t.length && u.includes(t)));
+  return kept.slice(0, IDENT_MAX);
+}
+function identCreditOf(ident, hay) {
+  if (hay.includes(ident)) return 1;
+  const parts = ident.split(/[\\/]+/);
+  const base = parts[parts.length - 1] ?? "";
+  if (base !== ident && base.length >= IDENT_MIN && hay.includes(base)) return IDENT_BASE_CREDIT;
+  const stem = base.replace(/\.[a-z0-9]+$/, "");
+  if (stem !== base && stem.length >= IDENT_MIN && hay.includes(stem)) return IDENT_STEM_CREDIT;
+  return 0;
+}
+function verbatimOf(idents, hay) {
+  let sum = 0;
+  const matched = [];
+  for (const t of idents) {
+    const c = identCreditOf(t, hay);
+    if (c > 0) {
+      sum += c;
+      matched.push(c >= 1 ? t : t + "(局部)");
+    }
+  }
+  return { ratio: idents.length === 0 ? 0 : Math.min(1, sum / idents.length), matched };
+}
+function verbatimInputs(query, docs, opts, textOf) {
+  const idents = opts.verbatim === false ? [] : identsOf(query);
+  return {
+    idents,
+    verbHay: idents.length === 0 ? null : docs.map((d) => textOf(d).toLowerCase()),
+    rawVerbatim: docs.map(() => null)
+  };
+}
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
   const q = tokenize(query);
-  if (q.length === 0 || docs.length === 0) return [];
+  if (docs.length === 0) return [];
   // [macro-fusion 0.2.122] 实体先验的输入（问句里没有专有名词时为空数组，后面整段跳过）
   const entToks = opts.entityPrior === false
     ? []
     : queryEntities(query).map((e) => tokenize(e)).filter((t) => t.length === 1).map((t) => t[0]);
   const n = docs.length;
+  // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 verbHay 为 null，后面整段跳过）
+  const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
+  if (q.length === 0 && idents.length === 0) return [];
   const plainToks = docs.map((d) => tokenize(docText(d)));
   const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
   const docToks = sessTopics ? docs.map((d, i) => {
@@ -2064,8 +2140,26 @@ function search(query, docs, opts = {}) {
       for (const t of entToks) if (entSets[di].has(t)) hit++;
       if (hit > 0) s *= 1 + ENT_W * (hit / entToks.length);
     }
+    if (verbHay !== null) {
+      const vb = verbatimOf(idents, verbHay[di]);
+      if (vb.matched.length > 0) rawVerbatim[di] = vb;
+    }
     return s;
   });
+  // [macro-fusion 0.2.147] 标识符补分：原样命中是与词命中同量纲的独立证据，走加法而不是乘号
+  // （乘号要靠赌「翻得过来」，而 BM25 的分布本来就没有可比刻度）。全命中值六成最高分；
+  // 命中的是这条记忆的 id 时值一个半。加法同时把「BM25 为 0 但原样命中」那一类拉进候选集。
+  const identBase = Math.max(...raw);
+  const baseRaw = raw.slice();
+  if (verbHay !== null) {
+    const unitRaw = identBase > 0 ? identBase : 1;
+    for (let di = 0; di < docs.length; di++) {
+      const vb = rawVerbatim[di];
+      if (vb === null) continue;
+      const idHit = vb.matched.some((t) => String(docs[di].id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
+      raw[di] += unitRaw * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
+    }
+  }
   const maxRaw = Math.max(...raw);
   const hits = [];
   // [macro-fusion 0.2.85] importance 以前只用来「豁免时间衰减」，从不进分数：一条 importance=4 的
@@ -2102,7 +2196,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }, score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice(), identBonus: Math.round((raw[di] - baseRaw[di]) * 1e3) / 1e3 }), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   hits.sort((a, b2) => b2.score - a.score);
@@ -2113,10 +2207,13 @@ function keywordHitScore(query, docs, opts = {}) {
   const now = opts.now === void 0 ? Date.now() : opts.now;
   const keep = (ts) => ts.filter((t) => t.length >= 2);
   const q = keep(tokenize(query));
-  if (q.length === 0 || docs.length === 0) return [];
+  if (docs.length === 0) return [];
   const qTf = /* @__PURE__ */ new Map();
   for (const t of q) qTf.set(t, (qTf.get(t) ?? 0) + 1);
   const n = docs.length;
+  // [macro-fusion 0.2.147] 与 search() 同口径：标识符原样命中也在这里补分（两个打分器不许两套口径）
+  const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.title ?? "") + " " + String(d.content ?? "") + " " + (Array.isArray(d.keywords) ? d.keywords.join(" ") : ""));
+  if (q.length === 0 && idents.length === 0) return [];
   const docToks = docs.map((d) => keep(tokenize([d.content, d.title ?? ""].join(" "))));
   const df = /* @__PURE__ */ new Map();
   const tf = [];
@@ -2138,8 +2235,26 @@ function keywordHitScore(query, docs, opts = {}) {
     for (const [t, f] of qTf) {
       if (tf[di].has(t)) s += idf(t) * f;
     }
+    if (verbHay !== null) {
+      const vb = verbatimOf(idents, verbHay[di]);
+      if (vb.matched.length > 0) rawVerbatim[di] = vb;
+    }
     return s;
   });
+  // [macro-fusion 0.2.147] 标识符补分：原样命中是与词命中同量纲的独立证据，走加法而不是乘号
+  // （乘号要靠赌「翻得过来」，而 BM25 的分布本来就没有可比刻度）。全命中值六成最高分；
+  // 命中的是这条记忆的 id 时值一个半。加法同时把「BM25 为 0 但原样命中」那一类拉进候选集。
+  const identBase = Math.max(...raw);
+  const baseRaw = raw.slice();
+  if (verbHay !== null) {
+    const unitRaw = identBase > 0 ? identBase : 1;
+    for (let di = 0; di < docs.length; di++) {
+      const vb = rawVerbatim[di];
+      if (vb === null) continue;
+      const idHit = vb.matched.some((t) => String(docs[di].id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
+      raw[di] += unitRaw * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
+    }
+  }
   const maxRaw = Math.max(...raw);
   const out = [];
   for (let di = 0; di < docs.length; di++) {
@@ -7996,6 +8111,7 @@ export {
   resumeAndDream,
   scanTurn,
   search,
+  keywordHitScore,
   statusWeight,
   foldNearDupes,
   pickKeeper,
@@ -8013,6 +8129,8 @@ export {
   sweepHomeLogs,
   switchHomeDir,
   tokenize,
+  identsOf,
+  verbatimOf,
   topicDrift,
   trustCommandDefinition,
   trustWorkspace,

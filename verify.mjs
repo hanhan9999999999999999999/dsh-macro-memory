@@ -9637,8 +9637,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.146（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.146'"),
+    'GV 版本: 代码里是 0.2.147（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.147'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9766,8 +9766,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.146（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.146'"),
+    'GW 版本: 代码里是 0.2.147（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.147'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9781,6 +9781,148 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'GW 等价: 剔掉 = 没问（同一问句去掉噪声词后首条分数逐位相同）',
     gwA?.id === gwB?.id && Math.abs((gwA?.score ?? 0) - (gwB?.score ?? 0)) < 1e-9,
     `${gwA?.score} vs ${gwB?.score}`,
+  )
+}
+
+// ── VV（0.2.147）：标识符原样匹配 —— 版本号 / 路径 / 文件名 / 短 id 不该被分词切成碎词。
+//    分词是检索的第一次解释，而解释会丢东西：0.2.146 切成 0 / 2 / 146，memory.db 切成 memori / db，
+//    短 id 因为不在正文里、BM25 恒为 0，连候选集都进不去。这一刀加一条**不过分词**的证据通道：
+//    问句里长得像标识符的那一段，按整串去候选文本里找，整串 1 / basename 0.7 / 去扩展名的主名 0.5。
+//    加法补分（乘法乘在 0 上还是 0），认得克制（太短不算、最多 6 个、同一处证据只记一遍、一键关）。
+{
+  const idSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const idMod = await import('./vendor/meow-memory/lib/index.js')
+  check(
+    'VV 源码: 六道阈值是常量（最短 4 / 最多 6 / 两份权重 / 两档降级信用）',
+    idSrc.includes('var IDENT_MIN = 4;') &&
+      idSrc.includes('var IDENT_MAX = 6;') &&
+      idSrc.includes('var IDENT_W = 0.6;') &&
+      idSrc.includes('var IDENT_ID_W = 1.5;') &&
+      idSrc.includes('var IDENT_BASE_CREDIT = 0.7;') &&
+      idSrc.includes('var IDENT_STEM_CREDIT = 0.5;'),
+  )
+  check(
+    'VV 源码: 九条形状正则覆盖盘符路径 / 多段相对路径 / 带扩展名文件 / 版本号 / 日期 / 短 id / commit / kebab / a-b',
+    idSrc.includes('var IDENT_RES = [') &&
+      idSrc.includes('/[A-Za-z]:\\\\') &&
+      idSrc.includes('/(?:[\\w.@-]+\\/){2,}[\\w.@-]+/g') &&
+      idSrc.includes('\\.(?:js|mjs|cjs|ts|tsx|json|md|db|py|ps1|yml|yaml|toml|txt|zip|exe|dll|log)') &&
+      idSrc.includes('/\\b\\d+\\.\\d+\\.\\d+\\b/g') &&
+      idSrc.includes('/\\b\\d{4}-\\d{2}-\\d{2}\\b/g') &&
+      idSrc.includes('/\\b0m[a-z0-9]{5,}\\b/gi') &&
+      idSrc.includes('/\\b[0-9a-f]{7,40}\\b/gi') &&
+      idSrc.includes('(?:[-_][a-z0-9]+)+'),
+  )
+  check(
+    'VV 源码: identsOf 四道筛（短于 4 丢掉 / 去重 / 包含关系去冗余 / 上限 6）',
+    idSrc.includes('if (t.length < IDENT_MIN) continue;') &&
+      idSrc.includes('if (!out.includes(t)) out.push(t);') &&
+      idSrc.includes('const kept = out.filter((t) => !out.some((u) => u !== t && u.length > t.length && u.includes(t)));') &&
+      idSrc.includes('return kept.slice(0, IDENT_MAX);'),
+  )
+  check(
+    'VV 源码: 分级信用三档（整串 1 / basename 0.7 / 主名 0.5），并且降级要标「(局部)」',
+    idSrc.includes('if (hay.includes(ident)) return 1;') &&
+      idSrc.includes('if (base !== ident && base.length >= IDENT_MIN && hay.includes(base)) return IDENT_BASE_CREDIT;') &&
+      idSrc.includes('if (stem !== base && stem.length >= IDENT_MIN && hay.includes(stem)) return IDENT_STEM_CREDIT;') &&
+      idSrc.includes('matched.push(c >= 1 ? t : t + "(局部)");'),
+  )
+  check(
+    'VV 源码: 候选文本含 id 与 project（短 id 指认靠的是字段，不是正文里恰好出现那几个字）',
+    idSrc.includes('(d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d)'),
+  )
+  check(
+    'VV 源码: 加法补分（单位分数 × ratio × 权重，指认 id 时用 1.5 那一档）',
+    idSrc.includes('raw[di] += unitRaw * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);'),
+  )
+  check(
+    'VV 源码: 早退改成「词与标识符都没有才空」，否则 BM25 为 0 的原样命中会被提前挡掉',
+    idSrc.includes('if (q.length === 0 && idents.length === 0) return [];'),
+  )
+  check(
+    'VV 源码: 一键回旧口径（verbatim:false 直接不给标识符，整段惰性）',
+    idSrc.includes('const idents = opts.verbatim === false ? [] : identsOf(query);'),
+  )
+  check(
+    'VV 源码: 认得谁要说出来（explain.verbatim + identBonus 同报，且 bm25 回到纯词分）',
+    idSrc.includes('verbatim: rawVerbatim[di].matched.slice(), identBonus:') &&
+      idSrc.includes('bm25: Math.round(baseRaw[di] * 1e3) / 1e3'),
+  )
+  check(
+    'VV 源码: 两支打分器同口径（keywordHitScore 也走 verbatimInputs）',
+    idSrc.split('verbatimInputs(').length - 1 >= 3,
+  )
+
+  const idDoc = (id, c, sess) => ({
+    id,
+    level: 'fact',
+    title: c.slice(0, 8),
+    content: c,
+    keywords: [],
+    importance: 2,
+    status: 'active',
+    project: null,
+    source_session: sess,
+    created_at: 1700000000000,
+    updated_at: 1700000000000,
+  })
+  const idDocs = [
+    idDoc('v146', '0.2.146 加了噪声地板：用 df 判据剔噪声词，分子分母同口径。', 's-v1'),
+    idDoc('vnoise', '改了措辞之后分数漂了一点，别当成回归。', 's-v3'),
+    idDoc('vpath', '补丁改的是 D:\\dsh-home\\vendor\\meow-memory\\lib\\index.js 里的 search()。', 's-v4'),
+    idDoc('0mwq5zzv8-c6a56522bbaa', '这一条正文里没有半个标识符，只讲交付态。', 's-v6'),
+  ]
+  const idOn = idMod.search('0mwq5zzv 是什么', idDocs, { k: 12, explain: true })
+  const idOff = idMod.search('0mwq5zzv 是什么', idDocs, { k: 12, verbatim: false, explain: true })
+  check(
+    'VV 行为: 问一段短 id，id 就是那条的那位直接第 1，且 explain.bm25 为 0（纯指认）',
+    idOn[0]?.id === '0mwq5zzv8-c6a56522bbaa' && idOn[0]?.explain?.bm25 === 0,
+    `${idOn[0]?.id}@${idOn[0]?.score} bm25=${idOn[0]?.explain?.bm25}`,
+  )
+  check(
+    'VV 行为: 阴性对照 verbatim:false 时那条连候选都进不去（不是「本来就有分」）',
+    !idOff.some((h) => h.id === '0mwq5zzv8-c6a56522bbaa') && idOff.every((h) => h.explain.verbatim === undefined),
+    idOff.map((h) => h.id).join(',') || '0 条',
+  )
+  const idPath = idMod.search('D:\\dsh-home\\vendor\\meow-memory\\lib\\index.js 改了什么', idDocs, { k: 12, explain: true })
+  check(
+    'VV 行为: 路径整串命中时正文带这串路径的那条排第 1（问句里的路径不再是段名碎片）',
+    idPath[0]?.id === 'vpath',
+    `${idPath[0]?.id}@${idPath[0]?.score}`,
+  )
+  const idLoose = idMod.search('E:\\Temp\\lib\\index.js 改了什么', idDocs, { k: 12, explain: true }).find((h) => h.id === 'vpath')
+  check(
+    'VV 行为: 只命中 basename 时标「(局部)」——降级命中不许冒充整串命中',
+    (idLoose?.explain?.verbatim ?? []).some((t) => t.endsWith('(局部)')),
+    JSON.stringify(idLoose?.explain?.verbatim ?? null),
+  )
+  const plainQ = '星图建图的延迟要盯着'
+  const plainA = idMod.search(plainQ, idDocs, { k: 12 }).map((h) => `${h.id}:${h.score}`)
+  const plainB = idMod.search(plainQ, idDocs, { k: 12, verbatim: false }).map((h) => `${h.id}:${h.score}`)
+  check(
+    'VV 行为: 问句里没有标识符时逐条同分（不是「多多少少加点分」）',
+    plainA.join(' ') === plainB.join(' '),
+    plainA.join(' '),
+  )
+  const idKw = idMod.keywordHitScore('0mwq5zzv 是什么', idDocs, { k: 5 })
+  check(
+    'VV 行为: 另一支打分器也认得出同一段短 id（换个入口不换答案）',
+    idKw[0]?.id === '0mwq5zzv8-c6a56522bbaa',
+    idKw.map((h) => h.id).join(',') || '0 条',
+  )
+  const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
+  check(
+    'VV 版本: 代码里是 0.2.147（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.147'"),
+  )
+  const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'VV 文档: INTERNAL 9.153 讲了「与既有 levers 不重叠」，DESIGN 159 收在「都得有一条不被切碎的路」',
+    idInt.includes('## 9.153 ') &&
+      idInt.includes('### 9.153.5 与既有 levers 不重叠') &&
+      idDes.includes('## 159 ') &&
+      idDes.includes('都得有一条不被切碎的路'),
   )
 }
 

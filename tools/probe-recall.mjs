@@ -303,6 +303,112 @@ check(
   `${nfA?.id}@${nfA?.score} vs ${nfB?.id}@${nfB?.score}`,
 )
 
+// ── VB（0.2.147）：标识符原样匹配 —— 版本号 / 路径 / 文件名 / 短 id 不过分词 ──────
+// tokenize 把 0.2.146 切成 0 / 2 / 146、把 memory.db 切成 memori / db，于是问「哪个版本」
+// 变成一堆谁都能沾边的碎词，真讲它的那条反被噪声挤下去；问一段短 id 更连候选都进不去
+// （id 不在 docText 里，BM25 恒为 0）。这里量的是：字面上带这个标识符的条目被认出来，
+// 而且认得克制——问句里一个标识符都不带时，分数一个字节都不动。
+const VB_DOCS = [
+  mkDoc('v146', '0.2.146 加了噪声地板：用 df 判据剔噪声词，分子分母同口径。', 's-v1'),
+  mkDoc('v145', '0.2.145 加了每轮星图邻域注入，挂在 agent/pre-step 尾部追加。', 's-v2'),
+  mkDoc('vnoise', '改了措辞之后分数漂了一点，别当成回归。', 's-v3'),
+  mkDoc(
+    'vpath',
+    '补丁改的是 D:\\dsh-home\\vendor\\dsh-macro-memory\\vendor\\meow-memory\\lib\\index.js 里的 search()。',
+    's-v4',
+  ),
+  mkDoc('vtool', 'tools/probe-words.mjs 里 claimedGuideLengths 会把「420 个字符」误报成口径不一致。', 's-v5'),
+  mkDoc('0mwq5zzv8-c6a56522bbaa', '这一条正文里没有半个标识符，只讲交付态。', 's-v6'),
+];
+const vbIds = (hits) => hits.map((h) => h.id).join(',');
+const VB_QVER = '0.2.146 改了什么'
+check(
+  'VB1 版本号是一个整体：identsOf 认 0.2.146，不认它被切碎的 0 / 2 / 146',
+  JSON.stringify(V.identsOf(VB_QVER)) === '["0.2.146"]',
+  JSON.stringify(V.identsOf(VB_QVER)),
+)
+const vbVer = V.search(VB_QVER, VB_DOCS, { k: 12, explain: true })
+check(
+  'VB2 问版本号时，字面带该版本的那条第 1（词侧被分词打碎，靠原样匹配认回来）',
+  vbVer[0]?.id === 'v146' && (vbVer[0]?.explain?.verbatim ?? []).includes('0.2.146'),
+  `${vbVer[0]?.id}@${vbVer[0]?.score} verbatim=${JSON.stringify(vbVer[0]?.explain?.verbatim ?? null)}`,
+)
+const VB_QID = '0mwq5zzv 是什么'
+const vbIdOn = V.search(VB_QID, VB_DOCS, { k: 12, explain: true })
+const vbIdOff = V.search(VB_QID, VB_DOCS, { k: 12, verbatim: false })
+check(
+  'VB3 问一段短 id 时，id 就是那条的那位直接站到第 1（正文里没有这个 token 也能被指认）',
+  vbIdOn[0]?.id === '0mwq5zzv8-c6a56522bbaa',
+  vbIds(vbIdOn),
+)
+check(
+  'VB4 那不是词命中带来的：该条 explain.bm25 为 0（纯指认，不假装读到了正文）',
+  (vbIdOn[0]?.explain?.bm25 ?? -1) === 0,
+  `bm25=${vbIdOn[0]?.explain?.bm25} identBonus=${vbIdOn[0]?.explain?.identBonus}`,
+)
+check(
+  'VB5 阴性对照：verbatim:false 时同一问句连候选都进不去（原样匹配真在起效，不是本来就有分）',
+  !vbIds(vbIdOff).includes('0mwq5zzv8-c6a56522bbaa') && vbIdOff.every((h) => h.explain === undefined),
+  vbIds(vbIdOff) || '0 条',
+)
+const VB_QPATH = 'D:\\dsh-home\\vendor\\dsh-macro-memory\\vendor\\meow-memory\\lib\\index.js 改了什么'
+const vbPath = V.search(VB_QPATH, VB_DOCS, { k: 12, explain: true })
+check(
+  'VB6 路径整串命中：问句里写全路径时，正文带这串路径的条目排第 1',
+  vbPath[0]?.id === 'vpath',
+  `${vbPath[0]?.id}@${vbPath[0]?.score} 共 ${vbPath.length} 条`,
+)
+const VB_QLOOSE = 'E:\\Temp\\lib\\index.js 改了什么'
+const vbLoose = V.search(VB_QLOOSE, VB_DOCS, { k: 12, explain: true })
+const vbLooseHit = vbLoose.find((h) => h.id === 'vpath')
+check(
+  'VB7 降级要说实话：整串没命中、只有 basename 命中时，verbatim 里标「(局部)」而不是当成整串命中',
+  (vbLooseHit?.explain?.verbatim ?? []).some((t) => t.endsWith('(局部)')),
+  JSON.stringify(vbLooseHit?.explain?.verbatim ?? null),
+)
+const vbUpper = V.search('TOOLS/PROBE-WORDS.MJS 是干嘛的', VB_DOCS, { k: 12, explain: true })
+check(
+  'VB8 大小写不敏感：问句写大写也认得出同一个文件（两侧都小写化再比）',
+  vbUpper[0]?.id === 'vtool' && (vbUpper[0]?.explain?.verbatim ?? []).includes('tools/probe-words.mjs'),
+  `${vbUpper[0]?.id} verbatim=${JSON.stringify(vbUpper[0]?.explain?.verbatim ?? null)}`,
+)
+check(
+  'VB9 太短的算不上标识符：a/b 与 1.5 都不进原样匹配（免得「a/b」这种通用词去刷分）',
+  V.identsOf('a/b 和 1.5').length === 0,
+  JSON.stringify(V.identsOf('a/b 和 1.5')),
+)
+check(
+  'VB10 一条问句最多认 6 个标识符：多写的丢掉，不让一句话把半个库拽进来',
+  V.identsOf('0.2.1 0.2.2 0.2.3 0.2.4 0.2.5 0.2.6 0.2.7 0.2.8').length === 6,
+  JSON.stringify(V.identsOf('0.2.1 0.2.2 0.2.3 0.2.4 0.2.5 0.2.6 0.2.7 0.2.8')),
+)
+const vbNest = V.identsOf('tools/probe-words.mjs')
+check(
+  'VB11 同一处证据不记两遍：tools/probe-words.mjs 只留最长的那个，不再单留 probe-words / tools/probe-words',
+  JSON.stringify(vbNest) === '["tools/probe-words.mjs"]',
+  JSON.stringify(vbNest),
+)
+const VB_QPLAIN = '星图建图的延迟要盯着'
+const vbPlainOn = V.search(VB_QPLAIN, VB_DOCS, { k: 12, explain: true }).map((h) => `${h.id}:${h.score}`)
+const vbPlainOff = V.search(VB_QPLAIN, VB_DOCS, { k: 12, explain: true, verbatim: false }).map((h) => `${h.id}:${h.score}`)
+check(
+  'VB12 没有标识符的问句完全惰性：开与关逐条同分同名次（不是「多多少少加点分」）',
+  vbPlainOn.join(' ') === vbPlainOff.join(' '),
+  vbPlainOn.join(' '),
+)
+check(
+  'VB13 没认到标识符时 explain 里不出现 verbatim 键（回执不编造证据）',
+  V.search(VB_QPLAIN, VB_DOCS, { k: 12, explain: true }).every((h) => h.explain.verbatim === undefined),
+  JSON.stringify(V.search(VB_QPLAIN, VB_DOCS, { k: 12, explain: true }).map((h) => h.explain.verbatim)),
+)
+const vbKwOn = V.keywordHitScore(VB_QID, VB_DOCS, { k: 5 })
+const vbKwOff = V.keywordHitScore(VB_QID, VB_DOCS, { k: 5, verbatim: false })
+check(
+  'VB14 另一支打分器同口径：keywordHitScore 也认得出那段短 id，关掉后同样一条不剩',
+  vbKwOn[0]?.id === '0mwq5zzv8-c6a56522bbaa' && vbKwOff.length === 0,
+  `开 ${vbIds(vbKwOn)} / 关 ${vbKwOff.length} 条`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {
