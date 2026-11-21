@@ -9895,6 +9895,70 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
   }
 
+  // ── HZ（0.2.166）：稠密只补盲区，不并列投票 ───────────────────────────────
+  // 两件事都要断言：词法承认不行时它得能救场；词法有把握时它得闭嘴（RRF 就是没闭嘴那版）。
+  {
+    const occur = (t) => eng.split(t).length - 1
+    check(
+      'HZ 常量: 三道门槛各一个来源（0.2 / 4 / 0.45），兜底只有一个实现',
+      occur('var DENSE_RESCUE_COVER = 0.2;') === 1 &&
+        occur('var DENSE_RESCUE_HEAD = 4;') === 1 &&
+        occur('var DENSE_RESCUE_COS = 0.45;') === 1 &&
+        occur('function rescueByDense(') === 1 &&
+        occur('function denseRescueWanted(') === 1,
+    )
+    check(
+      'HZ 权限: 稠密就绪也不许默认并列融合（老 RRF 只在 denseFuse:true 时走），且 _dense 不清出去就是泄漏',
+      eng.includes('if (opts.denseFuse !== true) return trimByBand(lex, opts.k, opts);') &&
+        eng.includes('if (!(r.cos >= minCos)) break;') &&
+        occur('delete h._dense;') === 1 &&
+        eng.includes('for (const h of lexHits.slice(head))'),
+    )
+    const MeowHZ = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    check(
+      'HZ 常量导出: 探针要能读到真值，不许在测试里另写一份 0.2/4/0.45',
+      MeowHZ.DENSE_RESCUE_COVER === 0.2 && MeowHZ.DENSE_RESCUE_HEAD === 4 && MeowHZ.DENSE_RESCUE_COS === 0.45,
+    )
+    // 这个仓库默认没有稠密模型：整条路径必须一次都不触发，回执与纯词法逐位相同。
+    const hzCorpus = []
+    const hzDoc = (id, c, kws) => hzCorpus.push({ id, level: 'fact', content: c, title: '', keywords: kws || [], importance: 2, status: 'active' })
+    hzDoc('d0', '舵轮校准要先把液压油温升到四十度，再逐格对零位。', ['舵轮', '校准'])
+    hzDoc('d1', '舵轮校准的零位漂移多半来自编码器线松了。', ['舵轮', '漂移'])
+    hzDoc('d2', '压载水的排放记录必须保留三年。', ['压载水'])
+    hzDoc('d3', '甲板照明在夜航时降到最低档。', ['照明'])
+    const hzQs = ['舵轮 校准 零位', '压载水 排放 记录', '甲板 照明 夜航']
+    // searchHybrid 是 async：不 await 拿到的是 Promise，JSON.stringify 出来是 {}（恒假）。
+    const hzSame = await Promise.all(hzQs.map(async (q) => {
+      const a = await MeowHZ.searchHybrid(q, hzCorpus, { k: 3 })
+      const b = MeowHZ.search(q, hzCorpus, { k: 3 })
+      return JSON.stringify(a) === JSON.stringify(b)
+    }))
+    check(
+      'HZ 行为: 稠密未就绪时 hybrid 与纯词法逐位相同（没模型就当它不存在，不加提示、不改分数）',
+      hzSame.every(Boolean) && MeowHZ.denseStatus().state !== 'ready',
+    )
+    const hzOff = await Promise.all(hzQs.map(async (q) => {
+      const pure = MeowHZ.search(q, hzCorpus, { k: 3 }).map((h) => h.id).join(',')
+      const off1 = (await MeowHZ.searchHybrid(q, hzCorpus, { k: 3, denseRescue: false })).map((h) => h.id).join(',')
+      const off2 = (await MeowHZ.searchHybrid(q, hzCorpus, { k: 3, rescueCover: 0 })).map((h) => h.id).join(',')
+      return pure === off1 && pure === off2
+    }))
+    const hzWide = await MeowHZ.searchHybrid('舵轮 校准', hzCorpus, { k: 2, rescueCover: 1, rescueHead: 0 })
+    const hzHead = await MeowHZ.searchHybrid('舵轮 校准', hzCorpus, { k: 5, rescueHead: 99 })
+    check(
+      'HZ 阴性对照: denseRescue:false / rescueCover:0 都回到纯词法；rescueCover:1 与 rescueHead 越界值也不回超 k',
+      hzOff.every(Boolean) && hzWide.length <= 2 && hzHead.length <= 5,
+      `关闭 ${hzOff.filter(Boolean).length}/${hzOff.length} · ${hzWide.length} 条 / ${hzHead.length} 条`,
+    )
+    const hzInt = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+    const hzDes = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    check(
+      'HZ 文档锚：9.173 写下盲区读数（0.072）与三道门槛，178 写下「只许补盲区，不许并列投票」',
+      hzInt.includes('## 9.173') && hzInt.includes('DENSE_RESCUE_COVER') && hzInt.includes('0.072') &&
+        hzDes.includes('## 178') && hzDes.includes('只许补盲区'),
+    )
+  }
+
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10230,8 +10294,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.165（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.165'"),
+    'GV 版本: 代码里是 0.2.166（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.166'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10360,8 +10424,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.165（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.165'"),
+    'GW 版本: 代码里是 0.2.166（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.166'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10508,8 +10572,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.165（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.165'"),
+    'VV 版本: 代码里是 0.2.166（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.166'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10686,9 +10750,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.165（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.165' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.165'"),
+    'GX19 版本已到 0.2.166（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.166' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.166'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10788,10 +10852,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.165',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.165' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.165'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.165'),
+    'VY15 版本三处一致 0.2.166',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.166' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.166'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.166'),
   )
 }
 
@@ -10839,10 +10903,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.165（三处一致）',
-    pkgWz.version === '0.2.165' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.165'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.165'),
+    'WZ9 版本已到 0.2.166（三处一致）',
+    pkgWz.version === '0.2.166' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.166'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.166'),
   )
 }
 

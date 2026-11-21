@@ -897,6 +897,68 @@ if (denseUsable) {
   )
 }
 
+// ── G24（0.2.166）：稠密只许补盲区，不许并列投票 ─────────────────────────────
+// 这一组问的是「新通道的权限」：词法自己承认不行时它能不能救场，词法有把握时它能不能闭嘴。
+// 两件事都得断言，否则只测了一半——只测救场，RRF 那种把强序打散的版本也能过。
+{
+  const eng = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
+  const wrong = []
+  const occur = (t) => eng.split(t).length - 1
+  if (occur('var DENSE_RESCUE_COVER = 0.2;') !== 1) wrong.push('闸门门槛不是唯一来源')
+  if (occur('var DENSE_RESCUE_HEAD = 4;') !== 1) wrong.push('head 不是唯一来源')
+  if (occur('var DENSE_RESCUE_COS = 0.45;') !== 1) wrong.push('余弦门槛不是唯一来源')
+  if (occur('function rescueByDense(') !== 1) wrong.push('rescueByDense 没有唯一实现')
+  if (occur('function denseRescueWanted(') !== 1) wrong.push('denseRescueWanted 没有唯一实现')
+  if (occur('if (!(r.cos >= minCos)) break;') !== 1) wrong.push('兜底没有在余弦跌破门槛时停手')
+  if (occur('delete h._dense;') !== 1) wrong.push('内部字段 _dense 没清出回执')
+  if (!eng.includes('if (opts.denseFuse !== true) return trimByBand(lex, opts.k, opts);')) wrong.push('稠密就绪时仍默认并列融合（强序会被打散）')
+  if (occur('denseRescueWanted(lex, opts)') !== 1) wrong.push('searchHybrid 没有走闸门')
+  if (!eng.includes('for (const h of lexHits.slice(head))')) wrong.push('兜底没有把词法找到的尾巴接回来')
+
+  // 行为①：稠密未就绪（这个仓库的默认状态）时，hybrid 必须与纯词法逐位相同
+  let sameLex = 0
+  for (const { q } of fx.queries.slice(0, 12)) {
+    const a = (await V.searchHybrid(q, docs, { k: 10 })).map((h) => h.id).join(',')
+    const b = V.search(q, docs, { k: 10 }).map((h) => h.id).join(',')
+    if (a === b) sameLex++
+  }
+  if (sameLex !== 12) wrong.push(`稠密未就绪时 hybrid 与纯词法不同（${sameLex}/12）`)
+
+  // 行为②：关得掉——denseRescue:false 与纯词法逐位相同
+  const offOk = (await Promise.all(fx.queries.slice(0, 8).map(async ({ q }) => {
+    const a = (await V.searchHybrid(q, docs, { k: 10, denseRescue: false })).map((h) => h.id).join(',')
+    const b = V.search(q, docs, { k: 10 }).map((h) => h.id).join(',')
+    return a === b
+  }))).every(Boolean)
+  if (!offOk) wrong.push('denseRescue:false 不等于纯词法')
+
+  // 行为③：门槛旋钮两头都不越界（0 = 关；1 = 全开也只重排、不回超 k）
+  const wide = await V.searchHybrid(fx.queries[0].q, docs, { k: 5, rescueCover: 1, rescueHead: 0 })
+  if (wide.length > 5) wrong.push(`rescueCover:1 时回了 ${wide.length} 条（k=5）`)
+  const headBig = await V.searchHybrid(fx.queries[1].q, docs, { k: 10, rescueHead: 99 })
+  if (headBig.length > 10) wrong.push('rescueHead 大于命中数时越界')
+  const ids = headBig.map((h) => String(h.id))
+  if (new Set(ids).size !== ids.length) wrong.push('兜底把同一条塞了两次')
+
+  // 行为④：老能力还开着——denseFuse 显式打开时仍能走 0.2.154 的融合路径
+  const fused = await V.searchHybrid(fx.queries[0].q, docs, { k: 10, denseFuse: true })
+  if (fused.length === 0) wrong.push('denseFuse 打开后没有结果（老能力被砍了）')
+
+  // 文档在案
+  const int166 = readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8')
+  const des166 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  if (!(int166.includes('## 9.173') && int166.includes('DENSE_RESCUE_COVER') && int166.includes('0.072'))) wrong.push('INTERNAL 9.173 没写盲区读数与参数')
+  if (!(des166.includes('## 178') && des166.includes('盲区'))) wrong.push('DESIGN 178 没写原则')
+
+  check(
+    'G24 稠密只补盲区：闸门在、跌破余弦即停、词法有把握时不插话、关得掉、老融合仍在',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `DENSE_RESCUE ${V.DENSE_RESCUE_COVER}/${V.DENSE_RESCUE_HEAD}/${V.DENSE_RESCUE_COS}；未就绪时与词法逐位相同（12/12）`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

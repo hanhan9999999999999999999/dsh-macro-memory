@@ -2226,6 +2226,7 @@ function trimByBand(hits, k, opts = {}) {
     delete h._raw;
     delete h._ident;
     delete h._band;
+    delete h._dense;
   }
   return out;
 }
@@ -8873,6 +8874,84 @@ function fuseDenseHits(lexHits, denseRes, docs, opts = {}) {
   return out.slice(0, Math.max(0, k));
 }
 
+// [macro-fusion 0.2.166] 稠密兜底（rescue）：只在词法「自己知道不行」的时候才给稠密话语权。
+//
+// 为什么需要：词法强不等于没有盲区。真库换说池 14 题里有 7 题没进 top3，它们的榜首覆盖度
+// 全落在 0.072~0.142（命中题的覆盖度中位数是 1.00）——问句与记忆的字面几乎没沾上，靠调
+// 打分权重救不回来；而同一批题里稠密能把其中 1 题排到第 1、1 题排到第 2。
+// 为什么不能一直混：0.2.154 的并列 RRF 在现在这套词法上是有害的——五池一起量，
+// 照抄 hit@1 0.956→0.933、换说法 0.798→0.738、锚点 0.883→0.825、真库自找 0.997→0.954。
+// 词法已经很强时，稠密补的那张平票会把强序打散，赚到只有尾部一条。
+//
+// 做法：覆盖度 < DENSE_RESCUE_COVER 时，词法前 DENSE_RESCUE_HEAD 名原样不动，其后按稠密
+// 余弦重排（余弦低于 DENSE_RESCUE_COS 的不进来）。保住「已经答对的那部分」，只重排本来
+// 就不可信的尾巴——这是「往下削一律伤」那条经验的加法侧版本。
+// 实测（θ0.2 / head4 / cos0.45，五池 233 题）：hit@1 与 hit@3 一条不动，top5 三池各 +1
+// （照抄 44→45、换说法 13→14、真库换说 12→13），MRR 0.956 / 0.810 / 0.883 / 0.997 / 0.542。
+// 稠密没就绪（没模型、没依赖、MEOW_DENSE=0）时这条路径一次都不触发——行为与 0.2.165 逐位相同。
+var DENSE_RESCUE_COVER = 0.2;
+var DENSE_RESCUE_HEAD = 4;
+var DENSE_RESCUE_COS = 0.45;
+
+function rescueByDense(lexHits, denseRes, docs, opts = {}) {
+  const head = Number.isFinite(opts.rescueHead) ? Math.max(0, Math.round(opts.rescueHead)) : DENSE_RESCUE_HEAD;
+  const minCos = Number.isFinite(opts.rescueCos) ? opts.rescueCos : DENSE_RESCUE_COS;
+  const prefix = lexHits.slice(0, head);
+  const seen = new Set(prefix.map((h) => String(h.id)));
+  const byId = new Map();
+  for (const h of lexHits) byId.set(String(h.id), h);
+  const docById = new Map();
+  for (const d of docs) docById.set(String(d.id), d);
+  const out = prefix.slice();
+  for (const r of denseRes.ranked) {
+    // ranked 已按余弦降序：跌破门槛就可以停，别把「不相关的」当兜底塞回来。
+    if (!(r.cos >= minCos)) break;
+    const id = String(r.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const hit = byId.get(id);
+    if (hit !== void 0) { out.push(hit); continue; }
+    // 词法一个字都没沾上的条目：从语料里把正文捞回来，不能只回一个 id —— 那条对调用方没用。
+    const d = docById.get(id);
+    if (d === void 0) continue;
+    out.push({
+      id: d.id,
+      level: d.level,
+      title: d.title,
+      content: d.content,
+      importance: d.importance,
+      updated_at: d.updated_at,
+      ...d.keywords === void 0 ? {} : { keywords: d.keywords },
+      ...d.project === void 0 ? {} : { project: d.project },
+      ...d.created_at === void 0 ? {} : { created_at: d.created_at },
+      ...d.source_session === void 0 ? {} : { source_session: d.source_session },
+      cover: 0,
+      _dense: Math.round(r.cos * 1e3) / 1e3,
+      score: Math.round(r.cos * 1e3) / 1e3,
+      ...opts.explain === true ? { explain: { cover: 0, dense: Math.round(r.cos * 1e3) / 1e3, rescue: true, score: Math.round(r.cos * 1e3) / 1e3 } } : {}
+    });
+  }
+  // 词法里排在 head 之后、稠密没提到的，按原顺序接到末尾——兜底不许把词法找到的东西弄丢。
+  for (const h of lexHits.slice(head)) {
+    const id = String(h.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(h);
+  }
+  return out;
+}
+
+// 该不该走兜底：词法有结果、稠密就绪、榜首覆盖度低于门槛、没被人为关掉。
+function denseRescueWanted(lexHits, opts = {}) {
+  if (opts.denseRescue === false) return false;
+  if (lexHits.length === 0) return false;
+  const theta = Number.isFinite(opts.rescueCover) ? opts.rescueCover : DENSE_RESCUE_COVER;
+  if (!(theta > 0)) return false;
+  const cover = Number(lexHits[0].cover);
+  if (!Number.isFinite(cover)) return false;
+  return cover < theta;
+}
+
 // 对外的入口：词法先算（它永远在），稠密能上就上。
 // 稠密这一路失败时**返回词法原样**，不返回空、不抛错——「可选」的含意就是失败等于没有。
 async function searchHybrid(query, docs, opts = {}) {
@@ -8882,6 +8961,15 @@ async function searchHybrid(query, docs, opts = {}) {
   let denseRes = null;
   try { denseRes = await denseRank(query, docs, opts); } catch { denseRes = null; }
   if (denseRes === null || denseRes.ranked.length === 0) return trimByBand(lex, opts.k, opts);
+  // [0.2.166] 词法自己说「这题我没把握」时走兜底：head 不动，只重排尾巴。
+  if (denseRescueWanted(lex, opts)) {
+    return trimByBand(rescueByDense(lex, denseRes, docs, opts), opts.k, { ...opts, bandKeep: false });
+  }
+  // 词法有把握的时候，稠密不许插话：并列投票会把已经排好的强序打散——真库自找池
+  // 149/150 会掉到 138/149（多出来的 11 道正是「本来答对」的题）。省下来的算力只花在
+  // 词法自己承认不行的那道闸门后面。0.2.154 的 RRF 融合保留成显式开关（denseFuse），
+  // 想要那股「平票也投一票」的行为随时能开回来，能力不砍。
+  if (opts.denseFuse !== true) return trimByBand(lex, opts.k, opts);
   return trimByBand(fuseDenseHits(lex, denseRes, docs, opts), opts.k, opts);
 }
 
@@ -9063,6 +9151,9 @@ export {
   WEAK_GAP,
   COORD_W_DEF,
   COORD_POW_DEF,
+  DENSE_RESCUE_COVER,
+  DENSE_RESCUE_HEAD,
+  DENSE_RESCUE_COS,
   KW_TF_W,
   FIELD_KW_W_DEF,
   verbatimOf,
