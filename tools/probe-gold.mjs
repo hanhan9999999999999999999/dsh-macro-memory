@@ -604,6 +604,111 @@ if (denseUsable) {
       : wrong.join(' / '),
   )
 }
+// ── G21（0.2.162）同义词桥：词面零交集时，换个说法还得找得到 ─────────────────────
+// 换说法池 hit@1 卡在 0.500 不是排序不聪明，是「根本没有可比的词」：中文二元组这一层没有词形变化，
+// 「反省」和「反思」、「推送」和「远端」在词面上就是两套东西。这一条量四件事：
+//   ① 表本身站得住（手工、二字词、无跨组重复、权重在 (0,1) 开区间——换个说法能帮忙不能顶替原话）；
+//   ② 真起作用（换说法池比关桥基线高，且不是靠代价照抄/锚点池换来的）；
+//   ③ 只在加法那一层动（覆盖度分母、照抄池、锚点池逐条一处不动）；
+//   ④ 自带阴性对照（关桥 = 权重 0；空表返回 null；只含同义词的条目在关桥时进不了候选、开桥时进得来）。
+{
+  const ranksOf = (list, opts) =>
+    list.map(({ q, want }) => {
+      const w = Array.isArray(want) ? want.map(String) : [String(want)]
+      const ids = V.search(q, docs, { k: K, ...opts }).map((h) => String(h.id))
+      return ids.findIndex((id) => w.includes(id))
+    })
+  const sigOf = (list, opts) =>
+    list.map(({ q }) => V.search(q, docs, { k: K, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join(',')).join('|')
+
+  // ① 表形态
+  const groups = V.SYN_GROUPS
+  const flat = groups.flat()
+  const shapeOk =
+    Array.isArray(groups) &&
+    groups.length >= 12 &&
+    groups.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => typeof w === 'string' && [...w].length === 2)) &&
+    new Set(flat).size === flat.length &&
+    typeof V.SYN_W === 'number' &&
+    V.SYN_W > 0 &&
+    V.SYN_W < 1 &&
+    typeof V.synExpandOf === 'function'
+
+  // ② 真起作用（换说法池 vs 关桥）
+  const pOn = measure(fx.paraphrase, docs)
+  const pOff = measure(fx.paraphrase, docs, { synBridge: false })
+
+  // ③ 照抄池/锚点池零漂移（排名与读数都要一处不动）
+  const qOn = measure(fx.queries, docs)
+  const qOff = measure(fx.queries, docs, { synBridge: false })
+  const aOn = measure(fx.anchor, docs)
+  const aOff = measure(fx.anchor, docs, { synBridge: false })
+  const qDrift = ranksOf(fx.queries, {}).reduce((n, r, i) => n + (r === ranksOf(fx.queries, { synBridge: false })[i] ? 0 : 1), 0)
+  const aDrift = ranksOf(fx.anchor, {}).reduce((n, r, i) => n + (r === ranksOf(fx.anchor, { synBridge: false })[i] ? 0 : 1), 0)
+  const same = (a, b) => Math.round(a * 1e3) === Math.round(b * 1e3)
+
+  // ④ 覆盖度分母不动：同一条问句的开/关 cover 必须逐条相同（扩词不进 qIdfSum）
+  // 覆盖度只认「同一条记忆的 cover 有没有变」：开桥会改变命中集合与顺序，按位置比是错的判据。
+  const coverShape = fx.paraphrase.every(({ q }) => {
+    const on = new Map(V.search(q, docs, { k: K }).map((h) => [String(h.id), Number(h.cover ?? -1).toFixed(3)]))
+    const off = new Map(V.search(q, docs, { k: K, synBridge: false }).map((h) => [String(h.id), Number(h.cover ?? -1).toFixed(3)]))
+    for (const [id, v] of on) if (off.has(id) && off.get(id) !== v) return false
+    return true
+  })
+
+  // ⑤ 候选集：只含同义词的那条，关桥时进不来、开桥时进得来（倒排合并的证据）
+  const synCorpus = [
+    { id: 'S1', level: 'fact', title: '', content: '这一段讲的是反思', keywords: [], importance: 1, project: 'g21', updated_at: 1763e9, last_accessed_at: 1763e9 },
+    { id: 'S2', level: 'fact', title: '', content: '这一段讲的是别的', keywords: [], importance: 1, project: 'g21', updated_at: 1763e9, last_accessed_at: 1763e9 },
+  ]
+  const synIds = (opts) => V.search('反省', synCorpus, { k: 2, ...opts }).map((h) => String(h.id))
+  const bridgeEnters = synIds({}).includes('S1') && !synIds({ synBridge: false }).includes('S1')
+
+  // ⑥ 虚词新增两条真的不进打分：含着「不要」的那条与不带它的一条必须同分
+  // 构造要点：问句被剔掉「这个 / 要不 / 不要」之后，剩下的是「个要 / 要紧」；
+  // 两条等长文档都只命中「要紧」，F1 多出的「不要」不允许进打分——所以必须同分。
+  const funcCorpus = [
+    { id: 'F1', level: 'fact', title: '', content: '不要紧', keywords: [], importance: 1, project: 'g21', updated_at: 1763e9, last_accessed_at: 1763e9 },
+    { id: 'F2', level: 'fact', title: '', content: '很要紧', keywords: [], importance: 1, project: 'g21', updated_at: 1763e9, last_accessed_at: 1763e9 },
+  ]
+  const fScore = (id) => Number(V.search('这个要不要紧', funcCorpus, { k: 2 }).find((h) => String(h.id) === id)?.score ?? 0)
+  const funcQuiet = same(fScore('F1'), fScore('F2'))
+
+  // ⑦ 老规矩不破：正文命中压过只在 keywords 里的（0.2.152）
+  const pairDocs = [
+    { id: 'P', level: 'fact', title: '', content: '验收口径甲乙丙丁', keywords: [], importance: 1, project: 'g21', updated_at: 1763e9, last_accessed_at: 1763e9 },
+    { id: 'Q', level: 'fact', title: '', content: '甲乙丙丁戊己庚辛', keywords: ['验收'], importance: 1, project: 'g21', updated_at: 1763e9, last_accessed_at: 1763e9 },
+  ]
+  const pairHits = V.search('验收口径', pairDocs, { k: 2 }).map((h) => String(h.id))
+  const tagBelowBody = pairHits[0] === 'P'
+
+  // ⑧ 阴性对照：关桥 = 权重 0，两条必须逐条同分（证明旋钮只有一个）
+  const knobOk = sigOf(fx.paraphrase, { synBridge: false }) === sigOf(fx.paraphrase, { synW: 0 })
+
+  // ⑨ 阴性对照：表里没有的词不扩（返回 null），不是「随便扩一堆」
+  const noSyn = V.synExpandOf(['毫无关系'], new Map([['关系', 1]])) === null
+
+  const wrong = []
+  if (!shapeOk) wrong.push('同义词表形态不对（要 ≥12 组、每组 ≥2、每词两字、无跨组重复、0<SYN_W<1）')
+  if (!(pOn.hit1 >= 0.7 && pOn.hit3 >= 0.9)) wrong.push(`换说法池没到门槛（hit@1=${pOn.hit1.toFixed(3)} hit@3=${pOn.hit3.toFixed(3)}）`)
+  if (!(pOn.hit1 > pOff.hit1 + 0.05)) wrong.push('换说法池相对关桥基线几乎没动——同义桥没在起作用')
+  if (qDrift !== 0 || !same(qOn.hit1, qOff.hit1) || !same(qOn.mrr, qOff.mrr)) wrong.push('照抄池被动了')
+  if (aDrift !== 0 || !same(aOn.hit1, aOff.hit1) || !same(aOn.mrr, aOff.mrr)) wrong.push('锚点池被动了')
+  if (!coverShape) wrong.push('cover 开/关不一致（扩词进了覆盖度分母）')
+  if (!bridgeEnters) wrong.push('只含同义词的条目没被桥进来（倒排候选集没合并同义词 postings）')
+  if (!funcQuiet) wrong.push('「不要」还在参与打分（虚词表没生效）')
+  if (!tagBelowBody) wrong.push('只在 keywords 里的压过了正文命中的（破 0.2.152 的规矩）')
+  if (!knobOk) wrong.push('synBridge:false 与 synW:0 不同分（旋钮不是一个）')
+  if (!noSyn) wrong.push('表外词也被扩了（扩词没有边界）')
+
+  check(
+    'G21 同义词桥：换个说法能找回（换说法池抬起来），照抄/锚点/覆盖度一处不动，自带四道阴性对照',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `${groups.length} 组 / SYN_W=${V.SYN_W}；换说法 关 ${pOff.hit1.toFixed(3)}/${pOff.hit3.toFixed(3)}/${pOff.mrr.toFixed(3)} → 开 ${pOn.hit1.toFixed(3)}/${pOn.hit3.toFixed(3)}/${pOn.mrr.toFixed(3)}；照抄漂移 ${qDrift} 条、锚点漂移 ${aDrift} 条`
+      : wrong.join(' / '),
+  )
+}
 
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 

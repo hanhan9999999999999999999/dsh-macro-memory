@@ -9713,6 +9713,101 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// HB2（0.2.162）：同义词桥——词面上根本没有可比的词时，换个说法还找得回来。
+// 这一组量的是「桥只做加法」：表站得住、只扩问句、权重小于 1、覆盖度分母与倒排候选集各归各位，
+// 而且开关只有一个（synBridge:false = synW:0）。
+{
+  const eng = readFileSync(
+    join(root, 'vendor', 'meow-memory', 'lib', 'index.js'),
+    'utf8',
+  )
+  const meow162 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  check(
+    'HB2 单一来源: 表与权重只定义一次，别的模块不许自己写一份「哪些词算同义」',
+    eng.split('var SYN_GROUPS = ').length - 1 === 1 &&
+      eng.split('var SYN_W = ').length - 1 === 1 &&
+      !readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8').includes('SYN_W') &&
+      !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('SYN_GROUPS'),
+  )
+  check(
+    'HB2 表能对齐: 每组 ≥2 条、每个词两字（tokenize 只产二元组，一字词永远命不中）、无跨组重复',
+    Array.isArray(meow162.SYN_GROUPS) &&
+      meow162.SYN_GROUPS.length >= 12 &&
+      meow162.SYN_GROUPS.every((g) => g.length >= 2 && g.every((w) => [...w].length === 2)) &&
+      new Set(meow162.SYN_GROUPS.flat()).size === meow162.SYN_GROUPS.flat().length,
+  )
+  check(
+    'HB2 权重是「帮忙」不是「顶替」: 0 < SYN_W < 1，扩词不能与原文同权',
+    typeof meow162.SYN_W === 'number' && meow162.SYN_W > 0 && meow162.SYN_W < 1,
+  )
+  check(
+    'HB2 只扩问句: 开关与权重都从 opts 读，默认读常量（一处兜底，不是每处各写一遍）',
+    eng.includes('const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df);') &&
+      eng.includes('const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;') &&
+      eng.split('opts.synW : SYN_W').length - 1 === 1,
+  )
+  check(
+    'HB2 覆盖度分母不动: 分母只累 qKept，同义词一个字节都不进（进了就是「问句更难满足」）',
+    eng.split('for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);').length - 1 === 1 &&
+      !/cover \+= idfOf\(a\)/.test(eng) &&
+      eng.split('coverOf[di] = Math.min(1, cover / qIdfSum);').length - 1 === 1,
+  )
+  check(
+    'HB2 候选集合并: 同义词的 postings 必须并进倒排候选，否则被剪掉的条目连分都算不到',
+    eng.includes('if (synOf !== null) {') &&
+      eng.includes('for (const alts of synOf.values()) for (const a of alts) {') &&
+      eng.includes('const p = postings.get(a);'),
+  )
+  check(
+    'HB2 可审计: 表与函数从模块导出，探针和验收读的是同一份数据',
+    eng.includes('  SYN_GROUPS,\n  SYN_W,\n  synExpandOf,') &&
+      typeof meow162.synExpandOf === 'function',
+  )
+  check(
+    'HB2 虚词补齐: 「要不要」的另一半与「一段」都进了虚词表（此前只剔了「要不」）',
+    eng.includes('"一些", "一段", "还是"') && eng.includes('"不是", "不要", "没有"'),
+  )
+  const docs162 = [
+    { id: 'S1', level: 'fact', title: '', content: '这一段讲的是反思', keywords: [], importance: 1, project: 'hb2', updated_at: 1763e9, last_accessed_at: 1763e9 },
+    { id: 'S2', level: 'fact', title: '', content: '这一段讲的是别的', keywords: [], importance: 1, project: 'hb2', updated_at: 1763e9, last_accessed_at: 1763e9 },
+  ]
+  const idsOf = (opts) => meow162.search('反省', docs162, { k: 2, ...opts }).map((h) => String(h.id))
+  check(
+    'HB2 行为: 只含同义词的条目，关桥进不来、开桥进得来（这是「词面零交集」那一类问句的对照）',
+    idsOf({}).includes('S1') && !idsOf({ synBridge: false }).includes('S1'),
+  )
+  check(
+    'HB2 行为: 覆盖度按条目比，开桥不改同一条记忆的 cover（只加分，不改判据）',
+    (() => {
+      const on = new Map(meow162.search('反思', docs162, { k: 2 }).map((h) => [String(h.id), Number(h.cover ?? -1).toFixed(3)]))
+      const off = new Map(meow162.search('反思', docs162, { k: 2, synBridge: false }).map((h) => [String(h.id), Number(h.cover ?? -1).toFixed(3)]))
+      for (const [id, v] of on) if (off.has(id) && off.get(id) !== v) return false
+      return true
+    })(),
+  )
+  const probe162 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+  check(
+    'HB2 自带阴性对照: 探针里五条对照都必须能让 G21 变红（开关失效 / 候选集没并 / 进分母 / 虚词退回去 / 权重压扁）',
+    probe162.includes('G21 同义词桥') &&
+      probe162.includes('同义词表形态不对') &&
+      probe162.includes('只含同义词的条目没被桥进来') &&
+      probe162.includes('cover 开/关不一致') &&
+      probe162.includes('「不要」还在参与打分') &&
+      probe162.includes('synBridge:false 与 synW:0 不同分') &&
+      probe162.includes('换说法池没到门槛'),
+  )
+  const int162 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des162 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  check(
+    'HB2 有记: INTERNAL 9.169 写清词面零交集与四个读数，DESIGN 174 写清「只做加法」的边界',
+    int162.includes('## 9.169') &&
+      int162.includes('0.571') &&
+      int162.includes('0.798') &&
+      des162.includes('## 174') &&
+      des162.includes('同义'),
+  )
+}
+
 // FE（0.2.139）：链是 8 位前缀近似出来的——接手者可能已不在库里，前缀也可能撞车。
 // 这一组钉住「近似要说清楚」：三态、两句新文案、以及全库只扫一遍。
 {
@@ -9985,8 +10080,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.161（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.161'"),
+    'GV 版本: 代码里是 0.2.162（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.162'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10114,8 +10209,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.161（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.161'"),
+    'GW 版本: 代码里是 0.2.162（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.162'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10262,8 +10357,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.161（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.161'"),
+    'VV 版本: 代码里是 0.2.162（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.162'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10440,9 +10535,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.161（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.161' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.161'"),
+    'GX19 版本已到 0.2.162（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.162' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.162'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10542,10 +10637,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.161',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.161' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.161'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.161'),
+    'VY15 版本三处一致 0.2.162',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.162' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.162'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.162'),
   )
 }
 
@@ -10593,10 +10688,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.161（三处一致）',
-    pkgWz.version === '0.2.161' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.161'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.161'),
+    'WZ9 版本已到 0.2.162（三处一致）',
+    pkgWz.version === '0.2.162' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.162'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.162'),
   )
 }
 

@@ -1996,7 +1996,7 @@ var CJK_FUNC_WORDS = new Set([
   "怎么", "什么", "为什", "么样", "怎样", "如何", "为何", "哪些", "哪个", "哪里", "哪儿", "哪些",
   "多少", "是否", "可否", "可以", "应该", "需要", "已经", "现在", "时候", "一个", "这个", "那个",
   "这样", "那样", "这些", "那些", "我们", "你们", "他们", "它们", "自己", "一下", "一次", "一点",
-  "一些", "还是", "就是", "也是", "都是", "不是", "没有", "要不", "能不", "会不", "是不", "有没",
+  "一些", "一段", "还是", "就是", "也是", "都是", "不是", "不要", "没有", "要不", "能不", "会不", "是不", "有没",
   "到底", "究竟", "那么", "这么", "多么", "然后", "接着", "因此", "于是", "不过", "其实", "好像",
   "之前", "之后", "以后", "以前", "因为", "所以", "但是", "而且", "或者", "如果", "虽然", "即使",
   "并且", "以及", "关于", "对于", "由于", "除了", "而是", "不是", "就是", "只是", "还要", "还会",
@@ -2063,6 +2063,57 @@ var WEAK_GAP = 0.95;
 // 而它只按 0.25 倍词频、+0.35 加成参与打分。抬到 0.35 / 0.6——读数与 tf 0.5/0.6 完全相同，
 // 但 0.5 会把「只在 keywords 里提到的条目」压过「正文命中的条目」，破坏 0.2.152 立下的「标签不是正文」。
 // 同读数选不破老规矩的那一个；tf 再往下（0.3/0.6）换说法池就掉回 0.429。
+// [macro-fusion 0.2.162] 同义词桥：中文二元组这一层没有词形变化，「反省」与「反思」、「推送」与
+// 「远端」在词面上就是零交集——换说法池 hit@1 卡在 0.500 的根本原因，不是排序不聪明，是**根本没有
+// 可比的词**。这里补一条问句侧的单向扩词通道：
+//   ① 表是手工的，只收「问句里常说、正文里常换个说法」的二字词；每条必须与 tokenize() 的二元组对齐，
+//      三字以上的词要被切成二元组，所以表里不出现它们。
+//   ② 只扩问句，不动文档；扩出来的词单独计分、权重 SYN_W < 1——换个说法能帮忙，但不能顶替原话。
+//   ③ 覆盖度分母一个字节不动：扩词只加分，不进 qIdfSum，否则「问句更难满足」，会把真相关的条目一起裁掉。
+//   ④ 倒排候选集必须把同义词的 postings 并进来，否则被剪掉的条目连分数都算不到。
+//   ⑤ `synBridge:false` 一键回到旧口径。
+var SYN_GROUPS = [
+  ["反省", "反思", "回味"],
+  ["自测", "测试", "校验", "断言"],
+  ["推送", "远端", "仓库"],
+  ["拆开", "拆分", "重构", "改造"],
+  ["接班", "取代", "接任", "移交"],
+  ["筛掉", "过滤", "剔除", "噪声", "噪音"],
+  ["评测", "榜单", "基准", "跑分"],
+  ["例外", "豁免", "特例", "放行"],
+  ["验收", "确认", "核对"],
+  ["毛病", "缺陷", "问题", "踩坑"],
+  ["省钱", "成本", "预算", "花钱"],
+  ["线索", "来源", "出处"],
+  ["吵架", "冲突", "矛盾"],
+  ["耗时", "卡顿", "拖慢", "变慢"],
+  ["学会", "记住", "记下"],
+];
+var SYN_W = 0.6;
+var SYN_MAP = null;
+function synMapOf() {
+  if (SYN_MAP !== null) return SYN_MAP;
+  SYN_MAP = new Map();
+  for (const group of SYN_GROUPS) {
+    for (const t of group) {
+      const cur = SYN_MAP.get(t);
+      const add = group.filter((x) => x !== t);
+      SYN_MAP.set(t, cur === void 0 ? add.slice() : [.../* @__PURE__ */ new Set([...cur, ...add])]);
+    }
+  }
+  return SYN_MAP;
+}
+function synExpandOf(qTerms, df) {
+  const map = synMapOf();
+  const out = /* @__PURE__ */ new Map();
+  for (const t of qTerms) {
+    const alts = map.get(t);
+    if (alts === void 0) continue;
+    const use = alts.filter((a) => !qTerms.includes(a) && (df.get(a) ?? 0) > 0);
+    if (use.length > 0) out.set(t, use);
+  }
+  return out.size > 0 ? out : null;
+}
 var KW_TF_W = 0.35;
 var FIELD_KW_W_DEF = 0.6;
 function hintWordsOf(hit, query) {
@@ -2401,6 +2452,9 @@ function search(query, docs, opts = {}) {
     qLoop = q;
   }
   const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+  // 同义扩词只扩问句：表里没有的词、库里 df=0 的词都不进（扩了也没人能命中，白算一遍）。
+  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df);
+  const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;
   // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
   // 倒排缺席（opts.inverted===false）或问句里有标识符（要逐条比原文）时退回全库扫描。
   const scanDoc = (di) => {
@@ -2415,6 +2469,20 @@ function search(query, docs, opts = {}) {
       if (titleSets !== null && titleSets[di].has(term)) fw += FIELD_TITLE_W;
       if (kwSets !== null && kwSets[di].has(term)) fw += FIELD_KW_W;
       s += idf * fw * (f * (k1 + 1) / (f + k1 * (1 - b + b * len / dl)));
+    }
+    // 同义词只走一条窄通道：每个原始词最多取「最好的那个同义词」的一份分，不叠乘、不进覆盖度。
+    if (synOf !== null) {
+      const sat = (f) => f * (k1 + 1) / (f + k1 * (1 - b + b * len / dl));
+      for (const alts of synOf.values()) {
+        let best = 0;
+        for (const a of alts) {
+          const f = tf[di].get(a);
+          if (!f) continue;
+          const v = idfOf(a) * sat(f);
+          if (v > best) best = v;
+        }
+        s += synW * best;
+      }
     }
     if (qIdfSum > 0) {
       let cover = 0;
@@ -2441,6 +2509,12 @@ function search(query, docs, opts = {}) {
     for (const term of qLoop) {
       const p = postings.get(term);
       if (p) for (let pi = 0; pi < p.length; pi++) set.add(p[pi]);
+    }
+    if (synOf !== null) {
+      for (const alts of synOf.values()) for (const a of alts) {
+        const p = postings.get(a);
+        if (p) for (let pi = 0; pi < p.length; pi++) set.add(p[pi]);
+      }
     }
     return set;
   })();
@@ -2502,7 +2576,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), cover: Math.round(coverOf[di] * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -8931,6 +9005,9 @@ export {
   sweepHomeLogs,
   switchHomeDir,
   tokenize,
+  SYN_GROUPS,
+  SYN_W,
+  synExpandOf,
   identsOf,
   timeAnchorOf,
   TIME_ANCHOR_RE,
