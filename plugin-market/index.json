@@ -52,7 +52,7 @@
                                                       "order":  "desc"
                                                   }
                                   },
-                     "publishTimestamp":  1795240379
+                     "publishTimestamp": 1795273036
                  },
     "plugins":  [
                     {
@@ -92,17 +92,17 @@
                                          "sortKeys":  {
                                                           "updated":  1795136086
                                                       },
-                                         "publishTimestamp":  1795271251,
+                                         "publishTimestamp": 1795273036,
                                          "version":  "0.2.156"
                                      },
                         "versions":  [
                                          {
                                              "version":  "0.2.156",
-                                             "publishTimestamp":  1795271251,
+                                             "publishTimestamp": 1795273036,
                                              "source":  {
                                                             "type":  "git",
                                                             "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                                            "commit":  "a2cbc950eadea2ecab007319749f044b6899af7e"
+                                                            "commit": "71e259ffb3d03e080271b702a2f89a5e1a16214d"
                                                         }
                                          }
                                      ],
@@ -110,7 +110,7 @@
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit":  "a2cbc950eadea2ecab007319749f044b6899af7e"
+                                       "commit": "71e259ffb3d03e080271b702a2f89a5e1a16214d"
                                    }
                     }
                 ]
