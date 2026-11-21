@@ -9461,5 +9461,61 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check('FY 行为: 同状态同分时较新的赢（分高不能压过时间）', foldFy2.kept.length === 1 && foldFy2.kept[0].id === 'a-new')
 }
 
+// FZ（0.2.142）：一条正文写着「（已被取代：xxxx）」，可那个 xxxx 已经不在库、或前缀撞了一堆认不出是谁。
+// 上面三块（逐字重复 / 重复详写 / 疑似冲突）比的是正文像不像，这种断法一对都抓不到——
+// 断链不是「该整理」，是「已经整理坏了」。这一组验三态判据、零成本、文案与三语。
+{
+  const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const meowMod = await import('./vendor/meow-memory/lib/index.js')
+  check(
+    'FZ 源码: 三态按「库里有没有这个前缀」判（不能按开头筛完剩几条判）',
+    meowSrc.includes('function dreamChainIssues(allRows, db)') && meowSrc.includes('state: hits.length === 0 ? "absent" : "ambiguous",'),
+  )
+  check('FZ 源码: 没有取代句就一次库都不扫（干净清单零成本）', meowSrc.includes('if (claims.length === 0) return { list: [], total: 0 };'))
+  check(
+    'FZ 源码: 撞车时先按开头筛（同秒写入前 8 位必撞，开头是唯一证据）',
+    meowSrc.includes('chainHeadMatch(chainHeadOf(r.content), one.mark.head)') &&
+      meowSrc.includes('if (sure.length === 1) continue;'),
+  )
+  check(
+    'FZ 源码: 这一块是清单的第四块，紧跟冲突块，且按「这条落在哪一轮就由哪一轮说」分摊',
+    meowSrc.includes('listBlock + dupBlock + coverBlock + conflictBlock + chainBlock') &&
+      meowSrc.includes('const chainHere = chainAll.list.filter((it) => roundIds.has(String(it.id)));'),
+  )
+  check('FZ 源码: 条数有上限，超出的说「还有几条」（不刷屏也不静默）', meowSrc.includes('var DREAM_CHAIN_MAX = 6;') && meowSrc.includes('dreamChainBlock({ list: chainHere, total: chainAll.total }, shortOf, lbl3)'))
+  const fzRow = { id: 'aaa11111-1', level: 'fact', content: '口径（已被取代：bbb22222「新说法正文」，2026-11-21）', updated_at: 5 }
+  const fzAbsent = meowMod.dreamChainIssues([fzRow], { list: () => [] })
+  check('FZ 行为: 接手者不在库 → absent（并拆出前缀/开头/日期）', fzAbsent.total === 1 && fzAbsent.list[0].state === 'absent' && fzAbsent.list[0].who === 'bbb22222' && fzAbsent.list[0].head === '新说法正文' && fzAbsent.list[0].day === '2026-11-21')
+  const fzAmb = meowMod.dreamChainIssues(
+    [fzRow],
+    { list: (lv) => (lv === 'fact' ? [{ id: 'bbb22222-9', content: '完全不同的甲' }, { id: 'bbb22222-8', content: '完全不同的乙' }] : []) },
+  )
+  check('FZ 行为: 前缀撞了且开头对不上 → ambiguous（不是 absent）', fzAmb.total === 1 && fzAmb.list[0].state === 'ambiguous' && fzAmb.list[0].hits === 2)
+  const fzExact = meowMod.dreamChainIssues(
+    [fzRow],
+    { list: (lv) => (lv === 'fact' ? [{ id: 'bbb22222-9', content: '新说法正文' }, { id: 'bbb22222-8', content: '完全不同的乙' }] : []) },
+  )
+  check('FZ 行为: 链是好的（exact）一个字不报', fzExact.total === 0 && fzExact.list.length === 0)
+  let fzScans = 0
+  meowMod.dreamChainIssues([{ id: 'x', level: 'fact', content: '没有链的正文', updated_at: 1 }], { list: () => (fzScans++, []) })
+  check('FZ 行为: 没有取代句时 db.list 一次都没被调用', fzScans === 0)
+  const fzLbl = (k, p) => meowMod.fillTemplate(meowMod.keyedValue('labels', k), p) ?? `MISSING:${k}`
+  const fzText = meowMod.dreamChainBlock({ list: fzAbsent.list, total: 3 }, null, fzLbl)
+  const fzText2 = meowMod.dreamChainBlock({ list: fzAmb.list, total: 1 }, null, fzLbl)
+  check(
+    'FZ 文案: 断链块说清「不在库里 / 认不出是谁」，并交代还有几条',
+    fzText.includes('链断了 3 条') && fzText.includes('不在库里') && fzText.includes('还有 2 条') && fzText2.includes('按开头') && fzText2.includes('2 条'),
+  )
+  check('FZ 克制: 没有断链时块是空串', meowMod.dreamChainBlock({ list: [], total: 0 }, null, fzLbl) === '')
+  check(
+    'FZ 文案: 五个键三语都在',
+    ['zh', 'en', 'pt-br'].every((lang) => {
+      const body = readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8')
+      return ['dream.chain.title', 'dream.chain.absent', 'dream.chain.ambiguous', 'dream.chain.more', 'dream.chain.rule'].every((k) => body.includes(`- ${k}:`))
+    }),
+  )
+  check('FZ 不建表: 只读现有行，不加列不加索引', !/ALTER TABLE|CREATE INDEX/.test(meowSrc.slice(meowSrc.indexOf('function dreamChainIssues('), meowSrc.indexOf('function dreamChainBlock('))))
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

@@ -45,6 +45,11 @@
 - dream.conflict.same: -> both carry the exact same update time ({time}), so neither is newer — read the bodies and decide yourself
 - dream.conflict.rule: Ruler — same subject + different numbers/versions + neither a verbatim duplicate nor an excerpt-plus-write-up. Different wording with identical numbers does **not** count as a conflict (that is a restatement); an archived entry is not reported either (archiving is already the disposition). However you settle it, leave a trace on the entry you changed that says why.
 - dream.plan.conflicts: {n} more probable conflicts (same subject, different numbers/versions — named in the checklist).
+- dream.chain.title: 【{n} broken succession chains】(these entries say "superseded by <id8>", but that successor is no longer in the store, or the first 8 characters collide with several entries so we cannot tell which — the blocks above compare wording, which cannot catch this):
+- dream.chain.absent: it says {who} took over ({day}), but that entry is not in the store anymore (deleted or moved) — either this entry is the current conclusion (set it back to active), or rewrite it once with supersedes so a new entry takes over.
+- dream.chain.ambiguous: it says {who} took over ({day}), but that prefix matches {hits} entries in the store (entries written in the same second always share the first 8 characters) — check the opening「{head}」yourself and pick the right one; do not edit the wrong entry from the prefix alone.
+- dream.chain.more: {n} more are broken the same way; handle the ones above first.
+- dream.chain.rule: Ruler — the body carries a supersede line, and the prefix matches 0 entries (absent) or ≥2 with no opening match (ambiguous). Exactly one match, or a collision whose opening does match, is not reported (the chain is fine). Neither case is "needs tidying": it is "already tidied wrong" — either rewrite the succession once, or restate what this entry is now; do not leave a lineage pointing at nothing.
 - project.unlabeled: unlabeled
 - project.header: [project: {name}]
 - project.empty: [project: {name}] No memory entries for this project yet.

@@ -45,6 +45,11 @@
 - dream.conflict.same: -> as duas têm exatamente o mesmo horário de atualização ({time}), então nenhuma é mais nova — leia os textos e decida você mesmo
 - dream.conflict.rule: Régua — mesmo assunto + números/versões diferentes + nem duplicata literal nem resumo-com-redação. Redação diferente com números idênticos **não** conta como conflito (é reescrita); entrada arquivada também não é reportada (arquivar já é o desfecho). Como quer que resolva, deixe na entrada alterada um rastro do porquê.
 - dream.plan.conflicts: mais {n} conflitos prováveis (mesmo assunto, números/versões diferentes — nomeados na lista).
+- dream.chain.title: 【{n} cadeias de sucessão quebradas】(estas entradas dizem "substituída por <id8>", mas essa sucessora não está mais no acervo, ou os 8 primeiros caracteres colidem com várias entradas e não dá para saber qual — os blocos acima comparam redação, o que não pega este caso):
+- dream.chain.absent: diz que {who} assumiu ({day}), mas essa entrada não está mais no acervo (apagada ou movida) — ou esta entrada é a conclusão atual (volte para active), ou reescreva uma vez com supersedes para uma nova entrada assumir.
+- dream.chain.ambiguous: diz que {who} assumiu ({day}), mas esse prefixo casa com {hits} entradas do acervo (entradas gravadas no mesmo segundo sempre compartilham os 8 primeiros caracteres) — confira você mesmo o início「{head}」e escolha a certa; não edite a entrada errada só pelo prefixo.
+- dream.chain.more: mais {n} quebradas do mesmo jeito; resolva as de cima primeiro.
+- dream.chain.rule: Régua — o corpo traz uma linha de sucessão, e o prefixo casa com 0 entradas (absent) ou ≥2 sem casar o início (ambiguous). Uma única correspondência, ou colisão cujo início casa, não é reportada (a cadeia está boa). Nenhum dos dois casos é "precisa organizar": é "já foi organizado errado" — ou reescreva a sucessão uma vez, ou diga o que esta entrada é agora; não deixe uma linhagem apontando para o vazio.
 - project.unlabeled: sem rótulo
 - project.header: [project: {name}]
 - project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.

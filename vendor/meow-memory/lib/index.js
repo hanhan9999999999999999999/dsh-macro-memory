@@ -4410,6 +4410,97 @@ function dreamConflictPairs(rows, max = DREAM_CONFLICT_MAX) {
   out.sort((x, y) => stamp(y) - stamp(x));
   return out.slice(0, max);
 }
+// [macro-fusion 0.2.142] 第三种只出声不出人：一条正文写着「（已被取代：xxxx——）」，
+// 而那个 xxxx 现在不在库、或者前 8 位撞了一堆认不出是谁。上面三个块都看不见它：
+//   · 逐字重复 / 重复详写比的是正文相似度，可接手与被接手本来就不像；
+//   · 疑似冲突比「同题不同数」，可这里压根不缺对方那半句，缺的是对方**这条记录**。
+// 于是清单一直只列「该整理的地方」，而这是「已经整理坏了的地方」：链断了、或链指向了一个认不出的人。
+// 判据只做两件事：① 前缀命中 0 条 → absent（那条被删/搬走了）；② 命中 ≥2 条且开头对不上 → ambiguous。
+// 命中恰好 1 条、或撞车但开头能对上 → 链是好的，一个字不印（干净清单不加噪音）。
+var DREAM_CHAIN_MAX = 6;
+var SUPERSEDE_MARK_D = "（已被取代：";
+function chainMarkOf(text) {
+  const s = String(text ?? "");
+  const at = s.indexOf(SUPERSEDE_MARK_D);
+  if (at < 0) return null;
+  const rest = s.slice(at + SUPERSEDE_MARK_D.length);
+  const idm = /^\s*([0-9a-z]{4,})/.exec(rest);
+  if (idm === null) return null;
+  const headm = /^[0-9a-z]{4,}「([^」]*)」/.exec(rest);
+  const daym = /[，,]\s*(\d{4}-\d{1,2}-\d{1,2})\s*[）)]/.exec(rest);
+  return { id8: idm[1].slice(0, 8), head: headm?.[1] ?? "", day: daym?.[1] ?? "" };
+}
+function chainHeadOf(text) {
+  const first = String(text ?? "").split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+  return first.length > 28 ? `${first.slice(0, 28)}…` : first;
+}
+function chainHeadMatch(a, b) {
+  const x = String(a ?? "").replace(/…$/, "").trim();
+  const y = String(b ?? "").replace(/…$/, "").trim();
+  if (x === "" || y === "") return false;
+  return x.startsWith(y) || y.startsWith(x);
+}
+function dreamChainIssues(allRows, db) {
+  const claims = [];
+  for (const r of allRows) {
+    const mark = chainMarkOf(r.content);
+    if (mark !== null) claims.push({ row: r, mark });
+  }
+  // 全库扫一遍只在真有 claim 时才付——没有断链的清单，一分钱不多花。
+  if (claims.length === 0) return { list: [], total: 0 };
+  const index = new Map();
+  for (const level of LEVELS) {
+    const list = db.list(level, {});
+    for (const r of Array.isArray(list) ? list : []) {
+      const key = String(r.id ?? "").slice(0, 8);
+      const arr = index.get(key);
+      if (arr === undefined) index.set(key, [r]); else arr.push(r);
+    }
+  }
+  const out = [];
+  for (const one of claims) {
+    const hits = index.get(one.mark.id8) ?? [];
+    // 撞车是常态（同秒写入前 8 位必然相同），所以先按开头筛：取代句里的开头就是为这一刻留的。
+    const sure = hits.length > 1 && one.mark.head !== ""
+      ? hits.filter((r) => chainHeadMatch(chainHeadOf(r.content), one.mark.head))
+      : hits;
+    if (sure.length === 1) continue;
+    out.push({
+      id: String(one.row.id ?? ""),
+      level: String(one.row.level ?? ""),
+      status: String(one.row.status ?? ""),
+      who: one.mark.id8,
+      head: one.mark.head,
+      day: one.mark.day,
+      hits: hits.length,
+      // 三态要按「库里到底有没有这个前缀」分，不能按开头筛完剩几条分：
+      // 撞车但开头一个都对不上时，sure 也是 0——那是「认不出是谁」，不是「那条不在了」。
+      state: hits.length === 0 ? "absent" : "ambiguous",
+      at: Number(one.row.updated_at) || 0
+    });
+  }
+  out.sort((x, y) => y.at - x.at);
+  return { list: out.slice(0, DREAM_CHAIN_MAX), total: out.length };
+}
+// 渲染这一段：没有断链就返回空串（干净清单一个字不加）。抽成纯函数是为了探针能直接验文案，
+// 不用为了看一句话去造一整个 dream 轮次。
+function dreamChainBlock(result, shortOf, lbl3) {
+  const here = Array.isArray(result?.list) ? result.list : [];
+  const total = Number(result?.total) || 0;
+  if (here.length === 0) return "";
+  const more = total > here.length ? `\n${lbl3("dream.chain.more", { n: String(total - here.length) })}` : "";
+  return `
+${lbl3("dream.chain.title", { n: String(total) })}
+${here.map((it) => {
+    const sid = typeof shortOf?.get === "function" ? shortOf.get(String(it.id)) : String(it.id).slice(0, 8);
+    const head = `- ${sid} \xB7 ${it.level} \xB7 ${it.who}${it.head === "" ? "" : `\u300C${it.head}\u300D`}${it.day === "" ? "" : `\uFF08${it.day}\uFF09`}`;
+    const said = it.state === "absent"
+      ? lbl3("dream.chain.absent", { who: it.who, day: it.day })
+      : lbl3("dream.chain.ambiguous", { who: it.who, day: it.day, hits: String(it.hits), head: it.head });
+    return `${head}\n  ${said}`;
+  }).join("\n")}${more}
+${lbl3("dream.chain.rule", {})}`;
+}
 // [macro-fusion 0.2.96] dream 整理完什么都不留：claimDream 只防重复整理，logDream 只记「done + 轮数」，
 // 主人在面板与回执里都看不到「这一轮翻了多少条、撞上几对、有几对合并会丢字」。模型自己也无从预判规模。
 // 这段把清单本身算成一串数字——用的是后面真正印块的那两个函数，不另立口径——① 起 dream 时随回执说给模型听，
@@ -4661,7 +4752,12 @@ ${conflictPairs.map((p) => {
       return [head, `  ${kwLine}`, ...sideLines.map((s) => `  ${s}`), `  ${verdict}`].join("\n");
     }).join("\n")}
 ${lbl3("dream.conflict.rule", {})}`;
-    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock + conflictBlock, groupMarker }).split("\n"));
+    // [macro-fusion 0.2.142] 链体检块：接手者不在了、或前缀撞车认不出是谁——这两件事上面三块都看不见，
+    // 而它们不是「该整理」，是「已经断了」。照样按「这条落在哪一轮就由哪一轮说」分摊，不会每组各印一遍。
+    const chainAll = dreamChainIssues(allRows, db);
+    const chainHere = chainAll.list.filter((it) => roundIds.has(String(it.id)));
+    const chainBlock = dreamChainBlock({ list: chainHere, total: chainAll.total }, shortOf, lbl3);
+    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock + dupBlock + coverBlock + conflictBlock + chainBlock, groupMarker }).split("\n"));
   }
   return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }
@@ -7644,6 +7740,8 @@ export {
   connectionAuthOf,
   consecutiveToolSteps,
   disableWorkspaceTrust,
+  dreamChainBlock,
+  dreamChainIssues,
   dreamCommandDefinition,
   dreamPlanDigest,
   dreamReceipt,

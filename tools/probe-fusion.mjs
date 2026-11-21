@@ -6991,6 +6991,88 @@ check(
   }
 }
 
+// RS0-RS8（0.2.142）：一条正文写着「（已被取代：xxxx）」，可那个 xxxx 现在不在库、
+// 或前 8 位撞了一堆认不出是谁——上面三块（逐字重复 / 重复详写 / 疑似冲突）比的是正文像不像，
+// 这种断法一对都抓不到。这一组验三态判定、干净清单零成本、文案落地与三语。
+{
+  const rsLang = (k, p) => Meow.fillTemplate(Meow.keyedValue('labels', k), p) ?? `MISSING:${k}`
+  const rsRow = (content, extra = {}) => ({ id: 'aaa11111-1', level: 'fact', content, updated_at: 5, ...extra })
+  const rsClaim = '落地口径（已被取代：bbb22222「新说法正文」，2026-11-21）'
+  const rsEmptyDb = { list: () => [] }
+  const rsAbsent = Meow.dreamChainIssues([rsRow(rsClaim)], rsEmptyDb)
+  check(
+    'RS0 absent：前缀在库里 0 条就说「那条不在了」，取代句里的前缀/开头/日期都拆出来了',
+    rsAbsent.total === 1 &&
+      rsAbsent.list[0].state === 'absent' &&
+      rsAbsent.list[0].hits === 0 &&
+      rsAbsent.list[0].who === 'bbb22222' &&
+      rsAbsent.list[0].day === '2026-11-21' &&
+      rsAbsent.list[0].head === '新说法正文',
+    JSON.stringify(rsAbsent.list[0] ?? {}).slice(0, 220),
+  )
+  const rsAmbDb = {
+    list: (lv) => (lv === 'fact' ? [{ id: 'bbb22222-9', content: '完全不同的甲' }, { id: 'bbb22222-8', content: '完全不同的乙' }] : []),
+  }
+  const rsAmb = Meow.dreamChainIssues([rsRow(rsClaim)], rsAmbDb)
+  check(
+    'RS1 ambiguous：前缀撞了 2 条且开头对不上，是「认不出是谁」，不是「那条不在了」',
+    rsAmb.total === 1 && rsAmb.list[0].state === 'ambiguous' && rsAmb.list[0].hits === 2,
+    `state=${rsAmb.list[0]?.state} hits=${rsAmb.list[0]?.hits}`,
+  )
+  const rsExactDb = {
+    list: (lv) => (lv === 'fact' ? [{ id: 'bbb22222-9', content: '新说法正文' }, { id: 'bbb22222-8', content: '完全不同的乙' }] : []),
+  }
+  const rsExact = Meow.dreamChainIssues([rsRow(rsClaim)], rsExactDb)
+  check('RS2 链是好的一个字不报：撞车但开头能对上（exact）不进清单', rsExact.total === 0 && rsExact.list.length === 0, JSON.stringify(rsExact))
+  let rsScans = 0
+  const rsSpy = {
+    list: () => {
+      rsScans++
+      return []
+    },
+  }
+  const rsClean = Meow.dreamChainIssues([rsRow('没有链的普通正文')], rsSpy)
+  check('RS3 干净清单零成本：没有取代句就一次库都不扫（不给每轮 dream 加固定开销）', rsClean.total === 0 && rsScans === 0, `scans=${rsScans}`)
+  const rsText = Meow.dreamChainBlock({ list: rsAbsent.list, total: 3 }, null, rsLang)
+  check(
+    'RS4 文案：断链块说清「不在库里」，并交代还有几条没列',
+    rsText.includes('链断了 3 条') && rsText.includes('不在库里') && rsText.includes('还有 2 条'),
+    rsText.replace(/\s+/g, ' ').slice(0, 220),
+  )
+  const rsAmbText = Meow.dreamChainBlock({ list: rsAmb.list, total: 1 }, null, rsLang)
+  check(
+    'RS5 ambiguous 文案指向「按开头核对」：撞车是常态，别照着前缀改错人',
+    rsAmbText.includes('撞') && rsAmbText.includes('按开头') && rsAmbText.includes('2 条'),
+    rsAmbText.replace(/\s+/g, ' ').slice(0, 220),
+  )
+  const rsNone = Meow.dreamChainBlock({ list: [], total: 0 }, null, rsLang)
+  check('RS6 没有断链时块是空串（干净清单不加噪音）', rsNone === '', JSON.stringify(rsNone))
+  const rsWs = mkdtempSync(join(tmpdir(), 'meow-chain-'))
+  Meow.trustWorkspace(rsWs)
+  const rsDb = Meow.getDb(rsWs, '.dsh-meow')
+  rsDb.insert({ level: 'fact', content: '真库探针（已被取代：0mzzzzz9「谁也不知道」，2026-11-21）', keywords: ['链探针'], importance: 2, project: '探针链' })
+  const rsRealRows = rsDb.list('fact', {}).filter((r) => String(r.content ?? '').includes('真库探针'))
+  const rsReal = Meow.dreamChainIssues(rsRealRows, rsDb)
+  check(
+    'RS7 真库一遍：从库里读出来的条目一样判得出 absent（判据不依赖探针手搓的行）',
+    rsReal.total === 1 && rsReal.list[0].state === 'absent' && String(rsReal.list[0].id).length > 8,
+    JSON.stringify(rsReal.list[0] ?? {}).slice(0, 200),
+  )
+  try {
+    rmSync(rsWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+  const rsKeys = ['dream.chain.title', 'dream.chain.absent', 'dream.chain.ambiguous', 'dream.chain.more', 'dream.chain.rule']
+  const rsLangs = ['zh', 'en', 'pt-br']
+  const rsMissing = []
+  for (const lang of rsLangs) {
+    const body = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lang, 'labels.md'), 'utf8')
+    for (const key of rsKeys) if (!body.includes(`- ${key}:`)) rsMissing.push(`${lang}:${key}`)
+  }
+  check('RS8 文案三语都在（zh / en / pt-br 各 5 条链体检键）', rsMissing.length === 0, rsMissing.join(' '))
+}
+
 for (const d of disposers) {
   try {
     d()
