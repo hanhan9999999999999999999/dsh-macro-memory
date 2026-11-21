@@ -60,6 +60,7 @@ const STEPS = [
   ['tools/probe-similar.mjs', '相似检索：基准与候选同一把尺子、本会话刚写的也算候选、端过的不再端'],
   ['tools/probe-ruler.mjs', '两把尺子：相似度（cosine）与逐字重复度（词集 Jaccard）并报、与写侧合并判据同源、长文嵌一句要点名'],
   ['tools/probe-gold.mjs', '准确率量尺：40 条真实样张 × 45 条自然问句，hit@1 / hit@3 / MRR 三档 + 阴性对照'],
+  ['tools/probe-cost.mjs', '效率量尺：三档语料（40 / 400 / 1200）的 p50/p95、结果快照、缓存只许省时间'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],

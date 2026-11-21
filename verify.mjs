@@ -9666,8 +9666,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.152（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.152'"),
+    'GV 版本: 代码里是 0.2.153（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.153'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9795,8 +9795,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.152（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.152'"),
+    'GW 版本: 代码里是 0.2.153（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.153'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9943,8 +9943,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.152（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.152'"),
+    'VV 版本: 代码里是 0.2.153（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.153'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10121,9 +10121,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.152（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.152' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.152'"),
+    'GX19 版本已到 0.2.153（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.153' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.153'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10223,15 +10223,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.152',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.152' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.152'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.152'),
+    'VY15 版本三处一致 0.2.153',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.153' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.153'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.153'),
   )
 }
-
-console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
-process.exit(failures === 0 ? 0 : 1)
 
 /** ───────── WZ（0.2.152）：关键词是标签，不是正文 ───────── */
 {
@@ -10269,9 +10266,67 @@ process.exit(failures === 0 ? 0 : 1)
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.152（三处一致）',
-    pkgWz.version === '0.2.152' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.152'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.152'),
+    'WZ9 版本已到 0.2.153（三处一致）',
+    pkgWz.version === '0.2.153' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.153'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.153'),
   )
 }
+
+/** ───────── XA（0.2.153）：检索先建表、再记指纹、最后缓存 ───────── */
+{
+  const MX = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const Mk = await import('./vendor/meow-memory/lib/index.js')
+
+  check('XA1 缓存上限是常量（4 张：多工作区够用，又不许无限长内存）', MX.includes('const SEARCH_INDEX_CACHE_MAX = 4;'))
+  check(
+    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写）',
+    MX.includes('mix(content.slice(0, 40));') && MX.includes('mix(content.slice(-40));') &&
+      MX.includes("mix(Array.isArray(d?.keywords) ? d.keywords.join('\\u0001') : -1);"),
+  )
+  check('XA3 倒排表能关（阴性对照要有开关，否则证明不了它真在起作用）', MX.includes('const postings = opts.inverted === false ? null : new Map();'))
+  check('XA4 缓存能关（opts.cache === false 走现建现用）', MX.includes('if (opts.cache === false) return buildSearchIndex(docs, opts, key);'))
+  check(
+    'XA5 四个口子都导出（探针要能问指纹、问缓存账、清空）',
+    typeof Mk.searchIndexOf === 'function' && typeof Mk.indexSignature === 'function' &&
+      typeof Mk.searchIndexCacheInfo === 'function' && typeof Mk.clearSearchIndexCache === 'function',
+  )
+
+  const dX = (id, content) => ({ id, level: 'fact', title: '', content, keywords: [], importance: 1, project: 'xa', updated_at: 1764e9, last_accessed_at: 1764e9 })
+  const flatX = (hits) => JSON.stringify(hits.map((h) => [h.id, (h.score ?? 0).toFixed(6)]))
+  const xDocs = [dX('x1', '发布方式用蓝绿切换'), dX('x2', '星图建图的延迟调下来')]
+  Mk.clearSearchIndexCache()
+  const warmX = Mk.search('蓝绿切换', xDocs, { k: 2 })
+  const coldX = Mk.search('蓝绿切换', xDocs, { k: 2, cache: false })
+  check('XA6 行为: 开缓存与关缓存的答案逐位相同（缓存只许省时间）', flatX(warmX) === flatX(coldX), flatX(warmX))
+
+  Mk.clearSearchIndexCache()
+  const missX = Mk.search('红黑切换', [dX('y1', '发布方式用蓝绿切换')], { k: 2 })
+  const hitX = Mk.search('红黑切换', [dX('y1', '发布方式用红黑切换')], { k: 2 })
+  check(
+    'XA7 行为: 等长改写后立刻问，答的是新库（旧库里根本没有「红黑切换」）',
+    Mk.indexSignature([dX('y1', '发布方式用蓝绿切换')]) !== Mk.indexSignature([dX('y1', '发布方式用红黑切换')]) &&
+      (hitX[0]?.score ?? 0) > (missX[0]?.score ?? 0),
+    `${(missX[0]?.score ?? 0).toFixed(3)} → ${(hitX[0]?.score ?? 0).toFixed(3)}`,
+  )
+
+  Mk.clearSearchIndexCache()
+  for (let i = 0; i < 6; i++) Mk.search('发布', [dX(`z${i}`, `发布方式第 ${i} 种`)], { k: 1 })
+  const infoX = Mk.searchIndexCacheInfo()
+  check('XA8 行为: 六张不同的库进来，缓存仍只留 4 张（LRU 淘汰）', infoX.size === 4 && infoX.max === 4 && infoX.keys.length === 4, `size=${infoX.size} / max=${infoX.max}`)
+  Mk.clearSearchIndexCache()
+
+  const idX = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const deX = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'XA9 文档锚：9.159 写下了「先建表、再记指纹」与 121.8 → 5.1ms 的读数',
+    idX.includes('## 9.159 ') && idX.includes('121.8') && deX.includes('## 165 '),
+  )
+  check(
+    'XA10 量具在位：probe-cost 与它的结果快照',
+    existsSync(new URL('./tools/probe-cost.mjs', import.meta.url)) && existsSync(new URL('./tools/fixtures/cost-snap.json', import.meta.url)),
+  )
+}
+
+console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
+process.exit(failures === 0 ? 0 : 1)

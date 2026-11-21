@@ -2117,6 +2117,153 @@ function verbatimInputs(query, docs, opts, textOf) {
     rawVerbatim: docs.map(() => null)
   };
 }
+// [macro-fusion 0.2.153] 检索的固定开销：以前每问一次就把整库重新切一遍词、重建 tf/df——
+// 1200 条记忆时单问 108ms，其中切词 30ms、建表 36ms、打分 42ms。可这三样里，
+// 前两样跟「问什么」毫无关系：库没变，切出来的词和表也不会变。
+// 所以把「跟问句无关的那一半」提出来做成一张索引：同一次会话里连问五个问题，
+// 只该付一次切词的钱。索引带签名（条数 + 每条 id/更新时间/正文长度的哈希），
+// 签名不对就重建——宁可多花 30ms，也不许拿旧表答新库。
+function indexSignature(docs) {
+  let h = 2166136261 >>> 0;
+  const mix = (x) => {
+    const str = String(x ?? '');
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    h ^= 0x7c;
+    h = Math.imul(h, 16777619) >>> 0;
+  };
+  h ^= docs.length;
+  h = Math.imul(h, 16777619) >>> 0;
+  for (const d of docs) {
+    mix(d?.id);
+    mix(d?.updated_at ?? d?.updatedAt ?? '');
+    // 只看长度会把「同一秒内等长改写」当成同一张库：字数一样、头尾一动就漏。
+    // 取「长度 + 头 40 + 尾 40 + 标题全文 + 关键词全文 + 会话」——比全量哈希便宜一个量级，
+    // 又把「等长改写」压到几乎不可能（真要撞上，得同时保住字数、首尾 80 字与标题关键词）。
+    const content = String(d?.content ?? '');
+    mix(content.length);
+    mix(content.slice(0, 40));
+    mix(content.slice(-40));
+    mix(String(d?.title ?? ''));
+    mix(Array.isArray(d?.keywords) ? d.keywords.join('\u0001') : -1);
+    mix(d?.source_session);
+  }
+  return `${docs.length}:${h >>> 0}`;
+}
+
+function buildSearchIndex(docs, opts = {}, sig = null) {
+  const n = docs.length;
+  const useField = opts.fieldBoost !== false;
+  const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25;
+  const dText = opts.kwSeparate === false
+    ? docText
+    : (d) => [String(d.title ?? ''), String(d.content ?? '')].join(' ');
+  const plainToks = docs.map((d) => tokenize(dText(d)));
+  const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
+  const docToks = sessTopics ? docs.map((d, i) => {
+    const extra = sessTopics.get(d.source_session);
+    return extra ? plainToks[i].concat(extra) : plainToks[i];
+  }) : plainToks;
+  const avgdl = docToks.reduce((s2, t) => s2 + t.length, 0) / n || 1;
+  const bodyLen = docs.map((d) => {
+    const t = tokenize(String(d.content ?? ''));
+    return t.length > 0 ? t.length : 1;
+  });
+  const avgBody = bodyLen.reduce((s2, x) => s2 + x, 0) / n || 1;
+
+  const df = new Map();
+  const tf = [];
+  const kwToks = opts.kwSeparate === false ? null : docs.map((d) => (Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ''))));
+  // 倒排：词 → 出现过它的条目下标。打分只碰「问句里那几个词真的出现过」的条目，
+  // 而不是把整库每条都乘一遍。opts.inverted === false 可关掉，用于阴性对照。
+  const postings = opts.inverted === false ? null : new Map();
+  for (let di = 0; di < docToks.length; di++) {
+    const m = new Map();
+    const seen = new Set();
+    for (const t of docToks[di]) {
+      m.set(t, (m.get(t) ?? 0) + 1);
+      if (!seen.has(t)) {
+        seen.add(t);
+        df.set(t, (df.get(t) ?? 0) + 1);
+        const p = postings?.get(t);
+        if (p) p.push(di);
+        else postings?.set(t, [di]);
+      }
+    }
+    if (kwToks !== null) {
+      for (const t of kwToks[di]) {
+        m.set(t, (m.get(t) ?? 0) + kwTfW);
+        if (!seen.has(t)) {
+          seen.add(t);
+          df.set(t, (df.get(t) ?? 0) + 1);
+          const p = postings?.get(t);
+          if (p) p.push(di);
+          else postings?.set(t, [di]);
+        }
+      }
+    }
+    tf.push(m);
+  }
+  const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? '')))) : null;
+  const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ''))))) : null;
+  return {
+    __n: n,
+    __sig: sig ?? indexSignature(docs),
+    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}`,
+    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField
+  };
+}
+
+// 索引缓存：同一张库连问五个问题，只付一次切词的钱。
+// 键是「签名 + 影响切词的那几个开关」，所以库一改（哪怕只改正文长度、只换 updated_at）
+// 就是另一个键，旧表再也取不到——不靠调用方记得清缓存，也不许拿旧表答新库。
+// 最多留 4 张（本机同时活跃的工作区通常 1–2 个），超出按最久未用淘汰。
+const SEARCH_INDEX_CACHE_MAX = 4;
+const searchIndexCache = new Map();
+
+function indexPathKey(docs, opts) {
+  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25}${opts.inverted === false ? 0 : 1}`;
+}
+
+// 调用方也可以直接传 opts.index（自己缓存那张表）；签名或口径对不上就自己重建——
+// 传错表比慢更要命，所以这里宁可多算一次签名，也不"信任调用方"。
+function searchIndexOf(docs, opts) {
+  const key = indexPathKey(docs, opts);
+  const given = opts.index;
+  if (given && given.__n === docs.length && given.__sig === indexSignature(docs) &&
+      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25}`) {
+    return given;
+  }
+  if (opts.cache === false) return buildSearchIndex(docs, opts, key);
+  const hit = searchIndexCache.get(key);
+  if (hit !== void 0) {
+    searchIndexCache.delete(key);
+    searchIndexCache.set(key, hit);
+    return hit;
+  }
+  const built = buildSearchIndex(docs, opts, key);
+  searchIndexCache.set(key, built);
+  while (searchIndexCache.size > SEARCH_INDEX_CACHE_MAX) {
+    const oldest = searchIndexCache.keys().next().value;
+    searchIndexCache.delete(oldest);
+  }
+  return built;
+}
+
+// 缓存的自述与清空：探针要能问「现在几张表、键是什么」，也要能在量具里把状态归零。
+// 不给外部改表的入口——只读条数与键，动表只允许 clear。
+function searchIndexCacheInfo() {
+  return { max: SEARCH_INDEX_CACHE_MAX, size: searchIndexCache.size, keys: [...searchIndexCache.keys()] };
+}
+
+function clearSearchIndexCache() {
+  const n = searchIndexCache.size;
+  searchIndexCache.clear();
+  return n;
+}
+
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
@@ -2130,74 +2277,18 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 verbHay 为 null，后面整段跳过）
   const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
   if (q.length === 0 && idents.length === 0) return [];
-  // [macro-fusion 0.2.152] 关键词该是「字段」，不是「正文」：docText 把它们平铺成一个串，
-  // 于是一个词出现在 keywords（用户会怎么问的逆向词）和出现在正文里得分一模一样，
-  // 而本库条目正是「短正文 + 9 个关键词」——正文被稀释，虚词问句还能靠关键词里的短词硬凑。
-  // kwSeparate:true 时正文 BM25 只看 title + content，关键词只走字段加成（FIELD_KW_W）。
-  const dText = opts.kwSeparate === false
-    ? docText
-    : (d) => [String(d.title ?? ""), String(d.content ?? "")].join(" ");
-  const plainToks = docs.map((d) => tokenize(dText(d)));
-  const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
-  const docToks = sessTopics ? docs.map((d, i) => {
-    const extra = sessTopics.get(d.source_session);
-    return extra ? plainToks[i].concat(extra) : plainToks[i];
-  }) : plainToks;
-  const avgdl = docToks.reduce((s, t) => s + t.length, 0) / n || 1;
-  // [macro-fusion 0.2.133b] BM25 的长度归一原本拿 docToks 的长度当分母，而 docToks 里
-  // 混着 title、8~13 个 keywords 和会话扩词。于是「元数据写得越全的条目，正文越被稀释」——
-  // 越是好条目越吃亏。长度只该量正文。lengthOnBody:false 可回到旧口径做对照。
-  const bodyLen = docs.map((d) => {
-    const t = tokenize(String(d.content ?? ""));
-    return t.length > 0 ? t.length : 1;
-  });
-  const avgBody = bodyLen.reduce((s, x) => s + x, 0) / n || 1;
-
-  const df = /* @__PURE__ */ new Map();
-  const tf = [];
-  // [macro-fusion 0.2.152] 关键词的 tf 打折：正文（含标题）计数照算，关键词计数乘 kwTfW，
-  // df 取并集。这样「问句里的词只写在 keywords 里」仍然能桥接到那条记忆（候选资格不掉），
-  // 但关键词不会像平铺时那样和正文等价——9 个关键词不再稀释短正文、也不再让虚词问句硬凑回执。
-  const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25;
-  const kwToks = opts.kwSeparate === false ? null : docs.map((d) => (Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ""))));
-  for (let di = 0; di < docToks.length; di++) {
-    const m = /* @__PURE__ */ new Map();
-    const seen = /* @__PURE__ */ new Set();
-    for (const t of docToks[di]) {
-      m.set(t, (m.get(t) ?? 0) + 1);
-      if (!seen.has(t)) {
-        seen.add(t);
-        df.set(t, (df.get(t) ?? 0) + 1);
-      }
-    }
-    if (kwToks !== null) {
-      for (const t of kwToks[di]) {
-        m.set(t, (m.get(t) ?? 0) + kwTfW);
-        if (!seen.has(t)) {
-          seen.add(t);
-          df.set(t, (df.get(t) ?? 0) + 1);
-        }
-      }
-    }
-    tf.push(m);
-  }
-  const k1 = 1.5;
-  const b = 0.75;
-  const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;
-  const ENT_W = 0.8;
-  // [macro-fusion 0.2.133] 两条只做乘性加成、不改候选集的精度补丁。起因：本库的条目形态是
-  // 「短正文 + 8~13 个关键词」，而 docText 把 title / 正文 / keywords 平铺成一个字符串，三者等权——
-  // 一个词出现在 keywords（那正是「用户会怎么问」的逆向词）和出现在正文里，得分一模一样。
-  // 另一个洞是加法式 BM25 没有覆盖度概念：命中一个词十次，能压过命中五个词各一次，而记忆调取
-  // 要的恰恰是「这几个词都聊到了」。两条都可一键关（fieldBoost:false / coord:false），便于回退对照。
+  // [macro-fusion 0.2.153] 切词与建表挪进索引：这部分跟「问什么」无关，只跟「库里有什么」有关。
+  const index = searchIndexOf(docs, opts);
+  const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings } = index;
   const FIELD_TITLE_W = 0.6;
-  // [macro-fusion 0.2.152] 关键词字段权重此前是写死的 0.35，而 0.2.133 上线时用的样张 keywords 全是空的——
-  // 这个常量从来没被量到过。现在尺子补真（keywords 均 9.2 个），先把它开成可测的旋钮，默认值不变。
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : 0.35;
   const COORD_W = 0.35;
-  const useField = opts.fieldBoost !== false;
-  const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? "")))) : null;
-  const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ""))))) : null;
+  const k1 = 1.5;
+  const b = 0.75;
+  // 实体先验要逐条查「这条描述里有没有那个专名」——集合建在索引建立时最省，
+  // 但 entToks 是问句决定的，只能每条两个词的量，留在 search 里。
+  const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;
+  const ENT_W = 0.8;
   const idfOf = (t) => Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
   const qTerms = [...new Set(q)];
   // [macro-fusion 0.2.146] 噪声地板：剔掉的词既不进 BM25，也不进覆盖度分母——
@@ -2214,7 +2305,9 @@ function search(query, docs, opts = {}) {
     qLoop = q;
   }
   const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
-  const raw = docs.map((_, di) => {
+  // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
+  // 倒排缺席（opts.inverted===false）或问句里有标识符（要逐条比原文）时退回全库扫描。
+  const scanDoc = (di) => {
     let s = 0;
     const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
     const dl = opts.lengthOnBody === false ? avgdl : avgBody;
@@ -2242,7 +2335,22 @@ function search(query, docs, opts = {}) {
       if (vb.matched.length > 0) rawVerbatim[di] = vb;
     }
     return s;
-  });
+  
+  };
+  const raw = new Array(docs.length).fill(0);
+  const candSet = postings === null || verbHay !== null ? null : (() => {
+    const set = new Set();
+    for (const term of qLoop) {
+      const p = postings.get(term);
+      if (p) for (let pi = 0; pi < p.length; pi++) set.add(p[pi]);
+    }
+    return set;
+  })();
+  if (candSet === null) {
+    for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
+  } else {
+    for (const di of candSet) raw[di] = scanDoc(di);
+  }
   // [macro-fusion 0.2.148] 标识符补分挪到「加权之后」：补分以前进 raw，会被每条自己的
   // importance / 新鲜度 / 状态权重再乘一遍——于是一条 impW=1.75 的措辞命中能把「问的正是这条 id」
   // 压下去（实测问 0mwq5zzv：措辞那条 17.96，被指认那条只有 16.16）。指认是同义反复的最高形态，
@@ -8236,6 +8344,10 @@ export {
   resumeAndDream,
   scanTurn,
   search,
+  indexSignature,
+  searchIndexOf,
+  searchIndexCacheInfo,
+  clearSearchIndexCache,
   keywordHitScore,
   statusWeight,
   foldNearDupes,
