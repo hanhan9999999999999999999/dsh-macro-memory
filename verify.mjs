@@ -5647,11 +5647,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 理由：render 去重让 memory_search 字面量长了 1.3 KB，schema 一字节没动——拿字面量当判据，
   // 会把「改实现」误判成「塞描述」，人就开始抬上界。
   // 0.2.167：memory_search 加了 band_keep，单项上界 6,500 → 7,500（实测 6,852）。
+  // 0.2.170：疑问框架剥离在 explain 里要说清改过什么，整字面量 105,000 → 106,000（实测 105,156）。
   check(
-    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 105,000',
+    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 106,000',
     probeSrc.includes('const BUDGET_BYTES = 24000') &&
       probeSrc.includes('const TOOL_BUDGET = { memory_search: 7500 }') &&
-      probeSrc.includes('const LITERAL_CEIL = 105000') &&
+      probeSrc.includes('const LITERAL_CEIL = 106000') &&
       probeSrc.includes('ok(sum <= BUDGET_BYTES') &&
       probeSrc.includes("'体积：单项 schema ' + name + ' 没有膨胀'"),
   )
@@ -10139,6 +10140,63 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
   }
 
+  // ── HZ5（0.2.170）：疑问框架剥离 ─────────────────────────────────────────
+  // 中文按 bigram 切，「什么时候」会切出「么时」这种跨界碎片：df 极低、idf 极高，一个假词就能把
+  // 一条只写着「什么时候」的笔记顶到榜首。真库 554 条上换说池首位 4/13 → 5/13、回执 4.23 → 4.15 条。
+  {
+    const recall170 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+    check(
+      'HZ5 疑问框架剥离在：一张表 + 一个最小长度（剥完太短就整句回退，宁可带噪声不许凭空空手）',
+      eng.includes('var QUESTION_FRAME = /什么时候|') && eng.includes('var QUESTION_FRAME_MIN = 4;') &&
+        eng.includes('function stripQuestionFrame(text) {'),
+      'QUESTION_FRAME / MIN / 函数三处都在',
+    )
+    check(
+      'HZ5 剥成空格而不是删掉：空格负责切断 bigram，删掉会把两侧粘成新假词',
+      eng.includes('raw.replace(QUESTION_FRAME, " ")') && eng.includes('if (out.length < QUESTION_FRAME_MIN) return { text: raw, stripped: [] };'),
+      '空格替换 + 短句回退',
+    )
+    check(
+      'HZ5 只在问句这一侧剥：索引与文档切词一个字节不动，且带 questionStrip:false 的出口',
+      eng.includes('const qStrip = opts.questionStrip === false ? { text: query, stripped: [] } : stripQuestionFrame(query);') &&
+        eng.includes('const q = tokenize(qStrip.text);'),
+      '接入点在 search 的问句一侧',
+    )
+    check(
+      'HZ5 explain 只在真剥了的时候出现：没剥就没有 stripped 这一项（不许谎报改过问法）',
+      eng.includes('...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() })'),
+      '条件展开在位',
+    )
+    check(
+      'HZ5 对外可测：stripQuestionFrame 与 QUESTION_FRAME 都在导出块里（探针要能直接量口径）',
+      eng.includes('  stripQuestionFrame,') && eng.includes('  QUESTION_FRAME,'),
+      '导出两处',
+    )
+    check(
+      'HZ5 行为探针在：probe-recall 有 R8 八条（含受控库那刀真能红）',
+      recall170.includes("'R8 疑问框架会剥") && recall170.includes("'R8 剥完不足 4 个字符就整句回退") &&
+        recall170.includes("'R8 剥疑问不动标识符") && recall170.includes("'R8 空格切断跨界碎片") &&
+        recall170.includes("'R8 只在问句这一侧剥") && recall170.includes("'R8 这刀真的会红") &&
+        recall170.includes("'R8 explain 里看得见") && recall170.includes("'R8 关掉时 explain 也不许谎报"),
+      '8 个 R8 标题',
+    )
+    check(
+      'HZ5 两台刀分开测：老刀的阴性对照只关自己那把（questionStrip:false 至少五处，别让新刀替它记账）',
+      recall170.includes('questionStrip: false') &&
+        (readFileSync(join(root, 'verify.mjs'), 'utf8').match(/questionStrip: false/g) || []).length >= 2 &&
+        (readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8').match(/questionStrip: false/g) || []).length >= 1,
+      'probe-recall / verify / probe-gold 三处都有',
+    )
+    check(
+      'HZ5 文档锚：9.177 写下「么时」这个碎片读数，182 写下「词切错了，再好的打分也救不回来」',
+      readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('## 9.177') &&
+        readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('么时') &&
+        readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 182') &&
+        readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('词切错了'),
+      '9.177 / 182 两处锚',
+    )
+  }
+
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10474,8 +10532,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.169（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.169'"),
+    'GV 版本: 代码里是 0.2.170（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.170'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10581,7 +10639,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const gwQ = '怎么 星图建图的延迟调下来'
   const gwOn = meowMod.search(gwQ, gwDocs, { k: 12 })
   // [0.2.165] 这条测的是噪声地板：回执裁剪（bandKeep）与它无关，必须关掉，否则最多只回 5 条。
-  const gwOff = meowMod.search(gwQ, gwDocs, { k: 12, noiseFloor: false, funcFloor: false, bandKeep: false })
+  // [0.2.170] 疑问框架剥离也是另一把刀：它会在分词前就拿走「怎么」，对照组只关地板，不关它。
+  const gwOff = meowMod.search(gwQ, gwDocs, { k: 12, noiseFloor: false, funcFloor: false, bandKeep: false, questionStrip: false })
   check(
     'GW 行为: 只沾「怎么」的八条退出榜单，剩下真正相关的那条',
     gwOn.length === 1 && gwOn[0].id === 'real',
@@ -10604,8 +10663,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.169（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.169'"),
+    'GW 版本: 代码里是 0.2.170（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.170'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10752,8 +10811,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.169（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.169'"),
+    'VV 版本: 代码里是 0.2.170（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.170'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10807,7 +10866,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     vwDoc('loud', '改了什么 措辞更像那一条，而且重要度写得很高。', 4, 'vw-b'),
   ]
   const on = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, explain: true })
-  const off = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, verbatim: false, funcFloor: false })
+  // [0.2.170] 对照组只关「看得见的那两把刀」：疑问框架剥离会在分词前拿走「是什么」，一起关掉才量得准。
+  const off = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, verbatim: false, funcFloor: false, questionStrip: false })
   check('VW8 行为：被指认那条排第 1（importance=1 也压得住 4 分的措辞命中）', on[0]?.id === '0mzz9abc1-aaaa')
   check(
     'VW9 行为：score 与 identBonus 同值（证明补分在乘法之后）',
@@ -10930,9 +10990,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.169（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.169' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.169'"),
+    'GX19 版本已到 0.2.170（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.170' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.170'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11032,10 +11092,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.169',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.169' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.169'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.169'),
+    'VY15 版本三处一致 0.2.170',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.170' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.170'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.170'),
   )
 }
 
@@ -11083,10 +11143,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.169（三处一致）',
-    pkgWz.version === '0.2.169' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.169'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.169'),
+    'WZ9 版本已到 0.2.170（三处一致）',
+    pkgWz.version === '0.2.170' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.170'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.170'),
   )
 }
 

@@ -150,8 +150,10 @@ const NEG_QUERIES = [
   '咖啡因的半衰期是多久', '怎么腌酸菜不坏',
 ]
 const abstain = (opts) => NEG_QUERIES.filter((q) => V.search(q, docs, { k: 5, ...opts }).length === 0);
-const negEmpty = abstain({});
-const negEmptyOld = abstain({ funcFloor: false });
+const negEmpty = abstain({})
+// 0.2.170 起问句里的疑问框架（怎么 / 多久 / 哪一年…）在分词前就被剥掉了，所以「关掉地板」这件事
+// 必须只关地板：一起把剥离关掉才量得准「地板现在还挡不挡得住」。两台刀分开测，谁也别替谁记账。
+const negEmptyOld = abstain({ funcFloor: false, questionStrip: false });
 check(
   'G8 没有的事就空手：14 条与记忆库无关的问句里，至少 9 条回执为空（问句虚词不算证据）',
   negEmpty.length >= 9,

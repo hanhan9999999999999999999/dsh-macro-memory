@@ -130,7 +130,9 @@ const BUDGET_BYTES = 24000
 // 不按「反正还没到合计线」随口放宽——上界贴着实测值才抓得住下一次悄悄长胖。
 const TOOL_BUDGET = { memory_search: 7500 }
 // 整字面量只当粗胖警戒线（含 render 闭包、局部引用）：真有人塞一段长代码时它也拦得住。
-const LITERAL_CEIL = 105000
+// 105,000 → 106,000（0.2.170）：疑问框架剥离要在 explain 里说清「改过你的问法」，实测 105,156，
+// 超 0.15%。这条线本来就不看小波动，为 156 B 去删一句可追溯性话反而本末倒置。
+const LITERAL_CEIL = 106000
 
 
 let failures = 0

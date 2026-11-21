@@ -298,9 +298,12 @@ const NF_DOCS = [
 ]
 // 噪声词单独成段（空格隔开）：剔掉它之后词表与「不含噪声词的那一问」逐字相同，NF6 才量得准。
 const NF_Q = '怎么 星图建图的延迟调下来'
-const nfOn = V.search(NF_Q, NF_DOCS, { k: 12 })
+// 这里测的是噪声地板那把刀。0.2.170 的疑问剥离会在分词前就把「怎么」拿走，与地板无关却会
+// 把地板的读数搅浑（noiseDropped 变 null、阴性对照放不回噪声）：两台刀分开测，新刀归 R8。
+const NF_OPT = { questionStrip: false }
+const nfOn = V.search(NF_Q, NF_DOCS, { k: 12, ...NF_OPT })
 // 同上：这条测噪声地板，回执裁剪（0.2.165）与它无关。
-const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false, funcFloor: false, bandKeep: false })
+const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false, funcFloor: false, bandKeep: false, ...NF_OPT })
 const nfIds = (hits) => hits.map((h) => h.id).join(',')
 
 check(
@@ -315,22 +318,22 @@ check(
 )
 check(
   'NF3 剔了谁要说出来：explain.noiseDropped 点名「怎么」（可追溯性，不是悄悄改口径）',
-  JSON.stringify(V.search(NF_Q, NF_DOCS, { k: 12, explain: true })[0]?.explain?.noiseDropped ?? null) === '["怎么"]',
-  JSON.stringify(V.search(NF_Q, NF_DOCS, { k: 12, explain: true })[0]?.explain?.noiseDropped ?? null),
+  JSON.stringify(V.search(NF_Q, NF_DOCS, { k: 12, explain: true, ...NF_OPT })[0]?.explain?.noiseDropped ?? null) === '["怎么"]',
+  JSON.stringify(V.search(NF_Q, NF_DOCS, { k: 12, explain: true, ...NF_OPT })[0]?.explain?.noiseDropped ?? null),
 )
 const nfSmall = NF_DOCS.slice(0, 5)
 check(
   'NF4 库小（<8 条）时一条都不剔：df 在小样本上不可信（5 条全含「怎么」也照旧参与）',
-  V.search('怎么', nfSmall, { k: 8 }).length === 5 && V.search('怎么', nfSmall, { k: 8, explain: true })[0]?.explain?.noiseDropped === undefined,
-  `${V.search('怎么', nfSmall, { k: 8 }).length} 条`,
+  V.search('怎么', nfSmall, { k: 8, ...NF_OPT }).length === 5 && V.search('怎么', nfSmall, { k: 8, explain: true, ...NF_OPT })[0]?.explain?.noiseDropped === undefined,
+  `${V.search('怎么', nfSmall, { k: 8, ...NF_OPT }).length} 条`,
 )
 check(
   'NF5 整句都是常用词时整段回退（宁可噪声也不给空结果）',
-  V.search('怎么', NF_DOCS, { k: 12 }).length === 8,
-  `${V.search('怎么', NF_DOCS, { k: 12 }).length} 条`,
+  V.search('怎么', NF_DOCS, { k: 12, ...NF_OPT }).length === 8,
+  `${V.search('怎么', NF_DOCS, { k: 12, ...NF_OPT }).length} 条`,
 )
-const nfA = V.search(NF_Q, NF_DOCS, { k: 12 })[0]
-const nfB = V.search('星图建图的延迟调下来', NF_DOCS, { k: 12 })[0]
+const nfA = V.search(NF_Q, NF_DOCS, { k: 12, ...NF_OPT })[0]
+const nfB = V.search('星图建图的延迟调下来', NF_DOCS, { k: 12, ...NF_OPT })[0]
 check(
   'NF6 剔掉 = 没问：同一问句去掉「怎么」后首条分数逐位相同（分子分母同口径）',
   nfA?.id === nfB?.id && Math.abs((nfA?.score ?? 0) - (nfB?.score ?? 0)) < 1e-9,
@@ -454,7 +457,7 @@ const VX_DOCS = [
 ]
 const VX_Q = '0mzz9abc1 措辞'
 const vxOn = V.search(VX_Q, VX_DOCS, { k: 8, explain: true })
-const vxOff = V.search(VX_Q, VX_DOCS, { k: 8, verbatim: false, funcFloor: false })
+const vxOff = V.search(VX_Q, VX_DOCS, { k: 8, verbatim: false, funcFloor: false, questionStrip: false })
 check(
   'VX1 指认压得住重要性：问一条短 id 时，那条即使 importance=1 也排第 1（措辞命中的是 4 分也没用）',
   vxOn[0]?.id === '0mzz9abc1-aaaa',
@@ -501,9 +504,10 @@ const VT_DOCS = [
   mkDoc('vt-en', 'latency 的观测点放在巡检里，不看 p99。', 's-vt-en'),
 ]
 const VT_Q = '怎么 把延迟调下来'
-const vtFuncOn = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, explain: true })
+const VT_OPT = { questionStrip: false }
+const vtFuncOn = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, explain: true, ...VT_OPT })
 // 这条测的是虚词地板：回执裁剪（0.2.165 的 trimByBand）与它无关，所以要显式关掉。
-const vtFuncOff = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, funcFloor: false, bandKeep: false })
+const vtFuncOff = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, funcFloor: false, bandKeep: false, ...VT_OPT })
 const vtIds = (hits) => hits.map((h) => h.id).join(',')
 check(
   'VT1 虚词单独就能挡噪声：关掉噪声地板，只留虚词地板，六条只沾「怎么」的流水账进不了榜',
@@ -642,6 +646,83 @@ check(
   'R7 同一问句两次调用逐位相同：补位与折数都不带随机（换 session 也一样）',
   JSON.stringify(r7a) === JSON.stringify(r7b) && r7a.length > 0,
   `${r7a.length} vs ${r7b.length}`,
+)
+
+// ── R8 疑问框架剥离（0.2.170）：疑问词不算证据，跨界碎片尤其不算 ─────────────
+// 中文按 bigram 切，「什么时候」会变成 `什么 / 么时 / 时候`。虚词表挡掉了「什么」「时候」，
+// 「么时」这种没有意义的碎片却漏了网：真库 554 条上，换说池 13 题里 #3、#7 的榜首都是同一条
+// 靠「么时」拿了 9.24 / 9.41 分的条目，而正解只有 5.84 / 3.61。整段剥掉之后首位 4/13 → 5/13。
+// 这里既要钉住函数口径（剥什么、什么时候不剥、不碰标识符），也要造一个能红的受控库：
+// 污染源只靠「么时」进榜——关掉这刀它在，开着它一个词都不剩。
+const strip1 = V.stripQuestionFrame('它自己什么时候该回头反省一次')
+check(
+  'R8 疑问框架会剥：整段剥成空格，剥了什么要报得出来',
+  !strip1.text.includes('什么时候') && strip1.stripped.includes('什么时候'),
+  JSON.stringify(strip1),
+)
+const strip2 = V.stripQuestionFrame('什么时候')
+check(
+  'R8 剥完不足 4 个字符就整句回退：宁可带噪声，不许凭空空手',
+  strip2.text === '什么时候' && strip2.stripped.length === 0,
+  JSON.stringify(strip2),
+)
+const strip3 = V.stripQuestionFrame('0mwq84ts 什么时候更新的')
+check(
+  'R8 剥疑问不动标识符：id / 路径这类原样证据一个字都不能少（0.2.147 的地基）',
+  strip3.text.includes('0mwq84ts') && strip3.stripped.length === 1,
+  JSON.stringify(strip3),
+)
+check(
+  'R8 空格切断跨界碎片：剥掉「什么时候」之后不再产出「么时 / 候该」这类假词',
+  !V.tokenize(strip1.text).some((t) => t === '么时' || t === '候该'),
+  JSON.stringify(V.tokenize(strip1.text)),
+)
+check(
+  'R8 只在问句这一侧剥（索引不动）：剥离函数在被调用的地方只有一处，且带 questionStrip:false 的出口',
+  countOf('stripQuestionFrame(') === 2 &&
+    SRC.includes('const qStrip = opts.questionStrip === false ? { text: query, stripped: [] } : stripQuestionFrame(query);'),
+  `stripQuestionFrame 出现 ${countOf('stripQuestionFrame(')} 处（定义 1 + 调用 1）`,
+)
+// 受控库：干净 workspace，四条语料，污染源只共享「么时」一个碎片。
+const ws8 = join(home, 'ws8')
+mkdirSync(ws8, { recursive: true })
+const c8 = (name, args, tag) =>
+  T.get(name).execute(args, { agent: { session: { header: { cwd: ws8, id: `sess-r8-${tag}` } } } })
+const R8_SEED = [
+  { content: '「什么时候」这类闸门词要单独成表，不能靠词边界。', keywords: ['闸门词', '词边界'], importance: 3, level: 'lesson', project: 'r8-闸门' },
+  { content: '连着跑二十轮以上、同一个结论反复被推翻时，就该回头把这一段重写一遍。', keywords: ['重写', '推翻', '触发'], importance: 3, level: 'lesson', project: 'r8-闸门' },
+  { content: '数据库迁移要挑低峰期做，先备份再动，回滚脚本要提前写好。', keywords: ['数据库', '迁移', '备份'], importance: 2, level: 'lesson', project: 'r8-闸门' },
+  { content: '发版前把基线更新两轮，第二轮才作数。', keywords: ['基线', '发版'], importance: 2, level: 'lesson', project: 'r8-闸门' },
+]
+const r8ids = []
+for (const s of R8_SEED) r8ids.push(String((await c8('memory_remember', s, 'w')).id).slice(0, 9))
+const db8 = V.getDb(ws8, '.dsh-meow')
+const docs8 = ['soul', 'user', 'rules', 'fact', 'lesson', 'topic', 'project'].flatMap((lv) => {
+  try {
+    return db8.listSearchable(lv)
+  } catch {
+    return []
+  }
+})
+const q8 = '它自己什么时候该回头反省一次'
+const off8 = await V.search(q8, docs8, { k: 10, questionStrip: false, min_rel: 0, bandKeep: false })
+const on8 = await V.search(q8, docs8, { k: 10, min_rel: 0, bandKeep: false })
+check(
+  'R8 这刀真的会红：污染源只靠「么时」进榜，关掉它在、剥掉它一个词都不剩',
+  off8.some((h) => String(h.id).startsWith(r8ids[0])) && !on8.some((h) => String(h.id).startsWith(r8ids[0])),
+  `关掉 ${off8.length} 条（含污染源 ${off8.some((h) => String(h.id).startsWith(r8ids[0]))}）/ 默认 ${on8.length} 条（含污染源 ${on8.some((h) => String(h.id).startsWith(r8ids[0]))}）`,
+)
+const ex8 = await V.search(q8, docs8, { k: 5, explain: true })
+check(
+  'R8 explain 里看得见「改过你的问法」：默认回执不花字节，explain 模式必须给',
+  Array.isArray(ex8[0]?.explain?.stripped) && ex8[0].explain.stripped.includes('什么时候'),
+  JSON.stringify(ex8[0]?.explain?.stripped ?? null),
+)
+const offEx8 = await V.search(q8, docs8, { k: 5, explain: true, questionStrip: false })
+check(
+  'R8 关掉时 explain 也不许谎报：没剥就没有 stripped 这一项',
+  offEx8[0]?.explain?.stripped === undefined,
+  JSON.stringify(offEx8[0]?.explain?.stripped ?? null),
 )
 
 

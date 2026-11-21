@@ -2009,6 +2009,29 @@ function funcTermsOf(qTerms) {
   for (const t of qTerms) if (CJK_FUNC_WORDS.has(t)) out.push(t);
   return out.length >= qTerms.length ? [] : out;
 }
+// [macro-fusion 0.2.170] 疑问框架整段剥掉：0.2.151 那张虚词表治的是「双字虚词」，治不了**跨界碎片**。
+// 中文按 bigram 切，「什么时候」会变成 `什么 / 么时 / 时候`——表里挡掉了「什么」「时候」，
+// 「么时」这种没有意义的碎片漏了网，于是谁的内容里写着「什么时候」，谁就能靠碎片赢下榜首：
+// 真库 554 条、换说池 13 题里，#3（什么时候才轮到把代码放到远端仓库）与 #7（它自己什么时候该回头
+// 反省一次）的榜首都是同一条『JS 正则里的 \b 对中文不成立……「什么时候」这类中文闸门词必须……』，
+// 它靠一个「么时」拿了 9.24 / 9.41 分，而正解只有 5.84 / 3.61。手工表列不完所有碎片，
+// 所以在分词**之前**把整段疑问框架剥成空格（空格切断 bigram，不会把前后两个字粘成一个假词）。
+// 读数（真库 554 条）：换说池首位 4/13 → 5/13（#3 第 2→第 1、#9 第 1→第 1），命中 11/13 不变，
+// 平均回执 4.23 → 4.15 条；自找池（问句=关键词拼接，天然不含疑问词）525/554 · 首位 509 · 2.65 条 一位不动。
+// 三条护栏：①剥完不到 4 个字符就整句回退（宁可带噪声，不许凭空空手）；②只作用于问句，不动索引；
+// ③`questionStrip:false` 一键回到旧口径。
+var QUESTION_FRAME = /什么时候|多久|怎么办|怎么|为什么|为啥|是不是|能不能|会不会|有没有|该不该|哪些|哪个|多少|是否|如何|是什么/g;
+var QUESTION_FRAME_MIN = 4;
+function stripQuestionFrame(text) {
+  const raw = String(text ?? "");
+  if (raw.length === 0) return { text: raw, stripped: [] };
+  const matched = raw.match(/什么时候|什么时间|多长时间|多久|怎么办|怎么样|怎么|为什么|为啥|要不要|是不是|能不能|会不会|有没有|可不可以|需不需要|该不该|哪些|哪个|哪一|多少|是否|如何|什么叫|什么是|是什么/g) ?? [];
+  if (matched.length === 0) return { text: raw, stripped: [] };
+  const out = raw.replace(QUESTION_FRAME, " ").replace(/\s+/g, " ").trim();
+  if (out.length < QUESTION_FRAME_MIN) return { text: raw, stripped: [] };
+  // 同一段词被剥两次只报一次；顺序按首次出现，读者照着读得出来。
+  return { text: out, stripped: [...new Set(matched)] };
+}
 // [macro-fusion 0.2.147] 标识符原样匹配：问句里真正决定答案的，常常是「原样才算数」的东西——
 // 版本号（0.2.146）、路径（D:\dsh-home\vendor\...）、文件名（tools/probe-words.mjs）、
 // 短 id（0mwq5zzv）、commit（c12e4f6）。分词会把它们打碎：0.2.146 -> 0 / 2 / 146，
@@ -2488,7 +2511,10 @@ function clearSearchIndexCache() {
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
-  const q = tokenize(query);
+  // [macro-fusion 0.2.170] 疑问框架先剥再切：`什么时候` 切成 `什么/么时/时候`，其中 `么时` 这类跨界碎片
+  // 没有意义却能靠「文档里正好写着这个词」赢分（见 stripQuestionFrame 上方读数）。
+  const qStrip = opts.questionStrip === false ? { text: query, stripped: [] } : stripQuestionFrame(query);
+  const q = tokenize(qStrip.text);
   if (docs.length === 0) return [];
   // [macro-fusion 0.2.122] 实体先验的输入（问句里没有专有名词时为空数组，后面整段跳过）
   const entToks = opts.entityPrior === false
@@ -2652,7 +2678,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -4094,7 +4120,12 @@ function searchTool(dir) {
       const bandNote = bandShort && rescued === 0
         ? safeKeyed("search.bandTrim", "\u8fd9\u6b21\u56de\u4e86 {n} \u6761\uff0c\u6ca1\u5230\u4f60\u8981\u7684 {k} \u6761\uff1a\u548c\u699c\u9996\u4e0d\u662f\u4e00\u4e2a\u91cf\u7ea7\u7684\u5019\u9009\uff08\u5206\u6570\u4e0d\u5230 {pct}%\uff0c\u591a\u534a\u53ea\u6cbe\u4e00\u4e24\u4e2a\u8bcd\uff09\u6ca1\u5c55\u5f00\uff0c\u76f8\u5173\u5ea6\u5730\u677f\u4e0e\u53bb\u91cd\u4e5f\u4f1a\u6298\u6389\u4e00\u4e9b\u3002\u8981\u8fde\u4f4e\u5206\u5019\u9009\u4e00\u8d77\u770b\uff1a\u4f20 band_keep: false\uff08\u914d\u5408 min_rel: 0 \u624d\u662f\u771f\u5168\u91cf\uff09\u3002", { n: String(hits.length), k: String(k), pct: String(Math.round(IMP_BAND * 100)) })
         : "";
-      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, rescueNote, bandNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
+      // [macro-fusion 0.2.170] 剥离了哪些疑问框架，只有 explain 模式才说：默认回执一个字节都不花，
+      // 但真要问「它凭什么排第一」时，读者得能看到「我改过你的问法」。
+      const stripNote = explain && (hits[0]?.explain?.stripped?.length ?? 0) > 0
+        ? safeKeyed("search.strip", "疑问框架按虚词处理了：{words}", { words: hits[0].explain.stripped.join("、") })
+        : "";
+      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, rescueNote, bandNote, liftNote, relClampNote, dedupeNote, statusDownNote, stripNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {
@@ -9242,6 +9273,8 @@ export {
   sweepHomeLogs,
   switchHomeDir,
   tokenize,
+  stripQuestionFrame,
+  QUESTION_FRAME,
   SYN_GROUPS,
   SYN_W,
   synExpandOf,
