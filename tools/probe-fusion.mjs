@@ -6406,6 +6406,81 @@ check(
   }
 }
 
+// RI0-RI10（0.2.134）：反思不再等轮数——这一轮自己出的事故就是触发条件。
+{
+  const ev = (type, data) => ({ type, data })
+  const tc = (id, name) => ev('assistant/message', { message: { content: [{ type: 'tool-call', id, name }] } })
+  const rOk = (id) => ev('tool/result', { message: { isError: false, toolCallId: id } })
+  const rBad = (id) => ev('tool/result', { message: { isError: true, toolCallId: id } })
+  const riEvents = [ev('turn/start', {}), tc('c1', 'pwsh'), tc('c2', 'memory_search'), rBad('c1'), rBad('c1'), rBad('c2'), rOk('c1')]
+  const ri = Meow.scanTurn(riEvents)
+  check(
+    'RI0 事故计数：三次失败一个不漏，成功的 tool/result 不算',
+    ri.toolErrors === 3 && ri.memoryErrors === 1 && ri.worstTool === 'pwsh' && ri.worstFail === 2,
+    `errors=${ri.toolErrors} memory=${ri.memoryErrors} worst=${ri.worstTool}×${ri.worstFail}`,
+  )
+  check(
+    'RI1 事故计数：按失败次数排序，只留前四个工具',
+    JSON.stringify(ri.failedTools) === JSON.stringify([['pwsh', 2], ['memory_search', 1]]),
+    JSON.stringify(ri.failedTools),
+  )
+  const riEmpty = Meow.scanTurn([ev('turn/start', {}), tc('x1', 'pwsh'), rOk('x1')])
+  check('RI2 一次都没挂：计数为零、不编造工具名', riEmpty.toolErrors === 0 && riEmpty.worstTool === undefined && riEmpty.failedTools.length === 0)
+  const riNoId = Meow.scanTurn([ev('turn/start', {}), ev('tool/result', { message: { isError: true } })])
+  check(
+    'RI3 拿不到名字的失败也要计数（宁可说不出是谁，不能当没发生）',
+    riNoId.toolErrors === 1 && typeof riNoId.worstTool === 'string' && riNoId.worstTool.length > 0,
+    String(riNoId.worstTool),
+  )
+
+  const clean = Meow.incidentOf({ toolErrors: 0 }, 'stop')
+  const soft = Meow.incidentOf({ toolErrors: 1, worstFail: 1, worstTool: 'pwsh' }, 'stop')
+  const retry = Meow.incidentOf({ toolErrors: 2, worstFail: 2, worstTool: 'pwsh' }, 'stop')
+  const mem = Meow.incidentOf({ toolErrors: 1, worstFail: 1, worstTool: 'memory_link', memoryErrors: 1 }, 'stop')
+  const burst = Meow.incidentOf({ toolErrors: 3, worstFail: 1, worstTool: 'pwsh' }, 'stop')
+  const turnErr = Meow.incidentOf({ toolErrors: 0 }, 'error')
+  const cue = Meow.incidentOf({ toolErrors: 0, cue: 1 }, 'stop')
+  const all = [clean, soft, retry, mem, burst, turnErr, cue]
+  check(
+    'RI4 分级：无事 0 / 零星一次 1 / 连挂·记忆工具挂·整轮出错·主人发火 都是 2',
+    all.map((x) => x.level).join(',') === '0,1,2,2,2,2,2',
+    all.map((x) => `${x.level}:${x.kinds.join('+') || '-'}`).join(' | '),
+  )
+  check(
+    'RI5 分级：事故种类点得出来（记忆工具挂了自己认账）',
+    mem.kinds.includes('memory-error') &&
+      retry.kinds.includes('retry-storm') &&
+      burst.kinds.includes('error-burst') &&
+      cue.kinds.includes('user-cue') &&
+      turnErr.kinds.includes('turn-error'),
+    `${mem.kinds} / ${retry.kinds} / ${burst.kinds}`,
+  )
+  check(
+    'RI6 阈值：硬档当场 1 步、软档 3 步、没事照旧 cadence',
+    Meow.reflectNeed(retry, 7) === 1 && Meow.reflectNeed(soft, 7) === 3 && Meow.reflectNeed(clean, 7) === 7,
+    `${Meow.reflectNeed(retry, 7)}/${Meow.reflectNeed(soft, 7)}/${Meow.reflectNeed(clean, 7)}`,
+  )
+  check(
+    'RI7 阈值：软档不许反过来比 cadence 慢（cadence=2 还是 2）',
+    Meow.reflectNeed(soft, 2) === 2 && Meow.reflectNeed(soft, 1) === 1 && Meow.reflectNeed(clean, 0) === 7,
+  )
+  const lines = Meow.incidentLines({ level: 2, kinds: ['retry-storm'], toolErrors: 2, worstFail: 2, worstTool: 'pwsh', failedTools: [['pwsh', 2]] })
+  const joined = lines.join('\n')
+  check(
+    'RI8 报文：说清「是插件自己叫的」+ 挂几次 + 先判真假事故',
+    joined.includes('插件自己') && joined.includes('pwsh ×2') && joined.includes('工具失败 2 次'),
+    joined.slice(0, 160).replace(/\n/g, ' / '),
+  )
+  check('RI9 报文：没事故时一个字都不加', Meow.incidentLines(clean).length === 0)
+  const langs = ['zh', 'en', 'pt-br']
+  const keys = ['incidentHead', 'incidentTools', 'incidentDetail', 'incidentTurnError', 'incidentCue', 'incidentAsk', 'unknownTool']
+  const missing = langs.filter((lg) => {
+    const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lg, 'labels.md'), 'utf8')
+    return !keys.every((k) => t.includes(`- reflect.${k}:`))
+  })
+  check('RI10 三语：事故文案七个键在 zh/en/pt-br 都在（换语言不炸成 undefined）', missing.length === 0, missing.join(',') || 'zh/en/pt-br 全在')
+}
+
 for (const d of disposers) {
   try {
     d()

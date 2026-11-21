@@ -8990,9 +8990,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check('EY 三条补丁都能单独关掉回退', meowSrc133.includes('opts.coord === false') && meowSrc133.includes('opts.fieldBoost !== false') && meowSrc133.includes('opts.lengthOnBody === false'))
   check('EY 星图扩散: 默认就扩散，只有 expand:false 才关', searchSrc133.includes('const wantExpand = args.expand !== false') && !searchSrc133.includes('args.expand === true || (args.expand !== false && hits === 0)'))
 
-  check('EY 反思·闸门: 不再因为「最后一步是 memory_* 」整轮免反思', !meowSrc133.includes('if (lastToolName !== void 0 && lastToolName.startsWith("memory_")) return;') && meowSrc133.includes('if (!sawNonMemory) return;'))
+  check('EY 反思·闸门: 不再因为「最后一步是 memory_* 」整轮免反思', !meowSrc133.includes('if (lastToolName !== void 0 && lastToolName.startsWith("memory_")) return;') && meowSrc133.includes('if (!sawNonMemory && INC.level === 0) return;'))
   check('EY 反思·闸门: scanTurn 记下「有没有非记忆工具」和用户原话', meowSrc133.includes('let sawNonMemory = false;') && meowSrc133.includes('const userTexts = [];') && meowSrc133.includes('userText: userTexts.join("\\n").slice(-2e3)'))
-  check('EY 反思·事故信号: 主人发火 / 出错时阈值降到 1 步', meowSrc133.includes('var REFLECT_CUE = /(') && meowSrc133.includes('const NEED = CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns;'))
+  check('EY 反思·事故信号: 主人发火时阈值降到 1 步', meowSrc133.includes('var REFLECT_CUE = /(') && meowSrc133.includes('const NEED = reflectNeed(INC, resolved.reflectTurns);'))
   const pkg133 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'EY 检索精度: 版本与文档一起走（9.139 / 145）',
@@ -9001,5 +9001,102 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 145 '),
   )
 }
+// ── EZ 反思由事故自己触发（0.2.134）
+{
+  const meowPath134 = join(root, 'vendor', 'meow-memory', 'lib', 'index.js')
+  const meowSrc134 = readFileSync(meowPath134, 'utf8')
+  const M134 = await import(pathToFileURL(meowPath134).href)
+  const ev = (type, data) => ({ type, data })
+
+  // 事件面：失败数得清、能点出是谁、成功的不算。
+  const events = [
+    ev('turn/start', {}),
+    ev('assistant/message', { message: { content: [{ type: 'tool-call', id: 'k1', name: 'pwsh' }, { type: 'tool-call', id: 'k2', name: 'memory_search' }] } }),
+    ev('tool/result', { message: { isError: true, toolCallId: 'k1' } }),
+    ev('tool/result', { message: { isError: true, toolCallId: 'k1' } }),
+    ev('tool/result', { message: { isError: true, toolCallId: 'k2' } }),
+    ev('tool/result', { message: { isError: false, toolCallId: 'k1' } }),
+  ]
+  const scanned = M134.scanTurn(events)
+  check(
+    'EZ 事故计数·行为: 三次失败一个不漏，成功的 tool/result 不算',
+    scanned.toolErrors === 3 && scanned.memoryErrors === 1 && scanned.worstFail === 2 && scanned.worstTool === 'pwsh',
+    `errors=${scanned.toolErrors} memory=${scanned.memoryErrors} worst=${scanned.worstTool}×${scanned.worstFail}`,
+  )
+  check(
+    'EZ 事故计数·行为: 失败按工具归并，只留前四个',
+    JSON.stringify(scanned.failedTools) === JSON.stringify([['pwsh', 2], ['memory_search', 1]]),
+    JSON.stringify(scanned.failedTools),
+  )
+
+  // 判据面：什么东西算事故。
+  const clean = M134.incidentOf({ toolErrors: 0 }, 'stop')
+  const soft = M134.incidentOf({ toolErrors: 1, worstFail: 1, worstTool: 'pwsh' }, 'stop')
+  const retry = M134.incidentOf({ toolErrors: 2, worstFail: 2, worstTool: 'pwsh' }, 'stop')
+  const mem = M134.incidentOf({ toolErrors: 1, worstFail: 1, worstTool: 'memory_link', memoryErrors: 1 }, 'stop')
+  const burst = M134.incidentOf({ toolErrors: 3, worstFail: 1, worstTool: 'pwsh' }, 'stop')
+  const turnErr = M134.incidentOf({ toolErrors: 0 }, 'error')
+  const cue = M134.incidentOf({ toolErrors: 0, cue: 1 }, 'stop')
+  const levels = [clean, soft, retry, mem, burst, turnErr, cue].map((x) => x.level).join(',')
+  check('EZ 分级·行为: 无事 0、零星一次 1、连挂/记忆工具挂/整轮出错/主人发火都是 2', levels === '0,1,2,2,2,2,2', levels)
+  check(
+    'EZ 分级·行为: 事故种类点得出来（记忆工具自己挂了要认账）',
+    mem.kinds.includes('memory-error') &&
+      retry.kinds.includes('retry-storm') &&
+      burst.kinds.includes('error-burst') &&
+      turnErr.kinds.includes('turn-error') &&
+      cue.kinds.includes('user-cue'),
+    `${mem.kinds} / ${retry.kinds} / ${burst.kinds} / ${turnErr.kinds} / ${cue.kinds}`,
+  )
+
+  // 阈值面：事故当场反思，正常不提前。
+  check(
+    'EZ 阈值·行为: 硬档当场 1 步、软档压到 3 步、没事照旧 cadence',
+    M134.reflectNeed(retry, 7) === 1 && M134.reflectNeed(soft, 7) === 3 && M134.reflectNeed(clean, 7) === 7,
+    `${M134.reflectNeed(retry, 7)}/${M134.reflectNeed(soft, 7)}/${M134.reflectNeed(clean, 7)}`,
+  )
+  check(
+    'EZ 阈值·行为: 软档只许提前、不许反过来变慢（cadence=2 还是 2，cadence 写坏兜底 7）',
+    M134.reflectNeed(soft, 2) === 2 && M134.reflectNeed(soft, 1) === 1 && M134.reflectNeed(clean, 0) === 7,
+  )
+
+  // 报文面：模型得知道「这是插件自己叫的」和「挂了什么」。
+  const lines = M134.incidentLines({ level: 2, kinds: ['retry-storm'], toolErrors: 2, worstFail: 2, worstTool: 'pwsh', failedTools: [['pwsh', 2]] })
+  const joined = lines.join('\n')
+  check(
+    'EZ 报文·行为: 说清是插件自己叫的、挂了几次、要求先判真假事故',
+    joined.includes('插件自己') && joined.includes('工具失败 2 次') && joined.includes('pwsh ×2'),
+    joined.split('\n')[1] ?? '',
+  )
+  check('EZ 报文·行为: 没事故时一个字都不加（不污染正常反思）', M134.incidentLines(clean).length === 0)
+  const missingLabel = ['zh', 'en', 'pt-br'].filter((lg) => {
+    const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lg, 'labels.md'), 'utf8')
+    return !['incidentHead', 'incidentTools', 'incidentDetail', 'incidentTurnError', 'incidentCue', 'incidentAsk', 'unknownTool'].every((k) => t.includes(`- reflect.${k}:`))
+  })
+  check('EZ 三语: 事故文案七个键在 zh/en/pt-br 都在（用户换语言不炸成 undefined）', missingLabel.length === 0, missingLabel.join(',') || 'zh/en/pt-br 全在')
+
+  // 源码面：闸门真的走事故，且硬档留痕。
+  check(
+    'EZ 闸门·源码: 只碰过 memory_* 不再整轮免反思，阈值改由事故决定',
+    meowSrc134.includes('if (!sawNonMemory && INC.level === 0) return;') &&
+      meowSrc134.includes('if (!sawToolCall && INC.level === 0) return;') &&
+      meowSrc134.includes('const NEED = reflectNeed(INC, resolved.reflectTurns);') &&
+      meowSrc134.includes('incident=${INC.kinds.join(",") || "none"}'),
+  )
+  check('EZ 闸门·源码: 不再有「CUE 或 error 就 1 步」的二选一', !meowSrc134.includes('CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns'))
+  check(
+    'EZ 留痕·源码: 硬档往梦的账本里补一行事故（事后能查为什么这轮被叫醒）',
+    meowSrc134.includes('reflect incident=') && meowSrc134.includes('dream-debug.log'),
+  )
+
+  const pkg134 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'EZ 版本与文档一起走（9.140 / 146）',
+    pkg134.version.split('.').map((x) => Number(x))[2] >= 134 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.140 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 146 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

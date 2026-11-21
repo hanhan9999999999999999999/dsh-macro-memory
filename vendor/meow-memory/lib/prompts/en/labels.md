@@ -62,6 +62,13 @@
 - time.hours: {n} h ago
 - time.days: {n} d ago
 - reflect.noProjects: (none yet)
+- reflect.incidentHead: ⚠️ Something broke during this turn, so the plugin called this reflection itself (not a step-count cadence):
+- reflect.incidentTools: · {count} tool failure(s){detail}
+- reflect.incidentDetail:  ({detail})
+- reflect.incidentTurnError: · The turn ended in an error.
+- reflect.incidentCue: · The user used a correction or incident tone — something they do not want to see again may have just happened.
+- reflect.incidentAsk: Decide first: a real incident, or a blip that recovered on its own? A real incident gets a lesson (symptom → root cause → fix → how to notice it earlier next time); a blip gets folded into an existing entry instead of becoming new noise.
+- reflect.unknownTool: a tool
 - remember.error.content: memory_remember: content is required — add what you want remembered and try again
 - remember.error.project: memory_remember: project is required — use "{global}" for globally applicable information, or the project name (comma-separate several projects) — add it and try again
 - remember.error.keywords: memory_remember: keywords is required — give 8-13 content keywords for retrieval (don't use the project name as a keyword) — add them and try again

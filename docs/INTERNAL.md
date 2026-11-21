@@ -8041,3 +8041,79 @@ W vs A 净 +33（救 68 / 丢 35，p<0.0001）；N vs A 净 −4（p=0.8015）�
 - 三条补丁都是乘法，不改变候选集与截断顺序，`memory_search` schema 一个字节没动（仍 6,494 B / 上限 6,500 B）。
 - 回退：`fieldBoost:false` + `coord:false` + `lengthOnBody:false` 三项全关 = 0.2.132 的排序（探针断言 4/7 已覆盖）。
 - 反思闸门回退：git 回滚 `vendor/meow-memory/lib/index.js` 单文件，或者把 `sawNonMemory` 那一行换成旧的一票否决。
+
+## 9.140 反思不该等轮数：事故自己会说话（0.2.134）
+
+主人的原话是「记忆反思功能逻辑有缺陷，他应该在重大 bug 论要自己调用」（m103380），前两句是
+「不要注重于分数了」「你就不能真正对插件进行优化吗」（m103377 / m103378）。所以这一版没有碰
+检索、没有再跑一次评测：只改「什么时候该反思」这一件事。
+
+### 9.140.1 上一版还差什么
+
+0.2.133 把闸门从「最后一步是记忆工具就免反思」修开了，但触发面还是三样，全都不是事故本身：
+
+- `REFLECT_CUE` —— 用户骂人的语气。事故已经发生了、用户还没骂，就不反思；用户只是发火、其实没事，反而反思。
+- `endReason === "error"` —— 只有整轮崩掉才算。写坏一次库、同一个工具连挂三次、命令 exit 1，轮子是正常停的。
+- `consecutiveToolSteps(...) < NEED` —— 攒步数。长任务里的严重事故被「还没到第 7 步」挡回去，
+  短会话里的小失误到点却照样反思，正好反了。
+
+三样共同的问题：**它们都在数「做了多少」，而不是看「出了什么事」**。而事故是长在动作上的信号：
+工具结果带 `isError: true`。
+
+### 9.140.2 改法：把失败读进来，按严重程度分两档
+
+`scanTurn` 多扫一类事件、多记四个数：
+
+- `tool/call` 与 `assistant/message` 里的 `tool-call` 都记 `callId → 工具名`（有的宿主只给其一）。
+- `tool/result` 里 `message.isError === true` 计一次失败：`toolErrors++`；按工具名归并计 `failByTool`，
+  最大者记成 `worstFail` / `worstTool`；工具名以 `memory_` 开头的另计 `memoryErrors`。
+- 拿不到工具名（`toolCallId` 对不上、`data.name` 也没有）时用标签 `reflect.unknownTool`（「某个工具」）——
+  宁可说不出是谁，不能当没发生。
+
+判据 `incidentOf(turn, endReason)` 只认事件，给两档：
+
+| 档 | 条件 | NEED |
+| --- | --- | --- |
+| hard | 记忆工具自己挂了 / 整轮 `endReason === "error"` / 同一工具连挂 ≥2 次（`INCIDENT_RETRY`）/ 一轮挂 ≥3 次（`INCIDENT_BURST`）/ 主人用了纠正语气 | 1（当场） |
+| soft | 只零星挂了一次 | 3（`Math.min(INCIDENT_SOFT_NEED, cadence)`） |
+| none | 一个都没挂 | `reflectTurns`（照旧） |
+
+`reflectNeed` 的两条约束是刻意的：soft 只能「提前」不能「推后」（主人把 `reflectTurns` 调成 2 时
+不该因为一次小失败反而变成第 3 步）；cadence 写坏（0 / NaN）兜底 7，不猜。
+
+闸门那两行随之变成「没干过非记忆工具 **且** 没事故」才免反思，
+`const NEED = reflectNeed(INC, resolved.reflectTurns);`，日志带 `incident=<kinds>`，
+hard 档再往 `<ws>/.dsh-meow/dream-debug.log` 补一行 `reflect incident="..." errors= memoryErrors= worst=` ——
+事后能回答「这一轮为什么被叫醒」。
+
+### 9.140.3 反思报文要说清「谁叫的、挂了什么」
+
+反思是一句独立用户消息（`[meow-memory-reflect]`），原来只有固定提示词。事故触发时模型看到的和
+按轮数触发时一模一样，于是很容易把一次抖动当成事故、或者反过来。`incidentLines(incident)` 补三到五行：
+
+- 抬头：「⚠️ 这一轮出了事故，所以是插件自己把你叫来反思（不是攒够轮数）：」
+- 事实：「· 工具失败 2 次（pwsh ×2）」/「· 这一轮以错误收场」/「· 用户用了纠正或事故语气……」
+- 要求：「先判断：这是真事故，还是一次能自己恢复的抖动？真事故写 lesson（现象 → 根因 → 修法 → 下次怎么早发现）；
+  抖动把结论补进已有条目，别为它新建噪声。」
+
+无事故时 `incidentLines` 返回空数组，报文与 0.2.133 逐字一致（不污染正常反思）。
+七个新标签 `reflect.incidentHead` / `incidentTools` / `incidentDetail` / `incidentTurnError` /
+`incidentCue` / `incidentAsk` / `unknownTool` 在 zh / en / pt-br 三份 `labels.md` 都齐全；
+读标签一律走 `safeKeyed`（try/catch + 兜底中文），用户改过 `prompts` 覆盖目录缺键时不许把整轮反思炸掉。
+
+### 9.140.4 探针与断言
+
+- `tools/probe-fusion.mjs`：RI0–RI10（11 条，650 → 661）——合成事件测计数（成功的 tool/result 不算、
+  拿不到名字也计数）、归并排序只留前四、七种情形分级、三档阈值（1/3/7 与「soft 不推后」）、
+  报文三要素、无事故零行、三语标签齐全。
+- `verify.mjs`：EY 两条断言跟着新闸门改写；新增 EZ 段 13 条（行为 + 源码 + 文档口径），
+  1,289 → 1,302。
+
+### 9.140.5 没做的事与回退
+
+- 不做「事故自动写 lesson」：写什么、写到哪一层仍是模型的判断；插件只负责在正确的时刻把它叫醒，并
+  把事故事实递到手上。自动写入会把「抖动」也变成记忆噪声。
+- 不引入新的配置项：两档阈值是常量（3 / 2 / 3）。真需要调的时候先有证据，再加旋钮。
+- 回退：`vendor/meow-memory/lib/index.js` 单文件回滚，或把闸门两行换回
+  `if (!sawNonMemory) return;` + `const NEED = CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns;`
+  （标签多出来的七个键留着无害）。

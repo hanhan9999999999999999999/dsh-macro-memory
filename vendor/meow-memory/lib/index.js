@@ -5304,6 +5304,14 @@ function scanTurn(events) {
   let sawNonMemory = false;
   let lastToolName;
   let sawReflect = false;
+  // [macro-fusion 0.2.134] 事故信号：失败长在动作上，不在句子里。原来只看「用户骂人」和
+  // 「turn 以 error 结束」，于是写坏一次库、同一个工具连挂三次，都留不下任何痕迹。
+  let toolErrors = 0;
+  let memoryErrors = 0;
+  let worstFail = 0;
+  let worstTool;
+  const callNames = /* @__PURE__ */ new Map();
+  const failByTool = /* @__PURE__ */ new Map();
   const texts = [];
   const userTexts = [];
   for (let i = startIdx; i < events.length; i++) {
@@ -5326,6 +5334,8 @@ function scanTurn(events) {
           sawToolCall = true;
           lastToolName = block.name;
           if (!block.name.startsWith("memory_")) sawNonMemory = true;
+          const callId = block.id ?? block.callId;
+          if (typeof callId === "string") callNames.set(callId, block.name);
         } else if (block.type === "text" && block.text) {
           texts.push(block.text);
         }
@@ -5337,9 +5347,39 @@ function scanTurn(events) {
         lastToolName = name2;
         if (!name2.startsWith("memory_")) sawNonMemory = true;
       }
+    } else if (e?.type === "tool/call") {
+      const callId2 = e.data?.callId;
+      const name3 = e.data?.name;
+      if (typeof callId2 === "string" && typeof name3 === "string") callNames.set(callId2, name3);
+    } else if (e?.type === "tool/result") {
+      const res = e.data?.message;
+      if (res?.isError === true) {
+        toolErrors++;
+        const called = callNames.get(res.toolCallId);
+        const name4 = typeof called === "string" ? called : typeof e.data?.name === "string" ? e.data.name : keyedValue("labels", "reflect.unknownTool");
+        const seen = (failByTool.get(name4) ?? 0) + 1;
+        failByTool.set(name4, seen);
+        if (name4.startsWith("memory_")) memoryErrors++;
+        if (seen > worstFail) {
+          worstFail = seen;
+          worstTool = name4;
+        }
+      }
     }
   }
-  return { sawToolCall, sawNonMemory, lastToolName, sawReflect, turnText: texts.join("\n").slice(-2e3), userText: userTexts.join("\n").slice(-2e3) };
+  return {
+    sawToolCall,
+    sawNonMemory,
+    lastToolName,
+    sawReflect,
+    toolErrors,
+    memoryErrors,
+    worstFail,
+    worstTool,
+    failedTools: [...failByTool.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4),
+    turnText: texts.join("\n").slice(-2e3),
+    userText: userTexts.join("\n").slice(-2e3)
+  };
 }
 function consecutiveToolSteps(events) {
   let startIdx = 0;
@@ -5377,10 +5417,72 @@ var REFLECT_CUE = /(他妈|tmd|谁他妈|谁允许|擅自|不许|不允许|别�
 function reflectCueHit(text) {
   return REFLECT_CUE.test(String(text ?? "")) ? 1 : 0;
 }
-function buildReflectMessage(workspace, turnText, dir = ".dsh-meow") {
+// [macro-fusion 0.2.134] 反思由「发生了什么」触发，不由「攒了几步」触发。两档：
+//   hard（NEED=1，当场反思）：这一轮以错误收场 / 同一个工具连挂 ≥2 次 / 一轮挂 ≥3 次 /
+//                            记忆工具自己挂了（这条最重：是插件自己的 bug）/ 用户用了纠正语气。
+//   soft（NEED 压到 3）：只零星挂了一次——说明某处没按预期走，但不必当场打断任务。
+// 判据只认事件：干了很多活但一切正常不该反思，刚开个头就闯了祸必须反思。
+var INCIDENT_BURST = 3;
+var INCIDENT_RETRY = 2;
+var INCIDENT_SOFT_NEED = 3;
+function incidentOf(turn, endReason) {
+  const info = turn ?? {};
+  const toolErrors = Number(info.toolErrors ?? 0);
+  const memoryErrors = Number(info.memoryErrors ?? 0);
+  const worstFail = Number(info.worstFail ?? 0);
+  const cue = Number(info.cue ?? 0);
+  const kinds = [];
+  if (memoryErrors > 0) kinds.push("memory-error");
+  if (endReason === "error") kinds.push("turn-error");
+  if (worstFail >= INCIDENT_RETRY) kinds.push("retry-storm");
+  if (toolErrors >= INCIDENT_BURST) kinds.push("error-burst");
+  if (cue > 0) kinds.push("user-cue");
+  const base = {
+    toolErrors,
+    memoryErrors,
+    worstFail,
+    worstTool: info.worstTool,
+    failedTools: Array.isArray(info.failedTools) ? info.failedTools : []
+  };
+  if (kinds.length > 0) return { ...base, level: 2, kinds };
+  if (toolErrors > 0) return { ...base, level: 1, kinds: ["tool-error"] };
+  return { ...base, level: 0, kinds: [] };
+}
+function reflectNeed(incident, turns) {
+  const cadence = Number.isFinite(turns) && turns > 0 ? Math.floor(turns) : 7;
+  if ((incident?.level ?? 0) >= 2) return 1;
+  if ((incident?.level ?? 0) === 1) return Math.min(INCIDENT_SOFT_NEED, cadence);
+  return cadence;
+}
+// 事故文案走 labels，但用户改过 prompts 覆盖目录时缺键不许把整轮反思炸掉。
+function safeKeyed(key, fallback, params) {
+  let text = fallback;
+  try {
+    text = keyedValue("labels", key);
+  } catch {
+  }
+  return fillTemplate(text, params ?? {});
+}
+function incidentLines(incident) {
+  if (!incident || incident.level === 0) return [];
+  const lines = [safeKeyed("reflect.incidentHead", "\u26a0\ufe0f 这一轮出了事故，所以是插件自己把你叫来反思（不是攒够轮数）：")];
+  if (incident.toolErrors > 0) {
+    const detail = (incident.failedTools ?? []).map(([n, c]) => `${n} \u00d7${c}`).join("\u3001");
+    lines.push(safeKeyed("reflect.incidentTools", "\u00b7 工具失败 {count} 次{detail}", { count: incident.toolErrors, detail: detail ? safeKeyed("reflect.incidentDetail", "\uff08{detail}\uff09", { detail }) : "" }));
+  }
+  if (incident.kinds.includes("turn-error")) lines.push(safeKeyed("reflect.incidentTurnError", "\u00b7 这一轮以错误收场（endReason=error）。"));
+  if (incident.kinds.includes("user-cue")) lines.push(safeKeyed("reflect.incidentCue", "\u00b7 用户用了纠正或事故语气，可能刚发生了他不想再见到的事。"));
+  lines.push(safeKeyed("reflect.incidentAsk", "先判断：这是真事故，还是一次能自己恢复的抖动？真事故写 lesson（现象 \u2192 根因 \u2192 修法 \u2192 下次怎么早发现）；抖动把结论补进已有条目，别为它新建噪声。"));
+  return lines;
+}
+function buildReflectMessage(workspace, turnText, dir = ".dsh-meow", incident) {
   const db = getDb(workspace, dir);
   const prompt = resolveSlotText("reflect", { projectList: projectNamesText(db.listProjectNames()) });
-  const text = `${REFLECT_MARKER} ${prompt}`;
+  const head = `${REFLECT_MARKER} ${prompt}`;
+  const extra = incidentLines(incident);
+  const text = extra.length > 0 ? `${head}
+
+${extra.join("\n")}` : head;
   return createUserMessage2({ content: [{ type: "text", text }], source: PLUGIN_SOURCE });
 }
 function projectNamesText(projectNames) {
@@ -6772,21 +6874,25 @@ ${e.stack ?? ""}` : String(e)}
     if (!resolved.reflect) return;
     const ws = workspaceOfAgent(agent);
     if (!ws) return;
-    const { sawToolCall, sawNonMemory, lastToolName, sawReflect, turnText, userText } = scanTurn(sessionEventsOf(agent.session));
+    const turnInfo = scanTurn(sessionEventsOf(agent.session));
+    const { sawToolCall, sawNonMemory, lastToolName, sawReflect, turnText, userText } = turnInfo;
     if (sawReflect) {
       reflectQueuedTurn.delete(sidTs);
       return;
     }
     if (turn !== void 0 && reflectQueuedTurn.get(sidTs) === turn) return;
-    if (!sawToolCall) return;
+    const CUE = reflectCueHit(userText);
+    // [macro-fusion 0.2.134] 事故比「干了几步」优先：记忆工具自己挂了、或这一轮以错误收场时，
+    // 哪怕整轮只碰过 memory_*，也要当场反思——那正是最该被记住的一次。
+    const INC = incidentOf({ ...turnInfo, cue: CUE }, endReason);
+    if (!sawToolCall && INC.level === 0) return;
     // [macro-fusion 0.2.133] 老写法是「最后一步是 memory_* 就整轮免反思」——而一轮活干完，
     // 收尾那步几乎总是 memory_remember / memory_update。等于「刚把记忆写进去的那一轮，
     // 恰好不反思」，主人在 2026-11-21 明确点出了这个洞。改成只看整轮有没有非记忆的活。
-    if (!sawNonMemory) return;
-    const CUE = reflectCueHit(userText);
-    const NEED = CUE > 0 || endReason === "error" ? 1 : resolved.reflectTurns;
+    if (!sawNonMemory && INC.level === 0) return;
+    const NEED = reflectNeed(INC, resolved.reflectTurns);
     if (consecutiveToolSteps(sessionEventsOf(agent.session)) < NEED) return;
-    const message = buildReflectMessage(ws, turnText, resolved.projectDir);
+    const message = buildReflectMessage(ws, turnText, resolved.projectDir, INC);
     if (sendMemoryTurn(agent, message, ws, resolved.projectDir, `reflect sid=${shortSessionId(sidTs)}`)) {
       if (turn !== void 0) {
         reflectQueuedTurn.set(sidTs, turn);
@@ -6796,7 +6902,14 @@ ${e.stack ?? ""}` : String(e)}
           reflectQueuedTurn.delete(oldest);
         }
       }
-      ctx.logger.info(`meow-memory: reflect sent as standalone turn (cue=${CUE}, need=${NEED}, lastTool=${lastToolName ?? "none"})`);
+      if (INC.level >= 2) {
+        try {
+          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] reflect incident="${INC.kinds.join(",")}" errors=${INC.toolErrors} memoryErrors=${INC.memoryErrors} worst=${INC.worstTool ?? "-"}\u00d7${INC.worstFail} sid=${shortSessionId(sidTs)}
+`);
+        } catch {
+        }
+      }
+      ctx.logger.info(`meow-memory: reflect sent as standalone turn (cue=${CUE}, need=${NEED}, incident=${INC.kinds.join(",") || "none"}, lastTool=${lastToolName ?? "none"})`);
     } else {
       ctx.logger.warn("meow-memory: reflect \u53D1\u9001\u5931\u8D25\uFF08\u672C\u8F6E\u4E0D\u53CD\u601D\uFF0C\u4E0B\u8F6E\u91CD\u8BD5\uFF09");
     }
@@ -7214,6 +7327,8 @@ export {
   headerOf,
   homeDirPresets,
   hourInTimeZone,
+  incidentLines,
+  incidentOf,
   inject,
   isDreamSuppressed,
   isGlobalProject,
@@ -7252,6 +7367,7 @@ export {
   readWritten,
   recencyWeight,
   recoverInterruptedDream,
+  reflectNeed,
   registerCreatedWorkspace,
   registerMemoryTools,
   relativeTime,
