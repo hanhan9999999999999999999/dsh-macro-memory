@@ -124,14 +124,30 @@ const docsOf = () =>
   })
 check('R0 语料时间序：随手记比铁律旧（否则「按时间排」和「按相关度排」分不开）', (rowOf('casual')?.updated_at ?? 0) <= (rowOf('iron')?.updated_at ?? 1))
 
-// ── R1 相关度优先：第一条是最相关的，不是最旧的 ─────────────────────────────
+// ── R1 相关度优先：第一条是「正文里就在说这件事」的那条 ─────────────────────
+// [macro-fusion 0.2.152] 这条判据改过口径，改的理由记在这里：
+// 旧版断言「铁律（importance 4，只有 keywords 里提到『部署』）压过随手记（正文提三次）」，
+// 那是在关键词平铺进正文（+35% 字段加成）的旧打分下成立的——靠的正是 0.2.150 明令禁止的
+// 「先验越级」。0.2.152 把关键词降成标签（tf 打 0.25 折、候选资格保留）之后，铁律落在下一档，
+// impW 就再也翻不过去。于是改成显式口径：
+//   正文重复说这件事的排第一；只在 keywords 里提到它的，靠桥接进榜但排后面。
+// 这跟 0.2.150「证据先分档」一致：关键词是「用户会怎么问」的标签，不是「这条在讲什么」的证据。
+const explainOfR1 = (hits, key) => hits.find((h) => h.id === ids[key])?.explain
 const hitsR1 = (await call('memory_search', { query: '部署', explain: true, k: 10 })).hits
-check('R1 首条是最相关的（铁律），不是最旧的（随手记）', hitsR1[0]?.id === ids.iron, `${hitsR1[0]?.level} ${String(hitsR1[0]?.content ?? '').slice(0, 12)}`)
-check('R1 随手记仍在结果里（不是被挤没，只是排后面）', hitsR1.some((h) => h.id === ids.casual))
+check('R1 首条是正文就在说这件事的那条（措辞三次），不是只在关键词里提到它的铁律',
+  hitsR1[0]?.id === ids.casual, `${hitsR1[0]?.level} ${String(hitsR1[0]?.content ?? '').slice(0, 12)}`)
+check('R1 关键词桥接没断：只在 keywords 里提到「部署」的铁律仍在结果里，且 bm25 > 0',
+  hitsR1.some((h) => h.id === ids.iron) && (explainOfR1(hitsR1, 'iron')?.bm25 ?? 0) > 0,
+  `铁律 bm25=${explainOfR1(hitsR1, 'iron')?.bm25} 排名=${hitsR1.findIndex((h) => h.id === ids.iron) + 1}`)
 const scoresR1 = hitsR1.map((h) => h.score)
 check('R1 分数单调不增（排序真按分数，不是按时间）', scoresR1.every((v, i) => i === 0 || scoresR1[i - 1] >= v), scoresR1.join(' ≥ '))
-const byTime = [...hitsR1].sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0))
-check('R1 阴性对照：旧口径（updated_at 升序）排出来的第一条不是同一条', byTime[0]?.id !== hitsR1[0]?.id, `${String(byTime[0]?.content ?? '').slice(0, 12)}`)
+// 因果写清楚：铁律的先验不是「没算」，是算了也不够——impW 1.75 确实乘上去了，
+// 但关键词只做标签（tf 打 0.25 折）之后它的词分本来就低，先验抬不动这条差距。
+// 这正是 0.2.150 的规矩：先验可以决定同档谁先开口，不能决定谁有资格开口。
+const exIronR1c = explainOfR1(hitsR1, 'iron')
+check('R1 先验算了也没翻上去：铁律 impW 1.75 已生效，末尾仍是 0.97 < 榜首 1.83（差距来自词分，不是没算）',
+  exIronR1c?.importanceWeight === 1.75 && (exIronR1c?.score ?? 0) < (hitsR1[0]?.score ?? 0),
+  `iron impW=${exIronR1c?.importanceWeight} score=${exIronR1c?.score} / 榜首 ${hitsR1[0]?.score}`)
 
 // ── R2 重要度进分数 + explain 三因子 ───────────────────────────────────────
 const explainOf = (hits, key) => hits.find((h) => h.id === ids[key])?.explain
@@ -141,12 +157,29 @@ check('R2 importance=4 的乘数是 1.75', exIron?.importanceWeight === 1.75, St
 check('R2 importance=1 的乘数是 1', explainOf(hitsR1, 'casual')?.importanceWeight === 1, String(explainOf(hitsR1, 'casual')?.importanceWeight))
 const recomputed = hitsR1.map((h) => Math.round(h.explain.bm25 * h.explain.recencyWeight * h.explain.importanceWeight * 100) / 100)
 check('R2 score = bm25 × recencyWeight × importanceWeight（分项能还原总分）', recomputed.every((v, i) => Math.abs(v - hitsR1[i].score) <= 0.011), `${recomputed.join(',')} vs ${hitsR1.map((h) => h.score).join(',')}`)
-check('R2 铁律的 bm25 低于随手记，却靠重要度反超（不是靠措辞赢的）', exIron.bm25 <= (explainOf(hitsR1, 'casual')?.bm25 ?? Infinity), `${exIron.bm25} vs ${explainOf(hitsR1, 'casual')?.bm25}`)
+check('R2 铁律的 bm25 确实低于随手记（它是标签桥接进榜的，不是靠措辞赢的）', exIron.bm25 <= (explainOf(hitsR1, 'casual')?.bm25 ?? Infinity), `${exIron.bm25} vs ${explainOf(hitsR1, 'casual')?.bm25}`)
 
-// 阴性对照：把 importance 全抹平成 1，引擎自己就会把顺序翻过来。
-// 这条同时证明「R1 不是恒真的」——去掉这个补丁，同一个查询会给出另一个首条。
+// 阴性对照（0.2.152 重写）：原写法「importance 全抹平后首条翻成随手记」是 0.2.150 分档之前的契约——
+// 现在榜首本来就是随手记，抹平重要度也不会翻，那条断言已恒真（量不到东西）。改成量两件真事：
+// ①抹平后铁律的分数必须掉下来（先验确实在算）；②按时间升序摆一遍首条不是现在这条（排序不是按时间蒙对的）。
 const flat = V.search('部署', docsOf().map((d) => ({ ...d, importance: 1 })), { k: 10, explain: true })
-check('R2 阴性对照：importance 全抹平后首条翻成随手记', flat[0]?.id === ids.casual, `${flat[0]?.level} score=${flat[0]?.score}`)
+const flatIron = flat.find((h) => h.id === ids.iron)
+const ironScore = hitsR1.find((h) => h.id === ids.iron)?.score
+check('R2 阴性对照：抹平 importance 后铁律分数确实掉了（先验真在算，不是摆设）',
+  (flatIron?.score ?? 0) < (ironScore ?? 0) - 1e-9,
+  `抹平 ${flatIron?.score} vs 原 ${ironScore}`)
+// 时间序对照（0.2.152 重写）：R1 那两条里「随手记」恰好也是最旧的一条，时间序跟名次串重合——
+// 在这份语料上「按时间排会不同」量不出来。改用独立小语料：相关的新、无关的旧，
+// 真按时间升序会先把无关的旧条顶上来，而引擎给的是相关的新条。
+const T_A85 = [
+  { id: 't-old', level: 'fact', title: '', content: '数据库连接池的默认大小是八', keywords: [], importance: 4, status: 'active', created_at: 1, updated_at: 1000 },
+  { id: 't-new', level: 'fact', title: '', content: '连接池上限调错了会打满', keywords: [], importance: 1, status: 'active', created_at: 2, updated_at: 9e12 },
+]
+const tHits = V.search('连接池 上限', T_A85, { k: 2, explain: true })
+const tTime = T_A85.slice().sort((a, b) => a.updated_at - b.updated_at).map((d) => d.id)
+check('R2 阴性对照：相关的那条更新，按时间升序却会先给无关的旧条（排序不是按时间蒙对的）',
+  tHits[0]?.id === 't-new' && tTime[0] === 't-old',
+  `引擎首条 ${tHits[0]?.id} / 时间序首条 ${tTime[0]}`)
 
 // ── R3 加成不碾压：强相关只有一条时，沾边的高重要度进不来 ──────────────────
 const hitsR3 = (await call('memory_search', { query: '数据库连接池', k: 10 })).hits

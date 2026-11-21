@@ -2130,7 +2130,14 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 verbHay 为 null，后面整段跳过）
   const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
   if (q.length === 0 && idents.length === 0) return [];
-  const plainToks = docs.map((d) => tokenize(docText(d)));
+  // [macro-fusion 0.2.152] 关键词该是「字段」，不是「正文」：docText 把它们平铺成一个串，
+  // 于是一个词出现在 keywords（用户会怎么问的逆向词）和出现在正文里得分一模一样，
+  // 而本库条目正是「短正文 + 9 个关键词」——正文被稀释，虚词问句还能靠关键词里的短词硬凑。
+  // kwSeparate:true 时正文 BM25 只看 title + content，关键词只走字段加成（FIELD_KW_W）。
+  const dText = opts.kwSeparate === false
+    ? docText
+    : (d) => [String(d.title ?? ""), String(d.content ?? "")].join(" ");
+  const plainToks = docs.map((d) => tokenize(dText(d)));
   const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
   const docToks = sessTopics ? docs.map((d, i) => {
     const extra = sessTopics.get(d.source_session);
@@ -2148,14 +2155,28 @@ function search(query, docs, opts = {}) {
 
   const df = /* @__PURE__ */ new Map();
   const tf = [];
-  for (const toks of docToks) {
+  // [macro-fusion 0.2.152] 关键词的 tf 打折：正文（含标题）计数照算，关键词计数乘 kwTfW，
+  // df 取并集。这样「问句里的词只写在 keywords 里」仍然能桥接到那条记忆（候选资格不掉），
+  // 但关键词不会像平铺时那样和正文等价——9 个关键词不再稀释短正文、也不再让虚词问句硬凑回执。
+  const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25;
+  const kwToks = opts.kwSeparate === false ? null : docs.map((d) => (Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ""))));
+  for (let di = 0; di < docToks.length; di++) {
     const m = /* @__PURE__ */ new Map();
     const seen = /* @__PURE__ */ new Set();
-    for (const t of toks) {
+    for (const t of docToks[di]) {
       m.set(t, (m.get(t) ?? 0) + 1);
       if (!seen.has(t)) {
         seen.add(t);
         df.set(t, (df.get(t) ?? 0) + 1);
+      }
+    }
+    if (kwToks !== null) {
+      for (const t of kwToks[di]) {
+        m.set(t, (m.get(t) ?? 0) + kwTfW);
+        if (!seen.has(t)) {
+          seen.add(t);
+          df.set(t, (df.get(t) ?? 0) + 1);
+        }
       }
     }
     tf.push(m);
@@ -2170,7 +2191,9 @@ function search(query, docs, opts = {}) {
   // 另一个洞是加法式 BM25 没有覆盖度概念：命中一个词十次，能压过命中五个词各一次，而记忆调取
   // 要的恰恰是「这几个词都聊到了」。两条都可一键关（fieldBoost:false / coord:false），便于回退对照。
   const FIELD_TITLE_W = 0.6;
-  const FIELD_KW_W = 0.35;
+  // [macro-fusion 0.2.152] 关键词字段权重此前是写死的 0.35，而 0.2.133 上线时用的样张 keywords 全是空的——
+  // 这个常量从来没被量到过。现在尺子补真（keywords 均 9.2 个），先把它开成可测的旋钮，默认值不变。
+  const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : 0.35;
   const COORD_W = 0.35;
   const useField = opts.fieldBoost !== false;
   const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? "")))) : null;

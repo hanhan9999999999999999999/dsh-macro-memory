@@ -6353,10 +6353,14 @@ check(
     !!whenHit && whenHit.day === expectWhen(whenHit.updated_at),
     `${String(whenHit?.day ?? '空')} vs 期望 ${expectWhen(whenHit?.updated_at ?? 0)}`,
   )
+  // 判据写成「所有邻居行都不带分钟」而不是「↑ 行必须存在」：排名一变，榜首可能正好是会话第一条，
+  // 那么这条查询就只有 ↓ 邻居——旧写法会空转成假红（0.2.152 关键词权重改过之后就是这样）。
+  const nbLines = txTwo.split('\n').filter((l) => l.includes('\u2191') || l.includes('\u2193'))
+  const nbWithMinute = nbLines.filter((l) => l.includes('\u2191') || l.includes('\u2193')).filter((l) => /\d{4}-\d{2}-\d{2} \d{2}:\d{2} /.test(l))
   check(
     'DT5 邻居行只到天（不给每一行都加分钟，字省下来留给正文）',
-    /\u2191 \d{4}-\d{2}-\d{2} /.test(txTwo) && !/\u2191 \d{4}-\d{2}-\d{2} \d{2}:\d{2} /.test(txTwo),
-    (txTwo.split('\n').find((l) => l.includes('\u2191')) ?? '').slice(0, 60),
+    nbLines.length > 0 && nbLines.every((l) => /\d{4}-\d{2}-\d{2} /.test(l)) && nbWithMinute.length === 0,
+    `${nbLines.length} 条邻居行${nbLines.length > 0 ? '：' + nbLines[0].trim().slice(0, 40) : '（一条都没有，判据空转）'}`,
   )
   // TL0–TL3（0.2.129）：问句问时间时才印一行时间轴，编号与命中抬头同一套。
   const mkHit = (i, day, extra = {}) => ({
