@@ -9585,5 +9585,117 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── GV（0.2.145）：0.2.18 把每轮自动注入整段删了，检索退化成「模型想起来才查」——
+//    省了 token，也把记忆系统降级了。这一刀把「这一轮的话在星图里连着谁」自动带回来，
+//    但必须满足三条：不进 system prompt 前缀、每轮便宜且有上限、注入自己说明来路。
+{
+  const nbSrc = readFileSync(new URL('./lib/macro/neighbor.js', import.meta.url), 'utf8')
+  const nbMod = await import('./lib/macro/neighbor.js')
+  const idxSrc = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
+  check(
+    'GV 源码: 注入器只挂 agent/pre-step，一个字都不往 systemPrompt 里塞（前缀缓存不能碎）',
+    nbSrc.includes('export function createNeighborInjector(') &&
+      nbSrc.includes("ctx.on('agent/pre-step'") &&
+      !nbSrc.includes('systemPrompt'),
+  )
+  check(
+    'GV 源码: 追加在最后一条用户消息之后，原来的 messages 一条不动',
+    nbSrc.includes('return { ...decision, messages: [...messages, msg] }'),
+  )
+  check(
+    'GV 源码: 星图走 bridge.tryCall，不直接读 vendor；工具名是常量',
+    nbSrc.includes('bridge.tryCall(NEIGHBOR_TOOL') && nbSrc.includes("export const NEIGHBOR_TOOL = 'nebula_recall'"),
+  )
+  check(
+    'GV 源码: 注入消息自带来源标记（读者/宿主都能分清它不是用户说的）',
+    nbSrc.includes("export const NEIGHBOR_SOURCE_KIND = 'macro-memory:neighbor'") &&
+      nbSrc.includes('source: { kind: NEIGHBOR_SOURCE_KIND') &&
+      nbSrc.includes("form: 'notice'"),
+  )
+  check(
+    'GV 源码: 上限是常量而不是散落在逻辑里（4 条 / 420 字符 / 记 200 条已带过）',
+    nbMod.NEIGHBOR_DEFAULT_MAX === 4 && nbMod.NEIGHBOR_DEFAULT_CHARS === 420 && nbMod.NEIGHBOR_SEEN_MAX === 200,
+  )
+  check(
+    'GV 装配: lib/index.js 建了注入器，并把 dispose 挂进 cleanups',
+    idxSrc.includes('createNeighborInjector({') && idxSrc.includes('cleanups.push(() => neighbor.dispose())'),
+  )
+  check(
+    'GV 装配: 三个旋钮在 MACRO_DEFAULTS、MACRO_KEYS、Config 三处都齐',
+    idxSrc.includes('neighborInject: true') &&
+      /'neighborInject',\s*'neighborMax',\s*'neighborChars',/.test(idxSrc) &&
+      idxSrc.includes('neighborInject: z.boolean().default(') &&
+      idxSrc.includes('neighborMax: z.number().default(') &&
+      idxSrc.includes('neighborChars: z.number().default('),
+  )
+
+  const gvInternal = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const gvDesign = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'GV 文档: INTERNAL 9.151 与 DESIGN 157 在位，且 DESIGN 收在「记忆在场才是本事」上',
+    gvInternal.includes('## 9.151 ') && gvInternal.includes('### 9.151.5 失败不挡这一轮') &&
+      gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
+  )
+  check(
+    'GV 版本: 代码里是 0.2.145（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.145'"),
+  )
+
+  // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
+  const gvMake = (init) => ({ role: 'user', ...init })
+  const gvBridge = (text) => ({ tryCall: async () => ({ text }) })
+  const gvAgent = { session: { id: 'gv-sess', header: {} } }
+  const gvUser = {
+    role: 'user',
+    source: { kind: 'user' },
+    content: [{ type: 'text', text: '写入节流那个窗口后来怎么定的' }],
+  }
+  const gvDec = { kind: 'enter', messages: [gvUser] }
+  const gvRecall = ['1. [fact] dsh-macro-memory     强度 0.80 一条记忆', '  id: 0mgv0001'].join('\n')
+  const gvInj = nbMod.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: gvBridge(gvRecall),
+    config: {},
+    loadLlm: async () => ({ createUserMessage: gvMake }),
+  })
+  const gvOut = await gvInj.decide({ agent: gvAgent }, gvDec)
+  check(
+    'GV 行为: 追加而不是替换（原来那条仍是第一条、还是同一个对象）',
+    gvOut.messages.length === 2 && gvOut.messages[0] === gvUser,
+  )
+  check(
+    'GV 行为: 注入块开头就说「自动带来的」，收尾给读全文的办法',
+    String(gvOut.messages[1]?.content?.[0]?.text ?? '').includes('自动带来的') &&
+      String(gvOut.messages[1]?.content?.[0]?.text ?? '').includes('memory_read('),
+  )
+  const gvOff = nbMod.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: gvBridge(gvRecall),
+    config: { neighborInject: false },
+    loadLlm: async () => ({ createUserMessage: gvMake }),
+  })
+  check('GV 行为: 关掉开关连对象都不换（原样返回同一个 decision）', (await gvOff.decide({ agent: gvAgent }, gvDec)) === gvDec)
+  const gvSecond = await gvInj.decide({ agent: gvAgent }, gvDec)
+  check('GV 行为: 同一会话第二轮不再带同一条', gvSecond.messages.length === 1 && gvInj.stats().injected === 1)
+  const gvEmpty = nbMod.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: gvBridge('星图里没找到相关记忆'),
+    config: {},
+    loadLlm: async () => ({ createUserMessage: gvMake }),
+  })
+  check('GV 克制: 星图没东西时一个字都不注入', (await gvEmpty.decide({ agent: gvAgent }, gvDec)) === gvDec)
+  const gvBad = nbMod.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: {
+      tryCall: async () => {
+        throw new Error('星图挂了')
+      },
+    },
+    config: {},
+    loadLlm: async () => ({ createUserMessage: gvMake }),
+  })
+  check('GV 行为: 星图报错不挡这一轮（原样返回）', (await gvBad.decide({ agent: gvAgent }, gvDec)) === gvDec)
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

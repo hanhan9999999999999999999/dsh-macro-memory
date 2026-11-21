@@ -7278,6 +7278,225 @@ check(
   check('RU7b 中文标题确实是这一句', readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'zh', 'labels.md'), 'utf8').includes('- dream.repeat.title: 这轮写的东西，库里已经有了'), '')
 }
 
+// ── RV. 每轮星图邻域注入（0.2.145）────────────────────────────────────────
+{
+  const nb = await import(pathToFileURL(join(root, 'lib', 'macro', 'neighbor.js')).href)
+  // nebula_recall 的回执（真实形状见 fusion.js 的 NODE_HEAD / ID_LINE / WHY_LINE）
+  const recall = [
+    '星图邻域（1 跳，3 条）：',
+    '',
+    '1. [fact] dsh-macro-memory     强度 0.82 0.2.144 的交付态',
+    '  id: ws:0mwq3aa9',
+    '  为什么：同一条线',
+    '  摘要：交付态摘要',
+    '2. [lesson] dsh-macro-memory     强度 0.61 判空别只判 undefined',
+    '  id: 0mwq2ncq',
+    '3. [topic] 其他项目     强度 0.55 别的项目的一件事',
+    '  id: ws:0mabc123',
+  ].join('\n')
+
+  check(
+    'RV0 常量：一次最多 4 条 / 420 字符 / 少于 6 字符不猜 / 走 nebula_recall / 来源标 macro-memory:neighbor',
+    nb.NEIGHBOR_DEFAULT_MAX === 4 &&
+      nb.NEIGHBOR_DEFAULT_CHARS === 420 &&
+      nb.NEIGHBOR_MIN_QUERY === 6 &&
+      nb.NEIGHBOR_SEEN_MAX === 200 &&
+      nb.NEIGHBOR_TOOL === 'nebula_recall' &&
+      nb.NEIGHBOR_SOURCE_KIND === 'macro-memory:neighbor',
+    '',
+  )
+
+  // ── 取「这一轮用户说的话」：只看 source.kind === 'user'
+  const msgs = [
+    { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '上一轮的话' }] },
+    { role: 'user', source: { kind: 'macro-memory:neighbor' }, content: [{ type: 'text', text: '上一轮注入的东西' }] },
+    {
+      role: 'user',
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: '这一轮想找回以前那个写入节流怎么定的' }, { type: 'image' }],
+    },
+  ]
+  check(
+    'RV1 取最后一条用户消息的文本块（跳过自己注入的、跳过图片块）',
+    nb.neighborQueryOf(msgs) === '这一轮想找回以前那个写入节流怎么定的',
+    nb.neighborQueryOf(msgs),
+  )
+  check(
+    'RV1b 没有用户消息 / 空列表都给空串',
+    nb.neighborQueryOf([{ role: 'user', source: { kind: 'tool' } }]) === '' && nb.neighborQueryOf([]) === '',
+    '',
+  )
+
+  // ── 渲染
+  const blk = nb.neighborBlockOf(recall, { max: 4, chars: 420 })
+  check(
+    'RV2 渲染 3 条、标题自报来路、带强度与 8 位短 id、多前缀 id 认得出裸 id',
+    blk !== null &&
+      blk.ids.length === 3 &&
+      blk.text.startsWith('【星图邻域 · 自动带来的】') &&
+      blk.text.includes('- [fact] [0mwq3aa9]') &&
+      blk.text.includes('强度 0.82') &&
+      blk.ids[1] === '0mwq2ncq',
+    blk === null ? 'null' : blk.text.split('\n')[1],
+  )
+  check(
+    'RV2b 收尾给读全文的办法，并提醒别把摘要当原文',
+    blk !== null && blk.text.includes('memory_read("0mwq3aa9")') && blk.text.includes('别把上面的摘要当原文引用'),
+    '',
+  )
+  check('RV2c 上限生效：max=2 只带 2 条', (nb.neighborBlockOf(recall, { max: 2 })?.ids.length ?? 0) === 2, '')
+  check('RV2d max=0 一条都不带（回 null，不是空串）', nb.neighborBlockOf(recall, { max: 0 }) === null, '')
+  check(
+    'RV2e 空回执 / 解析不出节点都不注入',
+    nb.neighborBlockOf('', {}) === null && nb.neighborBlockOf('星图里没找到相关记忆', {}) === null,
+    '',
+  )
+  const tight = nb.neighborBlockOf(recall, { max: 4, chars: 120 })
+  check(
+    'RV2f 字符上限真的管用：120 字符只装得下 1 条，且整块不超限',
+    tight !== null && tight.ids.length === 1 && tight.text.length <= 120,
+    tight === null ? 'null' : `${tight.ids.length} 条 / ${tight.text.length} 字`,
+  )
+  const skipped = nb.neighborBlockOf(recall, { skip: ['0mwq3aa9'] })
+  check(
+    'RV3 带过的（裸 id 或 ws: 前缀都认）不再带',
+    skipped !== null && skipped.ids.length === 2 && !skipped.ids.includes('0mwq3aa9'),
+    skipped === null ? 'null' : skipped.ids.join(','),
+  )
+  check(
+    'RV3b 全都带过就什么都不注入',
+    nb.neighborBlockOf(recall, { skip: ['0mwq3aa9', '0mwq2ncq', '0mabc123'] }) === null,
+    '',
+  )
+
+  // ── 决策函数：追加在**后面**，前缀一个字节不动
+  const mkAgent = (origin) => ({ session: { id: 'rv-sess-1', header: { origin } } })
+  const mkUser = (text) => ({
+    role: 'user',
+    source: { kind: 'user' },
+    content: [{ type: 'text', text }],
+  })
+  const mkRt = (text, { throws = false } = {}) => {
+    const calls = []
+    const bridge = {
+      tryCall: async (name, args) => {
+        calls.push({ name, args })
+        if (throws) throw new Error('星图挂了')
+        return { text }
+      },
+    }
+    return { bridge, calls }
+  }
+  const mkCtx = () => {
+    const events = []
+    return {
+      events,
+      on: (name, handler) => {
+        events.push({ name, handler })
+        return () => events.push({ name: `${name}:disposed` })
+      },
+    }
+  }
+
+  const rt1 = mkRt(recall)
+  const ctx1 = mkCtx()
+  const inj1 = nb.createNeighborInjector({ ctx: ctx1, bridge: rt1.bridge, config: {}, logger: () => {} })
+  const base = { kind: 'enter', messages: [mkUser('写入节流那个窗口后来怎么定的')] }
+  const out1 = await inj1.decide({ agent: mkAgent('cli') }, base)
+  check(
+    'RV4 决定函数把邻域追加到末尾（原来的消息一条不动、顺序不变）',
+    out1.messages.length === 2 && out1.messages[0] === base.messages[0] && out1.messages[1] !== base.messages[0],
+    `${out1.messages.length} 条`,
+  )
+  check(
+    'RV4b 注入消息自带来路（source.kind + 摘要里说几条）',
+    out1.messages[1].source?.kind === nb.NEIGHBOR_SOURCE_KIND &&
+      String(out1.messages[1].source?.summary ?? '').includes('3'),
+    JSON.stringify(out1.messages[1].source ?? {}),
+  )
+  check(
+    'RV4c 查星图只带 query / limit=max+2 / hops=1',
+    rt1.calls.length === 1 &&
+      rt1.calls[0].name === 'nebula_recall' &&
+      rt1.calls[0].args.hops === 1 &&
+      rt1.calls[0].args.limit === 6 &&
+      typeof rt1.calls[0].args.query === 'string',
+    JSON.stringify(rt1.calls[0]?.args ?? {}),
+  )
+  check(
+    'RV4d 注入器挂在 agent/pre-step 上（只挂这一个事件）',
+    ctx1.events.length === 1 && ctx1.events[0].name === 'agent/pre-step' && typeof inj1.dispose === 'function',
+    ctx1.events.map((e) => e.name).join(','),
+  )
+
+  // 同一会话第二轮：同样的邻居不再带
+  const out2 = await inj1.decide({ agent: mkAgent('cli') }, base)
+  check(
+    'RV5 同一会话第二轮不重复带（这些 id 已经带过了）',
+    out2.messages.length === 1 && inj1.stats().skipped === 1 && inj1.stats().injected === 1,
+    JSON.stringify(inj1.stats()),
+  )
+
+  inj1.dispose()
+  check(
+    'RV5b dispose 真的把钩子摘了（不是空函数）',
+    ctx1.events.length === 2 && ctx1.events[1].name === 'agent/pre-step:disposed',
+    ctx1.events.map((e) => e.name).join(','),
+  )
+
+  // subagent 不注入
+  const rt2 = mkRt(recall)
+  const inj2 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt2.bridge, config: {}, logger: () => {} })
+  const out3 = await inj2.decide({ agent: mkAgent('subagent') }, base)
+  check('RV6 子代理会话不注入（它有自己的活要干）', out3.messages.length === 1 && rt2.calls.length === 0, '')
+
+  // 关掉开关
+  const rt3 = mkRt(recall)
+  const inj3 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt3.bridge, config: { neighborInject: false }, logger: () => {} })
+  const out4 = await inj3.decide({ agent: mkAgent('cli') }, base)
+  check('RV6b 关掉开关就一次都不查星图', out4.messages.length === 1 && rt3.calls.length === 0, '')
+
+  // 话太短不猜
+  const rt4 = mkRt(recall)
+  const inj4 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt4.bridge, config: {}, logger: () => {} })
+  const out5 = await inj4.decide({ agent: mkAgent('cli') }, { kind: 'enter', messages: [mkUser('嗯')] })
+  check('RV7 「嗯」「继续」这种不猜（短于 6 字符直接放过）', out5.messages.length === 1 && rt4.calls.length === 0, '')
+
+  // 星图挂了 / 空回执 / 取不到消息工厂：都不许挡住这一轮
+  const rt5 = mkRt(recall, { throws: true })
+  const inj5 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt5.bridge, config: {}, logger: () => {} })
+  const out6 = await inj5.decide({ agent: mkAgent('cli') }, base)
+  check('RV8 星图报错不影响这一轮（原样返回，记一笔 failed）', out6.messages.length === 1 && inj5.stats().failed === 1, JSON.stringify(inj5.stats()))
+
+  const rt6 = mkRt('星图里没找到相关记忆')
+  const inj6 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt6.bridge, config: {}, logger: () => {} })
+  const out7 = await inj6.decide({ agent: mkAgent('cli') }, base)
+  check('RV8b 空回执不注入（记一笔 skipped）', out7.messages.length === 1 && inj6.stats().skipped === 1, '')
+
+  const rt7 = mkRt(recall)
+  const inj7 = nb.createNeighborInjector({
+    ctx: mkCtx(),
+    bridge: rt7.bridge,
+    config: {},
+    logger: () => {},
+    loadLlm: async () => {
+      throw new Error('宿主里没有 dsh-llm')
+    },
+  })
+  const out8 = await inj7.decide({ agent: mkAgent('cli') }, base)
+  check('RV8c 取不到宿主消息工厂时也不抛（原样返回，记一笔 failed）', out8.messages.length === 1 && inj7.stats().failed === 1, '')
+
+  // 默认 loadLlm 走真 import：探针里由 registerHooks 指向 stub，能造出消息才说明运行时这条路通
+  const rt8 = mkRt(recall)
+  const inj8 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt8.bridge, config: {}, logger: () => {} })
+  const out9 = await inj8.decide({ agent: mkAgent('cli') }, base)
+  check(
+    'RV9 默认懒加载 @deepseek-ai/dsh-llm 能造出真消息（探针 stub 与宿主同形）',
+    out9.messages.length === 2 && out9.messages[1].role === 'user' && typeof out9.messages[1].content[0].text === 'string',
+    '',
+  )
+}
+
 for (const d of disposers) {
   try {
     d()
