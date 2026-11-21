@@ -2737,6 +2737,65 @@ function crossLevelNote(hit, db) {
   const shortId = db === undefined ? hit.id.slice(0, 8) : uniqueShortId(db, hit.level, hit.id);
   return `另一层已有几乎一样的条目（${hit.level} ${shortId}，重复度 ${Math.round(hit.sim * 100)}%）：这条照样写下了，但同一句话存两层，检索时两条会一起冒出来、白占名额。它们若本是一件事，用 memory_update 把其中一条 status 设 archived；若两层各有分工，把措辞写开一点。`;
 }
+// [macro-fusion 0.2.136] 写入侧的第三件事：既不是「重复」也不是「跨层」，是「同一件事的两个版本」。
+// 实测：0.2.132 / 0.2.133 / 0.2.134 / 0.2.135 四条交付态 fact，逐字重复度只有四成多——写侧不合并
+// （线是 0.8）、跨层也不管，于是库里并排躺着四条「当前版本是 X」。检索时模型读到哪条算数？没答案。
+// 这类不是措辞重复，是**结论互斥**，只能靠硬事实认出来：版本号（1.2.3）与日期（2026-11-21）。
+// 判据刻意窄：同层、两边都有 token、且 token 集合不同、且相似度过 0.3 —— 只报「它写 A，你这次写 B」，
+// 不说「可能相关」这种没有信息量的话。提醒不改库（写入照旧），出口是 supersedes / memory_update。
+var CONFLICT_SIM = 0.3;
+var CONFLICT_MAX = 3;
+var VERSION_TOKEN = /(?:^|[^\w.])(\d+\.\d+(?:\.\d+){0,2})(?![\w.])/g;
+var DATE_TOKEN = /(?:^|\D)(\d{4}-\d{2}-\d{2})(?!\d)/g;
+function factTokens(text) {
+  const s = String(text ?? "");
+  const versions = /* @__PURE__ */ new Set();
+  const dates = /* @__PURE__ */ new Set();
+  let m;
+  VERSION_TOKEN.lastIndex = 0;
+  while (m = VERSION_TOKEN.exec(s)) versions.add(m[1]);
+  DATE_TOKEN.lastIndex = 0;
+  while (m = DATE_TOKEN.exec(s)) dates.add(m[1]);
+  return { versions, dates };
+}
+function tokenDiff(a, b) {
+  const only = (x, y) => [...x].filter((v) => !y.has(v));
+  const mineV = only(a.versions, b.versions);
+  const mineD = only(a.dates, b.dates);
+  const theirsV = only(b.versions, a.versions);
+  const theirsD = only(b.dates, a.dates);
+  if (mineV.length > 0 && theirsV.length > 0) return { kind: "\u7248\u672C", mine: mineV, theirs: theirsV };
+  if (mineD.length > 0 && theirsD.length > 0) return { kind: "\u65E5\u671F", mine: mineD, theirs: theirsD };
+  return null;
+}
+function conflictCandidates(rows, content, project, limit = CONFLICT_MAX) {
+  const mine = factTokens(content);
+  const proj = typeof project === "string" ? project.trim() : "";
+  const out = [];
+  for (const r of rows) {
+    const rowProj = typeof r.project === "string" ? r.project.trim() : "";
+    if (proj.length > 0 && rowProj.length > 0 && rowProj !== proj) continue;
+    const sim = similarity(r.content, content);
+    if (sim < CONFLICT_SIM) continue;
+    const d = tokenDiff(mine, factTokens(r.content));
+    if (!d) continue;
+    out.push({ id: r.id, level: r.level, sim: Math.round(sim * 1e3) / 1e3, kind: d.kind, mine: d.mine, theirs: d.theirs });
+  }
+  out.sort((a, b) => b.sim - a.sim);
+  return out.slice(0, limit);
+}
+function conflictWarn(list, db) {
+  if (!Array.isArray(list) || list.length === 0) return "";
+  const items = list.map((c) => {
+    let short = String(c.id ?? "").slice(0, 8);
+    try {
+      if (db !== void 0) short = uniqueShortId(db, c.level, c.id);
+    } catch {
+    }
+    return `${c.level} ${short}\uFF08${c.kind}\uFF1A\u5B83\u5199 ${c.theirs.join("/")}\uFF0C\u4F60\u8FD9\u6B21\u5199 ${c.mine.join("/")}\uFF09`;
+  });
+  return `\u26A0\uFE0F \u5E93\u91CC\u5DF2\u6709\u540C\u4E00\u4EF6\u4E8B\u7684\u53E6\u4E00\u79CD\u8BF4\u6CD5\uFF1A${items.join("\uFF1B")}\u3002\u8FD9\u6761\u7167\u6837\u5199\u4E0B\u4E86\u2014\u2014\u4F46\u5982\u679C\u5B83\u5DF2\u88AB\u8FD9\u6B21\u7684\u4FE1\u606F\u53D6\u4EE3\uFF0C\u6B63\u786E\u505A\u6CD5\u662F\u7ED9\u5B83\u4EEC\u4F20 supersedes\uFF08\u6216 memory_update \u628A status \u8BBE stale\uFF0C\u4E0D\u5220\u3001\u53EF\u53CD\u6094\uFF09\uFF0C\u522B\u8BA9\u4E24\u4E2A\u7248\u672C\u5E76\u6392\u8EBA\u5728\u5E93\u91CC\uFF1B\u82E5\u8BF4\u7684\u662F\u4E0D\u540C\u5BF9\u8C61\uFF0C\u5FFD\u7565\u8FD9\u6761\u63D0\u9192\u3002`;
+}
 function foldNearDupes(hits) {
   const kept = [];
   let folded = 0;
@@ -2941,6 +3000,7 @@ function rememberTool(dir) {
       });
       markWritten(workspace, source_session ?? "unknown", [row.id], dir);
       const crossNote = crossLevelNote(crossLevelDupe(db, level, content), db);
+      const conflictNote = conflictWarn(conflictCandidates(existing, content, project), db);
       return {
         ok: true,
         id: row.id,
@@ -2949,7 +3009,7 @@ function rememberTool(dir) {
         keywords: row.keywords,
         ...row.project ? { project: row.project } : {},
         dropped,
-        note: noteOf(crossNote)
+        note: noteOf([crossNote, conflictNote].filter((s) => s.length > 0).join("\n"))
       };
     },
     presentCall(args) {
@@ -7518,6 +7578,9 @@ export {
   dreamSweepTick,
   dshHomeDir,
   enableWorkspaceTrust,
+  conflictCandidates,
+  conflictWarn,
+  factTokens,
   factoryDefaultOf,
   fillTemplate,
   findSimilar,

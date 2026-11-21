@@ -6540,6 +6540,114 @@ check(
   }
 }
 
+// RK0-RK9（0.2.136）：库里躺着四条「当前版本是 X」——重复度不够合并、层也不同，检索时没人知道哪条算数。
+// 这类不是措辞重复，是结论互斥：靠版本号 / 日期这两个硬事实认出来，写进去照旧，但回执点名「它写 A 你写 B」。
+{
+  const rkWs = mkdtempSync(join(tmpdir(), 'meow-conflict-'))
+  Meow.trustWorkspace(rkWs)
+  const rkExec = { agent: { session: { header: { cwd: rkWs, id: 'sess-conflict' } } } }
+  const rkRun = (name, args) => tools.get(name).execute(args, rkExec)
+  const rkText = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+  const rkKw = ['冲突探针', '版本', '交付态', '断言数', '记忆写入', '冲突雷达', '硬事实', '版本号', '日期', '探针']
+  const rkOld = await rkRun('memory_remember', {
+    content: '冲突探针甲：0.2.132 交付态，check-all 21/21、合计 2,530 条断言。',
+    project: '探针冲突',
+    keywords: rkKw,
+    importance: 2,
+    level: 'fact',
+  })
+  check('RK0 写入：旧版本那条先落库，此时没人可冲突', rkText(rkOld).includes('记忆已写入') && !rkText(rkOld).includes('另一种说法'), rkText(rkOld).split('\n')[0])
+  const rkNew = await rkRun('memory_remember', {
+    content: '冲突探针甲：0.2.135 交付态，check-all 21/21、合计 2,606 条断言。',
+    project: '探针冲突',
+    keywords: rkKw,
+    importance: 2,
+    level: 'fact',
+  })
+  const rkNewText = rkText(rkNew)
+  check('RK1 冲突：同一件事写了新版本，回执点名「另一种说法」', rkNewText.includes('另一种说法'), rkNewText.split('\n')[0])
+  check(
+    'RK2 冲突：把两边的版本号并排报出来（它写 0.2.132，你写 0.2.135）',
+    rkNewText.includes('0.2.132') && rkNewText.includes('0.2.135') && rkNewText.includes('版本'),
+    rkNewText.slice(0, 200).replace(/\n/g, ' / '),
+  )
+  check('RK3 冲突：告诉人怎么收场（supersedes / stale），不是只提醒不给出路', rkNewText.includes('supersedes') && rkNewText.includes('stale'))
+  check('RK4 冲突：提醒不改写入行为（新条目照样落库）', rkNewText.includes('记忆已写入'))
+  const rkOther = rkRun('memory_remember', {
+    content: '冲突探针乙：另一个项目里写的 0.2.140 交付态，check-all 21/21、合计 2,700 条断言。',
+    project: '探针别的项目',
+    keywords: [...rkKw, '别的项目'],
+    importance: 1,
+    level: 'fact',
+  })
+  check('RK5 冲突：项目不同就不算同一件事（跨项目不打扰）', !rkText(await rkOther).includes('另一种说法'))
+  const rkDate = await rkRun('memory_remember', {
+    content: '冲突探针丙：复盘会定在 2026-11-02，结论是账本要看 24 小时窗。',
+    project: '探针冲突',
+    keywords: [...rkKw, '复盘', '日期'],
+    importance: 1,
+    level: 'fact',
+  })
+  const rkDate2 = await rkRun('memory_remember', {
+    content: '冲突探针丙：复盘会改到 2026-11-09，结论是账本要看 24 小时窗。',
+    project: '探针冲突',
+    keywords: [...rkKw, '复盘', '日期'],
+    importance: 1,
+    level: 'fact',
+  })
+  const rkDateText = rkText(rkDate2)
+  check(
+    'RK6 冲突：日期也是硬事实（会议从 11-02 改到 11-09 要被认出来）',
+    rkDateText.includes('日期') && rkDateText.includes('2026-11-02') && rkDateText.includes('2026-11-09'),
+    rkDateText.slice(0, 200).replace(/\n/g, ' / '),
+  )
+  const rkNoTok = await rkRun('memory_remember', {
+    content: '冲突探针丁：反思这条线要按事故分级、跨轮记账、事后验收，三段都要。',
+    project: '探针冲突',
+    keywords: [...rkKw, '反思线'],
+    importance: 1,
+    level: 'fact',
+  })
+  const rkNoTok2 = await rkRun('memory_remember', {
+    content: '冲突探针丁：反思这条线要按事故分级、跨轮记账、事后验收，三段都要——这次补上「抖动别留痕」。',
+    project: '探针冲突',
+    keywords: [...rkKw, '反思线'],
+    importance: 1,
+    level: 'fact',
+  })
+  check(
+    'RK7 抗噪：没有版本号 / 日期的近似说法不报冲突（闲聊不该被拦）',
+    !rkText(rkNoTok2).includes('另一种说法') && rkText(rkNoTok).length > 0,
+    rkText(rkNoTok2).split('\n')[0],
+  )
+  const rkRows = [
+    { id: 'aaaaaaaa1111', level: 'fact', project: 'p', content: '0.2.132 交付态 check-all 21/21 合计 2,530 条断言' },
+    { id: 'bbbbbbbb2222', level: 'fact', project: 'p', content: '0.2.129 交付态 check-all 19/19 合计 2,400 条断言' },
+    { id: 'cccccccc3333', level: 'fact', project: 'p', content: '0.2.141 交付态 check-all 22/22 合计 2,700 条断言' },
+    { id: 'dddddddd4444', level: 'fact', project: 'p', content: '0.2.150 交付态 check-all 23/23 合计 2,800 条断言' },
+    { id: 'eeeeeeee5555', level: 'fact', project: 'p', content: '今天海面很平静，风从东边来' },
+  ]
+  const rkCand = Meow.conflictCandidates(rkRows, '0.2.135 交付态 check-all 21/21 合计 2,606 条断言', 'p')
+  check('RK8 上限：最多点名 3 条（不能让回执变成一堵墙）', rkCand.length === 3, String(rkCand.length))
+  check('RK9 排序：相似度高的排前面', rkCand.every((c, i) => i === 0 || rkCand[i - 1].sim >= c.sim), rkCand.map((c) => c.sim).join(','))
+  const rkTok = Meow.factTokens('0.2.120 到 0.2.135，日期 2026-11-21 与 2026-11-02')
+  check(
+    'RK10 抽取：多个版本号与日期都认得（不只看第一个）',
+    rkTok.versions.size === 2 && rkTok.dates.size === 2,
+    `${[...rkTok.versions].join('/')} | ${[...rkTok.dates].join('/')}`,
+  )
+  const rkSrc = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  check(
+    'RK11 源码：判据写成常量（相似度门槛、点名上限），不是散在逻辑里的魔法数',
+    rkSrc.includes('var CONFLICT_SIM = 0.3;') && rkSrc.includes('var CONFLICT_MAX = 3;'),
+  )
+  try {
+    rmSync(rkWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
 for (const d of disposers) {
   try {
     d()

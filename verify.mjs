@@ -9180,5 +9180,79 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// ── FB 写入侧的冲突雷达（0.2.136）：库里躺两条「当前版本是 X」时，谁说哪条算数？
+{
+  const meowPath136 = join(root, 'vendor', 'meow-memory', 'lib', 'index.js')
+  const meowSrc136 = readFileSync(meowPath136, 'utf8')
+  const M136 = await import(pathToFileURL(meowPath136).href)
+
+  const tok = M136.factTokens('0.2.120 到 0.2.135，日期 2026-11-21 与 2026-11-02')
+  check('FB 抽取: 多个版本号都认得（不只看第一个）', tok.versions.size === 2 && tok.versions.has('0.2.120') && tok.versions.has('0.2.135'))
+  check('FB 抽取: 多个日期都认得', tok.dates.size === 2 && tok.dates.has('2026-11-21') && tok.dates.has('2026-11-02'))
+  const tokPlain = M136.factTokens('check-all 21/21、合计 2,606 条断言、用时 192.9s')
+  check('FB 抽取: 断言数与耗时不算版本号（21/21、192.9s 不该冒充结论）', tokPlain.versions.size === 0 && tokPlain.dates.size === 0)
+
+  const rows136 = [
+    { id: 'aaaaaaaa1111', level: 'fact', project: 'p', content: '0.2.132 交付态 check-all 21/21 合计 2,530 条断言' },
+    { id: 'bbbbbbbb2222', level: 'fact', project: 'p', content: '0.2.129 交付态 check-all 19/19 合计 2,400 条断言' },
+    { id: 'cccccccc3333', level: 'fact', project: 'p', content: '0.2.141 交付态 check-all 22/22 合计 2,700 条断言' },
+    { id: 'dddddddd4444', level: 'fact', project: 'p', content: '0.2.150 交付态 check-all 23/23 合计 2,800 条断言' },
+    { id: 'eeeeeeee5555', level: 'fact', project: 'p', content: '今天海面很平静，风从东边来' },
+  ]
+  const cand = M136.conflictCandidates(rows136, '0.2.135 交付态 check-all 21/21 合计 2,606 条断言', 'p')
+  check('FB 识别: 同一件事的新版本被认出来（kind=版本）', cand.length > 0 && cand[0].kind === '版本', JSON.stringify(cand[0] ?? null))
+  check('FB 识别: 两边的版本号都带着（它写 0.2.132 / 你写 0.2.135）', cand[0]?.theirs.includes('0.2.132') === true && cand[0]?.mine.includes('0.2.135') === true)
+  check('FB 上限: 最多点名 3 条（回执不许变成一堵墙）', cand.length === 3, String(cand.length))
+  check('FB 排序: 相似度高的排前面', cand.every((c, i) => i === 0 || cand[i - 1].sim >= c.sim), cand.map((c) => c.sim).join(','))
+  check(
+    'FB 隔离: 别的项目不算同一件事',
+    M136.conflictCandidates([{ id: 'x1', level: 'fact', project: '别的项目', content: '0.2.132 交付态 check-all 21/21' }], '0.2.135 交付态 check-all 21/21', 'p').length === 0,
+  )
+  check(
+    'FB 抗噪: 没有版本号 / 日期的近似说法不报',
+    M136.conflictCandidates([{ id: 'x2', level: 'fact', project: 'p', content: '反思线要按事故分级、跨轮记账、事后验收' }], '反思线要按事故分级、跨轮记账、事后验收，另外补上抖动别留痕', 'p').length === 0,
+  )
+  check(
+    'FB 抗噪: 相似度不到门槛（只是同话题）不报',
+    M136.conflictCandidates([{ id: 'x3', level: 'fact', project: 'p', content: '0.2.132 的账本容量是 200 行' }], '0.2.135 的海报配色改成深蓝，尾巴要留白', 'p').length === 0,
+  )
+  const dateCand = M136.conflictCandidates(
+    [{ id: 'y1', level: 'fact', project: 'p', content: '复盘会定在 2026-11-02，结论是账本看 24 小时窗' }],
+    '复盘会改到 2026-11-09，结论是账本看 24 小时窗',
+    'p',
+  )
+  check('FB 日期: 会议改期也算结论互斥（kind=日期）', dateCand.length === 1 && dateCand[0].kind === '日期', JSON.stringify(dateCand[0] ?? null))
+
+  const warn = M136.conflictWarn(cand)
+  check('FB 回执: 说清是哪件事、哪两个值', warn.includes('另一种说法') && warn.includes('0.2.132') && warn.includes('0.2.135'))
+  check('FB 回执: 给出收场办法（supersedes / stale），不是只提醒', warn.includes('supersedes') && warn.includes('stale'))
+  check('FB 回执: 没冲突时一个字都不加', M136.conflictWarn([]) === '')
+
+  check(
+    'FB 源码: 门槛与上限写成常量（不是散在逻辑里的魔法数）',
+    meowSrc136.includes('var CONFLICT_SIM = 0.3;') && meowSrc136.includes('var CONFLICT_MAX = 3;'),
+  )
+  check(
+    'FB 源码: 冲突检查挂在「新写一条」那条路上，且用的是同层同项目的候选',
+    meowSrc136.includes('const conflictNote = conflictWarn(conflictCandidates(existing, content, project), db);'),
+  )
+  check(
+    'FB 源码: 合并分支不重复报（合并已经处理了旧条目，再报冲突是噪声）',
+    meowSrc136.indexOf('const mergeNote = applyMerge(') < meowSrc136.indexOf('const conflictNote = conflictWarn('),
+  )
+  check(
+    'FB 源码: 回执把跨层提醒与冲突提醒都带上',
+    meowSrc136.includes('note: noteOf([crossNote, conflictNote].filter((s) => s.length > 0).join("\\n"))'),
+  )
+
+  const pkg136 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'FB 版本与文档一起走（9.142 / 148）',
+    pkg136.version.split('.').map((x) => Number(x))[2] >= 136 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.142 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 148 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
