@@ -409,6 +409,50 @@ check(
   `开 ${vbIds(vbKwOn)} / 关 ${vbKwOff.length} 条`,
 )
 
+// ── VX（0.2.148）：补分的单位跟着榜走 —— 指认不许被别人的重要性稀释 ────────────
+// 0.2.147 把补分加进 raw，于是它会被每条自己的 importance / 新鲜度 / 状态权重再乘一遍：
+// 一条 importance=4 的措辞命中（impW 1.75）就把「问的正是这条 id」压下去（实测 17.96 对 16.16）。
+// 这里量的是：补分落在加权之后，单位取榜首的实际分数；指认在同量级里压得住措辞命中。
+const vxDoc = (id, content, imp, sess) => ({ ...mkDoc(id, content, sess), importance: imp })
+const VX_DOCS = [
+  vxDoc('0mzz9abc1-aaaa', '这一条正文里没有半个标识符，只讲交付态。', 1, 's-x1'),
+  vxDoc('loud', '改了什么 措辞更像那一条，而且重要度写得很高。', 4, 's-x2'),
+]
+const VX_Q = '0mzz9abc1 是什么'
+const vxOn = V.search(VX_Q, VX_DOCS, { k: 8, explain: true })
+const vxOff = V.search(VX_Q, VX_DOCS, { k: 8, verbatim: false })
+check(
+  'VX1 指认压得住重要性：问一条短 id 时，那条即使 importance=1 也排第 1（措辞命中的是 4 分也没用）',
+  vxOn[0]?.id === '0mzz9abc1-aaaa',
+  vxOn.map((h) => `${h.id}@${h.score.toFixed(2)}`).join(' '),
+)
+check(
+  'VX2 补分落在加权之后：该条 score 与 identBonus 逐位相同（若先补分再乘权重，会差一个新鲜度系数）',
+  Math.abs((vxOn[0]?.score ?? 0) - (vxOn[0]?.explain?.identBonus ?? -1)) < 2e-3,
+  `score=${vxOn[0]?.score} bonus=${vxOn[0]?.explain?.identBonus}`,
+)
+check(
+  'VX3 阴性对照：verbatim:false 时那条连候选都没有（措辞命中重新占榜首，说明补分就是翻盘的那一手）',
+  vxOff[0]?.id === 'loud' && !vxOff.some((h) => h.id === '0mzz9abc1-aaaa'),
+  vxOff.map((h) => h.id).join(',') || '0 条',
+)
+check(
+  'VX4 单位跟着榜走：补分 = 榜首分数 × 权重（1.5 指认 / 0.6 一般），不是词分最大值',
+  Math.abs((vxOn[0]?.explain?.identBonus ?? 0) - (vxOn[1]?.score ?? 0) * 1.5) < 2e-3,
+  `bonus=${vxOn[0]?.explain?.identBonus} 榜首措辞分=${vxOn[1]?.score}`,
+)
+const vxKw = V.keywordHitScore(VX_Q, VX_DOCS, { k: 5 })
+check(
+  'VX5 另一支打分器同口径：keywordHitScore 也把被指认那条排在第 1',
+  vxKw[0]?.id === '0mzz9abc1-aaaa',
+  vxKw.map((h) => h.id).join(',') || '0 条',
+)
+check(
+  'VX6 临时字段不外漏：回执里不该出现 _vb（补完就摘，别把内部证据塞给读的人）',
+  vxOn.every((h) => h._vb === undefined),
+  JSON.stringify(Object.keys(vxOn[0] ?? {})),
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

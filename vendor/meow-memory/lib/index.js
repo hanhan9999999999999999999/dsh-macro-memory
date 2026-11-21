@@ -2146,20 +2146,11 @@ function search(query, docs, opts = {}) {
     }
     return s;
   });
-  // [macro-fusion 0.2.147] 标识符补分：原样命中是与词命中同量纲的独立证据，走加法而不是乘号
-  // （乘号要靠赌「翻得过来」，而 BM25 的分布本来就没有可比刻度）。全命中值六成最高分；
-  // 命中的是这条记忆的 id 时值一个半。加法同时把「BM25 为 0 但原样命中」那一类拉进候选集。
-  const identBase = Math.max(...raw);
+  // [macro-fusion 0.2.148] 标识符补分挪到「加权之后」：补分以前进 raw，会被每条自己的
+  // importance / 新鲜度 / 状态权重再乘一遍——于是一条 impW=1.75 的措辞命中能把「问的正是这条 id」
+  // 压下去（实测问 0mwq5zzv：措辞那条 17.96，被指认那条只有 16.16）。指认是同义反复的最高形态，
+  // 不该被别人的重要性稀释：先算完整分数，再按榜首的一个单位补上去（单位跟着榜走，不跟着词分走）。
   const baseRaw = raw.slice();
-  if (verbHay !== null) {
-    const unitRaw = identBase > 0 ? identBase : 1;
-    for (let di = 0; di < docs.length; di++) {
-      const vb = rawVerbatim[di];
-      if (vb === null) continue;
-      const idHit = vb.matched.some((t) => String(docs[di].id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
-      raw[di] += unitRaw * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
-    }
-  }
   const maxRaw = Math.max(...raw);
   const hits = [];
   // [macro-fusion 0.2.85] importance 以前只用来「豁免时间衰减」，从不进分数：一条 importance=4 的
@@ -2173,7 +2164,7 @@ function search(query, docs, opts = {}) {
     return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
   };
   for (let di = 0; di < docs.length; di++) {
-    if (raw[di] <= 0) continue;
+    if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
     let w = 1;
     if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
       w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
@@ -2181,6 +2172,7 @@ function search(query, docs, opts = {}) {
     const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
     const stW = statusWeight(docs[di].status);
     hits.push({
+      _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
       id: docs[di].id,
       level: docs[di].level,
       title: docs[di].title,
@@ -2196,8 +2188,24 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice(), identBonus: Math.round((raw[di] - baseRaw[di]) * 1e3) / 1e3 }), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
+  }
+  // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
+  // importance 更高的措辞命中不会再把它压下去；摘掉临时挂的原样证据，别让它漏进回执。
+  if (verbHay !== null) {
+    let topScore = 0;
+    for (const h of hits) if (h.score > topScore) topScore = h.score;
+    const unitScore = topScore > 0 ? topScore : 1;
+    for (const h of hits) {
+      const vb = h._vb;
+      delete h._vb;
+      if (vb === void 0 || vb === null) continue;
+      const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
+      const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
+      h.score += add;
+      if (h.explain !== void 0) h.explain.identBonus = Math.round(add * 1e3) / 1e3;
+    }
   }
   hits.sort((a, b2) => b2.score - a.score);
   return hits.slice(0, k);
@@ -2241,24 +2249,11 @@ function keywordHitScore(query, docs, opts = {}) {
     }
     return s;
   });
-  // [macro-fusion 0.2.147] 标识符补分：原样命中是与词命中同量纲的独立证据，走加法而不是乘号
-  // （乘号要靠赌「翻得过来」，而 BM25 的分布本来就没有可比刻度）。全命中值六成最高分；
-  // 命中的是这条记忆的 id 时值一个半。加法同时把「BM25 为 0 但原样命中」那一类拉进候选集。
-  const identBase = Math.max(...raw);
-  const baseRaw = raw.slice();
-  if (verbHay !== null) {
-    const unitRaw = identBase > 0 ? identBase : 1;
-    for (let di = 0; di < docs.length; di++) {
-      const vb = rawVerbatim[di];
-      if (vb === null) continue;
-      const idHit = vb.matched.some((t) => String(docs[di].id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
-      raw[di] += unitRaw * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
-    }
-  }
+  // [macro-fusion 0.2.148] 补分挪到加权之后（同 search 口径：指认不该被重要性稀释）
   const maxRaw = Math.max(...raw);
   const out = [];
   for (let di = 0; di < docs.length; di++) {
-    if (raw[di] <= 0) continue;
+    if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
     const len = docToks[di].length;
     let overlap = 0;
     for (const t of qTf.keys()) if (tf[di].has(t)) overlap++;
@@ -2271,6 +2266,7 @@ function keywordHitScore(query, docs, opts = {}) {
     const stW = statusWeight(docs[di].status);
     const titleHit = tokenize(docs[di].title ?? "").some((t) => qTf.has(t));
     out.push({
+      _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
       id: docs[di].id,
       level: docs[di].level,
       title: docs[di].title,
@@ -2279,6 +2275,19 @@ function keywordHitScore(query, docs, opts = {}) {
       updated_at: docs[di].updated_at,
       score: raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)
     });
+  }
+  // [macro-fusion 0.2.148] 与 search 同口径：单位取榜首实际分数，补完再排序。
+  if (verbHay !== null) {
+    let topScore = 0;
+    for (const h of out) if (h.score > topScore) topScore = h.score;
+    const unitScore = topScore > 0 ? topScore : 1;
+    for (const h of out) {
+      const vb = h._vb;
+      delete h._vb;
+      if (vb === void 0 || vb === null) continue;
+      const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
+      h.score += unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
+    }
   }
   out.sort((a, b) => b.score - a.score);
   return out.slice(0, k);

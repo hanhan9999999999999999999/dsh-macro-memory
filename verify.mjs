@@ -9637,8 +9637,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.147（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.147'"),
+    'GV 版本: 代码里是 0.2.148（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.148'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9766,8 +9766,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.147（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.147'"),
+    'GW 版本: 代码里是 0.2.148（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.148'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9832,8 +9832,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idSrc.includes('(d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d)'),
   )
   check(
-    'VV 源码: 加法补分（单位分数 × ratio × 权重，指认 id 时用 1.5 那一档）',
-    idSrc.includes('raw[di] += unitRaw * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);'),
+    'VV 源码: 加法补分（单位分数 × ratio × 权重，指认 id 时用 1.5 那一档）——0.2.148 起落在加权之后的 post-pass 里',
+    idSrc.includes('const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);') &&
+      idSrc.includes('h.score += add;'),
   )
   check(
     'VV 源码: 早退改成「词与标识符都没有才空」，否则 BM25 为 0 的原样命中会被提前挡掉',
@@ -9845,7 +9846,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VV 源码: 认得谁要说出来（explain.verbatim + identBonus 同报，且 bm25 回到纯词分）',
-    idSrc.includes('verbatim: rawVerbatim[di].matched.slice(), identBonus:') &&
+    idSrc.includes('verbatim: rawVerbatim[di].matched.slice()') &&
+      idSrc.includes('h.explain.identBonus = Math.round(add * 1e3) / 1e3;') &&
       idSrc.includes('bm25: Math.round(baseRaw[di] * 1e3) / 1e3'),
   )
   check(
@@ -9912,8 +9914,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.147（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.147'"),
+    'VV 版本: 代码里是 0.2.148（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.148'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9923,6 +9925,72 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       idInt.includes('### 9.153.5 与既有 levers 不重叠') &&
       idDes.includes('## 159 ') &&
       idDes.includes('都得有一条不被切碎的路'),
+  )
+}
+
+/** ───────── VW（0.2.148）：补分落在加权之后 ───────── */
+{
+  const MW = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const MWmod = { search: (await import('./vendor/meow-memory/lib/index.js')).search }
+  // 源码顺序：补分块必须在 push 循环之后（而不是写进 raw）
+  const iPush = MW.indexOf('_vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di]')
+  const iUnit = MW.indexOf('const unitScore = topScore > 0 ? topScore : 1;')
+  const iSort = MW.indexOf('sort((a, b2) => b2.score - a.score)')
+  check('VW1 补分块在 push 之后', iPush > 0 && iUnit > iPush, `${iPush}/${iUnit}`)
+  check('VW2 补分块在 sort 之前（排位之前就定死）', iUnit > 0 && iSort > iUnit, `${iUnit}/${iSort}`)
+  check('VW3 单位取榜首实际分数', MW.includes('const unitScore = topScore > 0 ? topScore : 1;'))
+  check('VW4 临时字段有死期：补完就 delete', MW.includes('delete h._vb;'))
+  check(
+    'VW5 两支打分器都走 post-pass（search 与 keywordHitScore 各一处 unitScore）',
+    (MW.match(/const unitScore = topScore > 0 \? topScore : 1;/g) || []).length === 2,
+  )
+  check(
+    'VW6 放行条件放行「无词分但有原样证据」',
+    (MW.match(/if \(raw\[di\] <= 0 && rawVerbatim\[di\] === null\) continue;/g) || []).length === 2,
+  )
+  check('VW7 旧的 raw 内补分已撤（raw 里不再出现 identBonus 累加）', !MW.includes('raw[di] += unitRaw * vb.ratio'))
+
+  // 行为：指认压得住 importance=4 的措辞命中
+  const vwDoc = (id, content, imp, sess) => ({
+    id,
+    level: 'fact',
+    title: content.slice(0, 8),
+    content,
+    keywords: [],
+    importance: imp,
+    status: 'active',
+    project: null,
+    source_session: sess,
+    created_at: Date.now() - 86400000,
+    updated_at: 1700000000000,
+  })
+  const VW_DOCS = [
+    vwDoc('0mzz9abc1-aaaa', '这一条正文里没有半个标识符，只讲交付态。', 1, 'vw-a'),
+    vwDoc('loud', '改了什么 措辞更像那一条，而且重要度写得很高。', 4, 'vw-b'),
+  ]
+  const on = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, explain: true })
+  const off = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, verbatim: false })
+  check('VW8 行为：被指认那条排第 1（importance=1 也压得住 4 分的措辞命中）', on[0]?.id === '0mzz9abc1-aaaa')
+  check(
+    'VW9 行为：score 与 identBonus 同值（证明补分在乘法之后）',
+    Math.abs((on[0]?.score ?? 0) - (on[0]?.explain?.identBonus ?? -1)) < 2e-3,
+  )
+  check('VW10 行为：阴性对照下措辞重新占榜首', off[0]?.id === 'loud')
+  check(
+    'VW11 行为：回执里没有 _vb 这种内部字段',
+    on.every((h) => h._vb === void 0),
+  )
+  const vwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const vwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'VW12 文档: INTERNAL 9.154 讲了「加法之后还有一次乘法」与「不重叠：税前还是税后发」',
+    vwInt.includes('## 9.154 ') &&
+      vwInt.includes('加法之后还有一次乘法') &&
+      vwInt.includes('### 9.154.5 与既有 levers 不重叠'),
+  )
+  check(
+    'VW13 文档: DESIGN 160 收在「价值是本身决定的，排位是最后一刻决定的」',
+    vwDes.includes('## 160 ') && vwDes.includes('证据的价值是它本身决定的'),
   )
 }
 
