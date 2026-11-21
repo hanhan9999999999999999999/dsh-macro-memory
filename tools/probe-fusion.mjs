@@ -6796,6 +6796,52 @@ check(
     return got !== null && got.id8 === 'abc12345' && got.head === '旧开头' && got.day.length > 0
   })())
   check('RM9 闭嘴：没工作区 / 没库时不编链', chainMod.successionNote({ workspace: '', id: rmOldId }) === '' && chainMod.successionNote({ workspace: join(tmpdir(), 'no-such-ws-138'), id: rmOldId }) === '')
+  // RM10-RM13（0.2.139）：链是 8 位前缀近似出来的，近似就得说清楚。
+  // ① 接手它的那条可能已经不在库里（删了/搬走了）——只念 id 会让人以为还能改到它；
+  // ② 同秒写入的条目前缀会撞——念一个 id 会让人以为那是唯一一条。
+  // 重新造一对：RM4 改过旧条正文，那句「已被取代」已经跟着正文一起换掉了（这正是 0.2.138 要「改之前读」的原因）。
+  await rmRun('memory_remember', {
+    content: '链诚实探针甲：0.2.139 之前，链只念前缀不管在不在。',
+    project: '探针取代链',
+    keywords: rmKw,
+    importance: 2,
+    level: 'fact',
+  })
+  const rmZ1Id = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('链诚实探针甲'))?.id ?? '')
+  await rmRun('memory_remember', {
+    content: '链诚实探针乙：0.2.139 交付态，链要说出接手者还在不在、前缀撞不撞。',
+    project: '探针取代链',
+    keywords: rmKw,
+    importance: 2,
+    level: 'fact',
+    supersedes: [rmZ1Id],
+  })
+  const rmChain = chainMod.successionOf({ workspace: rmWs, id: rmZ1Id })
+  check('RM10 精确：接手它的那条在库里，state 就是 exact', rmChain.mine?.state === 'exact' && rmChain.mine?.hits === 1, JSON.stringify(rmChain.mine))
+  const rmGhost = await rmRun('memory_remember', {
+    content: '链诚实探针：这条写着（已被取代：0mzzzzz9「早就不在库里的接手者」，2026-11-21）。',
+    project: '探针取代链',
+    keywords: rmKw,
+    importance: 2,
+    level: 'fact',
+  })
+  const rmGhostId = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('0mzzzzz9'))?.id ?? '')
+  const rmGhostRead = rmText(await rmRun('memory_read', { id: rmGhostId }))
+  check(
+    'RM11 缺席：接手者不在库里就直说，不许假装能改到它',
+    rmGhostId.length > 0 && rmGhostRead.includes('不在库里') && !rmGhostRead.includes('检索时说话的是接手它的那条'),
+    rmGhostRead.slice(0, 80),
+  )
+  check(
+    'RM12 撞车：前缀命中几条就说几条（纯函数三态）',
+    chainMod.prefixState(['0mwabcde-1', '0mwabcde-2', '0mwxyz'], '0mwabcde') === 2 &&
+      chainMod.prefixState(['0mwabcde-1'], '0mwabcde') === 1 &&
+      chainMod.prefixState(['0mwabcde-1'], '0mzzzzz9') === 0,
+  )
+  check(
+    'RM13 自撞：自己前缀撞车时提醒「下面可能记的是它们之一」',
+    rmChain.selfHits === 1 && !rmText(await rmRun('memory_read', { id: rmOldId })).includes('可能记的是它们之一'),
+  )
   try {
     rmSync(rmWs, { recursive: true, force: true })
   } catch {

@@ -9365,5 +9365,49 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// FE（0.2.139）：链是 8 位前缀近似出来的——接手者可能已不在库里，前缀也可能撞车。
+// 这一组钉住「近似要说清楚」：三态、两句新文案、以及全库只扫一遍。
+{
+  const chainPath = join(root, 'lib', 'macro', 'chain.js')
+  const chainSrc2 = readFileSync(chainPath, 'utf8')
+  const C2 = await import(pathToFileURL(chainPath).href)
+
+  check(
+    'FE 撞车: 前缀命中 0 / 1 / 2 各说各的（纯函数，真库造不出来）',
+    C2.prefixState(['0mwabcde-1', '0mwabcde-2', '0mwxyz'], '0mwabcde') === 2 &&
+      C2.prefixState(['0mwabcde-1'], '0mwabcde') === 1 &&
+      C2.prefixState(['0mwabcde-1'], '0mzzzzz9') === 0 &&
+      C2.prefixState([], '0mwabcde') === 0 &&
+      C2.prefixState(['0mwabcde-1'], '') === 0,
+  )
+  check('FE 撞车: 前缀口径就是 8 位（多一位少一位都不算命中）', C2.prefixState(['0mwabcde-1'], '0mwabcde-1') === 1 && C2.prefixState(['0mwabcde-1'], '0mwabcde-') === 1)
+
+  const mineBlocks = chainSrc2.match(/state: hits === 1 \? 'exact' : hits === 0 \? 'absent' : 'ambiguous'/g) ?? []
+  check('FE 源码: 接手者三态写在数据里（不是文案里猜）', mineBlocks.length === 1)
+  check(
+    'FE 源码: 缺席有专门一句话（不许拿「已被人接手」冒充）',
+    chainSrc2.includes('可那条现在不在库里') && chainSrc2.includes("chain.mine.state === 'absent'"),
+  )
+  check(
+    'FE 源码: 撞车有专门一句话（不许拿前缀当唯一 id）',
+    chainSrc2.includes('id 前 8 位撞了') && chainSrc2.includes("chain.mine.state === 'ambiguous'"),
+  )
+  check('FE 源码: 自己前缀撞车时提醒「可能记的是它们之一」', chainSrc2.includes('可能记的是它们之一') && chainSrc2.includes('selfHits'))
+  check(
+    'FE 源码: 全库只扫一遍（三个判断共用同一张表，别为每件事再 list 一次）',
+    /for \(const level of LEVELS\) \{\n\s+const list = db\.list\(level, \{\}\)/.test(chainSrc2) &&
+      chainSrc2.indexOf('const ids = all.map(') > chainSrc2.indexOf('const all = []'),
+  )
+  check('FE 源码: 仍然不建表不加列（缺陷修在读取侧，不在 schema）', !/ALTER TABLE|CREATE (TABLE|INDEX)/i.test(chainSrc2))
+
+  const pkg139 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'FE 版本与文档一起走（9.145 / 151）',
+    pkg139.version.split('.').map((x) => Number(x))[2] >= 139 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.145 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 151 '),
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
