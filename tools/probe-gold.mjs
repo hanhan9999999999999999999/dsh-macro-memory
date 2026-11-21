@@ -20,9 +20,10 @@
  * 用法：node tools/probe-gold.mjs
  */
 import { root } from './_root.mjs'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { tmpdir } from 'node:os'
 
 let failures = 0
 function check(label, ok, extra) {
@@ -289,6 +290,55 @@ if (denseUsable) {
     gateBlocked.length === 0 && gateKilled.length === 0,
     `挡住 ${gateBlocked.length}/14、误掐 ${gateKilled.length}/58，状态 ${denseSt.state}`,
   )
+}
+
+// ── G16（0.2.156）来源一行：读一条记忆能回答「从哪来、为什么在库里、还有人用吗」 ────────
+// 判据不是「有没有这一行」，而是「四种来路各说各的话，且没库的时候闭嘴」：
+// 迁移 / 整理封存 / 会话直写 / 没记来源会话，四条不许说成同一句；
+// 没有库、没有 id 时返回空串（不占 token、也不替人建出一个空库来）。
+{
+  const PROV = await import(pathToFileURL(join(root, 'lib', 'macro', 'provenance.js')).href)
+  const home = mkdtempSync(join(tmpdir(), 'probe-gold-prov-'))
+  const realHome = mkdtempSync(join(tmpdir(), 'probe-gold-prov-none-'))
+  const P = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const d = P.getDb(home, '.dsh-meow')
+  const now = Date.now()
+  const ins = (id, extra) =>
+    d
+      .p(
+        `INSERT INTO lesson (id, title, content, importance, keywords, status, source_session, hit_count, created_at, updated_at, last_accessed_at, corrected, project)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(id, '', '正文', 1, '[]', 'active', extra.src ?? null, extra.hit ?? 0, extra.ts, extra.ts, extra.last ?? null, extra.cor ?? 0, null)
+  ins('probe-migr1', { src: 'migration', ts: now - 86_400_000 })
+  ins('probe-drem1', { src: 'session-deadbeef-0001', ts: now - 7_200_000 })
+  ins('probe-drec1', { src: 'session-deadbeef-0001', ts: now - 600_000, hit: 7, last: now - 60_000, cor: 1 })
+  ins('probe-nosr1', { src: '', ts: now - 300_000 })
+  d.p('INSERT INTO dream_log (run_at, summary, changes, note) VALUES (?,?,?,?)').run(now - 7_200_000 + 360_000, 'probe dream', '{}', '')
+  const note = (id, ws = home) => PROV.provenanceNote({ workspace: ws, id })
+  const shapes = {
+    migr: note('probe-migr1').includes('迁移'),
+    dream: note('probe-drem1').includes('那次整理里封存'),
+    used: note('probe-drec1').includes('被读过 7 次') && note('probe-drec1').includes('主人纠正过'),
+    nosrc: note('probe-nosr1').includes('没有记来源会话'),
+    silent: note('probe-migr1', join(home, 'nope')) === '' && note('') === '',
+  }
+  const notMade = !existsSync(join(home, 'nope', '.dsh-meow', 'memory.db'))
+  const bad = Object.entries(shapes)
+    .filter(([, ok]) => !ok)
+    .map(([k]) => k)
+  check(
+    'G16 来源一行：迁移／整理封存／会话直写／没记来源会话四种来路各说各的话，没库时闭嘴且不建库',
+    bad.length === 0 && notMade,
+    bad.length === 0 ? `${Object.keys(shapes).length}/${Object.keys(shapes).length} 形态对，没库不建库` : `说不清的：${bad.join(' / ')}${notMade ? '' : '；还顺手建了个空库'}`,
+  )
+  for (const dir of [home, realHome]) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      /* Windows 上 sqlite 还开着句柄时删不掉，留在临时目录里也无害 */
+    }
+  }
 }
 
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))

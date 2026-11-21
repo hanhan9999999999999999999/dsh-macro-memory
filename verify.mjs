@@ -9372,7 +9372,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'FD 源码: 链要在改之前读（memory_update 换正文会连取代句一起换掉）',
     updSrc.indexOf('const chain = successionNote(') < updSrc.indexOf("const main = await flow.call('memory_update'"),
   )
-  check('FD 源码: 读也要带链，而且并进正文（预算按含链的长度算）', readSrc.includes('if (chain.length > 0) said = `${said}\\n\\n${chain}`') && readSrc.indexOf('said = `${said}') < readSrc.indexOf('const bodyEst = estTokens(said)'))
+  check('FD 源码: 读也要带链，而且并进正文（预算按含链的长度算）', readSrc.includes("const extras = [prov, chain].filter(Boolean).join('\\n')") && readSrc.includes('said = `${said}\\n\\n${extras}`') && readSrc.indexOf('said = `${said}') < readSrc.indexOf('const bodyEst = estTokens(said)'))
   check('FD 源码: 回执三条一起出（正文说明 / 星图链接 / 链），不许只留一条', updSrc.includes("return [said, linked, chain].filter((one) => typeof one === 'string' && one.length > 0).join('\\n\\n')"))
   check('FD 源码: meowDir 真的从装配处传下来（不是写死 .dsh-meow）', toolsSrc.includes('createUpdate({ flow, meowDir })') && toolsSrc.includes('createRead({ flow, meowDir })'))
   check(
@@ -9384,6 +9384,26 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     chainSrc.indexOf('existsSync(dbFile(') < chainSrc.indexOf('Meow.getDb('),
   )
   check('FD 源码: 取代句常量与写侧同源（两边不共用就会越读越偏）', chainSrc.includes("export const SUPERSEDE_MARK = '（已被取代：'") && readFileSync(join(root, 'lib', 'macro', 'defs', 'remember.js'), 'utf8').includes("const SUPERSEDE_MARK = '（已被取代：'"))
+
+  const provSrc = readFileSync(join(root, 'lib', 'macro', 'provenance.js'), 'utf8')
+  check(
+    'FW 来源: 读回执里真的接了来源一行（四种来路 + 用没用过 + 纠正过）',
+    readSrc.includes("import { provenanceNote } from '../provenance.js'") &&
+      provSrc.includes('MIGRATION') &&
+      provSrc.includes('那次整理里封存') &&
+      provSrc.includes('当次直接写进来') &&
+      provSrc.includes('没有记来源会话') &&
+      provSrc.includes('还没被检索用过') &&
+      provSrc.includes('主人纠正过'),
+  )
+  check(
+    'FW 来源: 读元数据不许顺手 markAccessed（否则「还有人用吗」会被读它的人污染）',
+    !provSrc.includes('markAccessed(') && provSrc.indexOf('existsSync(') < provSrc.indexOf('Meow.getDb('),
+  )
+  check(
+    'FW 来源: 近似要说明白（整理封存是按 6 小时窗口推的，落账口径不进正文）',
+    provSrc.includes('DREAM_WINDOW_MS = 6 * 60 * 60 * 1000') && provSrc.includes('dream_log') && !provSrc.includes('INSERT') && !provSrc.includes('UPDATE '),
+  )
 
   const pkg138 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
@@ -9666,8 +9686,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.155（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.155'"),
+    'GV 版本: 代码里是 0.2.156（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.156'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9795,8 +9815,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.155（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.155'"),
+    'GW 版本: 代码里是 0.2.156（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.156'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9943,8 +9963,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.155（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.155'"),
+    'VV 版本: 代码里是 0.2.156（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.156'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10121,9 +10141,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.155（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.155' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.155'"),
+    'GX19 版本已到 0.2.156（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.156' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.156'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10223,10 +10243,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.155',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.155' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.155'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.155'),
+    'VY15 版本三处一致 0.2.156',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.156' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.156'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.156'),
   )
 }
 
@@ -10266,14 +10286,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.155（三处一致）',
-    pkgWz.version === '0.2.155' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.155'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.155'),
+    'WZ9 版本已到 0.2.156（三处一致）',
+    pkgWz.version === '0.2.156' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.156'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.156'),
   )
 }
 
-/** ───────── XA（0.2.155）：检索先建表、再记指纹、最后缓存 ───────── */
+/** ───────── XA（0.2.156）：检索先建表、再记指纹、最后缓存 ───────── */
 {
   const MX = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const Mk = await import('./vendor/meow-memory/lib/index.js')
