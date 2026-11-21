@@ -109,8 +109,14 @@ function treeSync(aRoot, bRoot) {
 }
 {
   const pair = root === PROFILE ? treeSync(PROFILE, VENDOR) : treeSync(root, PROFILE)
-  if (pair.drift.length === 0 && pair.extra.length === 0) pass('两处字节一致', `${pair.count} 个文件`)
-  else {
+  // 比了就是一条断言：干净的树与有漂移的树都只算一条 PASS/FAIL，
+  // 否则「记录基线的那一趟」和「照着基线跑的那一趟」条数永远差一（baselines.json 收尾才写）。
+  const clean = pair.drift.length === 0 && pair.extra.length === 0
+  // 比了就是一条断言：这一行永远 PASS（它说的是「比较跑完了」），
+  // 不一致另起一条 FAIL。否则漂移时少一条 PASS，基线永远对不上下一趟。
+  pass('两处比较跑完了', clean ? `字节一致 / ${pair.count} 个文件`
+    : `${pair.drift.length} 个漂移 / ${pair.extra.length} 个多余（见下，判红在下一行）`)
+  if (!clean) {
     fail('两处不一致', `${pair.drift.length} 个漂移 / ${pair.extra.length} 个多余`)
     for (const d of pair.drift.slice(0, 12)) console.log(`      drift: ${d}`)
     for (const e of pair.extra.slice(0, 12)) console.log(`      extra: ${e}`)
