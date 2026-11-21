@@ -9637,8 +9637,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.145（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.145'"),
+    'GV 版本: 代码里是 0.2.146（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.146'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9695,6 +9695,93 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     loadLlm: async () => ({ createUserMessage: gvMake }),
   })
   check('GV 行为: 星图报错不挡这一轮（原样返回）', (await gvBad.decide({ agent: gvAgent }, gvDec)) === gvDec)
+}
+
+// ── GW（0.2.146）：噪声地板 —— 中文没有停用词表，BM25 对「怎么 / 那个 / 一下」照样给分。
+//    库一大，这些词把候选集撑成「都沾点边」；回执看起来都相关，其实是问句里一半的字在灌水。
+//    这一刀用 df 说话：出现在一半以上条目里的查询词不参与打分，也不参与覆盖度分母。
+{
+  const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const meowMod = await import('./vendor/meow-memory/lib/index.js')
+  check(
+    'GW 源码: 阈值是常量（一半以上 / 库至少 8 条），不是散在逻辑里的魔数',
+    meowSrc.includes('var NOISE_DF_RATIO = 0.5;') && meowSrc.includes('var NOISE_MIN_DOCS = 8;'),
+  )
+  check(
+    'GW 源码: 三条护栏各占一行——库小不剔、剔空回退、一键关',
+    meowSrc.includes('function noiseTermsOf(qTerms, df, n) {') &&
+      meowSrc.includes('if (n < NOISE_MIN_DOCS) return [];') &&
+      meowSrc.includes('return out.length >= qTerms.length ? [] : out;') &&
+      meowSrc.includes('opts.noiseFloor === false'),
+  )
+  check(
+    'GW 源码: 分子分母同口径（BM25 走 qLoop、覆盖度走 qKept），只剔分子等于把问句变难',
+    meowSrc.includes('for (const term of qLoop) {') &&
+      meowSrc.includes('for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);'),
+  )
+  check(
+    'GW 源码: 剔了谁要报出来（explain.noiseDropped），不是悄悄改口径',
+    meowSrc.includes('noiseDropped: noiseDropped.slice()'),
+  )
+
+  const gwDoc = (id, c, sess) => ({
+    id,
+    level: 'fact',
+    title: c.slice(0, 8),
+    content: c,
+    keywords: [],
+    importance: 2,
+    status: 'active',
+    project: null,
+    source_session: sess,
+    created_at: 1700000000000,
+    updated_at: 1700000000000,
+  })
+  const gwDocs = []
+  for (let i = 0; i < 8; i++) gwDocs.push(gwDoc('n' + i, `怎么记录第${i}条无关的流水账，随手写写。`, 's' + i))
+  gwDocs.push(gwDoc('real', '星图建图的延迟要盯着，一轮巡检大约 12 秒。', 's-real'))
+  gwDocs.push(gwDoc('other', '另一个完全无关的条目，讲的是食堂菜单。', 's-other'))
+  const gwQ = '怎么 星图建图的延迟调下来'
+  const gwOn = meowMod.search(gwQ, gwDocs, { k: 12 })
+  const gwOff = meowMod.search(gwQ, gwDocs, { k: 12, noiseFloor: false })
+  check(
+    'GW 行为: 只沾「怎么」的八条退出榜单，剩下真正相关的那条',
+    gwOn.length === 1 && gwOn[0].id === 'real',
+    gwOn.map((h) => h.id).join(','),
+  )
+  check(
+    'GW 行为: 阴性对照 noiseFloor:false 时八条全回来（真在起效）',
+    gwOff.length === 9,
+    `${gwOff.length} 条`,
+  )
+  const gwSmall = meowMod.search('怎么', gwDocs.slice(0, 5), { k: 8, explain: true })
+  check(
+    'GW 行为: 库小（5 条）时 df 不可信，一条都不剔',
+    gwSmall.length === 5 && gwSmall[0]?.explain?.noiseDropped === undefined,
+    `${gwSmall.length} 条`,
+  )
+  check(
+    'GW 克制: 整句都是常用词时回退（宁可噪声，不给空结果）',
+    meowMod.search('怎么', gwDocs, { k: 12 }).length === 8,
+  )
+  const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
+  check(
+    'GW 版本: 代码里是 0.2.146（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.146'"),
+  )
+  const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'GW 文档: INTERNAL 9.152 讲了「与既有 levers 不重叠」，DESIGN 158 收在「都差不多」',
+    gwInt.includes('## 9.152 ') && gwInt.includes('### 9.152.5 与既有 levers 不重叠') && gwDes.includes('## 158 ') && gwDes.includes('是「都差不多」'),
+  )
+  const gwA = meowMod.search(gwQ, gwDocs, { k: 12 })[0]
+  const gwB = meowMod.search('星图建图的延迟调下来', gwDocs, { k: 12 })[0]
+  check(
+    'GW 等价: 剔掉 = 没问（同一问句去掉噪声词后首条分数逐位相同）',
+    gwA?.id === gwB?.id && Math.abs((gwA?.score ?? 0) - (gwB?.score ?? 0)) < 1e-9,
+    `${gwA?.score} vs ${gwB?.score}`,
+  )
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

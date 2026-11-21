@@ -252,6 +252,57 @@ const nsOn = V.search(SESS_Q, noSess, { k: 8 }).map((h) => `${h.id}:${h.score.to
 const nsOff = V.search(SESS_Q, noSess, { k: 8, sessionTopic: false }).map((h) => `${h.id}:${h.score.toFixed(4)}`)
 check('SESS5 没有 source_session 时完全惰性（分数逐条相同，不靠字段兜底）', nsOn.join(' ') === nsOff.join(' '), nsOn.join(' '))
 
+// ── NF（0.2.146）：噪声地板 —— 出现在一半以上条目里的查询词不参与打分 ────────
+// 中文没有停用词表（英文靠 normalizeEn 的 EN_STOPWORDS），「怎么 / 那个 / 一下」照样进 BM25、
+// 照样进覆盖度分母。库一变大，这些词把候选集撑成「都沾点边」，回执读起来像「都相关」。
+// 这里量引擎行为：剔掉噪声词之后，只沾噪声的条目必须退出榜单，而相关条目一分不损。
+const NF_NOISE = []
+for (let i = 0; i < 8; i++) NF_NOISE.push(mkDoc('n' + i, `怎么记录第${i}条无关的流水账，随手写写。`, 's' + i))
+const NF_DOCS = [
+  ...NF_NOISE,
+  mkDoc('real', '星图建图的延迟要盯着，一轮巡检大约 12 秒。', 's-real'),
+  mkDoc('other', '另一个完全无关的条目，讲的是食堂菜单。', 's-other'),
+]
+// 噪声词单独成段（空格隔开）：剔掉它之后词表与「不含噪声词的那一问」逐字相同，NF6 才量得准。
+const NF_Q = '怎么 星图建图的延迟调下来'
+const nfOn = V.search(NF_Q, NF_DOCS, { k: 12 })
+const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false })
+const nfIds = (hits) => hits.map((h) => h.id).join(',')
+
+check(
+  'NF1 噪声词剔除后，只沾「怎么」的八条不再进榜（只剩真正相关的那条）',
+  nfIds(nfOn) === 'real',
+  `开 ${nfIds(nfOn)} / 共 ${NF_DOCS.length} 条语料`,
+)
+check(
+  'NF2 阴性对照：noiseFloor:false 同一语料把八条噪声全放回来（地板真在起效，不是本来就没命中）',
+  nfOff.length === 9 && nfIds(nfOff).startsWith('real,') && NF_NOISE.every((d) => nfIds(nfOff).includes(d.id)),
+  `${nfOff.length} 条：${nfIds(nfOff).slice(0, 40)}…`,
+)
+check(
+  'NF3 剔了谁要说出来：explain.noiseDropped 点名「怎么」（可追溯性，不是悄悄改口径）',
+  JSON.stringify(V.search(NF_Q, NF_DOCS, { k: 12, explain: true })[0]?.explain?.noiseDropped ?? null) === '["怎么"]',
+  JSON.stringify(V.search(NF_Q, NF_DOCS, { k: 12, explain: true })[0]?.explain?.noiseDropped ?? null),
+)
+const nfSmall = NF_DOCS.slice(0, 5)
+check(
+  'NF4 库小（<8 条）时一条都不剔：df 在小样本上不可信（5 条全含「怎么」也照旧参与）',
+  V.search('怎么', nfSmall, { k: 8 }).length === 5 && V.search('怎么', nfSmall, { k: 8, explain: true })[0]?.explain?.noiseDropped === undefined,
+  `${V.search('怎么', nfSmall, { k: 8 }).length} 条`,
+)
+check(
+  'NF5 整句都是常用词时整段回退（宁可噪声也不给空结果）',
+  V.search('怎么', NF_DOCS, { k: 12 }).length === 8,
+  `${V.search('怎么', NF_DOCS, { k: 12 }).length} 条`,
+)
+const nfA = V.search(NF_Q, NF_DOCS, { k: 12 })[0]
+const nfB = V.search('星图建图的延迟调下来', NF_DOCS, { k: 12 })[0]
+check(
+  'NF6 剔掉 = 没问：同一问句去掉「怎么」后首条分数逐位相同（分子分母同口径）',
+  nfA?.id === nfB?.id && Math.abs((nfA?.score ?? 0) - (nfB?.score ?? 0)) < 1e-9,
+  `${nfA?.id}@${nfA?.score} vs ${nfB?.id}@${nfB?.score}`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

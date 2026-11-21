@@ -1962,6 +1962,22 @@ function statusWeight(status) {
   const s = String(status ?? "active");
   return STATUS_WEIGHT[s] ?? 1;
 }
+// [macro-fusion 0.2.146] 噪声地板：中文没有停用词表（英文靠 normalizeEn 的 EN_STOPWORDS），
+// 于是「怎么 / 那个 / 现在 / 一下」这类词在 BM25 里照样有分数、照样进覆盖度分母。
+// 后果不是「排得差一点」而是**候选集被噪声撑大**：库里三分之一条目都含「怎么」时，
+// 问「怎么把延迟调下来」，那些只沾了「怎么」的条目会一起被召回，回执上看起来「都沾点边」。
+// 这里改用数据说话——出现在**一半以上**条目里的查询词，就是这一问里的噪声，直接不参与打分。
+// 三条护栏：①库小（<8 条）时 df 不可信，一条都不剔；②剔完一个词不剩就整段回退（宁可噪声，不许空）；
+// ③`noiseFloor:false` 一键回到旧口径，便于对照。
+var NOISE_DF_RATIO = 0.5;
+var NOISE_MIN_DOCS = 8;
+function noiseTermsOf(qTerms, df, n) {
+  if (n < NOISE_MIN_DOCS) return [];
+  const gate = Math.ceil(n * NOISE_DF_RATIO);
+  const out = [];
+  for (const t of qTerms) if ((df.get(t) ?? 0) >= gate) out.push(t);
+  return out.length >= qTerms.length ? [] : out;
+}
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
@@ -2019,12 +2035,17 @@ function search(query, docs, opts = {}) {
   const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ""))))) : null;
   const idfOf = (t) => Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
   const qTerms = [...new Set(q)];
-  const qIdfSum = opts.coord === false ? 0 : qTerms.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+  // [macro-fusion 0.2.146] 噪声地板：剔掉的词既不进 BM25，也不进覆盖度分母——
+  // 只剔分子不剔分母等于「问句更难满足」，会把真正相关的条目一起裁掉。
+  const noiseDropped = opts.noiseFloor === false ? [] : noiseTermsOf(qTerms, df, n);
+  const qKept = noiseDropped.length === 0 ? qTerms : qTerms.filter((t) => !noiseDropped.includes(t));
+  const qLoop = noiseDropped.length === 0 ? q : q.filter((t) => !noiseDropped.includes(t));
+  const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
   const raw = docs.map((_, di) => {
     let s = 0;
     const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
     const dl = opts.lengthOnBody === false ? avgdl : avgBody;
-    for (const term of q) {
+    for (const term of qLoop) {
       const f = tf[di].get(term);
       if (!f) continue;
       const idf = idfOf(term);
@@ -2035,7 +2056,7 @@ function search(query, docs, opts = {}) {
     }
     if (qIdfSum > 0) {
       let cover = 0;
-      for (const term of qTerms) if (tf[di].has(term)) cover += idfOf(term);
+      for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);
       if (cover > 0) s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);
     }
     if (entSets) {
@@ -2081,7 +2102,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }, score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   hits.sort((a, b2) => b2.score - a.score);

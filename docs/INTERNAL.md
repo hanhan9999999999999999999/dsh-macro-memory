@@ -8526,3 +8526,53 @@ meow 自己那条每轮注入（`preStepInject` → `buildHitInjection` → `hit
 
 `bridge.tryCall` 抛错、回执解析不出节点、`@deepseek-ai/dsh-llm` 取不到消息工厂——三种情况都只记一笔 `failed` 并原样返回 `decision`。注入是加分项，任何一条失败路径都不许让用户的这一轮走不下去。子代理会话（`agent.session.header.origin === 'subagent'`）直接跳过：它们有自己的任务上下文，塞主会话的邻域只会干扰。
 
+## 9.152 噪声词不是「排得差一点」，是把候选集撑成「都沾点边」（0.2.146）
+
+### 9.152.1 中文这一侧，从来没有停用词表
+
+英文那条路是完整的：`tokenize` 末尾按 `isMostlyLatin` 判断整段语言，拉丁为主就过 `normalizeEn`——停用词表 `EN_STOPWORDS` 加 Porter 词干。中文这条路只做了切分：`classify` 认出 CJK 就按二元组切（`run[k] + run[k+1]`），切完原样进 BM25。于是「怎么 / 那个 / 现在 / 一下 / 我们」和「星图 / 延迟 / 备份」在索引里是同等公民：一样的 `idfOf`、一样的 `tf`、一样的覆盖度分母。
+
+后果不是「排序差一点」。**噪声词会扩大候选集**：库里三分之一条目都含「怎么」，问「怎么把延迟调下来」时，那些只沾了「怎么」的条目统统拿到一个不为零的分数、统统进榜。回执看起来「都沾点边」，读者于是开始怀疑整个记忆库的精度——而这其实只是问句里两个字在灌水。
+
+### 9.152.2 判据用 df，不用词表
+
+写一张中文停用词表是最直接的做法，也是最容易腐烂的做法：词表要对「怎么/咋/如何/怎么样」这一族逐个维护，混语言、混口癖、混项目黑话之后永远补不完。这里换成数据自证——**出现在一半以上条目里的查询词，就是这一问里的噪声**：
+
+```js
+var NOISE_DF_RATIO = 0.5;
+var NOISE_MIN_DOCS = 8;
+function noiseTermsOf(qTerms, df, n) {
+  if (n < NOISE_MIN_DOCS) return [];
+  const gate = Math.ceil(n * NOISE_DF_RATIO);
+  const out = [];
+  for (const t of qTerms) if ((df.get(t) ?? 0) >= gate) out.push(t);
+  return out.length >= qTerms.length ? [] : out;
+}
+```
+
+判据是**这一问 × 这一库**，不是写死的词。库小（< 8 条）时 df 不可信——5 条里 3 条含某个词，那是巧合不是噪声——所以一条都不剔。剔完一个词不剩（整句都是「怎么」）就整段回退：**宁可噪声，也不给空结果**，空结果是「这库没记过这件事」的谎言。
+
+### 9.152.3 剔词必须同时剔分母
+
+`raw` 的 BM25 循环、覆盖度 `cover / qIdfSum`、以及 `qIdfSum` 自己，三处都得换成剔后的词集：
+
+```js
+const noiseDropped = opts.noiseFloor === false ? [] : noiseTermsOf(qTerms, df, n);
+const qKept = noiseDropped.length === 0 ? qTerms : qTerms.filter((t) => !noiseDropped.includes(t));
+const qLoop = noiseDropped.length === 0 ? q : q.filter((t) => !noiseDropped.includes(t));
+const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+```
+
+`qLoop` 保留问句里的重复（同一个词问两遍，该给两遍的分），`qKept` 去重（覆盖度按词种算）。**只剔分子不剔分母**是最常犯的错：覆盖度门槛原地抬高，真正相关的那条被一起裁掉，表面上「更严格」，实际是「更难满足」。探针 NF6 量这一条——同一问句去掉噪声词之后，首条分数必须逐位相同（`28.419066945088073 vs 28.419066945088073`）。
+
+### 9.152.4 剔了谁要报出来
+
+`explain.noiseDropped` 点名这一问被剔掉的词。理由和 0.2.143 的 `floorLift`、0.2.130 的 `implicit` 一样：**口径变化不写出来，下一次谁也不敢动它**。读者看到「为什么这条没进榜」，第一件该知道的事就是「你问的那两个字这次没参与」。
+
+### 9.152.5 与既有 levers 不重叠
+
+主人这一轮的要求是「功能不要重叠」。打分侧现有六件东西，量的是「怎么给分」：`fieldBoost`（关键词/标题命中加权）、`coord`（覆盖度乘性）、`entityPrior`（问句专有名词）、`importanceWeight`（重要度加成）、`recencyWeight`（新鲜度）、`statusWeight`（生命周期）。这一条量的是**「谁参与给分」**——参与资格，不是权重。两者可以相乘，但不能互相替代：权重把噪声词的分数调小，噪声词只要还在分母里，就仍然在决定「这一问要多难才叫命中」。
+
+### 9.152.6 覆盖
+
+`tools/probe-recall.mjs` 的 NF1–NF6（6 条：八条只沾噪声的退出榜单、阴性对照 `noiseFloor:false` 时全回来、`explain.noiseDropped` 点名、库小不剔、整句常用词回退、剔掉 = 没问的分数等价）；`verify.mjs` 的 GW 段（9 条：阈值是常量、三条护栏各占一行、分子分母同口径、`noiseDropped` 要报、四条行为）。
