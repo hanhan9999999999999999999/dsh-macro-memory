@@ -6817,7 +6817,12 @@ check(
     supersedes: [rmZ1Id],
   })
   const rmChain = chainMod.successionOf({ workspace: rmWs, id: rmZ1Id })
-  check('RM10 精确：接手它的那条在库里，state 就是 exact', rmChain.mine?.state === 'exact' && rmChain.mine?.hits === 1, JSON.stringify(rmChain.mine))
+  // 注意：meow 的 id 前半段就是写入时刻，同一秒写的条目**必然**撞前缀——所以这一条验的正是「撞了也能认出是谁」。
+  check(
+    'RM10 精确：前缀撞了也能只认一条（用取代句里的开头消歧）',
+    rmChain.mine?.state === 'exact' && rmChain.mine?.hits >= 1,
+    JSON.stringify(rmChain.mine),
+  )
   const rmGhost = await rmRun('memory_remember', {
     content: '链诚实探针：这条写着（已被取代：0mzzzzz9「早就不在库里的接手者」，2026-11-21）。',
     project: '探针取代链',
@@ -6838,9 +6843,12 @@ check(
       chainMod.prefixState(['0mwabcde-1'], '0mwabcde') === 1 &&
       chainMod.prefixState(['0mwabcde-1'], '0mzzzzz9') === 0,
   )
+  const rmZ2Id = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('链诚实探针乙'))?.id ?? '')
+  const rmZ2Read = rmText(await rmRun('memory_read', { id: rmZ2Id }))
   check(
-    'RM13 自撞：自己前缀撞车时提醒「下面可能记的是它们之一」',
-    rmChain.selfHits === 1 && !rmText(await rmRun('memory_read', { id: rmOldId })).includes('可能记的是它们之一'),
+    'RM13 自撞：自己前缀撞车时，认出来的那几条要说明「是按开头核对过的」',
+    rmZ2Read.includes('接手过 1 条') && (rmChain.selfHits === 1 || rmZ2Read.includes('按开头核对过')),
+    `selfHits=${rmChain.selfHits}`,
   )
   try {
     rmSync(rmWs, { recursive: true, force: true })

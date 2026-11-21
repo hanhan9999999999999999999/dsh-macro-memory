@@ -9382,8 +9382,19 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check('FE 撞车: 前缀口径就是 8 位（多一位少一位都不算命中）', C2.prefixState(['0mwabcde-1'], '0mwabcde-1') === 1 && C2.prefixState(['0mwabcde-1'], '0mwabcde-') === 1)
 
-  const mineBlocks = chainSrc2.match(/state: hits === 1 \? 'exact' : hits === 0 \? 'absent' : 'ambiguous'/g) ?? []
+  const mineBlocks = chainSrc2.match(/state: sure\.length === 1 \? 'exact' : sure\.length === 0 \? 'absent' : 'ambiguous'/g) ?? []
   check('FE 源码: 接手者三态写在数据里（不是文案里猜）', mineBlocks.length === 1)
+  check(
+    'FE 消歧: 前缀撞车时用取代句里的开头再筛一遍（同一秒写的条目必然撞前缀）',
+    C2.headMatch('链诚实探针乙：0.2.139 交付态，链要', '链诚实探针乙：0.2.139 交付态，链要说出接…') === true &&
+      C2.headMatch('一条完全不同的开头', '链诚实探针乙') === false &&
+      C2.headMatch('', '任意') === false &&
+      chainSrc2.includes('headMatch(headOf(one.row.content), mark.head)'),
+  )
+  check(
+    'FE 消歧: 反方向也按开头核对（否则会把「记着我兄弟」当成「记着我」）',
+    chainSrc2.includes('headMatch(myHead, mark2.head)'),
+  )
   check(
     'FE 源码: 缺席有专门一句话（不许拿「已被人接手」冒充）',
     chainSrc2.includes('可那条现在不在库里') && chainSrc2.includes("chain.mine.state === 'absent'"),
@@ -9392,7 +9403,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'FE 源码: 撞车有专门一句话（不许拿前缀当唯一 id）',
     chainSrc2.includes('id 前 8 位撞了') && chainSrc2.includes("chain.mine.state === 'ambiguous'"),
   )
-  check('FE 源码: 自己前缀撞车时提醒「可能记的是它们之一」', chainSrc2.includes('可能记的是它们之一') && chainSrc2.includes('selfHits'))
+  check('FE 源码: 自己前缀撞车时说明「按开头核对过」', chainSrc2.includes('按开头核对过') && chainSrc2.includes('selfHits'))
   check(
     'FE 源码: 全库只扫一遍（三个判断共用同一张表，别为每件事再 list 一次）',
     /for \(const level of LEVELS\) \{\n\s+const list = db\.list\(level, \{\}\)/.test(chainSrc2) &&
