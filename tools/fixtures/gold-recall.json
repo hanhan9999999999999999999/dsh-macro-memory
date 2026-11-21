@@ -1,0 +1,804 @@
+{
+ "note": "gold-recall 语料：从真实记忆库摘出的 40 条样张（内容都是插件自己的记录），问句按「用户会怎么问」写，want 是可接受的答案集合——同一件事写在两条里就算都对。判据不看单题而看三档聚合：hit@1 / hit@3 / MRR。",
+ "docs": [
+  {
+   "id": "0mwq84ts",
+   "level": "fact",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "0.2.148 已交付（",
+   "content": "0.2.148 已交付（标识别符补分挪到加权之后）：`vendor/meow-memory/lib/index.js` 的 search 与 keywordHitScore 都改成排序前 post-p",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000000000,
+   "updated_at": 1763000000000
+  },
+  {
+   "id": "0mwq7e84",
+   "level": "fact",
+   "status": "stale",
+   "importance": 2,
+   "project": "dsh-macro-memory",
+   "title": "0.2.147 已交付：",
+   "content": "0.2.147 已交付：标识符原样匹配。问句里的版本号/路径/文件名/短 id/commit/kebab 不过分词，按整串去候选文本找；信用三档（整串 1 / basename 0.7 / 去扩展名主",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000001000,
+   "updated_at": 1763000001000
+  },
+  {
+   "id": "0mwq5zzv",
+   "level": "fact",
+   "status": "stale",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "0.2.146 交付（2",
+   "content": "0.2.146 交付（21/21、2,855 条断言、未推送）：检索加「噪声地板」——出现在一半以上条目里的查询词（df ≥ ceil(n×0.5) 且库 ≥8 条）既不进 BM25 也不进覆盖度分母",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000002000,
+   "updated_at": 1763000002000
+  },
+  {
+   "id": "0mwq855m",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "往 verify.mjs",
+   "content": "往 verify.mjs 里插新断言段前，先照抄相邻老段的写法：这个文件的断言函数叫 `check(...)`，读文件用 `readFileSync(new URL('./x', import.met",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000003000,
+   "updated_at": 1763000003000
+  },
+  {
+   "id": "0mwq858p",
+   "level": "lesson",
+   "status": "active",
+   "importance": 2,
+   "project": "dsh-macro-memory",
+   "title": "断言 explain 里",
+   "content": "断言 explain 里的数字时容差给 2e-3：explain 的 identBonus 等字段只保留三位小数，用 1e-6 比较必然假红（0.2.148 的 VX2/VX4 就是这样红的）。",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000004000,
+   "updated_at": 1763000004000
+  },
+  {
+   "id": "0mwq85c6",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "在 PowerShell",
+   "content": "在 PowerShell 里别用 `python -c` 跑带中文或成对引号的多行脚本——反复 SyntaxError（`unterminated string literal`），0.2.148 版",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000005000,
+   "updated_at": 1763000005000
+  },
+  {
+   "id": "0mwq7eb7",
+   "level": "lesson",
+   "status": "active",
+   "importance": 2,
+   "project": "dsh-macro-memory",
+   "title": "verify 源码锚里写",
+   "content": "verify 源码锚里写 JS 字符串字面量要按字面量本身的转义写：想匹配源码里的 `\\.`，锚要写 '\\\\.'；写成 '/\\.(?:js' 这种带斜杠前缀的锚会恒假（0.2.147 的 VV 段首跑",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000006000,
+   "updated_at": 1763000006000
+  },
+  {
+   "id": "0mwq7ee0",
+   "level": "lesson",
+   "status": "active",
+   "importance": 2,
+   "project": "dsh-macro-memory",
+   "title": "相对路径的 a/b 正则",
+   "content": "相对路径的 a/b 正则必须允许末段带点（[a-z0-9.-]+），否则 tools/probe-words.mjs 会被拆成「tools/probe-words」+「probe-words.mjs」",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000007000,
+   "updated_at": 1763000007000
+  },
+  {
+   "id": "0mwq7fdx",
+   "level": "lesson",
+   "status": "active",
+   "importance": 2,
+   "project": "dsh-macro-memory",
+   "title": "补丁叠加时最容易踩的是「",
+   "content": "补丁叠加时最容易踩的是「同一行 spread 互相覆盖」：0.2.147 往 explain 行塞 verbatim 时把既有的 noiseDropped 整段顶掉，靠老段落探针 NF3 立刻假红才抓",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000008000,
+   "updated_at": 1763000008000
+  },
+  {
+   "id": "0mwq7fh1",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "发版基线至少要收敛两轮：",
+   "content": "发版基线至少要收敛两轮：第一轮 --update-baselines 记下的 doctor / check-market 条数是「镜像还没同步 / 市场还没钉」时的旧数，robocopy + 市场钉之",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000009000,
+   "updated_at": 1763000009000
+  },
+  {
+   "id": "0mwq6032",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "缩窄检索口径时，分子分母",
+   "content": "缩窄检索口径时，分子分母必须同口径剔：只把噪声词从 BM25 里剔掉、却留在覆盖度分母里，等于「门槛原地抬高」——真正相关的那条也会因覆盖不满被裁，表面「更严格」实际「更难满足」。判据用分数逐位相等（",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000010000,
+   "updated_at": 1763000010000
+  },
+  {
+   "id": "0mwq614d",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "0.2.146 NF6 ",
+   "content": "0.2.146 NF6 假红：判「剔掉噪声词 = 没问它」时，对照问句必须与剔后词表逐字相同。中文二元组会把「怎么把」切成「么把」，剔掉「怎么」后仍残留「么把」进分母，分数必然不等（26.93 vs ",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000011000,
+   "updated_at": 1763000011000
+  },
+  {
+   "id": "0mwq617y",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "PowerShell 的",
+   "content": "PowerShell 的 `Get-Date -UFormat %s` 在这台机器上返回的 epoch 比真实 UTC 多 8 小时（时区被算了两遍），拿它写市场索引的 `publishTimesta",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000012000,
+   "updated_at": 1763000012000
+  },
+  {
+   "id": "0mwq610a",
+   "level": "lesson",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "主人纠正（m109998",
+   "content": "主人纠正（m109998）：「上传github什么的不需要这么急 每次都上传有点夸张了 等我觉得差不多我点头你再上传吧」。根因：我把「推送欠账」当成必须偿还的债，每版收尾都去试 `git push`，",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000013000,
+   "updated_at": 1763000013000
+  },
+  {
+   "id": "0mwn9xk3",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh,dsh-macro-memory",
+   "title": "`--update-ba",
+   "content": "`--update-baselines` 一轮不够，要几轮取决于改了几支脚本：0.2.64/0.2.65 两轮（第一轮后 probe-load 14→13、doctor 各掉一条）；0.2.66/0.",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000014000,
+   "updated_at": 1763000014000
+  },
+  {
+   "id": "0mwo9o91",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "市场索引的 publis",
+   "content": "市场索引的 publishTimestamp 必须是过去的秒级时间戳：手写未来值会被 check-market 判 FAIL（publishTimestamp 是合理的时间），改用 `Math.flo",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000015000,
+   "updated_at": 1763000015000
+  },
+  {
+   "id": "0mwoduq1",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "发版时市场索引只有两份要",
+   "content": "发版时市场索引只有两份要改：plugin-market/index.json 与 plugin-market/index.cn.json（反代镜像，版本+时间戳跟着主索引、source.url 保持 ",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000016000,
+   "updated_at": 1763000016000
+  },
+  {
+   "id": "0mwq606x",
+   "level": "rules",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "主人对接管节奏的三条定调",
+   "content": "主人对接管节奏的三条定调（2026-11-21）：①「上传github什么的不需要这么急 每次都上传有点夸张了 等我觉得差不多我点头你再上传吧」——不许主动 push；②「现在主要是针对插件本身的优化",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000017000,
+   "updated_at": 1763000017000
+  },
+  {
+   "id": "0mwq3apl",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "DSHMemoryMacro-Regulation",
+   "title": "收窄旋钮（k / min",
+   "content": "收窄旋钮（k / min_rel）按分数切，分数只量「字面贴不贴这次提问」，不量「还在不在用、谁接了班」——所以凡是有证据指向接班者的条目，被裁掉要提回来，且必须三条一起：破例要有据（取代句指名道姓，",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000018000,
+   "updated_at": 1763000018000
+  },
+  {
+   "id": "0mwpu3hh",
+   "level": "rules",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "反思这类自动动作必须由事",
+   "content": "反思这类自动动作必须由事故本身触发，不许靠轮询或关键词：主人原话（m103380）「记忆反思功能逻辑有缺陷 他应该在重大bug论要自己调用」——遇到重大 bug 当场就动，不许等攒够步数；也不许把「用",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000019000,
+   "updated_at": 1763000019000
+  },
+  {
+   "id": "0mwpqwek",
+   "level": "rules",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "评测台禁止无预算花主人的",
+   "content": "评测台禁止无预算花主人的 key：任何发 LLM 请求的实验，必须先报次数与估算成本、必须设 OMNI_MAX_CALLS 上限、并发≤3；默认 OMNI_ALLOW_SPEND 未设即 exit(2",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000020000,
+   "updated_at": 1763000020000
+  },
+  {
+   "id": "0mwpe2gf",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "宏记忆融合",
+   "title": "回执设计原则（自己立、也",
+   "content": "回执设计原则（自己立、也用来做取舍）：同一个事实在回执里出现几次，就该有几份价值。重复印一遍正文是噪声（0.2.126 去重），重复印一遍时间也是噪声（0.2.128 只给命中行加分钟）；逐行补字段看",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000021000,
+   "updated_at": 1763000021000
+  },
+  {
+   "id": "0mwp4t4o",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "主人要的「拿评测结果看排",
+   "content": "主人要的「拿评测结果看排名」标准做法：不满足于检索命中率，必须把官方六步管线（ingestion → search → responses → eval → metric → report）跑到底拿 ",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000022000,
+   "updated_at": 1763000022000
+  },
+  {
+   "id": "0mwn1i95",
+   "level": "rules",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "打磨一个缺陷时的验收四件",
+   "content": "打磨一个缺陷时的验收四件套（用户反复要求「按商业标准」，实际必须同时做到）：①判据条目进 tools/criteria.mjs 的 contractChecklist（断言到具体分支，别只判关键词在不",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000023000,
+   "updated_at": 1763000023000
+  },
+  {
+   "id": "0mwmowr9",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "给 DSH 插件改代码的",
+   "content": "给 DSH 插件改代码的工作流三件套（每轮都要走一遍）：① 改第一行代码前先做备份到 `D:\\备份\\<时间戳>-<任务名>\\`（`l` = `D:\\dsh-home\\vendor\\dsh-macro-",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000024000,
+   "updated_at": 1763000024000
+  },
+  {
+   "id": "0mwmow1o",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "任何对用户输入的「上限」",
+   "content": "任何对用户输入的「上限」都不许做成静默截断：要么把条数报出来（「多出来的 N 条已排队」），要么直接把超出的部分接住（进队列/降级重试）。写死一个 `slice(0, 12)` 这种上限，看起来是「防",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000025000,
+   "updated_at": 1763000025000
+  },
+  {
+   "id": "0mwmn89h",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh,dsh-macro-memory",
+   "title": "判断「这条失败要不要重试",
+   "content": "判断「这条失败要不要重试」时，分支顺序本身就是结论，必须按「确定性从高到低」排：结构判据（r.entry === undefined）> 语义确定（isLinked / isSelfPairText）",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000026000,
+   "updated_at": 1763000026000
+  },
+  {
+   "id": "0mwmi7vi",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "重构的验收口径（0.2.",
+   "content": "重构的验收口径（0.2.22 定，适用于所有以后的结构手术）：不是「测试还绿」，而是逐条对得上——返回文本、降级文案、错误原文、卡片标题、description 一字不改；并且上一版留下的断言（0.2",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000027000,
+   "updated_at": 1763000027000
+  },
+  {
+   "id": "0mwmgxay",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "自检体系要回答三个递进的",
+   "content": "自检体系要回答三个递进的问题，缺一层就会自己骗自己：①「跑挂了吗」——只看退出码，把某支断言整段注释掉仍然全绿；②「该有的条数都在吗」——记 PASS 行数基线（0.2.18 baselines.js",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000028000,
+   "updated_at": 1763000028000
+  },
+  {
+   "id": "0mwmeyus",
+   "level": "rules",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "主人的验收口径（适用于 ",
+   "content": "主人的验收口径（适用于 dsh-macro-memory 每次发版，原文措辞）：「按照商业标准」「不能砍掉meow原有的功能移植」「不要加没有用的功能」「继续完善两个插件的联动和融合」「以meow为主",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000029000,
+   "updated_at": 1763000029000
+  },
+  {
+   "id": "0mwm84py",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "全局",
+   "title": "改任何被构建/打包/拼接",
+   "content": "改任何被构建/打包/拼接进产物的源文件后，必须重建产物，并在产物里 grep 到改动标记才算生效。实例：dsh-macro-memory 改 vendor/meow-memory/lib/client",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000030000,
+   "updated_at": 1763000030000
+  },
+  {
+   "id": "0mwm784d",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "全局",
+   "title": "凡记忆里写了\"当前反例 ",
+   "content": "凡记忆里写了\"当前反例 / 现状是 / 目前还未\"的条目，都属于会腐烂的断言：一旦对应代码或配置落地，同轮把该条改成\"已落地 + 落地方式 + 验证脚本\"，不留旧句。新会话的第一诊断来自记忆，不是来自",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000031000,
+   "updated_at": 1763000031000
+  },
+  {
+   "id": "0mwpu336",
+   "level": "topic",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "反思（dream）逻辑的",
+   "content": "反思（dream）逻辑的三步演进，2026-11-21，每层都因为上一层看不见某种失败： ① 0.2.133 及之前 =「连续工具步数 ≥ reflectTurns(7) + 用户骂人正则」两档判定 ",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000032000,
+   "updated_at": 1763000032000
+  },
+  {
+   "id": "0mwpv125",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "探针里给新工作区写记忆前",
+   "content": "探针里给新工作区写记忆前必须先 trustWorkspace：mkdtemp 出来的目录带 `.dsh-meow` 会被判「非本机创建」，`memory_remember` 直接抛「此工作区自带未信任",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000033000,
+   "updated_at": 1763000033000
+  },
+  {
+   "id": "0mwoybpd",
+   "level": "lesson",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "探针要写库就必须自带 m",
+   "content": "探针要写库就必须自带 mkdtemp 工作区；且因为 meow 的信任门（#64 `refuseWrite` 先于建库执行，只有 `getDb` 的 creating 分支会 registerCrea",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000034000,
+   "updated_at": 1763000034000
+  },
+  {
+   "id": "0mwpsfb0",
+   "level": "project",
+   "status": "active",
+   "importance": 2,
+   "project": "OmniMemEval",
+   "title": "OmniMemEval ",
+   "content": "OmniMemEval 是主人用来给宏记忆「按官方口径拿排名」的评测台，2026-11-21 起**已封存**：不再跑 locomo、不再发 LLM 请求花 key（除非主人点名），因为一晚 omni",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000035000,
+   "updated_at": 1763000035000
+  },
+  {
+   "id": "0mwpsco0",
+   "level": "project",
+   "status": "active",
+   "importance": 4,
+   "project": "dsh-macro-memory",
+   "title": "dsh-macro-me",
+   "content": "dsh-macro-memory 主线（goal「神级记忆系统」）：0.2.145 每轮星图邻域注入 → 0.2.146 噪声地板（df 判据剔噪声词、分子分母同剔）→ 0.2.147 标识符原样匹配",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000036000,
+   "updated_at": 1763000036000
+  },
+  {
+   "id": "0mwps9r9",
+   "level": "project",
+   "status": "active",
+   "importance": 3,
+   "project": "DSH Memory Macro-Regulation System",
+   "title": "0.2.133（D:\\d",
+   "content": "0.2.133（D:\\dsh-home\\vendor\\dsh-macro-memory，提交 d8693ee + 634e44f）：调取精度三刀 + 星图扩散默认开 + 反思闸门修一票否决。①vend",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000037000,
+   "updated_at": 1763000037000
+  },
+  {
+   "id": "0mwm6xq7",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "dsh-macro-me",
+   "content": "dsh-macro-memory 的注入准则（第五条之外补）：变化的内容不进 system prompt 前缀——system prompt 只放整会话稳定的 L0 段，动态/差分内容放工具返回或会话",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000038000,
+   "updated_at": 1763000038000
+  },
+  {
+   "id": "0mwm6qtl",
+   "level": "rules",
+   "status": "active",
+   "importance": 3,
+   "project": "dsh-macro-memory",
+   "title": "dsh-macro-me",
+   "content": "dsh-macro-memory 的设计准则（由「上位平替 + 可视化 + 极致省 token」倒推）：①任何新增能力先算 token 账——注入体积、每轮固定开销、dream 调用成本，不能只说\"更",
+   "keywords": [],
+   "source_session": "gold-fixture",
+   "created_at": 1763000039000,
+   "updated_at": 1763000039000
+  }
+ ],
+ "queries": [
+  {
+   "q": "0.2.148 改了什么",
+   "want": [
+    "0mwq84ts"
+   ]
+  },
+  {
+   "q": "0.2.148 做了什么",
+   "want": [
+    "0mwq84ts"
+   ]
+  },
+  {
+   "q": "0.2.147 改了什么",
+   "want": [
+    "0mwq7e84"
+   ]
+  },
+  {
+   "q": "0.2.146 加了什么",
+   "want": [
+    "0mwq5zzv"
+   ]
+  },
+  {
+   "q": "往 verify 里插断言段要注意什么",
+   "want": [
+    "0mwq855m"
+   ]
+  },
+  {
+   "q": "explain 里的数字容差给多少",
+   "want": [
+    "0mwq858p"
+   ]
+  },
+  {
+   "q": "PowerShell 里怎么跑多行 python",
+   "want": [
+    "0mwq85c6"
+   ]
+  },
+  {
+   "q": "源码锚里的转义怎么写",
+   "want": [
+    "0mwq7eb7"
+   ]
+  },
+  {
+   "q": "a/b 正则为什么要允许末段带点",
+   "want": [
+    "0mwq7ee0"
+   ]
+  },
+  {
+   "q": "补丁叠加最容易踩什么",
+   "want": [
+    "0mwq7fdx"
+   ]
+  },
+  {
+   "q": "基线要跑几轮才收敛",
+   "want": [
+    "0mwq7fh1"
+   ]
+  },
+  {
+   "q": "噪声词剔掉后分母怎么办",
+   "want": [
+    "0mwq6032"
+   ]
+  },
+  {
+   "q": "0.2.146 NF6 为什么假红",
+   "want": [
+    "0mwq614d"
+   ]
+  },
+  {
+   "q": "Get-Date 的 epoch 为什么会偏",
+   "want": [
+    "0mwq617y"
+   ]
+  },
+  {
+   "q": "推送欠账要不要每版都还",
+   "want": [
+    "0mwq610a"
+   ]
+  },
+  {
+   "q": "update-baselines 跑一轮够不够",
+   "want": [
+    "0mwn9xk3"
+   ]
+  },
+  {
+   "q": "publishTimestamp 该写什么值",
+   "want": [
+    "0mwo9o91"
+   ]
+  },
+  {
+   "q": "市场索引要改几个文件",
+   "want": [
+    "0mwoduq1"
+   ]
+  },
+  {
+   "q": "上传到 github 什么时候才允许",
+   "want": [
+    "0mwq606x",
+    "0mwq610a"
+   ]
+  },
+  {
+   "q": "收窄旋钮凭什么按分数切",
+   "want": [
+    "0mwq3apl"
+   ]
+  },
+  {
+   "q": "反思应该由什么触发",
+   "want": [
+    "0mwpu3hh"
+   ]
+  },
+  {
+   "q": "跑评测能不能花主人的 key",
+   "want": [
+    "0mwpqwek"
+   ]
+  },
+  {
+   "q": "回执里重复印正文算不算噪声",
+   "want": [
+    "0mwpe2gf"
+   ]
+  },
+  {
+   "q": "拿评测结果看排名要跑哪六步",
+   "want": [
+    "0mwp4t4o"
+   ]
+  },
+  {
+   "q": "打磨缺陷的验收四件套",
+   "want": [
+    "0mwn1i95"
+   ]
+  },
+  {
+   "q": "改插件代码前要不要先备份",
+   "want": [
+    "0mwmowr9"
+   ]
+  },
+  {
+   "q": "上限能不能静默截断",
+   "want": [
+    "0mwmow1o"
+   ]
+  },
+  {
+   "q": "重试判断的分支顺序怎么排",
+   "want": [
+    "0mwmn89h"
+   ]
+  },
+  {
+   "q": "重构的验收口径是什么",
+   "want": [
+    "0mwmi7vi"
+   ]
+  },
+  {
+   "q": "自检体系要回答哪三个问题",
+   "want": [
+    "0mwmgxay"
+   ]
+  },
+  {
+   "q": "按商业标准是哪几条验收口径",
+   "want": [
+    "0mwmeyus"
+   ]
+  },
+  {
+   "q": "改了源文件要重建产物吗",
+   "want": [
+    "0mwm84py"
+   ]
+  },
+  {
+   "q": "会腐烂的断言怎么处理",
+   "want": [
+    "0mwm784d"
+   ]
+  },
+  {
+   "q": "dream 逻辑三步演进",
+   "want": [
+    "0mwpu336"
+   ]
+  },
+  {
+   "q": "探针写库为什么要 mkdtemp 和 trustWorkspace",
+   "want": [
+    "0mwpv125",
+    "0mwoybpd"
+   ]
+  },
+  {
+   "q": "探针为什么要自带工作区",
+   "want": [
+    "0mwpv125",
+    "0mwoybpd"
+   ]
+  },
+  {
+   "q": "评测台为什么封存",
+   "want": [
+    "0mwpsfb0"
+   ]
+  },
+  {
+   "q": "现在主线推进到哪一版",
+   "want": [
+    "0mwpsco0",
+    "0mwq84ts"
+   ]
+  },
+  {
+   "q": "0.2.133 调取精度改了什么",
+   "want": [
+    "0mwps9r9"
+   ]
+  },
+  {
+   "q": "变化的内容能不能进 system prompt",
+   "want": [
+    "0mwm6xq7"
+   ]
+  },
+  {
+   "q": "新增能力先算什么账",
+   "want": [
+    "0mwm6qtl"
+   ]
+  },
+  {
+   "q": "推送欠账现在什么规矩",
+   "want": [
+    "0mwq610a",
+    "0mwq606x"
+   ]
+  },
+  {
+   "q": "基线收敛这件事有几次教训",
+   "want": [
+    "0mwq7fh1",
+    "0mwn9xk3"
+   ]
+  },
+  {
+   "q": "市场索引时间戳踩过什么坑",
+   "want": [
+    "0mwo9o91",
+    "0mwq617y"
+   ]
+  },
+  {
+   "q": "评测台还能跑 locomo 吗",
+   "want": [
+    "0mwpsfb0"
+   ]
+  }
+ ]
+}

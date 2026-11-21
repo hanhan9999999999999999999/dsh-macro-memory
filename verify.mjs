@@ -908,7 +908,7 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 21 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    steps.length === 22 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -9637,8 +9637,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.148（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.148'"),
+    'GV 版本: 代码里是 0.2.149（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.149'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9766,8 +9766,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.148（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.148'"),
+    'GW 版本: 代码里是 0.2.149（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.149'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9914,8 +9914,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.148（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.148'"),
+    'VV 版本: 代码里是 0.2.149（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.149'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9991,6 +9991,99 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'VW13 文档: DESIGN 160 收在「价值是本身决定的，排位是最后一刻决定的」',
     vwDes.includes('## 160 ') && vwDes.includes('证据的价值是它本身决定的'),
+  )
+}
+
+/** ───────── GX（0.2.149）：准确率量尺 ───────── */
+{
+  const gold = JSON.parse(readFileSync(new URL('./tools/fixtures/gold-recall.json', import.meta.url), 'utf8'))
+  const MG = readFileSync(new URL('./tools/probe-gold.mjs', import.meta.url), 'utf8')
+  const MC = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8')
+  const MWg = await import('./vendor/meow-memory/lib/index.js')
+
+  // 语料形状：真实样张，不是合成的「全 fact 全 active」
+  check(
+    'GX1 语料 40 条样张 + 45 条问句',
+    gold.docs.length === 40 && gold.queries.length === 45,
+    `${gold.docs.length}/${gold.queries.length}`,
+  )
+  check(
+    'GX2 语料层数与状态有真东西（≥3 种层、含非 active）',
+    new Set(gold.docs.map((d) => d.level)).size >= 3 && gold.docs.some((d) => d.status !== 'active'),
+  )
+  check(
+    'GX3 每条问句都有非空 want 且都在语料里',
+    gold.queries.every((q) => Array.isArray(q.want) && q.want.length > 0) &&
+      new Set(gold.docs.map((d) => d.id)).size === gold.docs.length &&
+      gold.queries.every((q) => q.want.every((id) => gold.docs.some((d) => d.id === id))),
+  )
+  check(
+    'GX4 问句不是抄正文（没有一条问句整句出现在任何样张正文里）',
+    gold.queries.every((q) => !gold.docs.some((d) => String(d.content).includes(q.q))),
+  )
+
+  // 三档口径与阈值：只读探针自带断言，阈值不许写死在注释里
+  check('GX5 hit@1 门槛 ≥ 0.80', MG.includes('base.hit1 >= 0.8'))
+  check('GX6 hit@3 门槛 ≥ 0.95', MG.includes('base.hit3 >= 0.95'))
+  check('GX7 MRR 门槛 ≥ 0.88', MG.includes('base.mrr >= 0.88'))
+  check('GX8 三档聚合里 MRR 按名次倒数累加（不是命中即 1）', MG.includes('1 / (rank + 1)'))
+  check('GX9 只看聚合：单题命中不许当基线（want 是集合）', MG.includes('want.includes(id)'))
+
+  // 阴性对照：方向只报不判，判据只断言「量得到」
+  check(
+    'GX10 阴性对照抹平 importance，断言「必须变化」而不是「必须变差」',
+    MG.includes('Math.abs(flatDelta) > 1e-9') && !MG.includes('flatM.hit1 < base.hit1'),
+  )
+  check('GX11 阴性对照语料反序（顺序敏感的排名会露馅）', MG.includes('docs.slice().reverse()'))
+  check('GX12 同一输入跑两遍逐位相同（可复现）', MG.includes('again.hit1 === base.hit1'))
+
+  // 行为：真跑一遍，三档在合理区间且抹平 importance 确实改变了读数
+  const run = (corpus) => {
+    let h1 = 0
+    let h3 = 0
+    let mrr = 0
+    for (const { q, want } of gold.queries) {
+      const ids = MWg.search(q, corpus, { k: 5 }).map((h) => String(h.id))
+      const rank = ids.findIndex((id) => want.includes(id))
+      if (rank === 0) h1++
+      if (rank >= 0 && rank < 3) h3++
+      mrr += rank >= 0 ? 1 / (rank + 1) : 0
+    }
+    const n = gold.queries.length
+    return { hit1: h1 / n, hit3: h3 / n, mrr: mrr / n }
+  }
+  const b = run(gold.docs)
+  check('GX13 实跑 hit@1 达标', b.hit1 >= 0.8, b.hit1.toFixed(3))
+  check('GX14 实跑 hit@3 达标', b.hit3 >= 0.95, b.hit3.toFixed(3))
+  check('GX15 实跑 MRR 达标', b.mrr >= 0.88, b.mrr.toFixed(3))
+  const flatRun = run(gold.docs.map((d) => ({ ...d, importance: 2 })))
+  check(
+    'GX16 抹平 importance 后读数确实变了（尺子量得到这一手）',
+    Math.abs(flatRun.hit1 - b.hit1) > 1e-9,
+    `${b.hit1.toFixed(3)} → ${flatRun.hit1.toFixed(3)}`,
+  )
+
+  // 挂进总检查：新尺子必须进清单，否则等于没造
+  check('GX17 已挂进 check-all 清单', MC.includes("['tools/probe-gold.mjs',"))
+  check(
+    'GX18 清单文案说明量的是什么（准确率三档）',
+    MC.includes('准确率量尺') && MC.includes('hit@1'),
+  )
+
+  // 版本与文档锚
+  check(
+    'GX19 版本已到 0.2.149（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.149' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.149'"),
+  )
+  const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'GX20 文档写了这一刀（9.155 + 161）',
+    idG.includes('## 9.155 ') &&
+      idG.includes('没有一条探针回答「用户随口问一句，第一条是不是他要的那条」') &&
+      deG.includes('## 161 ') &&
+      deG.includes('如果一把尺子只会确认你，它不是尺子，是回音'),
   )
 }
 

@@ -59,6 +59,7 @@ const STEPS = [
   ['tools/probe-dup.mjs', '跨层重复：写时点名另一层、检索折叠逐字级重复、dedupe:false 看全量'],
   ['tools/probe-similar.mjs', '相似检索：基准与候选同一把尺子、本会话刚写的也算候选、端过的不再端'],
   ['tools/probe-ruler.mjs', '两把尺子：相似度（cosine）与逐字重复度（词集 Jaccard）并报、与写侧合并判据同源、长文嵌一句要点名'],
+  ['tools/probe-gold.mjs', '准确率量尺：40 条真实样张 × 45 条自然问句，hit@1 / hit@3 / MRR 三档 + 阴性对照'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
