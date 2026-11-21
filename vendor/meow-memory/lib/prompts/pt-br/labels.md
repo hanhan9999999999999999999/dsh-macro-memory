@@ -76,6 +76,7 @@
 - conflict.join: ; 
 - conflict.item: {level} {id} ({kind}: ele diz {theirs}, você acabou de escrever {mine})
 - search.statusDown: {n} destes resultados não estão em uso (stale = concluído ou substituído, archived = anulado): foram rebaixados para {stale} / {arch} e ordenados depois — não os trate como conclusão atual; use status:"active" para ver só os vigentes.
+- search.dedupeKept: outros {n} registros são quase idênticos (sobreposição ≥{th}%) e não foram repetidos: mantido {kept} (escolhido por em uso → mais novo → maior nota), descartados {dropped}. Use dedupe: false para ver tudo.
 - conflict.head: ⚠️ O acervo já diz a mesma coisa de outro jeito: {items}. Esta entrada foi gravada mesmo assim — mas se a antiga foi substituída por esta, o correto é passar supersedes (ou marcar status=stale via memory_update: nada é apagado, dá para voltar atrás), em vez de deixar duas versões lado a lado; ignore se forem coisas diferentes.
 - conflict.headUpdate: ⚠️ Depois desta edição o acervo ainda diz a mesma coisa de outro jeito: {items}. A edição foi aplicada mesmo assim — mas duas versões lado a lado fazem a próxima busca não saber em qual confiar: se aquelas entradas foram substituídas por esta edição, marque status=stale nelas (nada é apagado, dá para voltar atrás; uma nova gravação também resolve em um passo com supersedes), em vez de deixar as duas; ignore se forem coisas diferentes.
 - remember.error.content: memory_remember: content é obrigatório — acrescente o que você quer lembrar e tente de novo

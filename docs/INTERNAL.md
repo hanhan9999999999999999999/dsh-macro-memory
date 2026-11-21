@@ -8353,3 +8353,36 @@ created_at/updated_at/last_accessed_at）。`statusWeight(undefined)` 一律取 
 文案走 `safeKeyed("search.statusDown", …)`，zh / en / pt-br 三个 labels.md 都补了同键；
 probe-fusion 的 RP0–RP5 走真工具验「降权发生、按序、说出口、explain 可见、纯函数分数比」，
 verify 的 FW 段验源码锚点与三语齐备。
+
+## 9.147 折叠掉的那条，可能才是现在该看的那条（0.2.141）
+
+### 9.147.1 折叠原来是「先到先得」
+检索侧的去重（`foldNearDupes`）原本只有一个判据：榜上先出现、且与后者相似度过线的那条留下，
+后来者记进 `folded++` 就跳过。榜是按分数排的，所以这条规则的实际含义是**分高者留**。
+分数说的是「措辞贴不贴这次提问」，不是「这条还用不用」。一条被自己标成 stale 的旧说法，
+只要字面更像提问，就能把接手它、措辞朴素的那条折掉——回执上只剩一句「多半是同一句
+既存了 fact 又存了 lesson」，一声不响。0.2.140 刚把状态放进打分，这一处却还在把状态当空气。
+
+### 9.147.2 挑谁：在用 → 较新 → 分高
+`pickKeeper(members, byId)` 排序键三级：`statusWeight` 降序、`updated_at` 降序、`score` 降序。
+前两级是「这条现在还算数、以及谁接了谁的班」，第三级才是措辞贴合度。这样同一条记忆的
+新旧两版同时上榜时，留下的一定是还在用的那一版；状态相同时留新不留下旧；只有状态与时间
+都打平时才回到分数。榜的外层顺序不动——`kept` 是按原榜 `hits.filter(...)` 回来的，
+折叠只换掉组内代表，不重排榜单。
+
+### 9.147.3 折了谁要能追溯
+`foldNearDupes` 返回 `{ kept, folded, dropped }`，`dropped` 里每条记 `{ id, keep, newer }`：
+被折掉的是哪条、被谁代表、它比留下的那条新还是旧。回执走
+`safeKeyed("search.dedupeKept", …)` 点名两侧（短 id 8 位，`、` 连接），并说明挑法是
+「在用 → 较新 → 分高」。可追溯性不是「库里有就能查到」，是**回执上看得见这次为什么没列它**。
+`dedupe: false` 这条出路一个字没动：折叠是默认行为，不是删除。
+
+### 9.147.4 探针里踩到的两个假绿
+`db.list('fact', { status: 'all' })` 返回 0 行——全量要传 `{}`，`status:'all'` 会被当成字面状态值。
+默认 `memory_search` 走 `db.listSearchable`，只含 active，所以验「退位那条被降权」必须显式
+`status:'all'`，否则两条都看不见、断言在空数组上恒真。两处都写进了 probe 的注释。
+
+### 9.147.5 覆盖
+probe-fusion 的 RQ0–RQ4：纯函数挑在用优先、`dropped` 记 `keep`、回执两侧点名、
+`dedupe:false` 两条都列、`pickKeeper` 分高但更旧时不压时间（**728 条全绿**）。
+verify 的 FY 段 5 条锚源码与三语，另有三条老锚点随签名同步（`foldNearDupes(aboveFloor, byId)`）。

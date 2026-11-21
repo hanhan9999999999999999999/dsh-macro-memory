@@ -76,6 +76,7 @@
 - conflict.join: ；
 - conflict.item: {level} {id}（{kind}：它写 {theirs}，你这次写 {mine}）
 - search.statusDown: 这次命中有 {n} 条不是在用的（stale=已完结或被取代，archived=作废）：它们已按 {stale} / {arch} 降权排在后面，别当成现在的结论用；只要在用的就在参数里加 status:"active"。
+- search.dedupeKept: 另有 {n} 条内容几乎一样（重复度 ≥{th}%）没重复列：留下的是 {kept}（按「在用 → 较新 → 分高」挑的），被折掉的是 {dropped}。要看全量传 dedupe: false。
 - conflict.head: ⚠️ 库里已有同一件事的另一种说法：{items}。这条照样写下来了——但如果它已被这次的信息取代，正确做法是给它们传 supersedes（或 memory_update 把 status 设 stale，不删、可反悔），别让两个版本并排躺在库里；若说的是不同对象，忽略这条提醒。
 - conflict.headUpdate: ⚠️ 改完之后，库里还有同一件事的另一种说法：{items}。这条改动照样落库了——可两个版本并排睡着，下次检索分不清该信哪个：若那些条目已被这次的信息取代，就把它们 status 设 stale（不删、可反悔；要重写时也可以用 supersedes 一次做完），别让两个版本并排睡；若是不同对象，忽略这条。
 - remember.error.content: memory_remember: content 参数必填，请补充要记住的内容后重试

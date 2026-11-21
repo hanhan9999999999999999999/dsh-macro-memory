@@ -2818,17 +2818,46 @@ function conflictWarn(list, db, mode) {
   return safeKeyed("conflict.head", "\u26a0\ufe0f \u5e93\u91cc\u5df2\u6709\u540c\u4e00\u4ef6\u4e8b\u7684\u53e6\u4e00\u79cd\u8bf4\u6cd5\uff1a{items}\u3002\u8fd9\u6761\u7167\u6837\u5199\u4e0b\u4e86\u2014\u2014\u4f46\u5982\u679c\u5b83\u5df2\u88ab\u8fd9\u6b21\u7684\u4fe1\u606f\u53d6\u4ee3\uff0c\u6b63\u786e\u505a\u6cd5\u662f\u7ed9\u5b83\u4eec\u4f20 supersedes\uff08\u6216 memory_update \u628a status \u8bbe stale\uff0c\u4e0d\u5220\u3001\u53ef\u53cd\u6094\uff09\uff0c\u522b\u8ba9\u4e24\u4e2a\u7248\u672c\u5e76\u6392\u8eba\u5728\u5e93\u91cc\uff1b\u82e5\u8bf4\u7684\u662f\u4e0d\u540c\u5bf9\u8c61\uff0c\u5ffd\u7565\u8fd9\u6761\u63d0\u9192\u3002", { items: items.join(sep) });
 }
 
-function foldNearDupes(hits) {
-  const kept = [];
-  let folded = 0;
+// [macro-fusion 0.2.141] 折叠以前是「谁分高留谁」：同组里第一条不动，后面一律折掉。可「分高」
+// 说的是措辞贴不贴，不是「这条还用不用」——一条已退位的旧说法只要写得更像提问，就能把接手它的
+// 新说法折掉，回执只留一句「多半是同一句既存了 fact 又存了 lesson」。这是**把新的折了、把旧的留下**，
+// 而且一声不响。现在同组里按「在用优先 → 较新优先 → 分高优先」挑一条留下，被折的逐条点名。
+function foldRank(h, byId) {
+  const row = byId ? byId.get(h.id) : null;
+  return {
+    st: statusWeight(row?.status ?? h.status),
+    at: Number(row?.updated_at ?? h.updated_at ?? 0) || 0,
+    sc: Number(h.score ?? 0) || 0
+  };
+}
+function pickKeeper(members, byId) {
+  return members.slice().sort((a, b) => {
+    const ra = foldRank(a, byId);
+    const rb = foldRank(b, byId);
+    if (ra.st !== rb.st) return rb.st - ra.st;
+    if (ra.at !== rb.at) return rb.at - ra.at;
+    return rb.sc - ra.sc;
+  })[0];
+}
+function foldNearDupes(hits, byId) {
+  const groups = [];
   for (const h of hits) {
-    if (kept.some((k) => similarity(k.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD)) {
-      folded++;
-      continue;
-    }
-    kept.push(h);
+    const g = groups.find((one) => similarity(one.head.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD);
+    if (g) g.members.push(h);
+    else groups.push({ head: h, members: [h] });
   }
-  return { kept, folded };
+  const keptIds = /* @__PURE__ */ new Set();
+  const dropped = [];
+  for (const g of groups) {
+    const keep = pickKeeper(g.members, byId);
+    keptIds.add(String(keep.id));
+    for (const m of g.members) {
+      if (String(m.id) === String(keep.id)) continue;
+      dropped.push({ id: String(m.id), keep: String(keep.id), newer: foldRank(m, byId).at > foldRank(keep, byId).at });
+    }
+  }
+  const kept = hits.filter((h) => keptIds.has(String(h.id)));
+  return { kept, folded: dropped.length, dropped };
 }
 // [macro-fusion 0.2.87] 「合并」以前是「用这次的参数把旧条目整条覆盖一遍」：关键词被整个换掉
 // （旧的一条不剩，检索就漏）、归属被搬到另一个项目（回执不提）、更短的新内容把旧细节吃掉
@@ -3330,10 +3359,18 @@ function searchTool(dir) {
       const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
       const belowFloor = ranked.length - aboveFloor.length;
       const dedupeOn = parsed.dedupe !== false;
-      const foldedRes = dedupeOn ? foldNearDupes(aboveFloor) : { kept: aboveFloor, folded: 0 };
+      const foldedRes = dedupeOn ? foldNearDupes(aboveFloor, byId) : { kept: aboveFloor, folded: 0, dropped: [] };
       const unique = foldedRes.kept;
+      // [macro-fusion 0.2.141] 折了谁、留下的是谁，都要点名——否则「另一条更该信」这件事永远看不见。
+      const foldKept = [...new Set((foldedRes.dropped ?? []).map((d) => String(d.keep).slice(0, 8)))].join("、");
+      const foldDropped = (foldedRes.dropped ?? []).map((d) => String(d.id).slice(0, 8)).join("、");
       const dedupeNote = foldedRes.folded > 0
-        ? `另有 ${foldedRes.folded} 条内容几乎一样（重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%）没重复列：多半是同一句既存了 fact 又存了 lesson。要看全量传 dedupe: false。`
+        ? safeKeyed("search.dedupeKept", "另有 {n} 条内容几乎一样（重复度 ≥{th}%）没重复列：留下的是 {kept}（按「在用 → 较新 → 分高」挑的），被折掉的是 {dropped}。要看全量传 dedupe: false。", {
+          n: String(foldedRes.folded),
+          th: String(Math.round(DEDUP_THRESHOLD * 100)),
+          kept: foldKept,
+          dropped: foldDropped
+        })
         : "";
       const relNote = belowFloor > 0
         ? `另有 ${belowFloor} 条相关度不到榜首的 ${Math.round(minRel * 100)}%（最高的 ${Math.round(ranked[aboveFloor.length].score * 100) / 100} 分，榜首 ${Math.round(topScore * 100) / 100} 分）没展开：它们多半只沾到一两个词，展开会挤掉真正相关的条目、也让回执变长。要看全量就传 min_rel=0。`
@@ -7699,6 +7736,8 @@ export {
   scanTurn,
   search,
   statusWeight,
+  foldNearDupes,
+  pickKeeper,
   seedTrustedWorkspaces,
   sendMemoryTurn,
   sessionEventsOf,

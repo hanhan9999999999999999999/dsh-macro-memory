@@ -6931,6 +6931,66 @@ check(
   }
 }
 
+// RQ0-RQ4（0.2.141）：折叠以前是「谁分高留谁」——一条退位的旧说法只要措辞更贴，就能把接手它的
+// 新说法折掉，回执只留一句「多半是同一句既存了 fact 又存了 lesson」。这一组验「挑对留下哪条」
+// 与「折了谁要说得出来」。
+{
+  const rqWs = mkdtempSync(join(tmpdir(), 'meow-fold-'))
+  Meow.trustWorkspace(rqWs)
+  const rqExec = { agent: { session: { header: { cwd: rqWs, id: 'sess-fold' } } } }
+  const rqRun = (name, args) => tools.get(name).execute(args, rqExec)
+  const rqDb = Meow.getDb(rqWs, '.dsh-meow')
+  const rqText = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+  const rqBody = '折叠探针：同一句被写了两次，只有状态与时间不同，用来验折叠留哪一条。'
+  const rqKw = ['折叠探针', '同句两写', '留下哪条', '在用优先', '较新优先', '分高优先', '可追溯', '去重', '回执', '点名']
+  const rqStale = rqDb.insert({ level: 'fact', content: rqBody, keywords: rqKw, importance: 2, project: '探针折叠' })
+  const rqFresh = rqDb.insert({ level: 'fact', content: rqBody, keywords: rqKw, importance: 2, project: '探针折叠' })
+  rqDb.update('fact', rqStale.id, { status: 'stale' })
+  rqDb.p('UPDATE fact SET updated_at = ? WHERE id = ?').run(Date.now() - 86400000, rqStale.id)
+  const rqStaleShort = String(rqStale.id).slice(0, 8)
+  const rqFreshShort = String(rqFresh.id).slice(0, 8)
+  const rqRows = rqDb.list('fact', {}).filter((r) => String(r.content ?? '').includes('折叠探针'))
+  const rqDocs = rqRows.map((r) => ({ ...r, keywords: r.keywords ?? [] }))
+  const rqGroups = Meow.foldNearDupes(rqDocs, new Map(rqDocs.map((r) => [r.id, r])))
+  check(
+    'RQ0 纯函数：同组里挑「在用优先 → 较新优先」，不挑那条更旧的退位说法',
+    rqGroups.kept.length === 1 && String(rqGroups.kept[0].id) === String(rqFresh.id) && rqGroups.folded === 1,
+    `kept=${String(rqGroups.kept[0]?.id ?? '').slice(0, 8)} folded=${rqGroups.folded}`,
+  )
+  check(
+    'RQ1 纯函数：被折掉的是谁要记在结果里（含它被谁接手）',
+    (rqGroups.dropped ?? []).length === 1 &&
+      String(rqGroups.dropped[0].id) === String(rqStale.id) &&
+      String(rqGroups.dropped[0].keep) === String(rqFresh.id),
+    JSON.stringify(rqGroups.dropped ?? []).slice(0, 160),
+  )
+  const rqSearch = rqText(await rqRun('memory_search', { query: '折叠探针 同一句 被写了两次', status: 'all', k: 5, content_max: 60 }))
+  check(
+    'RQ2 回执：留下的与被折的都点名（追溯得到，不用翻 dedupe:false 才看得见）',
+    rqSearch.includes(rqFreshShort) && rqSearch.includes(rqStaleShort) && rqSearch.includes('留下的是') && rqSearch.includes('被折掉的是'),
+    rqSearch.replace(/\s+/g, ' ').slice(0, 260),
+  )
+  const rqAll = rqText(await rqRun('memory_search', { query: '折叠探针 同一句 被写了两次', status: 'all', k: 5, content_max: 60, dedupe: false }))
+  check(
+    'RQ3 退路还在：dedupe:false 时两条都列出来（折叠只是默认行为，不是删除）',
+    rqAll.includes(rqFreshShort) && rqAll.includes(rqStaleShort) && !rqAll.includes('被折掉的是'),
+    rqAll.replace(/\s+/g, ' ').slice(0, 200),
+  )
+  const rqPick = Meow.pickKeeper(
+    [
+      { id: 'old', score: 99, content: 'x', status: 'active', updated_at: 1 },
+      { id: 'new', score: 1, content: 'x', status: 'active', updated_at: 2 }
+    ],
+    null,
+  )
+  check('RQ4 分高但更旧：分不压时间（措辞贴不贴，不代表还用不用）', rqPick.id === 'new')
+  try {
+    rmSync(rqWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
 for (const d of disposers) {
   try {
     d()

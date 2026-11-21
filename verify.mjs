@@ -5832,7 +5832,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     '下限: 排序第一位永远留着（下限再高也不许把结果收空），且先按分数线滤再折叠（折叠只动尾巴不动榜首）',
     meowSrc.includes(
       'const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;',
-    ) && meowSrc.indexOf('const aboveFloor') < meowSrc.indexOf('foldNearDupes(aboveFloor)'),
+    ) && meowSrc.indexOf('const aboveFloor') < meowSrc.indexOf('foldNearDupes(aboveFloor, byId)'),
   )
   check(
     '下限: 被收掉的尾巴要报数（还剩几条、最高几分），并给出 min_rel=0 的出路',
@@ -5932,13 +5932,13 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     '跨层重复: 检索侧折叠逐字级重复，且只折在分数排序之后（保留榜首那条）',
-    meowSrc.includes('function foldNearDupes(hits) {') &&
-      meowSrc.includes('kept.some((k) => similarity(k.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD)') &&
-      meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(aboveFloor) : { kept: aboveFloor, folded: 0 };'),
+    meowSrc.includes('function foldNearDupes(hits, byId) {') &&
+      meowSrc.includes('similarity(one.head.content ?? "", h.content ?? "") >= DEDUP_THRESHOLD') &&
+      meowSrc.includes('const foldedRes = dedupeOn ? foldNearDupes(aboveFloor, byId) : { kept: aboveFloor, folded: 0, dropped: [] };'),
   )
   check(
     '跨层重复: 折叠报条数、说清常见成因，并给 dedupe: false 出口（收窄必带出口）',
-    meowSrc.includes('另有 ${foldedRes.folded} 条内容几乎一样（重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%）没重复列') &&
+    meowSrc.includes('safeKeyed("search.dedupeKept"') &&
       meowSrc.includes('要看全量传 dedupe: false') &&
       meowSrc.includes('dedupe: { type: "boolean", default: true, description: T("memory_search.param.dedupe") }'),
   )
@@ -9437,6 +9437,28 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check('FW 行为: 正文与时间一样时，在用那条排前面，且分数比正好 0.6', rankedFw.length === 2 && rankedFw[0].id === 'a' && Math.abs(rankedFw[1].score / rankedFw[0].score - 0.6) < 1e-6)
   check('FW 文案: 降权要在回执里说出口（键 + 三语）', meowSrc.includes('search.statusDown') && ['zh', 'en', 'pt-br'].every((lang) => readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8').includes('- search.statusDown:')))
   check('FW 克制: 没有非 active 命中时一个字节都不多花', meowSrc.includes('const statusDownNote = offNow.length === 0'))
+}
+
+// FY（0.2.141）：折叠挑谁留下，决定你读到的是新的还是旧的。这一组验「挑法、点名、可退」。
+{
+  const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const meowMod = await import('./vendor/meow-memory/lib/index.js')
+  check('FY 源码: 折叠按「在用 → 较新 → 分高」挑一条（不再是先到先得）', meowSrc.includes('function pickKeeper(members, byId)') && meowSrc.includes('if (ra.st !== rb.st) return rb.st - ra.st;') && meowSrc.includes('if (ra.at !== rb.at) return rb.at - ra.at;'))
+  check('FY 源码: 折叠结果记下「谁被折、被谁接手」', meowSrc.includes('dropped.push({ id: String(m.id), keep: String(keep.id)'))
+  check('FY 源码: 回执点名留下的与被折的（三语）', meowSrc.includes('search.dedupeKept') && ['zh', 'en', 'pt-br'].every((lang) => readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8').includes('- search.dedupeKept:')))
+  const docsFy = [
+    { id: 'stale-new', level: 'fact', content: '同一句话，状态与时间不同', keywords: [], importance: 2, updated_at: 900, status: 'stale', score: 9 },
+    { id: 'active-old', level: 'fact', content: '同一句话，状态与时间不同', keywords: [], importance: 2, updated_at: 100, status: 'active', score: 5 },
+  ]
+  const byIdFy = new Map(docsFy.map((d) => [d.id, d]))
+  const foldFy = meowMod.foldNearDupes(docsFy, byIdFy)
+  check('FY 行为: 在用的旧条目胜过退位的新条目（「还用不用」压过「写得多新」）', foldFy.kept.length === 1 && foldFy.kept[0].id === 'active-old' && foldFy.dropped.length === 1 && foldFy.dropped[0].keep === 'active-old')
+  const docsFy2 = [
+    { id: 'a-old', level: 'fact', content: '同一句话，只差时间', keywords: [], importance: 2, updated_at: 100, status: 'active', score: 9 },
+    { id: 'a-new', level: 'fact', content: '同一句话，只差时间', keywords: [], importance: 2, updated_at: 900, status: 'active', score: 1 },
+  ]
+  const foldFy2 = meowMod.foldNearDupes(docsFy2, new Map(docsFy2.map((d) => [d.id, d])))
+  check('FY 行为: 同状态同分时较新的赢（分高不能压过时间）', foldFy2.kept.length === 1 && foldFy2.kept[0].id === 'a-new')
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
