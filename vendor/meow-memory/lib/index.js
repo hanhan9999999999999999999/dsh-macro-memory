@@ -4504,7 +4504,7 @@ var DREAM_REPEAT_MIN = 0.8;
 var DREAM_REPEAT_SCAN = 40;
 function dreamRepeatIssues(allRows, db) {
   if (allRows.length === 0) return { list: [], total: 0, scanned: 0 };
-  if (db === undefined || typeof db.list !== "function") return { list: [], total: 0, scanned: 0 };
+  if (!db || typeof db.list !== "function") return { list: [], total: 0, scanned: 0 };
   const here = new Set(allRows.map((r) => String(r.id)));
   const byHead = /* @__PURE__ */ new Map();
   const byKw = /* @__PURE__ */ new Map();
