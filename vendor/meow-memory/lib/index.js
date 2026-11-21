@@ -1996,6 +1996,41 @@ var IDENT_W = 0.6;
 var IDENT_ID_W = 1.5;
 var IDENT_BASE_CREDIT = 0.7;
 var IDENT_STEM_CREDIT = 0.5;
+// [macro-fusion 0.2.150] 证据先分档，档内才谈权重。
+// IMP_BAND —— 相邻两条记忆的词分差不到 17%（raw ≥ 0.85 × 上一档锚点）才算「同一档」，
+//   权重（importance / 新鲜度 / 状态）只能在这一档里改判顺序，不能把一个证据差两倍的条目
+//   抬成榜首（实测「0.2.147 改了什么」：总览 bm25 3.833 靠 impW 1.75 压过 bm25 7.02 的正解）。
+// RECENCY_FLOOR —— 时间折扣有下限：旧记忆最多折到 0.6，不该因为旧就从榜上消失
+//   （实测「评测台为什么封存」：正解 w=0.08，词分 6.869 却掉到第 5）。
+// 这两个数跟 recency 豁免用的是同一个 85% 带——口径本来就该是一件事。
+var IMP_BAND = 0.85;
+var RECENCY_FLOOR = 0.6;
+
+// 按证据分档：先按词分排，再从头扫，凡是掉到本档锚点 85% 以下就开新档。
+// 档号升序即证据强度降序；权重只在同档内比较，跨档永远不许越级。
+function bandize(hits, rawKey) {
+  if (hits.length < 2) return hits;
+  const byRaw = hits.slice().sort((a, b) => b[rawKey] - a[rawKey]);
+  const bandOf = new Map();
+  let band = -1;
+  let anchorRaw = 0;
+  for (const h of byRaw) {
+    // [macro-fusion 0.2.150] 指认（问的正是这条 id）是最强证据形态，词分为 0 也不许被扫到最后一档。
+    if (h._ident === true) {
+      bandOf.set(h, -1);
+      continue;
+    }
+    const r = h[rawKey];
+    if (band < 0 || r < IMP_BAND * anchorRaw) {
+      band += 1;
+      anchorRaw = r;
+    }
+    bandOf.set(h, band);
+  }
+  for (const [h, b] of bandOf) if (h.explain !== void 0) h.explain.band = b;
+  hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score));
+  return hits;
+}
 var IDENT_RES = [
   /[A-Za-z]:\\[^\s，。；、）)\]】]+/g,
   /(?:[\w.@-]+\/){2,}[\w.@-]+/g,
@@ -2166,13 +2201,15 @@ function search(query, docs, opts = {}) {
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
     let w = 1;
-    if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
-      w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
+    // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
+    if (now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+      w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
     }
     const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
     const stW = statusWeight(docs[di].status);
     hits.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
+      _raw: raw[di],
       id: docs[di].id,
       level: docs[di].level,
       title: docs[di].title,
@@ -2204,10 +2241,16 @@ function search(query, docs, opts = {}) {
       const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
       const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
       h.score += add;
+      if (idHit) h._ident = true;
       if (h.explain !== void 0) h.explain.identBonus = Math.round(add * 1e3) / 1e3;
     }
   }
-  hits.sort((a, b2) => b2.score - a.score);
+  // [macro-fusion 0.2.150] 分档排序：权重只能改判同档内的顺序，跨档不许越级。
+  bandize(hits, '_raw');
+  for (const h of hits) {
+    delete h._raw;
+    delete h._ident;
+  }
   return hits.slice(0, k);
 }
 function keywordHitScore(query, docs, opts = {}) {
@@ -2259,14 +2302,16 @@ function keywordHitScore(query, docs, opts = {}) {
     for (const t of qTf.keys()) if (tf[di].has(t)) overlap++;
     const coverage = len > 0 ? overlap / len : 0;
     let w = 1;
-    if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
-      w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
+    // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
+    if (now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+      w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
     }
     const impW = 1 + (docs[di].importance - 1) * 0.25;
     const stW = statusWeight(docs[di].status);
     const titleHit = tokenize(docs[di].title ?? "").some((t) => qTf.has(t));
     out.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
+      _raw: raw[di],
       id: docs[di].id,
       level: docs[di].level,
       title: docs[di].title,
@@ -2287,9 +2332,15 @@ function keywordHitScore(query, docs, opts = {}) {
       if (vb === void 0 || vb === null) continue;
       const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
       h.score += unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
+      if (idHit) h._ident = true;
     }
   }
-  out.sort((a, b) => b.score - a.score);
+  // [macro-fusion 0.2.150] 与 search 同口径：分档排序。
+  bandize(out, '_raw');
+  for (const h of out) {
+    delete h._raw;
+    delete h._ident;
+  }
   return out.slice(0, k);
 }
 function tfVector(toks) {

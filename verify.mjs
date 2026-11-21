@@ -9637,8 +9637,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.149（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.149'"),
+    'GV 版本: 代码里是 0.2.150（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.150'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9766,8 +9766,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.149（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.149'"),
+    'GW 版本: 代码里是 0.2.150（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.150'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9914,8 +9914,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.149（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.149'"),
+    'VV 版本: 代码里是 0.2.150（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.150'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9935,7 +9935,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 源码顺序：补分块必须在 push 循环之后（而不是写进 raw）
   const iPush = MW.indexOf('_vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di]')
   const iUnit = MW.indexOf('const unitScore = topScore > 0 ? topScore : 1;')
-  const iSort = MW.indexOf('sort((a, b2) => b2.score - a.score)')
+  const iSort = MW.indexOf("bandize(hits, '_raw')")
   check('VW1 补分块在 push 之后', iPush > 0 && iUnit > iPush, `${iPush}/${iUnit}`)
   check('VW2 补分块在 sort 之前（排位之前就定死）', iUnit > 0 && iSort > iUnit, `${iUnit}/${iSort}`)
   check('VW3 单位取榜首实际分数', MW.includes('const unitScore = topScore > 0 ? topScore : 1;'))
@@ -10023,16 +10023,19 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 
   // 三档口径与阈值：只读探针自带断言，阈值不许写死在注释里
-  check('GX5 hit@1 门槛 ≥ 0.80', MG.includes('base.hit1 >= 0.8'))
-  check('GX6 hit@3 门槛 ≥ 0.95', MG.includes('base.hit3 >= 0.95'))
-  check('GX7 MRR 门槛 ≥ 0.88', MG.includes('base.mrr >= 0.88'))
+  check('GX5 hit@1 门槛 ≥ 0.86', MG.includes('base.hit1 >= 0.86'))
+  check('GX6 hit@3 门槛 ≥ 0.99', MG.includes('base.hit3 >= 0.99'))
+  check('GX7 MRR 门槛 ≥ 0.92', MG.includes('base.mrr >= 0.92'))
   check('GX8 三档聚合里 MRR 按名次倒数累加（不是命中即 1）', MG.includes('1 / (rank + 1)'))
   check('GX9 只看聚合：单题命中不许当基线（want 是集合）', MG.includes('want.includes(id)'))
 
   // 阴性对照：方向只报不判，判据只断言「量得到」
   check(
-    'GX10 阴性对照抹平 importance，断言「必须变化」而不是「必须变差」',
-    MG.includes('Math.abs(flatDelta) > 1e-9') && !MG.includes('flatM.hit1 < base.hit1'),
+    'GX10 阴性对照换代：带内微案例证明重要度还活着，聚合上抹平它只要求「不许崩」',
+    MG.includes('G5a 带内重要度仍然改判') &&
+      MG.includes('G5b 带外重要度不许越级') &&
+      MG.includes('flatM.hit1 >= 0.86') &&
+      !MG.includes('flatM.hit1 < base.hit1'),
   )
   check('GX11 阴性对照语料反序（顺序敏感的排名会露馅）', MG.includes('docs.slice().reverse()'))
   check('GX12 同一输入跑两遍逐位相同（可复现）', MG.includes('again.hit1 === base.hit1'))
@@ -10053,13 +10056,13 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     return { hit1: h1 / n, hit3: h3 / n, mrr: mrr / n }
   }
   const b = run(gold.docs)
-  check('GX13 实跑 hit@1 达标', b.hit1 >= 0.8, b.hit1.toFixed(3))
-  check('GX14 实跑 hit@3 达标', b.hit3 >= 0.95, b.hit3.toFixed(3))
-  check('GX15 实跑 MRR 达标', b.mrr >= 0.88, b.mrr.toFixed(3))
+  check('GX13 实跑 hit@1 达标', b.hit1 >= 0.86, b.hit1.toFixed(3))
+  check('GX14 实跑 hit@3 达标', b.hit3 >= 0.99, b.hit3.toFixed(3))
+  check('GX15 实跑 MRR 达标', b.mrr >= 0.92, b.mrr.toFixed(3))
   const flatRun = run(gold.docs.map((d) => ({ ...d, importance: 2 })))
   check(
-    'GX16 抹平 importance 后读数确实变了（尺子量得到这一手）',
-    Math.abs(flatRun.hit1 - b.hit1) > 1e-9,
+    'GX16 抹平 importance 后仍然达标（先验不是证据，去掉它顶多平手）',
+    flatRun.hit1 >= 0.86 && flatRun.hit3 >= 0.99,
     `${b.hit1.toFixed(3)} → ${flatRun.hit1.toFixed(3)}`,
   )
 
@@ -10072,9 +10075,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.149（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.149' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.149'"),
+    'GX19 版本已到 0.2.150（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.150' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.150'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10084,6 +10087,100 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       idG.includes('没有一条探针回答「用户随口问一句，第一条是不是他要的那条」') &&
       deG.includes('## 161 ') &&
       deG.includes('如果一把尺子只会确认你，它不是尺子，是回音'),
+  )
+}
+
+/** ───────── VY（0.2.150）：证据先分档，档内才谈权重 ───────── */
+{
+  const MY = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const MYmod = await import('./vendor/meow-memory/lib/index.js')
+
+  check('VY1 常量 IMP_BAND = 0.85（相邻差 17% 内算同档）', MY.includes('var IMP_BAND = 0.85;'))
+  check('VY2 常量 RECENCY_FLOOR = 0.6（时间折扣有下限）', MY.includes('var RECENCY_FLOOR = 0.6;'))
+  check(
+    'VY3 分档器存在且在档内才比分数（bandize 里 sort 用 bandOf 再比 score）',
+    MY.includes('function bandize(hits, rawKey)') &&
+      MY.includes('(bandOf.get(a) - bandOf.get(b)) || (b.score - a.score)'),
+  )
+  check(
+    'VY4 两处新鲜度都用同一个 85% 带（IMP_BAND）而不是各自写死 0.85',
+    (MY.match(/raw\[di\] >= IMP_BAND \* maxRaw/g) || []).length === 2,
+  )
+  check(
+    'VY5 两处新鲜度都有下限（Math.max(RECENCY_FLOOR, recencyWeight(...))）',
+    (MY.match(/Math\.max\(RECENCY_FLOOR, recencyWeight\(/g) || []).length === 2,
+  )
+  check(
+    'VY6 两支打分器都挂词分给分档用（_raw 两处）',
+    (MY.match(/_raw: raw\[di\],/g) || []).length === 2,
+  )
+  check(
+    'VY7 两支打分器都走 bandize，且临时字段有死期',
+    (MY.match(/bandize\((hits|out), '_raw'\);/g) || []).length === 2 &&
+      (MY.match(/delete h\._ident;/g) || []).length === 2,
+  )
+  check(
+    'VY8 指认命中排最前（band -1），词分为 0 也不许被扫到最后一档',
+    MY.includes("if (h._ident === true) {") && MY.includes('bandOf.set(h, -1);'),
+  )
+  check('VY9 档号写进 explain（档位对调用方可见）', MY.includes('h.explain.band = b;'))
+
+  // 行为：同一句话两条记忆，档内由重要度改判
+  const vyDoc = (id, content, imp, extra) => ({
+    id, level: 'fact', title: content.slice(0, 8), content, keywords: [], importance: imp,
+    status: 'active', project: null, created_at: '2026-11-20T00:00:00.000Z',
+    updated_at: '2026-11-20T00:00:00.000Z', ...(extra || {}),
+  })
+  const vyA = MYmod.search('上传 github 之前 必须 问主人 点头', [
+    vyDoc('vy-hi', '上传 github 之前 必须 先问主人 点头 再 push', 4),
+    vyDoc('vy-lo', '上传 github 之前 必须 先问主人 点头 再 push', 2),
+  ], { k: 2, explain: true })
+  check(
+    'VY10 行为：同档内 important 高的在前（重要度没有被废掉）',
+    vyA[0]?.id === 'vy-hi' && vyA.every((h) => h.explain?.band === 0),
+  )
+
+  // 行为：带外条目即使分数更高也排后面
+  const vyB = MYmod.search('标识符 版本号 路径', [
+    vyDoc('vy-out-hi', '版本号 总览 主线 推进 到 哪一版', 4),
+    vyDoc('vy-out-lo', '标识符 版本号 路径 标识符 版本号 路径', 2),
+  ], { k: 2, explain: true })
+  check(
+    'VY11 行为：词分差一档就跨不过去（带外条目 band ≥ 1，榜首是 band 0）',
+    vyB[0]?.id === 'vy-out-lo' && vyB[0]?.explain?.band === 0 &&
+      vyB.find((h) => h.id === 'vy-out-hi')?.explain?.band >= 1,
+  )
+
+  // 行为：旧记忆留在榜上，权重停在 0.6
+  const vyC = MYmod.search('鲸落 深海 回声 泡沫', [
+    vyDoc('vy-new', '鲸落 深海 回声 泡沫 的 一次 记录', 2, { updated_at: '2026-11-21T00:00:00.000Z' }),
+    vyDoc('vy-old', '鲸落 只有 一个 词', 2, { updated_at: '2025-11-01T00:00:00.000Z' }),
+  ], { k: 2, explain: true })
+  const vyOld = vyC.find((h) => h.id === 'vy-old')
+  check(
+    'VY12 行为：时间折扣有下限（旧条 recencyWeight 停在 0.6 且仍在榜上）',
+    vyOld?.explain?.recencyWeight === 0.6 && vyC.some((h) => h.id === 'vy-old'),
+  )
+
+  // 行为：指认仍然压得住更高重要度的措辞命中（0.2.147/0.2.148 的保证不许被分档破坏）
+  const vyD = MYmod.search('0mzz9abc1 是什么', [
+    vyDoc('0mzz9abc1-aaaa', '这一条正文里没有半个标识符，只讲交付态。', 1),
+    vyDoc('loud', '改了什么 措辞更像那一条，而且重要度写得很高。', 4),
+  ], { k: 2, explain: true })
+  check('VY13 行为：指认排第 1（分档把指认放在 band -1，不被词分档拖下去）', vyD[0]?.id === '0mzz9abc1-aaaa')
+
+  // 文档与版本锚
+  const idY = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const deY = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'VY14 文档写了这一刀（9.156 + 162）',
+    idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
+  )
+  check(
+    'VY15 版本三处一致 0.2.150',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.150' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.150'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.150'),
   )
 }
 
