@@ -113,7 +113,7 @@ const rankM5 = (h) => {
   const r = rowM5.get(String(h.id)) ?? {}
   return {
     st: V.statusWeight?.(r.status ?? h.status) ?? 1,
-    at: Number(r.updated_at ?? h.updated_at ?? 0) || 0,
+    when: Number(r.updated_at ?? h.updated_at ?? 0) || 0,
     sc: Number(h.score ?? 0) || 0,
   }
 }
@@ -121,7 +121,7 @@ const orderM5 = [...(hits2 ?? [])].sort((a, b) => {
   const x = rankM5(a)
   const y = rankM5(b)
   if (x.st !== y.st) return y.st - x.st
-  if (x.at !== y.at) return y.at - x.at
+  if (x.when !== y.when) return y.when - x.when
   return y.sc - x.sc
 })
 check(
