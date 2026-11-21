@@ -428,6 +428,17 @@ var CTX_CHARS = 200;
 //  42.5%（4,727 字符）、限 24 行 41.5%（3,462 字符）、限 16 行 39.1%（2,335 字符）、
 //  逐条 ±1 38.9%（3,501 字符）——24 行这一档与逐条 ±1 花一样多的字，多 2.6pt，所以封在 24。
 var CTX_LINES = 24;
+// [0.2.132] 邻居行预算分档：问句在问时间就还是 24 行，其余铺到 48 行。
+//   LoCoMo 1,193 题同题对照（omni40 / omni41 / omni42 三次独立跑，同一套材料构造）：
+//     A 24 行/前 8 段 54.4 / 54.9 / 55.4；
+//     T 时间题 24 行、其余 48 行 57.6 / 57.5 / 58.2（净 +38 / +31 / +33，p≤0.0001）；
+//     中间档 36 行 54.6（净 −4，p=0.85）——不是线性，是阈值：行数不给到 48 等于没加；
+//     反过来只加段数不加行数（24 段 × 24 行）55.1（净 −4，p=0.80）——段数不是那个旋钮。
+//   时间题必须留着窄：48 行一律铺，cat2（时间）47.7→43.6，日期被多出来的噪声稀释。
+//   代价：非时间题的邻居字符 +67%（约 3.4k → 6.7k），所以再压一道字符闸（见 CTX_CHARS_DEEP）。
+var CTX_LINES_DEEP = 48;
+// 铺宽时最多花这么多字符（只数邻居行正文，不含命中本体）：行数放开、字数不放开。
+var CTX_CHARS_DEEP = 7000;
 
 // [0.2.129] 时间轴只在「问句本身在问时间」时才印。1,193 题同题对照（omni13）：
 //   不印 43.8% / 一律印 46.2% / 只在问句含时间词时印 46.5%（p<0.0001）——一律印会多花 168 字，
@@ -3070,18 +3081,24 @@ function searchTool(dir) {
         // [0.2.126] 命中挨在一起时，上一条的 ↓ 就是下一条的正文，再印一遍纯属重复花 token。
         //  命中一定会在自己的表头下面印出来，所以邻居里凡是命中体、或本轮已经印过的行，一律不印。
         const printed = new Set(hits.map((h) => `${String(h.level ?? "")}:${String(h.id ?? "")}`));
+
+        const ctxDeep = !TIMELINE_CUE.test(String(_args?.query ?? ""));
+        const ctxMax = ctxDeep ? CTX_LINES_DEEP : CTX_LINES;
         let ctxUsed = 0;
+        let ctxChars = 0;
         let ctxSkipped = 0;
         const ctxLine = (arrow, it) => {
           const key = `${String(it?.level ?? "")}:${String(it?.id ?? "")}`;
           if (key !== ":" && printed.has(key)) return null;
-          if (ctxUsed >= CTX_LINES) {
+          const text = `  ${arrow} ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`;
+          if (ctxUsed >= ctxMax || (ctxDeep && ctxChars + text.length > CTX_CHARS_DEEP)) {
             ctxSkipped++;
             return null;
           }
           printed.add(key);
           ctxUsed++;
-          return `  ${arrow} ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`;
+          ctxChars += text.length;
+          return text;
         };
         // [0.2.129] 时间轴本身在模块级 timelineLine 里（不塞进 render 字面量）
         const tl = timelineLine(hits, _args?.query);
@@ -3110,7 +3127,7 @@ function searchTool(dir) {
           }
         });
         if (ctxSkipped > 0)
-          lines.push(`  \u2026\u90BB\u5C45\u8FD8\u6709 ${String(ctxSkipped)} \u884C\u6CA1\u94FA\u5F00\uFF08\u4E00\u6B21\u6700\u591A ${String(CTX_LINES)} \u884C\uFF1B\u8BA4\u51C6\u54EA\u6761\u5C31\u7528 memory_read \u8BFB\u5168\u6587\uFF09`);
+          lines.push(`  \u2026\u90BB\u5C45\u8FD8\u6709 ${String(ctxSkipped)} \u884C\u6CA1\u94FA\u5F00\uFF08\u4E00\u6B21\u6700\u591A ${String(ctxMax)} \u884C\uFF1B\u8BA4\u51C6\u54EA\u6761\u5C31\u7528 memory_read \u8BFB\u5168\u6587\uFF09`);
         return lines.map((t) => ({ type: "text", text: t }));
       }
     },

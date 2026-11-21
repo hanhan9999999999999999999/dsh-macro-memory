@@ -6265,7 +6265,7 @@ check(
   )
 }
 
-// ── DT. 同一条不印两遍 + 邻居行封顶（0.2.126）────────────────────────────────
+// ── DT. 同一条不印两遍 + 邻居行封顶（0.2.126，0.2.132 分档）────────────────────────────────
 {
   const dtHome = mkdtempSync(join(tmpdir(), 'macro-probe-dedupe-'))
   const dtWs = join(dtHome, 'ws')
@@ -6305,19 +6305,27 @@ check(
     '鲸歌样本存进了硬盘的第三个分区。',
   ]
   let k = 0
-  for (let i = 0; i < 40; i++) {
+  // 64 条：深档 48 行的闸门才会真的顶住（40 条时可用邻居只有 30 行，不触发截断说明）
+  for (let i = 0; i < 64; i++) {
     const isHit = i % 8 === 0 && k < songs.length
     const content = isHit ? songs[k++] : `第 ${i} 条：${topics[i % topics.length]}的记录（不相关）。`
     await dtRun('memory_remember', { content, project: '封顶探针', keywords: isHit ? ['鲸歌', '录音'] : [topics[i % topics.length]], importance: 2, level: 'fact' })
   }
   const spread = await dtRun('memory_search', { query: '鲸歌 录音 水听器', k: 8, context: 3, min_rel: 0, project: '封顶探针' })
-  const txSpread = render(spread, { context: 3 })
+  const txSpread = render(spread, { context: 3, query: '鲸歌 录音 水听器' })
   const ctxRows = txSpread.split('\n').filter((l) => /^\s+[\u2191\u2193] /.test(l)).length
-  check('DT1 邻居行封顶 24 行（命中分散也不许铺满）', ctxRows === 24, `${ctxRows} 行`)
+  check('DT1 邻居行封顶：不问时间的题铺到 48 行（0.2.132）', ctxRows > 24 && ctxRows <= 48, `${ctxRows} 行`)
+  const txNarrow = render(spread, { context: 3, query: '我们什么时候去听鲸歌？' })
+  const narrowRows = txNarrow.split('\n').filter((l) => /^\s+[\u2191\u2193] /.test(l)).length
+  check('DT1b 邻居行封顶：问时间的题只铺 24 行（日期不被稀释）', narrowRows === 24, `${narrowRows} 行`)
+  // 截断说明只在真被闸门挡下时才有：这一组 30 行邻居，窄档（24）正好挡下 6 行，深档（48）不挡
   check(
     'DT2 截断时留一行说明还剩几行（省 token 不许悄悄少给）',
-    /邻居还有 \d+ 行没铺开/.test(txSpread) && txSpread.includes('memory_read'),
-    txSpread.split('\n').slice(-1)[0].slice(0, 80),
+    /邻居还有 \d+ 行没铺开/.test(txNarrow) &&
+      txNarrow.includes('memory_read') &&
+      txNarrow.includes('一次最多 24 行') &&
+      !txSpread.includes('没铺开'),
+    txNarrow.split('\n').slice(-1)[0].slice(0, 80),
   )
 
   const plain = render(await dtRun('memory_search', { query: '潜水 装备', k: 3, project: '去重探针' }), {})

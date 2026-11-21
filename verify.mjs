@@ -8617,9 +8617,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       meowSrc126.includes('const key = `${String(it?.level ?? "")}:${String(it?.id ?? "")}`;'),
   )
   check(
-    'DT 封顶: CTX_LINES=24 + 超了就停手并计数',
+    'DT 封顶: CTX_LINES=24 / 深档 48 + 超了就停手并计数',
     meowSrc126.includes('var CTX_LINES = 24;') &&
-      meowSrc126.includes('if (ctxUsed >= CTX_LINES) {') &&
+      meowSrc126.includes('if (ctxUsed >= ctxMax || (ctxDeep && ctxChars + text.length > CTX_CHARS_DEEP)) {') &&
       meowSrc126.includes('ctxSkipped++;'),
   )
   check(
@@ -8662,9 +8662,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     }
   }
   check(
-    'DT 去重·探针进线：DT0–DT3（含 24 行封顶与默认 0 一字不多）',
+    'DT 去重·探针进线：DT0–DT3（含两档封顶与默认 0 一字不多）',
     probeSrc126.includes('DT0 相邻两条命中：同一句只印一遍') &&
-      probeSrc126.includes('DT1 邻居行封顶 24 行') &&
+      probeSrc126.includes('DT1 邻居行封顶：不问时间的题铺到 48 行') &&
+      probeSrc126.includes('DT1b 邻居行封顶：问时间的题只铺 24 行') &&
       probeSrc126.includes('DT2 截断时留一行说明还剩几行') &&
       probeSrc126.includes('DT3 context 默认 0'),
   )
@@ -8691,7 +8692,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'DW 命中行: 命中用 stampWhen、邻居仍走 it?.day（两条路不一样）',
     meowSrc128.includes('day: dayOfKeywords(row?.keywords) || stampWhen(row?.updated_at),') &&
-      meowSrc128.includes('return `  ${arrow} ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`;'),
+      meowSrc128.includes('const text = `  ${arrow} ${it?.day ? String(it.day) + " " : ""}${String(it?.content ?? "")}`;'),
   )
   check(
     'DW 命中行: 三语 prompt 都说清「命中到分、邻居到天」',
@@ -8813,6 +8814,56 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       /* ignore */
     }
   }
+  check(
+    'EA 邻居深度: 两档常量都在，问句闸门复用同一条 TIMELINE_CUE（时间题窄、其余宽）',
+    meowSrc129.includes('var CTX_LINES_DEEP = 48;') &&
+      meowSrc129.includes('var CTX_CHARS_DEEP = 7000;') &&
+      meowSrc129.includes("const ctxDeep = !TIMELINE_CUE.test(String(_args?.query ?? \"\"));") &&
+      meowSrc129.includes('const ctxMax = ctxDeep ? CTX_LINES_DEEP : CTX_LINES;') &&
+      meowSrc129.includes('(ctxDeep && ctxChars + text.length > CTX_CHARS_DEEP)'),
+  )
+  {
+    const Meow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const ebHome = mkdtempSync(join(tmpdir(), 'macro-eb-'))
+    const T = new Map()
+    Meow.registerMemoryTools((t) => T.set(t.name, t), '.dsh-meow')
+    Meow.getDb(ebHome, '.dsh-meow')
+    const tool = T.get('memory_search')
+    const mkCtx = (tag, n, len) =>
+      Array.from({ length: n }, (_, i) => ({ id: `${tag}${i}`, level: 'fact', content: 'x'.repeat(len), day: '2023-05-08' }))
+    const deepHit = { id: 'eb1', level: 'fact', title: '', content: '正文', project: '全局', keywords: ['潜水'], day: '2023-05-08', updated_at: 0, score: 10, context: { before: mkCtx('b', 30, 60), after: mkCtx('c', 30, 60) } }
+    const fatHit = { id: 'eb2', level: 'fact', title: '', content: '正文', project: '全局', keywords: ['潜水'], day: '2023-05-08', updated_at: 0, score: 10, context: { before: mkCtx('d', 30, 200), after: mkCtx('e', 30, 200) } }
+    const rows = (txt) => txt.split('\n').filter((l) => l.startsWith('  \u2191 ') || l.startsWith('  \u2193 '))
+    const wide = tool.output.render({ query: '潜水装备在哪租', content_max: 300 }, { note: '', hits: [deepHit] }).map((x) => x.text).join('\n')
+    const narrow = tool.output.render({ query: '我们什么时候去潜水？', content_max: 300 }, { note: '', hits: [deepHit] }).map((x) => x.text).join('\n')
+    const capped = tool.output.render({ query: '潜水装备在哪租', content_max: 300 }, { note: '', hits: [fatHit] }).map((x) => x.text).join('\n')
+    check('EA 邻居深度·行为: 不问时间 → 铺到 48 行', rows(wide).length === 48, `${rows(wide).length} 行`)
+    check('EA 邻居深度·行为: 问时间 → 只铺 24 行（日期不被噪声稀释）', rows(narrow).length === 24, `${rows(narrow).length} 行`)
+    check(
+      'EA 邻居深度·行为: 字符闸先于行数闸（7,000 字封顶）',
+      rows(capped).length > 0 && rows(capped).length < 48 && rows(capped).join('').length <= 7000,
+      `${rows(capped).length} 行 / ${rows(capped).join('').length} 字`,
+    )
+    check(
+      'EA 邻居深度·行为: 截断提示里的行数是当下这一档，不是写死的 24',
+      wide.includes('一次最多 48 行') && narrow.includes('一次最多 24 行'),
+      wide.split('\n').filter((l) => l.includes('没铺开')).join(' | '),
+    )
+    try {
+      rmSync(ebHome, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  check(
+    'EA 邻居深度: 版本与文档一起走（9.138 / 144）',
+    (() => {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      return pkg.version.split('.').map((x) => Number(x))[2] >= 132
+    })() &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.138 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 144 '),
+  )
   check(
     'DY 时间轴·探针进线：TL0 / TL1 / TL2 / TL3',
     probeSrc129.includes('TL0 问句问时间') && probeSrc129.includes('TL1 问句不问时间') && probeSrc129.includes('TL2 命中不到三条') && probeSrc129.includes('TL3 超过 8 条'),
