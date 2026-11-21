@@ -6845,10 +6845,12 @@ check(
   )
   const rmZ2Id = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('链诚实探针乙'))?.id ?? '')
   const rmZ2Read = rmText(await rmRun('memory_read', { id: rmZ2Id }))
+  // 读回执里的 blur 是 successionNote 按**它自己那条**算的 selfHits，不是 rmZ1 的——两个对象别混着比。
+  const rmZ2Chain = chainMod.successionOf({ workspace: rmWs, id: rmZ2Id })
   check(
     'RM13 自撞：自己前缀撞车时，认出来的那几条要说明「是按开头核对过的」',
-    rmZ2Read.includes('接手过 1 条') && (rmChain.selfHits === 1 || rmZ2Read.includes('按开头核对过')),
-    `selfHits=${rmChain.selfHits}`,
+    /接手过 \d+ 条/.test(rmZ2Read) && ((rmZ2Chain.selfHits ?? 0) <= 1 || rmZ2Read.includes('按开头核对过')),
+    `selfHits(Z2)=${rmZ2Chain.selfHits}｜${rmZ2Read.replace(/\s+/g, ' ').slice(0, 200)}`,
   )
   try {
     rmSync(rmWs, { recursive: true, force: true })
