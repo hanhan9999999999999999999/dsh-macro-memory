@@ -9637,8 +9637,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.150（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.150'"),
+    'GV 版本: 代码里是 0.2.151（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.151'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9743,14 +9743,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   gwDocs.push(gwDoc('other', '另一个完全无关的条目，讲的是食堂菜单。', 's-other'))
   const gwQ = '怎么 星图建图的延迟调下来'
   const gwOn = meowMod.search(gwQ, gwDocs, { k: 12 })
-  const gwOff = meowMod.search(gwQ, gwDocs, { k: 12, noiseFloor: false })
+  const gwOff = meowMod.search(gwQ, gwDocs, { k: 12, noiseFloor: false, funcFloor: false })
   check(
     'GW 行为: 只沾「怎么」的八条退出榜单，剩下真正相关的那条',
     gwOn.length === 1 && gwOn[0].id === 'real',
     gwOn.map((h) => h.id).join(','),
   )
   check(
-    'GW 行为: 阴性对照 noiseFloor:false 时八条全回来（真在起效）',
+    'GW 行为: 阴性对照 noiseFloor:false（且关掉 0.2.151 虚词地板）时八条全回来（真在起效）',
     gwOff.length === 9,
     `${gwOff.length} 条`,
   )
@@ -9766,8 +9766,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.150（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.150'"),
+    'GW 版本: 代码里是 0.2.151（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.151'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9914,8 +9914,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.150（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.150'"),
+    'VV 版本: 代码里是 0.2.151（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.151'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9969,7 +9969,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     vwDoc('loud', '改了什么 措辞更像那一条，而且重要度写得很高。', 4, 'vw-b'),
   ]
   const on = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, explain: true })
-  const off = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, verbatim: false })
+  const off = MWmod.search('0mzz9abc1 是什么', VW_DOCS, { k: 8, verbatim: false, funcFloor: false })
   check('VW8 行为：被指认那条排第 1（importance=1 也压得住 4 分的措辞命中）', on[0]?.id === '0mzz9abc1-aaaa')
   check(
     'VW9 行为：score 与 identBonus 同值（证明补分在乘法之后）',
@@ -10022,10 +10022,15 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     gold.queries.every((q) => !gold.docs.some((d) => String(d.content).includes(q.q))),
   )
 
+  check(
+    'VZ15 文档锚：9.157 与 163 写下了这一刀',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.157 ') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 163 '),
+  )
   // 三档口径与阈值：只读探针自带断言，阈值不许写死在注释里
-  check('GX5 hit@1 门槛 ≥ 0.86', MG.includes('base.hit1 >= 0.86'))
+  check('GX5 hit@1 门槛 ≥ 0.92', MG.includes('base.hit1 >= 0.92'))
   check('GX6 hit@3 门槛 ≥ 0.99', MG.includes('base.hit3 >= 0.99'))
-  check('GX7 MRR 门槛 ≥ 0.92', MG.includes('base.mrr >= 0.92'))
+  check('GX7 MRR 门槛 ≥ 0.95', MG.includes('base.mrr >= 0.95'))
   check('GX8 三档聚合里 MRR 按名次倒数累加（不是命中即 1）', MG.includes('1 / (rank + 1)'))
   check('GX9 只看聚合：单题命中不许当基线（want 是集合）', MG.includes('want.includes(id)'))
 
@@ -10034,7 +10039,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'GX10 阴性对照换代：带内微案例证明重要度还活着，聚合上抹平它只要求「不许崩」',
     MG.includes('G5a 带内重要度仍然改判') &&
       MG.includes('G5b 带外重要度不许越级') &&
-      MG.includes('flatM.hit1 >= 0.86') &&
+      MG.includes('flatM.hit1 >= 0.92') &&
       !MG.includes('flatM.hit1 < base.hit1'),
   )
   check('GX11 阴性对照语料反序（顺序敏感的排名会露馅）', MG.includes('docs.slice().reverse()'))
@@ -10056,13 +10061,13 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     return { hit1: h1 / n, hit3: h3 / n, mrr: mrr / n }
   }
   const b = run(gold.docs)
-  check('GX13 实跑 hit@1 达标', b.hit1 >= 0.86, b.hit1.toFixed(3))
+  check('GX13 实跑 hit@1 达标', b.hit1 >= 0.92, b.hit1.toFixed(3))
   check('GX14 实跑 hit@3 达标', b.hit3 >= 0.99, b.hit3.toFixed(3))
-  check('GX15 实跑 MRR 达标', b.mrr >= 0.92, b.mrr.toFixed(3))
+  check('GX15 实跑 MRR 达标', b.mrr >= 0.95, b.mrr.toFixed(3))
   const flatRun = run(gold.docs.map((d) => ({ ...d, importance: 2 })))
   check(
     'GX16 抹平 importance 后仍然达标（先验不是证据，去掉它顶多平手）',
-    flatRun.hit1 >= 0.86 && flatRun.hit3 >= 0.99,
+    flatRun.hit1 >= 0.92 && flatRun.hit3 >= 0.99,
     `${b.hit1.toFixed(3)} → ${flatRun.hit1.toFixed(3)}`,
   )
 
@@ -10075,9 +10080,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.150（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.150' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.150'"),
+    'GX19 版本已到 0.2.151（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.151' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.151'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10177,10 +10182,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.150',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.150' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.150'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.150'),
+    'VY15 版本三处一致 0.2.151',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.151' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.151'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.151'),
   )
 }
 

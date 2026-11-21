@@ -266,7 +266,7 @@ const NF_DOCS = [
 // 噪声词单独成段（空格隔开）：剔掉它之后词表与「不含噪声词的那一问」逐字相同，NF6 才量得准。
 const NF_Q = '怎么 星图建图的延迟调下来'
 const nfOn = V.search(NF_Q, NF_DOCS, { k: 12 })
-const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false })
+const nfOff = V.search(NF_Q, NF_DOCS, { k: 12, noiseFloor: false, funcFloor: false })
 const nfIds = (hits) => hits.map((h) => h.id).join(',')
 
 check(
@@ -275,7 +275,7 @@ check(
   `开 ${nfIds(nfOn)} / 共 ${NF_DOCS.length} 条语料`,
 )
 check(
-  'NF2 阴性对照：noiseFloor:false 同一语料把八条噪声全放回来（地板真在起效，不是本来就没命中）',
+  'NF2 阴性对照：noiseFloor:false（且把 0.2.151 的虚词地板一起关掉）时八条噪声全回来（地板真在起效）',
   nfOff.length === 9 && nfIds(nfOff).startsWith('real,') && NF_NOISE.every((d) => nfIds(nfOff).includes(d.id)),
   `${nfOff.length} 条：${nfIds(nfOff).slice(0, 40)}…`,
 )
@@ -418,9 +418,9 @@ const VX_DOCS = [
   vxDoc('0mzz9abc1-aaaa', '这一条正文里没有半个标识符，只讲交付态。', 1, 's-x1'),
   vxDoc('loud', '改了什么 措辞更像那一条，而且重要度写得很高。', 4, 's-x2'),
 ]
-const VX_Q = '0mzz9abc1 是什么'
+const VX_Q = '0mzz9abc1 措辞'
 const vxOn = V.search(VX_Q, VX_DOCS, { k: 8, explain: true })
-const vxOff = V.search(VX_Q, VX_DOCS, { k: 8, verbatim: false })
+const vxOff = V.search(VX_Q, VX_DOCS, { k: 8, verbatim: false, funcFloor: false })
 check(
   'VX1 指认压得住重要性：问一条短 id 时，那条即使 importance=1 也排第 1（措辞命中的是 4 分也没用）',
   vxOn[0]?.id === '0mzz9abc1-aaaa',
@@ -432,7 +432,7 @@ check(
   `score=${vxOn[0]?.score} bonus=${vxOn[0]?.explain?.identBonus}`,
 )
 check(
-  'VX3 阴性对照：verbatim:false 时那条连候选都没有（措辞命中重新占榜首，说明补分就是翻盘的那一手）',
+  'VX3 阴性对照：verbatim:false（虚词地板回到 0.2.150 口径）时那条连候选都没有，措辞命中重新占榜首',
   vxOff[0]?.id === 'loud' && !vxOff.some((h) => h.id === '0mzz9abc1-aaaa'),
   vxOff.map((h) => h.id).join(',') || '0 条',
 )
@@ -451,6 +451,64 @@ check(
   'VX6 临时字段不外漏：回执里不该出现 _vb（补完就摘，别把内部证据塞给读的人）',
   vxOn.every((h) => h._vb === undefined),
   JSON.stringify(Object.keys(vxOn[0] ?? {})),
+)
+
+// ── VT（0.2.151）：问句里的虚词不算证据 ────────────────────────────────────
+// 噪声地板只认「到处都是」的词；虚词是另一半噪声——**哪都没有、却毫无信息**的两字碎片。
+// 实测问「高铁票怎么改签」，`怎么` 在本库 df=1、idf 高得离谱，一条只沾「怎么」的条目就能上桌。
+// 这里量四件事：虚词单独就能挡掉噪声、谁被剔要说出来、能一键关、以及「剔完只剩一个词」不许空手。
+const VT_NOISE = []
+for (let i = 0; i < 6; i++) VT_NOISE.push(mkDoc('t' + i, `怎么记录第${i}条流水账，随手写写。`, 's-t' + i))
+const VT_DOCS = [
+  ...VT_NOISE,
+  mkDoc('vt-real', '星图建图的延迟要盯着，一轮巡检大约 12 秒。', 's-vt-real'),
+  mkDoc('vt-why', '为什么这条会这么写，什么原因，也没说清。', 's-vt-why'),
+  mkDoc('vt-id', '路径 D:\\dsh-home\\vendor\\meow-memory 下的索引文件。', 's-vt-id'),
+  mkDoc('vt-en', 'latency 的观测点放在巡检里，不看 p99。', 's-vt-en'),
+]
+const VT_Q = '怎么 把延迟调下来'
+const vtFuncOn = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, explain: true })
+const vtFuncOff = V.search(VT_Q, VT_DOCS, { k: 8, noiseFloor: false, funcFloor: false })
+const vtIds = (hits) => hits.map((h) => h.id).join(',')
+check(
+  'VT1 虚词单独就能挡噪声：关掉噪声地板，只留虚词地板，六条只沾「怎么」的流水账进不了榜',
+  vtIds(vtFuncOn) === 'vt-real',
+  `${vtIds(vtFuncOn)} / 共 ${VT_DOCS.length} 条语料`,
+)
+check(
+  'VT2 剔了谁要说出来：explain.funcDropped 点名「怎么」（可追溯性，不是悄悄改口径）',
+  JSON.stringify(vtFuncOn[0]?.explain?.funcDropped ?? null) === '["怎么"]',
+  JSON.stringify(vtFuncOn[0]?.explain?.funcDropped ?? null),
+)
+check(
+  'VT3 阴性对照：funcFloor:false 同一问句把六条噪声全放回来（虚词地板真在起效，不是本来就没命中）',
+  vtFuncOff.length === 7 && VT_NOISE.every((d) => vtIds(vtFuncOff).includes(d.id)),
+  `${vtFuncOff.length} 条：${vtIds(vtFuncOff).slice(0, 40)}…`,
+)
+check(
+  'VT4 整句都是虚词时整段回退：问「为什么」照样能给回执，不因为剔词剔空而空手',
+  V.search('为什么', VT_DOCS, { k: 3, explain: true }).length > 0 &&
+    V.search('为什么', VT_DOCS, { k: 3, explain: true })[0]?.explain?.funcDropped === undefined,
+  `${V.search('为什么', VT_DOCS, { k: 3 }).map((h) => h.id).join(',') || '0 条'}`,
+)
+check(
+  'VT5 另一支打分器同口径：keywordHitScore 也只认内容词，六条流水账不进榜',
+  (() => {
+    const kw = V.keywordHitScore(VT_Q, VT_DOCS, { k: 8 })
+    return kw.length === 1 && kw[0].id === 'vt-real'
+  })(),
+  V.keywordHitScore(VT_Q, VT_DOCS, { k: 8 }).map((h) => h.id).join(',') || '0 条',
+)
+check(
+  'VT6 标识符与英文内容词不受影响：路径原样问得着，latency 照样能命中',
+  V.search('D:\\dsh-home\\vendor\\meow-memory', VT_DOCS, { k: 5 }).some((h) => h.id === 'vt-id') &&
+    V.search('latency 观测点', VT_DOCS, { k: 5 }).some((h) => h.id === 'vt-en'),
+  V.search('latency 观测点', VT_DOCS, { k: 5 }).map((h) => h.id).join(',') || '0 条',
+)
+check(
+  'VT7 剔完只剩一个内容词照样打分：只有一个真词命中时不许空手（那是「沾了一点」，不是噪声）',
+  V.search('publishTimestamp 该写什么值', [mkDoc('vt-p', 'publishTimestamp 该写这个字段，别写时间。', 's-vt-p')], { k: 3 }).length === 1,
+  `${V.search('publishTimestamp 该写什么值', [mkDoc('vt-p', 'publishTimestamp 该写这个字段，别写时间。', 's-vt-p')], { k: 3 }).length} 条`,
 )
 
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——

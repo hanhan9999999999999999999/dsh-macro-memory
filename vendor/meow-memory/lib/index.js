@@ -1978,6 +1978,37 @@ function noiseTermsOf(qTerms, df, n) {
   for (const t of qTerms) if ((df.get(t) ?? 0) >= gate) out.push(t);
   return out.length >= qTerms.length ? [] : out;
 }
+// [macro-fusion 0.2.151] 问句里的虚词不算证据。
+// 0.2.146 的噪声地板只认「到处都是」的词（df ≥ 一半），它治不了另一半噪声：**哪都没有、却毫无信息**
+// 的虚词碎片。实测问「高铁票怎么改签」，`怎么` 在本库 df=1、idf 高得离谱，于是一条只沾「怎么」的
+// 条目就上了桌（4.76 分）；十四条与记忆库毫无关系的问句里，十条都这样硬凑出回执——沉默被当成了失职，
+// 回执被当成了业绩。英文早就靠 EN_STOPWORDS 把这类词挡在外面，中文这边一直空着（0.2.146 注释里写着
+// 「中文没有停用词表」），这一刀把这张表补上。
+// 三条护栏：①只对中文虚词生效，标识符与英文词一个不动；②剔完一个词不剩就整段回退（问句只由虚词组成时，
+// 宁可照旧打分，不许凭空空手）；③`funcFloor:false` 一键回到旧口径，便于对照。
+var CJK_FUNC_WORDS = new Set([
+  // 单字
+  "的", "了", "是", "在", "和", "与", "及", "或", "而", "但", "也", "都", "就", "还", "又", "再",
+  "才", "只", "把", "被", "给", "让", "对", "从", "向", "到", "为", "以", "之", "其", "此", "这",
+  "那", "哪", "谁", "什", "怎", "几", "我", "你", "他", "她", "它", "们", "个", "些", "吗", "呢",
+  "吧", "啊", "呀", "哦", "嗯", "么", "嘛", "着", "过", "得", "地", "该", "咋",
+  // 双字虚词与问句骨架
+  "怎么", "什么", "为什", "么样", "怎样", "如何", "为何", "哪些", "哪个", "哪里", "哪儿", "哪些",
+  "多少", "是否", "可否", "可以", "应该", "需要", "已经", "现在", "时候", "一个", "这个", "那个",
+  "这样", "那样", "这些", "那些", "我们", "你们", "他们", "它们", "自己", "一下", "一次", "一点",
+  "一些", "还是", "就是", "也是", "都是", "不是", "没有", "要不", "能不", "会不", "是不", "有没",
+  "到底", "究竟", "那么", "这么", "多么", "然后", "接着", "因此", "于是", "不过", "其实", "好像",
+  "之前", "之后", "以后", "以前", "因为", "所以", "但是", "而且", "或者", "如果", "虽然", "即使",
+  "并且", "以及", "关于", "对于", "由于", "除了", "而是", "不是", "就是", "只是", "还要", "还会",
+  // 分词跨界的碎片：这些两字组本身没有意义，却常常在文档里出现
+  "用的", "的天", "的时", "的上", "的一", "了一", "了个", "上个", "上一", "下一", "来的", "去的",
+  "有的", "没的", "是的", "了的", "么一", "送为", "为什", "么办", "么样", "能怎", "样才", "么才",
+]);
+function funcTermsOf(qTerms) {
+  const out = [];
+  for (const t of qTerms) if (CJK_FUNC_WORDS.has(t)) out.push(t);
+  return out.length >= qTerms.length ? [] : out;
+}
 // [macro-fusion 0.2.147] 标识符原样匹配：问句里真正决定答案的，常常是「原样才算数」的东西——
 // 版本号（0.2.146）、路径（D:\dsh-home\vendor\...）、文件名（tools/probe-words.mjs）、
 // 短 id（0mwq5zzv）、commit（c12e4f6）。分词会把它们打碎：0.2.146 -> 0 / 2 / 146，
@@ -2149,8 +2180,16 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.2.146] 噪声地板：剔掉的词既不进 BM25，也不进覆盖度分母——
   // 只剔分子不剔分母等于「问句更难满足」，会把真正相关的条目一起裁掉。
   const noiseDropped = opts.noiseFloor === false ? [] : noiseTermsOf(qTerms, df, n);
-  const qKept = noiseDropped.length === 0 ? qTerms : qTerms.filter((t) => !noiseDropped.includes(t));
-  const qLoop = noiseDropped.length === 0 ? q : q.filter((t) => !noiseDropped.includes(t));
+  // [macro-fusion 0.2.151] 虚词与噪声分开记账：噪声是「到处都是」，虚词是「哪都没有也不带信息」。
+  const funcDropped = opts.funcFloor === false ? [] : funcTermsOf(qTerms);
+  const stopOf = (t) => noiseDropped.includes(t) || funcDropped.includes(t);
+  const stopAll = noiseDropped.length === 0 && funcDropped.length === 0;
+  let qKept = stopAll ? qTerms : qTerms.filter((t) => !stopOf(t));
+  let qLoop = stopAll ? q : q.filter((t) => !stopOf(t));
+  if (qKept.length === 0) {
+    qKept = qTerms;
+    qLoop = q;
+  }
   const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
   const raw = docs.map((_, di) => {
     let s = 0;
@@ -2225,7 +2264,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -2259,8 +2298,11 @@ function keywordHitScore(query, docs, opts = {}) {
   const keep = (ts) => ts.filter((t) => t.length >= 2);
   const q = keep(tokenize(query));
   if (docs.length === 0) return [];
+  // [macro-fusion 0.2.151] 与 search() 同口径：虚词不进证据（两个打分器不许两套词表）
+  const funcDropped = opts.funcFloor === false ? [] : funcTermsOf([...new Set(q)]);
+  const qUse = funcDropped.length === 0 ? q : q.filter((t) => !funcDropped.includes(t));
   const qTf = /* @__PURE__ */ new Map();
-  for (const t of q) qTf.set(t, (qTf.get(t) ?? 0) + 1);
+  for (const t of qUse) qTf.set(t, (qTf.get(t) ?? 0) + 1);
   const n = docs.length;
   // [macro-fusion 0.2.147] 与 search() 同口径：标识符原样命中也在这里补分（两个打分器不许两套口径）
   const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.title ?? "") + " " + String(d.content ?? "") + " " + (Array.isArray(d.keywords) ? d.keywords.join(" ") : ""));

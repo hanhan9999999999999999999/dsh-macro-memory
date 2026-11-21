@@ -62,9 +62,9 @@ const base = measure(fx.queries, docs)
 const fmt = (m) => `hit@1=${m.hit1.toFixed(3)} hit@3=${m.hit3.toFixed(3)} MRR=${m.mrr.toFixed(3)}（${m.n} 问）`
 for (const m of base.miss) console.log(`      未中第 1：rank=${m.rank} ${m.q} → want ${m.want.join('/')}，got ${m.got.join(',')}`)
 
-check('G1 hit@1 ≥ 0.86：问自然一句，第一条就得是那条', base.hit1 >= 0.86, fmt(base))
+check('G1 hit@1 ≥ 0.92：问自然一句，第一条就得是那条', base.hit1 >= 0.92, fmt(base))
 check('G2 hit@3 ≥ 0.99：排第二和找不到分开记账，前者才是可修的', base.hit3 >= 0.99, `hit@3=${base.hit3.toFixed(3)}`)
-check('G3 MRR ≥ 0.92：排第二要扣分，别用「都在前三」掩盖退步', base.mrr >= 0.92, `MRR=${base.mrr.toFixed(3)}`)
+check('G3 MRR ≥ 0.95：排第二要扣分，别用「都在前三」掩盖退步', base.mrr >= 0.95, `MRR=${base.mrr.toFixed(3)}`)
 
 // G4：聚合可当基线——同样的输入跑两遍必须同数（顺序敏感的实现会被抓出来）
 const again = measure(fx.queries, docs)
@@ -107,7 +107,7 @@ const flat = docs.map((d) => ({ ...d, importance: 2 }))
 const flatM = measure(fx.queries, flat)
 const flatDelta = flatM.hit1 - base.hit1
 check('G5c 抹平 importance 后仍然准（顶多平手，不许崩）：先验去掉，证据自己还得站得住',
-  flatM.hit1 >= 0.86 && flatM.hit3 >= 0.99,
+  flatM.hit1 >= 0.92 && flatM.hit3 >= 0.99,
   `抹平 ${fmt(flatM)} vs 原 ${fmt(base)}（hit@1 差 ${flatDelta >= 0 ? '+' : ''}${flatDelta.toFixed(3)}）`)
 
 // G5d 语料顺序反过来，三档不许「一样好」（顺序敏感的排名会露馅）
@@ -131,6 +131,30 @@ check('G7 时间折扣有下限：一年前的条目权重停在 RECENCY_FLOOR(0
 
 // G6：每条 want 都在语料里，问句不是凭空打靶
 const orphans = fx.queries.filter((q) => q.want.some((id) => !byId.has(id))).map((q) => q.q)
+// ── G8/G9（0.2.151）：库里没有这件事时，回执该是空的 ─────────────────────────
+// 准确率不只有「问到了对不对」，还有「没得答时敢不敢空手」。这一批问句与记忆库毫无关系，
+// 它们以前能凑出回执，靠的是问句里 `怎么 / 什么 / 用的` 这类两字碎片：碎片在本库 df 极低、
+// idf 极高，一条只沾一个碎片的条目就上了桌。记 10/14 条硬凑出回执，回执比沉默更危险。
+const NEG_QUERIES = [
+  '明天北京的天气怎么样', '红烧肉要炖多久才烂', '秦始皇哪一年统一六国',
+  '光合作用的暗反应发生在哪里', '帮我写一首关于秋天的七言绝句', 'Python 的 GIL 在 3.13 有变化吗',
+  '火星上一天有多少小时', '红楼梦里通灵宝玉是什么来历', '吉他换弦要注意什么',
+  '上一届世界杯冠军是谁', '我家的猫为什么半夜叫', '高铁票怎么改签',
+  '咖啡因的半衰期是多久', '怎么腌酸菜不坏',
+]
+const abstain = (opts) => NEG_QUERIES.filter((q) => V.search(q, docs, { k: 5, ...opts }).length === 0);
+const negEmpty = abstain({});
+const negEmptyOld = abstain({ funcFloor: false });
+check(
+  'G8 没有的事就空手：14 条与记忆库无关的问句里，至少 12 条回执为空（问句虚词不算证据）',
+  negEmpty.length >= 12,
+  `空手 ${negEmpty.length}/14，仍硬凑：${NEG_QUERIES.filter((q) => !negEmpty.includes(q)).join(' / ')}`,
+)
+check(
+  'G9 阴性对照：funcFloor:false 时这些问句又硬凑出回执（地板真在起效，不是本来就没命中）',
+  negEmptyOld.length <= 4,
+  `关掉后空手只剩 ${negEmptyOld.length}/14`,
+)
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
