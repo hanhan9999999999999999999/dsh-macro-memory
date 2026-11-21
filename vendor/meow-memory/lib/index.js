@@ -1951,6 +1951,17 @@ function queryEntities(query) {
   }
   return out;
 }
+// [macro-fusion 0.2.140] 状态不进打分的后果：stale（已完结 / 被取代）和 archived（作废）的条目
+// 只靠"status 过滤是检索前二值"这一条挡着——默认 status=null 时它们**全都参与**检索，
+// 而且分数只由 bm25 × 重要度 × 新鲜度决定。于是一条刚被你标 stale 的旧结论，只要措辞更贴，
+// 会稳稳排在接手它的那条前面，回执上只差一个 `（stale）` 字样。准确性不是"能召回"，是
+// "召回的是现在还对的那条"：这里给状态一个统一的权重，两个打分器（BM25 与关键词）同口径。
+// 只降权、不隐藏——历史仍可召回（可追溯性），只是不许压过在用的结论。
+var STATUS_WEIGHT = { active: 1, stale: 0.6, archived: 0.35 };
+function statusWeight(status) {
+  const s = String(status ?? "active");
+  return STATUS_WEIGHT[s] ?? 1;
+}
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
@@ -2053,6 +2064,7 @@ function search(query, docs, opts = {}) {
       w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
     }
     const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
+    const stW = statusWeight(docs[di].status);
     hits.push({
       id: docs[di].id,
       level: docs[di].level,
@@ -2068,8 +2080,8 @@ function search(query, docs, opts = {}) {
       ...docs[di].project === void 0 ? {} : { project: docs[di].project },
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
-      score: raw[di] * w * impW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * 1e3) / 1e3 } } : {}
+      score: raw[di] * w * impW * stW,
+      ...opts.explain === true ? { explain: { bm25: Math.round(raw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   hits.sort((a, b2) => b2.score - a.score);
@@ -2120,6 +2132,7 @@ function keywordHitScore(query, docs, opts = {}) {
       w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
     }
     const impW = 1 + (docs[di].importance - 1) * 0.25;
+    const stW = statusWeight(docs[di].status);
     const titleHit = tokenize(docs[di].title ?? "").some((t) => qTf.has(t));
     out.push({
       id: docs[di].id,
@@ -2128,7 +2141,7 @@ function keywordHitScore(query, docs, opts = {}) {
       content: docs[di].content,
       importance: docs[di].importance,
       updated_at: docs[di].updated_at,
-      score: raw[di] * coverage * w * impW * (titleHit ? 1.2 : 1)
+      score: raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)
     });
   }
   out.sort((a, b) => b.score - a.score);
@@ -3306,8 +3319,11 @@ function searchTool(dir) {
         importance: r.importance,
         created_at: r.created_at,
         updated_at: r.updated_at,
-        last_accessed_at: r.last_accessed_at
+        last_accessed_at: r.last_accessed_at,
         // #91：衰减按最后使用时间
+        // [macro-fusion 0.2.140] 但状态必须跟着进打分器：docs 里没有 status，statusWeight 就只能
+        // 一律取 1，「降权」便成了一句空话（实测：退位的旧结论照样排在第 1 条）。
+        status: r.status
       }));
       const ranked = search(query, docs, { k: docs.length, explain });
       const topScore = ranked.length > 0 ? ranked[0].score : 0;
@@ -3342,7 +3358,13 @@ function searchTool(dir) {
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
       const scopeNote = hits.length === 0 && levelValid.length > 0 ? `这次只在 ${levelValid.join(" / ")} 层里查了，零命中：别的层就算有同关键词也看不到——要全层查就去掉 level 参数（默认 fact / lesson / topic / rules）。` : "";
       const plain = hits.length === 0 && !explicitLevels && !statusDead ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules\uFF0Csoul \u4E0E user \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"soul,user"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
-      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote, dedupeNote].filter((s) => s.length > 0).join("\n");
+      // [macro-fusion 0.2.140] 降权是藏在分数里的，读者看不见——那就把它说出来：
+      // 有几条不是在用的、它们被降到多重、想只看在用的该加什么参数。没有这类命中时一个字符都不多花。
+      const offNow = reordered.filter((h) => String(byId.get(h.id)?.status ?? "active") !== "active");
+      const statusDownNote = offNow.length === 0
+        ? ""
+        : safeKeyed("search.statusDown", "这次命中有 {n} 条不是在用的（stale=已完结或被取代，archived=作废）：它们已按 {stale} / {arch} 降权排在后面，别当成现在的结论用；只要在用的就在参数里加 status:\"active\"。", { n: String(offNow.length), stale: String(STATUS_WEIGHT.stale), arch: String(STATUS_WEIGHT.archived) });
+      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {
@@ -3367,6 +3389,7 @@ function searchTool(dir) {
                 importance: row?.importance ?? 0,
                 importanceWeight: h.explain?.importanceWeight ?? 1,
                 recencyWeight: h.explain?.recencyWeight ?? 1,
+                statusWeight: h.explain?.statusWeight ?? statusWeight(row?.status),
                 status: row?.status ?? "active"
               }
             } : {}
@@ -7675,6 +7698,7 @@ export {
   resumeAndDream,
   scanTurn,
   search,
+  statusWeight,
   seedTrustedWorkspaces,
   sendMemoryTurn,
   sessionEventsOf,

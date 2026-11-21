@@ -6859,6 +6859,78 @@ check(
   }
 }
 
+// RP0-RP5（0.2.140）：状态以前只在过滤里起作用，不进打分——默认 status=null 时 stale 与 archived
+// 全都参与检索，一条被你标成 stale 的旧结论只要措辞更贴就排在接手者前面，回执上只差一个「（stale）」。
+// 这一组验「降权真的发生、真的按序、真的说出口」，并且验历史仍可召回（只降权不隐藏）。
+{
+  const rpWs = mkdtempSync(join(tmpdir(), 'meow-statusw-'))
+  Meow.trustWorkspace(rpWs)
+  const rpExec = { agent: { session: { header: { cwd: rpWs, id: 'sess-statusw' } } } }
+  const rpRun = (name, args) => tools.get(name).execute(args, rpExec)
+  const rpKw = ['状态权重探针', '降权', 'stale', 'archived', '排序', '在用', '结论', '可召回', '回执', '准确率']
+  await rpRun('memory_remember', {
+    content: '状态权重探针：当前交付态是 0.2.100，旧结论。',
+    project: '探针状态权重',
+    keywords: rpKw,
+    importance: 2,
+    level: 'fact',
+  })
+  const rpDb = Meow.getDb(rpWs, '.dsh-meow')
+  const rpOldId = String(rpDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('0.2.100，旧结论'))?.id ?? '')
+  await rpRun('memory_remember', {
+    content: '状态权重探针：当前交付态是 0.2.140，旧结论已被这条接手。',
+    project: '探针状态权重',
+    keywords: rpKw,
+    importance: 2,
+    level: 'fact',
+    supersedes: [rpOldId],
+  })
+  check('RP0 纯函数：三档权重写死在一处（active 1 / stale 0.6 / archived 0.35）', Meow.statusWeight('active') === 1 && Meow.statusWeight('stale') === 0.6 && Meow.statusWeight('archived') === 0.35 && Meow.statusWeight(void 0) === 1)
+  // 宏层 memory_search 给的是渲染好的文本（TEXT_OUT），不是 {note, hits} 对象——按文本验。
+  const rpAllText = String((await rpRun('memory_search', { query: '状态权重探针 当前交付态', status: 'all', k: 5, content_max: 80 })) ?? '')
+  check(
+    'RP1 降权真的发生：退位那条还在结果里（可追溯），但排在接手者后面',
+    rpAllText.includes('0.2.140') &&
+      rpAllText.includes('0.2.100，旧结论') &&
+      rpAllText.indexOf('0.2.140') < rpAllText.indexOf('0.2.100，旧结论'),
+    rpAllText.replace(/\s+/g, ' ').slice(0, 200),
+  )
+  check(
+    'RP2 降权要说出口：回执点名有几条不是在用的，并给出降权倍数',
+    rpAllText.includes('不是在用的') && rpAllText.includes('0.6'),
+    rpAllText.replace(/\s+/g, ' ').slice(0, 260),
+  )
+  const rpActiveText = String((await rpRun('memory_search', { query: '状态权重探针 当前交付态', status: 'active', k: 5, content_max: 80 })) ?? '')
+  check(
+    'RP3 只要在用的：status=active 时退位那条不出现，回执也不再报降权',
+    rpActiveText.includes('0.2.140') && !rpActiveText.includes('0.2.100，旧结论') && !rpActiveText.includes('不是在用的'),
+    rpActiveText.replace(/\s+/g, ' ').slice(0, 200),
+  )
+  const rpExplainDocs = [
+    { id: 'x', level: 'fact', content: '可解释权重探针：同题两种说法', keywords: [], importance: 3, updated_at: Date.now(), status: 'active' },
+    { id: 'y', level: 'fact', content: '可解释权重探针：同题两种说法', keywords: [], importance: 3, updated_at: Date.now(), status: 'stale' },
+  ]
+  const rpExplain = Meow.search('可解释权重探针 同题两种说法', rpExplainDocs, { k: 5, now: Date.now(), explain: true })
+  check(
+    'RP4 可解释：explain 里能看见 statusWeight（否则读者不知道它为什么掉下去了）',
+    rpExplain.length === 2 && rpExplain[0].explain?.statusWeight === 1 && rpExplain[1].explain?.statusWeight === 0.6,
+    rpExplain.map((h) => `${h.id}:${h.explain?.statusWeight}`).join(' '),
+  )
+  const rpDocs = [
+    { id: 'a', level: 'fact', content: '同一条正文，只有状态不同', keywords: [], importance: 3, updated_at: Date.now(), status: 'active' },
+    { id: 'b', level: 'fact', content: '同一条正文，只有状态不同', keywords: [], importance: 3, updated_at: Date.now(), status: 'stale' },
+    { id: 'c', level: 'fact', content: '同一条正文，只有状态不同', keywords: [], importance: 3, updated_at: Date.now(), status: 'archived' },
+  ]
+  const rpPure = Meow.search('同一条正文 只有状态不同', rpDocs, { k: 5, now: Date.now() })
+  const rpRatio = rpPure.length === 3 ? rpPure[1].score / rpPure[0].score : 0
+  check('RP5 权重就是分数比：正文与时间都一样时，stale / archived 的分数正好是 0.6 / 0.35 倍', rpPure.map((h) => h.id).join('') === 'abc' && Math.abs(rpRatio - 0.6) < 1e-6 && Math.abs(rpPure[2].score / rpPure[0].score - 0.35) < 1e-6, rpPure.map((h) => `${h.id}:${Math.round(h.score * 1e3) / 1e3}`).join(' '))
+  try {
+    rmSync(rpWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
 for (const d of disposers) {
   try {
     d()

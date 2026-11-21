@@ -8321,3 +8321,35 @@ probe-fusion `RM10–RM13`：真造一对（甲 → 乙 supersedes 甲）验 `st
 - 反方向同理：一条旧条目写着「我被 0mwpxnnu 接手」，只有当它记的开头也以我的开头起头时，
   才算「它记的是我」，否则可能记的是同秒的兄弟条；
 - 只有开头缺了、或筛完仍不唯一，才退回 `ambiguous`（照实说「认不出」）。
+
+## 9.146 状态一直是个过滤器，从没进过打分（0.2.140）
+
+### 9.146.1 一个只在「读」的时候才存在的区别
+`memory_search` 的 status 是一个**检索前的二值过滤**：默认 `null`，也就是 stale / archived
+全都参与检索。于是库里同时躺着「0.2.100 的旧结论」和「0.2.140 接手它」两条时，谁排第一
+由 BM25 × 重要度 × 新鲜度决定——跟「这条还用不用」完全无关。实测一条刚被标 stale 的旧结论，
+只要措辞更贴，稳稳排在接手它那条前面，回执上唯一的差别是行首一个 `（stale）`。
+
+准确性不是「能召回」，是「召回的是现在还对的那条」。
+
+### 9.146.2 权重进打分，但只降权不隐藏
+`STATUS_WEIGHT = { active: 1, stale: 0.6, archived: 0.35 }`，`statusWeight()` 一个入口，
+两个打分器（BM25 与关键词）同口径乘上去。历史仍然召回（可追溯性不许砍），只是不许压过
+在用的结论。`explain` 里补 `statusWeight` 一项——不然读者只知道它掉下去了，不知道为什么。
+
+### 9.146.3 差点写成一句空话
+第一版只加了权重函数与乘法，探针立刻打红：退位那条照样排第一。原因是 `searchTool` 把 rows
+映射成 docs 时**没有带 status**（那张 map 只挑 id/level/title/content/keywords/importance/
+created_at/updated_at/last_accessed_at）。`statusWeight(undefined)` 一律取 1，权重等于没加。
+补上 `status: r.status` 之后才真的生效——**降权的前提是权重看得到状态**，这一条写进 verify 的
+源码锚点，防止以后重构时又把它挑丢。
+
+### 9.146.4 降权必须说出口
+分数里的 0.6 是看不见的。命中里有非 active 时，回执补一句：有几条不是在用的、降到多重、
+只要在用的该加什么参数（`status:"active"`）。没有这类命中时 `statusDownNote` 是空串——
+常态一个字符都不多花。
+
+### 9.146.5 三语与覆盖
+文案走 `safeKeyed("search.statusDown", …)`，zh / en / pt-br 三个 labels.md 都补了同键；
+probe-fusion 的 RP0–RP5 走真工具验「降权发生、按序、说出口、explain 可见、纯函数分数比」，
+verify 的 FW 段验源码锚点与三语齐备。

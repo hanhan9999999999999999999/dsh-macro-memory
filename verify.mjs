@@ -5776,7 +5776,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25）',
     meowSrc.includes('const impW = 1 + (impOf(docs[di]) - 1) * 0.25;') &&
-      meowSrc.includes('score: raw[di] * w * impW,'),
+      meowSrc.includes('score: raw[di] * w * impW * stW,'),
   )
   check(
     '召回: explain 把 importanceWeight 也露出来（三个因子缺一个就没法解释排序）',
@@ -9418,6 +9418,25 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.145 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 151 '),
   )
+}
+
+// FW（0.2.140）：状态以前只在过滤里起作用，不进打分。这一组验「权重存在、两个打分器都用它、
+// docs 真的把 status 带进去了、降权这件事在回执里有话说、三语文案齐」。
+{
+  const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const meowMod = await import('./vendor/meow-memory/lib/index.js')
+  check('FW 纯函数：三档权重（active 1 / stale 0.6 / archived 0.35 / 缺省 1）', meowMod.statusWeight('active') === 1 && meowMod.statusWeight('stale') === 0.6 && meowMod.statusWeight('archived') === 0.35 && meowMod.statusWeight(void 0) === 1)
+  check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW,') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
+  check('FW 源码: docs 把 status 带进打分器（不带就等于没降权）', meowSrc.includes('status: r.status') && meowSrc.includes('const stW = statusWeight(docs[di].status)'))
+  check('FW 源码: explain 里有 statusWeight 分项', meowSrc.includes('statusWeight: Math.round(stW * 1e3) / 1e3'))
+  const docsFw = [
+    { id: 'a', level: 'fact', content: '同题同文，只有状态不同', keywords: [], importance: 3, updated_at: Date.now(), status: 'active' },
+    { id: 'b', level: 'fact', content: '同题同文，只有状态不同', keywords: [], importance: 3, updated_at: Date.now(), status: 'stale' },
+  ]
+  const rankedFw = meowMod.search('同题同文 只有状态不同', docsFw, { k: 5, now: Date.now() })
+  check('FW 行为: 正文与时间一样时，在用那条排前面，且分数比正好 0.6', rankedFw.length === 2 && rankedFw[0].id === 'a' && Math.abs(rankedFw[1].score / rankedFw[0].score - 0.6) < 1e-6)
+  check('FW 文案: 降权要在回执里说出口（键 + 三语）', meowSrc.includes('search.statusDown') && ['zh', 'en', 'pt-br'].every((lang) => readFileSync(new URL(`./vendor/meow-memory/lib/prompts/${lang}/labels.md`, import.meta.url), 'utf8').includes('- search.statusDown:')))
+  check('FW 克制: 没有非 active 命中时一个字节都不多花', meowSrc.includes('const statusDownNote = offNow.length === 0'))
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
