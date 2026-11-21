@@ -2053,6 +2053,80 @@ function timeAnchorOf(q, opts) {
   return TIME_ANCHOR_RE.test(String(q ?? ""));
 }
 
+// [macro-fusion 0.2.160] 弱命中：榜首「只是沾到」的时候要说得出来。
+// 覆盖度不足 = 这条问句的词只命中一小块；几乎并列 = 两个候选说得一样像。
+// 两个判据都只决定「回执里多不多一句话」，不参与打分、不改排序、不动 min_rel：
+// 真库 59 问上量过——触发 25 条里 18 条确实没中（覆盖 75%），误报 7 条。
+var WEAK_COVER = 0.2;
+var WEAK_GAP = 0.95;
+function hintWordsOf(hit, query) {
+  const raw = hit && hit.keywords;
+  let list = [];
+  if (Array.isArray(raw)) list = raw;
+  else if (typeof raw === "string" && raw.trim().length > 0) {
+    const t = raw.trim();
+    if (t.startsWith("[")) {
+      try {
+        const j = JSON.parse(t);
+        list = Array.isArray(j) ? j : t.split(/[,，、]/);
+      } catch {
+        list = t.split(/[,，、]/);
+      }
+    } else list = t.split(/[,，、]/);
+  }
+  const q = String(query ?? "");
+  const out = [];
+  for (const w of list) {
+    const one = String(w ?? "").trim();
+    if (one.length < 2 || one.length > 12) continue;
+    if (/^[0-9.\-/\s]+$/.test(one)) continue;
+    if (q.includes(one)) continue;
+    if (out.includes(one)) continue;
+    out.push(one);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+function weakHitOf(hits, opts) {
+  const list = Array.isArray(hits) ? hits.filter((h) => h && typeof h === "object") : [];
+  const o = opts ?? {};
+  const coverMax = Number.isFinite(o.cover) ? o.cover : WEAK_COVER;
+  const gapMax = Number.isFinite(o.gap) ? o.gap : WEAK_GAP;
+  if (list.length === 0) return { weak: false, why: "", cover: 0, gap: 0, words: [] };
+  const top = list[0];
+  const second = list[1] ?? null;
+  if (top.anchored === true) return { weak: false, why: "anchor", cover: typeof top.cover === "number" ? top.cover : 0, gap: 0, words: [] };
+  const cover = typeof top.cover === "number" && Number.isFinite(top.cover) ? top.cover : null;
+  const topScore = Number(top.score) || 0;
+  const gapRaw = second !== null && topScore > 0 ? (Number(second.score) || 0) / topScore : 0;
+  const gap = gapRaw > 1 ? 1 : gapRaw;
+  const lowCover = cover !== null && cover < coverMax;
+  const nearTie = second !== null && gap >= gapMax;
+  const why = lowCover && nearTie ? "cover+near" : lowCover ? "cover" : nearTie ? "near" : "";
+  return {
+    weak: lowCover || nearTie,
+    why,
+    cover: cover === null ? 0 : Math.round(cover * 1e3) / 1e3,
+    gap: Math.round(gap * 1e3) / 1e3,
+    words: lowCover || nearTie ? hintWordsOf(top, o.query) : []
+  };
+}
+function weakNoteOf(hits, opts) {
+  const w = weakHitOf(hits, opts);
+  if (!w.weak) return "";
+  const pct = Math.round(w.cover * 100);
+  const gapPct = Math.round((1 - w.gap) * 100);
+  const whyText = w.why === "cover+near"
+    ? safeKeyed("search.weakBoth", "榜首只覆盖了这条问句的 {pct}%，与第二名只差 {gap}%", { pct: String(pct), gap: String(gapPct) })
+    : w.why === "near"
+      ? (gapPct <= 1
+        ? safeKeyed("search.weakTie", "榜首与第二名几乎同分")
+        : safeKeyed("search.weakNear", "榜首与第二名只差 {gap}%", { gap: String(gapPct) }))
+      : safeKeyed("search.weakCover", "榜首只覆盖了这条问句的 {pct}%", { pct: String(pct) });
+  const words = w.words.length === 0 ? "" : safeKeyed("search.weakWords", "库里是这么说的：{words}。", { words: w.words.join("、") });
+  return safeKeyed("search.weak", "这次弱命中：{why}。它可能只沾了一两个词，先看正文确认，别直接当结论。{words}要更准就换个词，或者收窄 level / project / days。", { why: whyText, words });
+}
+
 // 按证据分档：先按词分排，再从头扫，凡是掉到本档锚点 85% 以下就开新档。
 // 档号升序即证据强度降序；权重只在同档内比较，跨档永远不许越级。
 function bandize(hits, rawKey) {
@@ -2339,6 +2413,7 @@ function search(query, docs, opts = {}) {
     if (qIdfSum > 0) {
       let cover = 0;
       for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);
+      coverOf[di] = Math.min(1, cover / qIdfSum);
       if (cover > 0) s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);
     }
     if (entSets) {
@@ -2354,6 +2429,7 @@ function search(query, docs, opts = {}) {
   
   };
   const raw = new Array(docs.length).fill(0);
+  const coverOf = new Array(docs.length).fill(0);
   const candSet = postings === null || verbHay !== null ? null : (() => {
     const set = new Set();
     for (const term of qLoop) {
@@ -2403,6 +2479,8 @@ function search(query, docs, opts = {}) {
     hits.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
       _raw: raw[di],
+      cover: Math.round(coverOf[di] * 1e3) / 1e3,
+      ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
       level: docs[di].level,
       title: docs[di].title,
@@ -2418,7 +2496,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), cover: Math.round(coverOf[di] * 1e3) / 1e3, score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -3819,10 +3897,12 @@ function searchTool(dir) {
         ? ""
         : safeKeyed("search.statusDown", "这次命中有 {n} 条不是在用的（stale=已完结或被取代，archived=作废）：它们已按 {stale} / {arch} 降权排在后面，别当成现在的结论用；只要在用的就在参数里加 status:\"active\"。", { n: String(offNow.length), stale: String(STATUS_WEIGHT.stale), arch: String(STATUS_WEIGHT.archived) });
       // [macro-fusion 0.2.155] 闸门挡下来的要单独解释：零命中可能是「库里没有」，也可能是「这一问跟库不沾边」。
+      // [macro-fusion 0.2.160] 弱命中就说清：强命中时这句是空串，一个字节都不多花。
+      const weakNote = gate.fired ? "" : weakNoteOf(ranked, { query });
       const gateNote = gate.fired
         ? `这次零命中不是「库里没有」，是这条问句跟记忆库不沾边：${gate.why}；最近的那条是 ${String(gate.nearest ?? '').slice(0, 8)}。真要硬看候选，就把这道闸关掉（环境里设 MEOW_DENSE_ABSTAIN=0），或者把门槛调低（MEOW_DENSE_ABSTAIN=0.3）。`
         : "";
-      const note = [plain, gateNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
+      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {
@@ -8848,6 +8928,11 @@ export {
   identsOf,
   timeAnchorOf,
   TIME_ANCHOR_RE,
+  weakHitOf,
+  weakNoteOf,
+  hintWordsOf,
+  WEAK_COVER,
+  WEAK_GAP,
   verbatimOf,
   topicDrift,
   trustCommandDefinition,

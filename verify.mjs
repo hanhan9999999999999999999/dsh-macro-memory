@@ -9462,7 +9462,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 }
 
 
-// FR（0.2.159）：面板层——引力可调、局部图 N 跳、标签随距离淡出。
+// FR（0.2.158）：面板层——引力可调、局部图 N 跳、标签随距离淡出。
 // 这一组钉三件事：纯函数与面板接线是真的（不是写在文档里）、默认值只有一个来源、
 // 以及「面板改了什么，请求前缀一个字节都没变」。第三件是这一版敢做的全部理由。
 {
@@ -9585,6 +9585,76 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       int159.includes('0.933') &&
       des159.includes('## 171') &&
       des159.includes('问句里的日期是条件，不是噪声'),
+  )
+}
+
+// HA（0.2.160）：分低别装懂——弱命中时说清「差在哪」，强命中一个字不多说。
+// 这一组量的是「诚实度」：不改排序（改不动就说明白），只说能核对的事实，且强命中零字节。
+{
+  const eng = readFileSync(
+    join(root, 'vendor', 'meow-memory', 'lib', 'index.js'),
+    'utf8',
+  )
+  check(
+    'HA 单一来源: 弱命中的两个门槛只定义一次，别的模块不许自己写一份「多低才算弱」',
+    eng.split('var WEAK_COVER =').length - 1 === 1 &&
+      eng.split('var WEAK_GAP =').length - 1 === 1 &&
+      !readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8').includes('WEAK_COVER'),
+  )
+  check(
+    'HA 判据是门槛不是玄学: 两个阈值都能被 opts 覆盖，且比值夹到 1（分档后第二名可能更高）',
+    eng.includes('const coverMax = Number.isFinite(o.cover) ? o.cover : WEAK_COVER;') &&
+      eng.includes('const gapMax = Number.isFinite(o.gap) ? o.gap : WEAK_GAP;') &&
+      eng.includes('const gapRaw = second !== null && topScore > 0') &&
+      eng.includes('const gap = gapRaw > 1 ? 1 : gapRaw;'),
+  )
+  check(
+    'HA 强命中零字节: 不弱就返回空串，闸门挡下的那次也不再重复说',
+    eng.includes('  if (!w.weak) return "";') &&
+      eng.includes('const weakNote = gate.fired ? "" : weakNoteOf(ranked, { query });') &&
+      eng.split('weakNoteOf(').length - 1 === 2,
+  )
+  check(
+    'HA 版本号问句不误报: 榜首那条自己就带这个日期/版本号时，不许说「措辞对不上」',
+    eng.includes('if (top.anchored === true) return { weak: false, why: "anchor"') &&
+      eng.includes('...(anchored ? { anchored: true } : {}),') &&
+      eng.split('...(anchored ? { anchored: true } : {}),').length - 1 === 1,
+  )
+  check(
+    'HA 覆盖度有出处: cover 只算一遍，hit 与 explain 用的是同一个算式（不是文案里另算一遍）',
+    eng.split('coverOf[di] = Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
+      eng.split('cover: Math.round(coverOf[di] * 1e3) / 1e3,').length - 1 >= 2 &&
+      /explain: \{ bm25:[\s\S]{0,600}cover: Math\.round\(coverOf\[di\] \* 1e3\) \/ 1e3/.test(eng),
+  )
+  check(
+    'HA 只说不改: 提示不进打分路径（词分、分档、排序一个字节都不动）',
+    !/function (scanDoc|bandize)[\s\S]{0,1200}weakNote/.test(eng) && eng.includes('hintWordsOf') && eng.includes('weakHitOf'),
+  )
+  check(
+    'HA 抽词有规矩: 2–12 字、剔纯数字与版本号、剔问句里已有的词、最多 3 个',
+    eng.includes('if (one.length < 2 || one.length > 12) continue;') &&
+      eng.includes('if (/^[0-9.\\-/\\s]+$/.test(one)) continue;') &&
+      eng.includes('if (q.includes(one)) continue;') &&
+      eng.includes('if (out.length >= 3) break;'),
+  )
+  const probeGold160 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+  check(
+    'HA 自带阴性对照: 探针里三条对照都必须能让 G19 变红（不闭嘴 / 误报版本号 / 抽词不剔）',
+    probeGold160.includes('G19 弱命中就说清') &&
+      probeGold160.includes('强命中仍多说了') &&
+      probeGold160.includes('版本号问句被当成弱命中') &&
+      probeGold160.includes('抽词没剔掉数字或问句里的词') &&
+      probeGold160.includes('每条都说 = 等于没说'),
+  )
+  const int160 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des160 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  check(
+    'HA 有记: INTERNAL 9.167 写清「为什么改排序改不动、只能改说法」，DESIGN 172 写清判据与代价',
+    int160.includes('## 9.167') &&
+      int160.includes('0.500') &&
+      int160.includes('16/31') &&
+      des160.includes('## 172') &&
+      des160.includes('分低就说清'),
   )
 }
 
@@ -9860,8 +9930,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.159（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.159'"),
+    'GV 版本: 代码里是 0.2.160（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.160'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9989,8 +10059,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.159（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.159'"),
+    'GW 版本: 代码里是 0.2.160（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.160'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10137,8 +10207,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.159（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.159'"),
+    'VV 版本: 代码里是 0.2.160（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.160'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10315,9 +10385,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.159（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.159' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.159'"),
+    'GX19 版本已到 0.2.160（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.160' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.160'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10417,10 +10487,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.159',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.159' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.159'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.159'),
+    'VY15 版本三处一致 0.2.160',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.160' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.160'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.160'),
   )
 }
 
@@ -10460,10 +10530,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.159（三处一致）',
-    pkgWz.version === '0.2.159' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.159'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.159'),
+    'WZ9 版本已到 0.2.160（三处一致）',
+    pkgWz.version === '0.2.160' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.160'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.160'),
   )
 }
 

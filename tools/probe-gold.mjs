@@ -442,6 +442,75 @@ if (denseUsable) {
   )
 }
 
+// ── G19（0.2.160）弱命中就说清：分低别装懂，把「差在哪」说出来 ────────────────
+// 这一条量的是「诚实度」不是「命中率」：词对不上时（换说法池 hit@1=0.500）排序改不动，
+// 那就把「榜首只覆盖了问句的几成」这件事说给调用方听，并给出库里实际用的说法。
+// 三条底线：强命中一个字都不多说（零字节）、版本号问句不误报、说的都是能核对的事实。
+{
+  const noteOf = (q, opts) => V.weakNoteOf(V.search(q, docs, { k: 5 }), { query: q, ...opts })
+  const hitOf = (q, opts) => V.search(q, docs, { k: 5, ...opts })
+
+  const all = [...fx.queries, ...fx.paraphrase, ...fx.anchor]
+  const notes = all.map((x) => noteOf(x.q))
+  const fired = notes.filter((s) => s.length > 0).length
+  const maxLen = notes.reduce((m, s) => Math.max(m, s.length), 0)
+
+  // 最弱的一条（换说法池里正解与榜单交集为 0）必须说；一句正常问法必须闭嘴
+  const weakQ = '自测怎么才算真的测到了东西'
+  const weakNote = noteOf(weakQ)
+  const quietQ = fx.queries.map((x) => x.q).find((q) => {
+    const h = V.search(q, docs, { k: 5 })
+    return h.length > 0 && h[0].anchored !== true && Number(h[0].cover) >= 0.35
+  })
+  const quietNote = quietQ === undefined ? '（找不到强命中样例）' : noteOf(quietQ)
+
+  // 版本号问句：榜首那条自己就带这个版本号 → 不许说「措辞对不上」
+  const anchoredQ = all.map((x) => x.q).find((q) => V.search(q, docs, { k: 2 })[0]?.anchored === true)
+  const anchoredW = anchoredQ === undefined ? null : V.weakHitOf(hitOf(anchoredQ), { query: anchoredQ })
+  const anchoredNote = anchoredQ === undefined ? '（找不到锚点样例）' : noteOf(anchoredQ)
+
+  // 覆盖度是个比值：每条 hit 都该在 0..1 之间，且 explain 里点得出来
+  const coverOk = all.every((x) =>
+    V.search(x.q, docs, { k: 5 }).every((h) => typeof h.cover === 'number' && h.cover >= 0 && h.cover <= 1),
+  )
+  const exCover = typeof hitOf(weakQ, { explain: true })[0].explain.cover === 'number'
+
+  // 阈值可覆盖：同一个问句，把门槛放到极低就闭嘴、放到极高就说——说明判据是门槛而不是偶然
+  const forceQuiet = quietQ === undefined ? '' : noteOf(quietQ, { cover: 0, gap: 2 })
+  const forceFire = quietQ === undefined ? 'x' : noteOf(quietQ, { cover: 1, gap: 2 })
+
+  // 抽词：三种 keywords 写法都吃、剔数字、剔问句里已有的词、最多 3 个、每个 2–12 字
+  const kwArr = V.hintWordsOf({ keywords: ['重放脚本', '锚点断言', '0.2.160', '验证', '补丁脚本'] }, '锚点断言怎么写')
+  const kwJson = V.hintWordsOf({ keywords: '["重放脚本","锚点断言"]' }, '锚点断言怎么写')
+  const kwCsv = V.hintWordsOf({ keywords: '重放脚本,锚点断言' }, '锚点断言怎么写')
+  const kwNone = V.hintWordsOf({ keywords: '' }, '随便问问')
+  const kwOk = (w) =>
+    Array.isArray(w) && w.length <= 3 && w.every((t) => typeof t === 'string' && t.length >= 2 && t.length <= 12 && !/^\d+$/.test(t))
+  // 问句里已有的词（锚点断言）与纯数字/版本号（0.2.160）都不该被当成「库里的说法」提出来
+  const kwClean = kwArr.every((t) => !t.includes('锚点断言') && !/^[\d.\-/]+$/.test(t)) && kwArr.length === 3
+
+  const wrong = []
+  if (!(weakNote.length > 0 && weakNote.includes('换个词'))) wrong.push('最弱的问句没有提示')
+  if (weakNote.includes('0.2.160') || weakNote.includes('锚点断言是不是')) wrong.push('提示里把问句原样复读了')
+  if (quietNote !== '') wrong.push(`强命中仍多说了 ${quietNote.length} 字（应为零字节）`)
+  if (anchoredQ !== undefined && !(anchoredW?.weak === false && anchoredW?.why === 'anchor' && anchoredNote === '')) {
+    wrong.push('版本号问句被当成弱命中')
+  }
+  if (!coverOk || !exCover) wrong.push('cover 不在 0..1 或 explain 里没有')
+  if (quietQ !== undefined && !(forceQuiet === '' && forceFire.length > 0)) wrong.push('阈值覆盖不动（判据不是门槛）')
+  if (!kwOk(kwArr) || !kwOk(kwJson) || !kwOk(kwCsv) || kwNone.length !== 0) wrong.push('抽词规则不对')
+  if (!kwClean) wrong.push('抽词没剔掉数字或问句里的词')
+  if (!(maxLen <= 200)) wrong.push(`句长 ${maxLen} 字（上限 200）`)
+  if (!(fired < all.length)) wrong.push('每条都说 = 等于没说')
+  check(
+    'G19 弱命中就说清：分低时说「差在哪」并给出库里的说法，强命中零字节，版本号问句不误报',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `${all.length} 问触发 ${fired}（${Math.round((fired / all.length) * 100)}%），句长 ≤ ${maxLen} 字；强命中 0 字节；锚点问句 ${anchoredQ === undefined ? '无样例' : '按情况闭嘴'}；抽词 3 种写法一致`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
