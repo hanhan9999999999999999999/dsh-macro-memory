@@ -5648,11 +5648,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 会把「改实现」误判成「塞描述」，人就开始抬上界。
   // 0.2.167：memory_search 加了 band_keep，单项上界 6,500 → 7,500（实测 6,852）。
   // 0.2.170：疑问框架剥离在 explain 里要说清改过什么，整字面量 105,000 → 106,000（实测 105,156）。
+  // 0.2.171：历史补录整段是三十行真逻辑，106,000 → 110,000（实测 108,705）；再涨就该拆工具。
   check(
-    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 106,000',
+    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 110,000',
     probeSrc.includes('const BUDGET_BYTES = 24000') &&
       probeSrc.includes('const TOOL_BUDGET = { memory_search: 7500 }') &&
-      probeSrc.includes('const LITERAL_CEIL = 106000') &&
+      probeSrc.includes('const LITERAL_CEIL = 110000') &&
       probeSrc.includes('ok(sum <= BUDGET_BYTES') &&
       probeSrc.includes("'体积：单项 schema ' + name + ' 没有膨胀'"),
   )
@@ -10197,6 +10198,59 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
   }
 
+  // ── HZ6（0.2.171）历史可查：点了名就说清「它过期了」，别装作没有 ─────────────
+  {
+    check(
+      'HZ6 历史补录在：问句点了名、而这名字只活在过期条目里时，翻出来（有上限）',
+      eng.includes('var HIST_LIFT_MAX = 3;') &&
+        eng.includes('const askIdents = statusDead || statusList.length > 0 || parsed.include_stale === false ? [] : identsOf(query);'),
+      `HIST_LIFT_MAX=${eng.includes('var HIST_LIFT_MAX = 3;')} 出口=${eng.includes('parsed.include_stale === false')}`,
+    )
+    check(
+      'HZ6 补也只补点了名的：没过这个标识符的过期条目一条都不许跟上来',
+      eng.includes('if (!askIdents.some((t) => hay.includes(t))) continue;') && eng.includes('const pool = [];'),
+      'ident 过滤与 pool 收集都在',
+    )
+    check(
+      'HZ6 先打分再取前 N：按库里顺序取前两条会把正解挤到第 3（0.2.147 就是这么漏的）',
+      eng.includes('const asked = await rankForSearch(query, pool.map(docFor), { k: HIST_LIFT_MAX, explain: false, bandKeep: true });'),
+      'rankForSearch 在补录路径上',
+    )
+    check(
+      'HZ6 只是检索这一侧放宽：listSearchable 仍只回 active（主人拍板：其他类别过时不默认检索）',
+      eng.includes('const active2 = this.list(level, { status: "active" });') &&
+        eng.includes("const todoDone = this.p(`SELECT * FROM project WHERE status = 'stale' AND subcategory = 'todo'`)"),
+      'listSearchable 定义未改',
+    )
+    check(
+      'HZ6 标识符补分能跨档：分档读的是 _raw，补分只进 score 就永远翻不过去',
+      eng.includes('var IDENT_BAND_W = 0.8;') &&
+        eng.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio)),'),
+      'IDENT_BAND_W 与 _raw 加成都可查',
+    )
+    const recall171 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+    check(
+      'HZ6 行为探针在：R9 六条（翻得出 / 说过期 / 关得掉 / 只认点了名 / 不捎带无关 / 口径不动）',
+      [
+        'R9 点了名的历史翻得出来',
+        'R9 翻出来要说「过期」',
+        'R9 关得掉',
+        'R9 只对「点了名」的问句放宽',
+        'R9 补也只补点了名的',
+        'R9 只是检索这一侧放宽',
+      ].every((t) => recall171.includes(t)),
+      '6 个 R9 标题',
+    )
+    check(
+      'HZ6 文档锚：9.178 写下「只活在过期条目里」，183 写下「过期不是删掉」',
+      readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('## 9.178') &&
+        readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('只活在过期条目里') &&
+        readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 183') &&
+        readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('过期不是删掉'),
+      '9.178 / 183 两处锚',
+    )
+  }
+
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10532,8 +10586,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.170（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.170'"),
+    'GV 版本: 代码里是 0.2.171（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.171'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10663,8 +10717,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.170（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.170'"),
+    'GW 版本: 代码里是 0.2.171（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.171'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10811,8 +10865,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.170（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.170'"),
+    'VV 版本: 代码里是 0.2.171（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.171'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10990,9 +11044,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.170（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.170' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.170'"),
+    'GX19 版本已到 0.2.171（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.171' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.171'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11026,8 +11080,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     (MY.match(/Math\.max\(RECENCY_FLOOR, recencyWeight\(/g) || []).length === 2,
   )
   check(
-    'VY6 两支打分器都挂词分给分档用（_raw 两处）',
-    (MY.match(/_raw: raw\[di\],/g) || []).length === 2,
+    'VY6 两支打分器都挂词分给分档用（_raw 两处；0.2.171 起 search 那处还要乘上标识符加成）',
+    (MY.match(/_raw: raw\[di\]/g) || []).length === 2 &&
+      MY.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio)),'),
   )
   check(
     'VY7 两支打分器都走 bandize，且临时字段有死期',
@@ -11092,10 +11147,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.170',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.170' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.170'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.170'),
+    'VY15 版本三处一致 0.2.171',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.171' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.171'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.171'),
   )
 }
 
@@ -11143,10 +11198,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.170（三处一致）',
-    pkgWz.version === '0.2.170' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.170'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.170'),
+    'WZ9 版本已到 0.2.171（三处一致）',
+    pkgWz.version === '0.2.171' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.171'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.171'),
   )
 }
 

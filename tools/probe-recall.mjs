@@ -726,6 +726,64 @@ check(
 )
 
 
+
+// ── R9 历史可查（0.2.171）：点了名就说清「它过期了」，别装作没有 ─────────────
+// 真库里问「0.2.148 改了什么」前 10 名一条正解都没有——不是排序差，是那条交付 fact 已被
+// 后续版本取代（status=stale），而 listSearchable 只回 active。于是读者得到的是五条顺带
+// 提过这个版本号的条目，一句提示都没有。这里钉的是：问句点了名（版本号 / 路径 / 短 id），
+// 而这名字只活在过期条目里时，翻出来、标明过期、并且给得出一个关掉它的开关。
+const ws9 = join(home, 'ws9')
+mkdirSync(ws9, { recursive: true })
+const c9 = (name, args, tag) =>
+  T.get(name).execute(args, { agent: { session: { header: { cwd: ws9, id: `sess-r9-${tag}` } } } })
+const R9_SEED = [
+  { content: '0.2.148 交付态：这一版把标识符补分挪到加权之后，并修了分档。', keywords: ['0.2.148', '交付态'], importance: 3, level: 'fact', project: 'r9-历史' },
+  { content: '改 vendor 副本必须在包目录留三样东西，否则下次取包会静默丢补丁。', keywords: ['vendor', '副本'], importance: 3, level: 'lesson', project: 'r9-历史' },
+  { content: '0.2.148 顺手记一句：日志要留着，出事时它比记忆可靠。', keywords: ['日志'], importance: 2, level: 'lesson', project: 'r9-历史' },
+  { content: '数据库迁移要挑低峰期做，先备份再动。', keywords: ['数据库', '迁移'], importance: 2, level: 'lesson', project: 'r9-历史' },
+]
+const r9ids = []
+for (const s of R9_SEED) r9ids.push(String((await c9('memory_remember', s, 'w')).id).slice(0, 9))
+await c9('memory_update', { id: r9ids[0], status: 'stale' }, 'up-a')
+await c9('memory_update', { id: r9ids[3], status: 'stale' }, 'up-b')
+const q9 = '0.2.148 改了哪些东西'
+const has9 = (out, id) => (out?.hits ?? []).some((h) => String(h.id).startsWith(id))
+const on9 = await c9('memory_search', { query: q9, k: 10 }, 'on')
+check(
+  'R9 点了名的历史翻得出来：问句带版本号、正解只在过期条目里时，它照样进回执',
+  has9(on9, r9ids[0]),
+  `hits=${(on9?.hits ?? []).length} 含过期正解=${has9(on9, r9ids[0])}`,
+)
+check(
+  'R9 翻出来要说「过期」：note 里点明它已被后续版本取代，别当成现在的结论',
+  /已过期/.test(String(on9?.note ?? '')) && /0\.2\.148/.test(String(on9?.note ?? '')),
+  String(on9?.note ?? '').slice(Math.max(0, String(on9?.note ?? '').indexOf('0.2.148') - 40), String(on9?.note ?? '').indexOf('0.2.148') + 90),
+)
+const off9 = await c9('memory_search', { query: q9, k: 10, include_stale: false }, 'off')
+check(
+  'R9 关得掉：include_stale:false 时一条过期条目都不带（阴性对照）',
+  !has9(off9, r9ids[0]),
+  `含过期正解=${has9(off9, r9ids[0])}`,
+)
+const noId9 = await c9('memory_search', { query: '最后改了哪些东西', k: 10 }, 'noid')
+check(
+  'R9 只对「点了名」的问句放宽：问句里没有标识符时，过期条目一条不补',
+  !has9(noId9, r9ids[0]),
+  `含过期正解=${has9(noId9, r9ids[0])}`,
+)
+check(
+  'R9 补也只补点了名的：同库里没提这个版本号的过期条目一条都不许跟上来',
+  !has9(on9, r9ids[3]),
+  `无关过期条目在榜=${has9(on9, r9ids[3])}`,
+)
+check(
+  'R9 只是检索这一侧放宽：listSearchable 的口径一个字没动（过了期的不默认进候选）',
+  SRC.includes('listSearchable(level)') &&
+    /listSearchable\(level\) \{[^}]*status: "active"/.test(SRC) &&
+    SRC.includes('const askIdents = statusDead || statusList.length > 0 || parsed.include_stale === false ? [] : identsOf(query);'),
+  `listSearchable 定义在=${SRC.includes('listSearchable(level)')} 出口在=${SRC.includes('parsed.include_stale === false')}`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

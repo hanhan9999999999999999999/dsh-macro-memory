@@ -2048,6 +2048,9 @@ var IDENT_MIN = 4;
 var IDENT_MAX = 6;
 var IDENT_W = 0.6;
 var IDENT_ID_W = 1.5;
+var IDENT_BAND_W = 0.8;
+// [macro-fusion 0.2.171] 历史补录上限：点了名的标识符只活在过期条目里时，最多翻几条出来。
+var HIST_LIFT_MAX = 3;
 var IDENT_BASE_CREDIT = 0.7;
 var IDENT_STEM_CREDIT = 0.5;
 // [macro-fusion 0.2.150] 证据先分档，档内才谈权重。
@@ -2629,6 +2632,7 @@ function search(query, docs, opts = {}) {
   // importance / 新鲜度 / 状态权重再乘一遍——于是一条 impW=1.75 的措辞命中能把「问的正是这条 id」
   // 压下去（实测问 0mwq5zzv：措辞那条 17.96，被指认那条只有 16.16）。指认是同义反复的最高形态，
   // 不该被别人的重要性稀释：先算完整分数，再按榜首的一个单位补上去（单位跟着榜走，不跟着词分走）。
+  const identBandW = Number.isFinite(opts.identBandW) ? opts.identBandW : IDENT_BAND_W;
   const baseRaw = raw.slice();
   const maxRaw = Math.max(...raw);
   const hits = [];
@@ -2660,7 +2664,7 @@ function search(query, docs, opts = {}) {
     const stW = anchored ? 1 : statusWeight(docs[di].status);
     hits.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
-      _raw: raw[di],
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio)),
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -4007,23 +4011,45 @@ function searchTool(dir) {
         if (statusList.length > 1) return db.list(lv);
         return db.listSearchable(lv);
       });
+      const docFor = (r) => ({ id: r.id, level: r.level, title: r.title, content: r.content, keywords: r.keywords, importance: r.importance, created_at: r.created_at, updated_at: r.updated_at, last_accessed_at: r.last_accessed_at, status: r.status });
+      // [macro-fusion 0.2.171] 历史可查：问句里点了名（版本号 / 路径 / 短 id / commit），这个名字
+      // 只活在已过期的条目里 —— 那就把它翻出来，并标明已过期。只并「点了名的那几条」，
+      // 所以 listSearchable 的口径一个字不动（主人拍板：其他类别过时不默认检索），
+      // 放宽只发生在「用户点名要它」这一种问句上。
+      // 挑哪几条不能再按库里的顺序取前两条（0.2.147 就是这样把正解挤到第 3）：先在过期子集里
+      // 用同一套打分器排一遍，只取排在最前的 HIST_LIFT_MAX 条。
+      const askIdents = statusDead || statusList.length > 0 || parsed.include_stale === false ? [] : identsOf(query);
+      let histAdded = 0;
+      const histIds = [];
+      if (askIdents.length > 0) {
+        const have = new Set(rows.map((r) => String(r.id)));
+        const pool = [];
+        for (const lv of levels) {
+          let olds = [];
+          try { olds = db.list(lv, { status: "stale" }); } catch { olds = []; }
+          for (const r of olds) {
+            const key = String(r.id);
+            if (have.has(key)) continue;
+            const hay = `${key} ${String(r.title ?? "")} ${String(r.content ?? "")} ${Array.isArray(r.keywords) ? r.keywords.join(" ") : ""} ${String(r.project ?? "")}`.toLowerCase();
+            if (!askIdents.some((t) => hay.includes(t))) continue;
+            pool.push(r);
+            have.add(key);
+          }
+        }
+        if (pool.length > 0) {
+          const asked = await rankForSearch(query, pool.map(docFor), { k: HIST_LIFT_MAX, explain: false, bandKeep: true });
+          for (const h of asked) {
+            const r = pool.find((x) => String(x.id) === String(h.id));
+            if (!r) continue;
+            rows.push(r);
+            histAdded += 1;
+            histIds.push(String(r.id).slice(0, 8));
+          }
+        }
+      }
       const filtered = filterSearchable(rows, { project, status, days });
       const byId = new Map(filtered.map((r) => [r.id, r]));
-      const docs = filtered.map((r) => ({
-        id: r.id,
-        level: r.level,
-        title: r.title,
-        content: r.content,
-        keywords: r.keywords,
-        importance: r.importance,
-        created_at: r.created_at,
-        updated_at: r.updated_at,
-        last_accessed_at: r.last_accessed_at,
-        // #91：衰减按最后使用时间
-        // [macro-fusion 0.2.140] 但状态必须跟着进打分器：docs 里没有 status，statusWeight 就只能
-        // 一律取 1，「降权」便成了一句空话（实测：退位的旧结论照样排在第 1 条）。
-        status: r.status
-      }));
+      const docs = filtered.map(docFor);
       // [macro-fusion 0.2.154] 稠密能上就上：模型 / 依赖缺一个立刻退回词法，
       // 答案与 0.2.153 逐位相同（这条由 probe-cost 的 C5 快照守着）。
       // [macro-fusion 0.2.167] band_keep：默认按置信档收口（0.2.165 的刀），
@@ -4125,7 +4151,15 @@ function searchTool(dir) {
       const stripNote = explain && (hits[0]?.explain?.stripped?.length ?? 0) > 0
         ? safeKeyed("search.strip", "疑问框架按虚词处理了：{words}", { words: hits[0].explain.stripped.join("、") })
         : "";
-      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, rescueNote, bandNote, liftNote, relClampNote, dedupeNote, statusDownNote, stripNote].filter((s) => s.length > 0).join("\n");
+      // [macro-fusion 0.2.171] 翻出来的历史要自己报名：不说是「过期的」，读者会把它当成现在的结论。
+      const histNote = histAdded === 0
+        ? ""
+        : safeKeyed("search.histLift", "\u95EE\u53E5\u91CC\u7684 {what} \u53EA\u51FA\u73B0\u5728\u5DF2\u8FC7\u671F\u7684\u6761\u76EE\u91CC\uFF1A\u8FD9\u6B21\u987A\u5E26\u628A {n} \u6761\u7FFB\u4E86\u51FA\u6765\uFF08{ids}\uFF09\uFF0C\u5B83\u4EEC\u6B63\u662F\u90A3\u4E2A\u65F6\u671F\u7684\u8BB0\u5F55\u3001\u5DF2\u88AB\u540E\u7EED\u7248\u672C\u53D6\u4EE3\uFF0C\u522B\u5F53\u6210\u73B0\u5728\u7684\u7ED3\u8BBA\u7528\u3002\u8981\u901A\u770B\u5386\u53F2\u4F20 status:\"all\"\u3002", {
+          what: askIdents.slice(0, 2).join("\u3001"),
+          n: String(histAdded),
+          ids: histIds.join("\u3001")
+        });
+      const note = [plain, gateNote, weakNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, rescueNote, bandNote, liftNote, histNote, relClampNote, dedupeNote, statusDownNote, stripNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {

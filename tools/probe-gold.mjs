@@ -518,13 +518,18 @@ if (denseUsable) {
 // 抬过头照抄池就开始掉（tf1/fw1.2 → 0.911），抬回来（旧口径 tf0.25/fw0.35）锚点池就掉到 0.700。
 // 平台内部的组合读数必须与默认**完全同分**，否则就不是平台，是一个捏出来的点。
 {
-  const base = measure(fx.queries, docs)
-  const pBase = measure(fx.paraphrase, docs)
-  const aBase = measure(fx.anchor, docs)
+  // [macro-fusion 0.2.171] 这一条量的是「关键词权重该值多少」，所以标识符跨档那刀（identBand）
+  // 必须关掉：它一开，带版本号的锚点池靠标识符就能进前列，旧口径（低 kw 权重）看起来「没变差」，
+  // 阴性对照就失效了——那不是关键词权重变好了，是另一把刀在替它干活。两把刀分开测。
+  const NB = { identBand: false }
+  const md = (list, o) => measure(list, docs, { ...NB, ...(o ?? {}) })
+  const base = md(fx.queries)
+  const pBase = md(fx.paraphrase)
+  const aBase = md(fx.anchor)
 
   const sig = (list, opts) =>
     list
-      .map(({ q }) => V.search(q, docs, { k: K, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join(','))
+      .map(({ q }) => V.search(q, docs, { k: K, ...NB, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join(','))
       .join('|')
 
   // ① 平台：三个平台内组合与默认逐条同分
@@ -537,7 +542,7 @@ if (denseUsable) {
   // 平台只认读数（hit@1 / hit@3 / MRR）：同分并列的条目在平台内会换位子，读数一处不动才是判据。
   const orderOf = (list, opts) => list.length + ':' + list.reduce((n, { q }) => n + V.search(q, docs, { k: 3, ...opts }).length, 0)
   const trip = (o) => {
-    const m = [measure(fx.queries, docs, o), measure(fx.paraphrase, docs, o), measure(fx.anchor, docs, o)]
+    const m = [md(fx.queries, o), md(fx.paraphrase, o), md(fx.anchor, o)]
     const r = (x) => Math.round(x * 1e3) / 1e3
     return m.map((x) => `${r(x.hit1)}/${r(x.hit3)}/${r(x.mrr)}`).join(' ')
   }
@@ -545,15 +550,15 @@ if (denseUsable) {
   const plateauOk = plateau.every((o) => trip(o) === tripBase)
 
   // ② 旧口径回退：锚点池必须真的变差（说明这两个数确实在起作用）
-  const aOld = measure(fx.anchor, docs, { kwTfW: 0.25, fieldKwW: 0.35 })
+  const aOld = md(fx.anchor, { kwTfW: 0.25, fieldKwW: 0.35 })
 
   // ③ 抬过头：照抄池必须变差（说明不是「越大越好」）
-  const qHot = measure(fx.queries, docs, { kwTfW: 1, fieldKwW: 1.2 })
+  const qHot = md(fx.queries, { kwTfW: 1, fieldKwW: 1.2 })
 
   // ④ 照抄池零漂移：默认 vs 旧口径逐条排名相同
   const ranksOf = (list, opts) =>
     list.map(({ q, want }) => {
-      const ids = V.search(q, docs, { k: K, ...opts }).map((h) => String(h.id))
+      const ids = V.search(q, docs, { k: K, ...NB, ...opts }).map((h) => String(h.id))
       return ids.findIndex((id) => want.includes(id))
     })
   const rDefault = ranksOf(fx.queries, {})
@@ -564,10 +569,10 @@ if (denseUsable) {
   const exportedOk = sig(fx.anchor, { kwTfW: V.KW_TF_W, fieldKwW: V.FIELD_KW_W_DEF }) === sig(fx.anchor, {})
 
   // ⑥ 换说法池不许被代价掉
-  const pNew = measure(fx.paraphrase, docs)
+  const pNew = md(fx.paraphrase)
 
   // ⑦ 平台边缘的反面：平台**外**必须真的不同分，否则「平台」就是随口一说的范围
-  const qEdge = measure(fx.anchor, docs, { kwTfW: 0.4, fieldKwW: 0.45 })
+  const qEdge = md(fx.anchor, { kwTfW: 0.4, fieldKwW: 0.45 })
 
   // ⑧ 同读数取保守值：0.5 / 0.6 的读数与默认一模一样，却会把「只在 keywords 里提到的条目」
   // 压过「正文命中的条目」——0.2.152 的「标签不是正文」在前，读数打平时只能选不破规矩的那个。
@@ -576,7 +581,7 @@ if (denseUsable) {
     { id: 'Q', level: 'fact', title: '', content: '口径甲乙丙丁', keywords: [], importance: 1, project: 'g20', updated_at: 1763e9, last_accessed_at: 1763e9 },
   ]
   const pairScore = (opts, id) => {
-    const h = V.search('口径', pairDocs, { k: 2, ...opts }).find((x) => String(x.id) === id)
+    const h = V.search('口径', pairDocs, { k: 2, ...NB, ...opts }).find((x) => String(x.id) === id)
     return Number(h?.score ?? 0)
   }
   const tagBelowBody = (opts) => pairScore(opts, 'Q') > pairScore(opts, 'P')
