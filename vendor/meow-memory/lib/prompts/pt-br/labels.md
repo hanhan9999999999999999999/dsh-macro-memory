@@ -71,6 +71,12 @@
 - reflect.incidentRepeat: · Não é a primeira vez: {detail}. Uma oscilação isolada não explica isso — escreva uma lesson (sintoma → causa raiz → correção → como perceber antes da próxima vez) em vez de mais uma frase solta.
 - reflect.incidentNoFollowup: · Você já refletiu antes e não escreveu nada na memória depois ({count} vez(es) no registro) — aquela reflexão foi perdida; não pare em impressões desta vez.
 - reflect.unknownTool: uma ferramenta
+- conflict.kindVersion: versão
+- conflict.kindDate: data
+- conflict.join: ; 
+- conflict.item: {level} {id} ({kind}: ele diz {theirs}, você acabou de escrever {mine})
+- conflict.head: ⚠️ O acervo já diz a mesma coisa de outro jeito: {items}. Esta entrada foi gravada mesmo assim — mas se a antiga foi substituída por esta, o correto é passar supersedes (ou marcar status=stale via memory_update: nada é apagado, dá para voltar atrás), em vez de deixar duas versões lado a lado; ignore se forem coisas diferentes.
+- conflict.headUpdate: ⚠️ Depois desta edição o acervo ainda diz a mesma coisa de outro jeito: {items}. A edição foi aplicada mesmo assim — mas duas versões lado a lado fazem a próxima busca não saber em qual confiar: se aquelas entradas foram substituídas por esta edição, marque status=stale nelas (nada é apagado, dá para voltar atrás; uma nova gravação também resolve em um passo com supersedes), em vez de deixar as duas; ignore se forem coisas diferentes.
 - remember.error.content: memory_remember: content é obrigatório — acrescente o que você quer lembrar e tente de novo
 - remember.error.project: memory_remember: project é obrigatório — use "{global}" para informações aplicáveis globalmente, ou o nome do projeto (separe vários projetos por vírgula) — acrescente e tente de novo
 - remember.error.keywords: memory_remember: keywords é obrigatório — dê de 8 a 13 palavras-chave de conteúdo para a recuperação (não use o nome do projeto como palavra-chave) — acrescente-as e tente de novo

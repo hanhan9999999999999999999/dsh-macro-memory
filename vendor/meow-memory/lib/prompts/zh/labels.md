@@ -71,6 +71,12 @@
 - reflect.incidentRepeat: · 这不是第一次：{detail}。孤立抖动解释不了它——写 lesson（现象 → 根因 → 修法 → 下次怎么早发现），不要只补一句结论。
 - reflect.incidentNoFollowup: · 上一次也反思过，但事后什么都没写进记忆（账本记着 {count} 次）——那次反思等于白做，这次别只写感想。
 - reflect.unknownTool: 某个工具
+- conflict.kindVersion: 版本
+- conflict.kindDate: 日期
+- conflict.join: ；
+- conflict.item: {level} {id}（{kind}：它写 {theirs}，你这次写 {mine}）
+- conflict.head: ⚠️ 库里已有同一件事的另一种说法：{items}。这条照样写下来了——但如果它已被这次的信息取代，正确做法是给它们传 supersedes（或 memory_update 把 status 设 stale，不删、可反悔），别让两个版本并排躺在库里；若说的是不同对象，忽略这条提醒。
+- conflict.headUpdate: ⚠️ 改完之后，库里还有同一件事的另一种说法：{items}。这条改动照样落库了——可两个版本并排睡着，下次检索分不清该信哪个：若那些条目已被这次的信息取代，就把它们 status 设 stale（不删、可反悔；要重写时也可以用 supersedes 一次做完），别让两个版本并排睡；若是不同对象，忽略这条。
 - remember.error.content: memory_remember: content 参数必填，请补充要记住的内容后重试
 - remember.error.project: memory_remember: project 参数必填——全局信息填"{global}"，具体项目填项目名（多个项目用英文逗号分隔），请补充后重试
 - remember.error.keywords: memory_remember: keywords 参数必填——请总结 8-13 个内容关键词供检索（不要用项目名当关键词），请补充后重试

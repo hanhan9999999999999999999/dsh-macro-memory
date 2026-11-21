@@ -8190,3 +8190,36 @@ hard 档再往 `<ws>/.dsh-meow/dream-debug.log` 补一行 `reflect incident="...
 probe-fusion `RK0–RK11`：写入端到端（真调 memory_remember 两次看回执）、跨项目不打扰、日期改期、
 无 token 抗噪、上限与排序、多 token 抽取、源码常量锚点。
 verify `FB`：抽取 / 识别 / 上限 / 排序 / 隔离 / 两条抗噪 / 日期 / 回执文案 / 四处源码锚点 / 版本与本文档。
+## 9.143 改动侧也要查冲突，而且这话得能翻译（0.2.137）
+
+### 9.143.1 最常走的那条路，恰好是唯一不查的路
+0.2.136 的冲突雷达只挂在 `memory_remember` 的非合并分支上。可真实用法里更常见的是
+「把旧条目改成新版本号」——`memory_update(content: ...)`。那条路当时什么都不查，
+改完两个版本照样并排躺着，反倒是**已经知道该改哪条的人**留下了互斥结论。
+
+所以 0.2.137 把同一套检查接到改动侧：`ok && typeof patch.content === "string"` 才查，
+比对范围是 `db.list(found.level, { status: "active" })` 去掉自己（`.filter((r) => r.id !== found.row.id)`），
+项目取 `patch.project ?? found.row.project`。
+
+### 9.143.2 只改状态不查
+`memory_update` 的绝大多数调用是 `status: "stale"`（todo 完结、条目过期）。
+没动正文就没有新结论，拿旧正文去比只会重复报同一件事。所以闸门是「这次真的换了 content」。
+
+### 9.143.3 两种说法不能混
+写新条目时说「这条照样写下来了」；改既有条目时说「这条改动照样落库了」。
+同一个函数 `conflictWarn(list, db, mode)`，mode === "update" 走 `conflict.headUpdate`，
+其余走 `conflict.head`。文案里都给收场路（`status: "stale"` 不删可反悔 / 下次重写时用 `supersedes` 一次做完），
+因为改动之后就属「旧的那条该退了」，不提 stale 等于只报警不给出口。
+
+### 9.143.4 文案进 labels，而不是写死在代码里
+冲突提示是**给人看**的话，`zh / en / pt-br` 各有 `conflict.item` / `conflict.head` /
+`conflict.headUpdate` / `conflict.kindVersion` / `conflict.kindDate` / `conflict.join` 六个键。
+代码里留一份中文兜底，并统一走 `safeKeyed()`（用户改过 prompts 覆盖目录、缺键时退回兜底，
+不许因为一句提示把整次写入带崩）。`tokenDiff` 返回的 `版本 / 日期` 也经 `kindOf()` 过一遍标签，
+否则英文回执里会冒出两个中文词。
+
+### 9.143.5 覆盖
+probe-fusion `RL0–RL12`：同项目两条不同版本 → 改其中一条，回执出现「改完之后」+ 两个版本号 +
+收场路 + 「已更新」仍在 + 读回来是新内容；只改状态不报警；跨项目不误报；三语六键齐全；
+英文模板不是中文搬家；写入/改动两种说法不互串；空表返回空串；源码锚点一条。
+`verify.mjs` `FC` 段 16 条把上面这些与版本/文档一起钉住。

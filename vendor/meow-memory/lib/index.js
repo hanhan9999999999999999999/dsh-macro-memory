@@ -2784,18 +2784,27 @@ function conflictCandidates(rows, content, project, limit = CONFLICT_MAX) {
   out.sort((a, b) => b.sim - a.sim);
   return out.slice(0, limit);
 }
-function conflictWarn(list, db) {
+function conflictWarn(list, db, mode) {
   if (!Array.isArray(list) || list.length === 0) return "";
+  const kindOf = (k) => k === "\u7248\u672c" ? safeKeyed("conflict.kindVersion", "\u7248\u672c") : k === "\u65e5\u671f" ? safeKeyed("conflict.kindDate", "\u65e5\u671f") : String(k ?? "");
+  const sep = safeKeyed("conflict.join", "\uff1b");
   const items = list.map((c) => {
     let short = String(c.id ?? "").slice(0, 8);
     try {
       if (db !== void 0) short = uniqueShortId(db, c.level, c.id);
     } catch {
     }
-    return `${c.level} ${short}\uFF08${c.kind}\uFF1A\u5B83\u5199 ${c.theirs.join("/")}\uFF0C\u4F60\u8FD9\u6B21\u5199 ${c.mine.join("/")}\uFF09`;
+    return safeKeyed("conflict.item", "{level} {id}\uff08{kind}\uff1a\u5b83\u5199 {theirs}\uff0c\u4f60\u8fd9\u6b21\u5199 {mine}\uff09", {
+      level: c.level, id: short, kind: kindOf(c.kind), theirs: (c.theirs ?? []).join("/"), mine: (c.mine ?? []).join("/")
+    });
   });
-  return `\u26A0\uFE0F \u5E93\u91CC\u5DF2\u6709\u540C\u4E00\u4EF6\u4E8B\u7684\u53E6\u4E00\u79CD\u8BF4\u6CD5\uFF1A${items.join("\uFF1B")}\u3002\u8FD9\u6761\u7167\u6837\u5199\u4E0B\u4E86\u2014\u2014\u4F46\u5982\u679C\u5B83\u5DF2\u88AB\u8FD9\u6B21\u7684\u4FE1\u606F\u53D6\u4EE3\uFF0C\u6B63\u786E\u505A\u6CD5\u662F\u7ED9\u5B83\u4EEC\u4F20 supersedes\uFF08\u6216 memory_update \u628A status \u8BBE stale\uFF0C\u4E0D\u5220\u3001\u53EF\u53CD\u6094\uFF09\uFF0C\u522B\u8BA9\u4E24\u4E2A\u7248\u672C\u5E76\u6392\u8EBA\u5728\u5E93\u91CC\uFF1B\u82E5\u8BF4\u7684\u662F\u4E0D\u540C\u5BF9\u8C61\uFF0C\u5FFD\u7565\u8FD9\u6761\u63D0\u9192\u3002`;
+  // mode="update" 说「改动落库了」，mode 缺省说「这条写下了」——同一件事在两条路上说法不同。
+  if (mode === "update") {
+    return safeKeyed("conflict.headUpdate", "⚠️ 改完之后，库里还有同一件事的另一种说法：{items}。这条改动照样落库了——可两个版本并排睡着，下次检索分不清该信哪个：若那些条目已被这次的信息取代，就把它们 status 设 stale（不删、可反悔；要重写时也可以用 supersedes 一次做完），别让两个版本并排睡；若是不同对象，忽略这条。", { items: items.join(sep) });
+  }
+  return safeKeyed("conflict.head", "\u26a0\ufe0f \u5e93\u91cc\u5df2\u6709\u540c\u4e00\u4ef6\u4e8b\u7684\u53e6\u4e00\u79cd\u8bf4\u6cd5\uff1a{items}\u3002\u8fd9\u6761\u7167\u6837\u5199\u4e0b\u4e86\u2014\u2014\u4f46\u5982\u679c\u5b83\u5df2\u88ab\u8fd9\u6b21\u7684\u4fe1\u606f\u53d6\u4ee3\uff0c\u6b63\u786e\u505a\u6cd5\u662f\u7ed9\u5b83\u4eec\u4f20 supersedes\uff08\u6216 memory_update \u628a status \u8bbe stale\uff0c\u4e0d\u5220\u3001\u53ef\u53cd\u6094\uff09\uff0c\u522b\u8ba9\u4e24\u4e2a\u7248\u672c\u5e76\u6392\u8eba\u5728\u5e93\u91cc\uff1b\u82e5\u8bf4\u7684\u662f\u4e0d\u540c\u5bf9\u8c61\uff0c\u5ffd\u7565\u8fd9\u6761\u63d0\u9192\u3002", { items: items.join(sep) });
 }
+
 function foldNearDupes(hits) {
   const kept = [];
   let folded = 0;
@@ -3740,7 +3749,21 @@ function updateTool(dir) {
           : `找到了这条记忆，但没写进库（${found.level} ${String(found.row.id).slice(0, 8)}）：可能是这行刚被合并/归档，也可能是库被锁住了。稍后再试一次，或先用 memory_read 确认它还在。`;
       }
       if (ok) markWritten(workspace, sessionId ?? "unknown", [found.row.id], dir);
-      return { ok, id: found.row.id, level: found.level, changed, dropped, note };
+      // [0.2.137] 改内容和写新条目一样会让两个版本并排躺着。原来只有 remember 查冲突，
+      // 于是「把旧条目改成新版本号」这条最常走的路反而是唯一不查的路。
+      let conflictNote = "";
+      if (ok && typeof patch.content === "string") {
+        try {
+          const projNow = patch.project !== void 0 ? patch.project : found.row.project;
+          const siblings = db.list(found.level, { status: "active" }).filter((r) => r.id !== found.row.id);
+          conflictNote = conflictWarn(conflictCandidates(siblings, patch.content, projNow), db, "update");
+        } catch {
+          conflictNote = "";
+        }
+      }
+      const said = conflictNote.length > 0 ? `${note}\n${conflictNote}` : note;
+      return { ok, id: found.row.id, level: found.level, changed, dropped, note: said };
+
     },
     presentCall(args) {
       const parsed = args;

@@ -6648,6 +6648,94 @@ check(
   }
 }
 
+// RL0-RL7（0.2.137）：冲突雷达原来只装在写新条目那条路上——可「把旧条目改成新版本号」
+// 才是最常走、也最容易留下两个版本并排睡的那条路。这一组走 memory_update 验。
+{
+  const rlWs = mkdtempSync(join(tmpdir(), 'meow-conflict-upd-'))
+  Meow.trustWorkspace(rlWs)
+  const rlExec = { agent: { session: { header: { cwd: rlWs, id: 'sess-conflict-upd' } } } }
+  const rlRun = (name, args) => tools.get(name).execute(args, rlExec)
+  const rlText = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+  const rlKw = ['改动冲突探针', '版本号', '交付态', '断言数', '冲突雷达', '覆盖', '改内容', '收场路', '日期', '探针']
+  const rlB = await rlRun('memory_remember', {
+    content: '改动冲突探针：0.2.132 交付态，check-all 21/21、合计 2,530 条断言。',
+    project: '探针改冲突',
+    keywords: rlKw,
+    importance: 2,
+    level: 'fact',
+  })
+  const rlA = await rlRun('memory_remember', {
+    content: '改动冲突探针：0.2.135 交付态，check-all 21/21、合计 2,606 条断言。',
+    project: '探针改冲突',
+    keywords: rlKw,
+    importance: 2,
+    level: 'fact',
+  })
+  // macro 那层把回执换成文本了，id 得从库里认回来（按内容里的版本号找）
+  const rlDb = Meow.getDb(rlWs, '.dsh-meow')
+  const rlRows = rlDb.list('fact', { status: 'active' })
+  const rlIdOf = (needle) => String(rlRows.find((r) => String(r.content ?? '').includes(needle))?.id ?? '')
+  const rlAId = rlIdOf('0.2.135')
+  const rlBId = rlIdOf('0.2.132')
+  check('RL0 准备：同项目里先有两条不同版本的说法', rlAId.length > 0 && rlBId.length > 0, `${rlAId.slice(0, 8)} / ${rlBId.slice(0, 8)}`)
+  const rlUpd = await rlRun('memory_update', {
+    id: rlAId,
+    content: '改动冲突探针：0.2.137 交付态，check-all 21/21、合计 2,700 条断言。',
+  })
+  const rlUpdText = rlText(rlUpd)
+  check('RL1 改动侧：改完回执自己说「库里还有另一种说法」', rlUpdText.includes('改完之后') && rlUpdText.includes('另一种说法'), rlUpdText.slice(0, 60).replace(/\n/g, ' / '))
+  check('RL2 改动侧：两个版本号并排摆出来（它写 0.2.132，你这次写 0.2.137）', rlUpdText.includes('0.2.132') && rlUpdText.includes('0.2.137'))
+  check('RL3 改动侧：给了收场路（supersedes / stale），不是只提醒', rlUpdText.includes('supersedes') && rlUpdText.includes('stale'))
+  check('RL4 改动侧：提醒不改写入（已更新照旧），改完的内容真进去了', rlUpdText.includes('已更新') && rlUpdText.includes('0.2.137'))
+  const rlRead = await rlRun('memory_read', { id: rlAId, neighbors: 0 })
+  check('RL5 改动侧：库里读回来是新内容（提醒不是「没改成」的借口）', rlText(rlRead).includes('0.2.137'), rlText(rlRead).slice(0, 40).replace(/\n/g, ' '))
+  const rlStatusOnly = await rlRun('memory_update', { id: rlBId, status: 'stale' })
+  check('RL6 改动侧：只改状态（不带 content）不查冲突——别为无关改动报警', !rlText(rlStatusOnly).includes('另一种说法'), rlText(rlStatusOnly).slice(0, 40).replace(/\n/g, ' '))
+  const rlC = await rlRun('memory_remember', {
+    content: '改动冲突探针乙：0.2.132 交付态，另一个项目里的独苗。',
+    project: '探针改冲突空',
+    keywords: [...rlKw, '独苗'],
+    importance: 1,
+    level: 'fact',
+  })
+  const rlCId = String(rlDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('0.2.132') && String(r.project ?? '') === '探针改冲突空')?.id ?? '')
+  const rlCUpd = await rlRun('memory_update', {
+    id: rlCId,
+    content: '改动冲突探针乙：0.2.200 交付态，另一个项目里的独苗。',
+  })
+  check('RL7 改动侧：项目里没有同类就不打扰（跨项目不误报）', !rlText(rlCUpd).includes('另一种说法'), rlText(rlCUpd).slice(0, 40).replace(/\n/g, ' '))
+  try {
+    rmSync(rlWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
+// RL8-RL11（0.2.137）：这套文案不能只写死在代码里——三语各有模板，用户改 prompts 时缺键也不能炸。
+{
+  const rlKeys = ['conflict.item', 'conflict.head', 'conflict.headUpdate', 'conflict.kindVersion', 'conflict.kindDate', 'conflict.join']
+  const rlMissing = ['zh', 'en', 'pt-br'].filter((lg) => {
+    const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lg, 'labels.md'), 'utf8')
+    return !rlKeys.every((k) => t.includes(`- ${k}:`))
+  })
+  check('RL8 三语：冲突文案六个键 zh/en/pt-br 都在', rlMissing.length === 0, rlMissing.join(',') || 'zh/en/pt-br 全在')
+  const rlEn = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'en', 'labels.md'), 'utf8')
+  check('RL9 三语：英文模板是英文说法，不是把中文搬过去', rlEn.includes('it says {theirs}') && rlEn.includes('version'))
+  const rlOne = Meow.conflictWarn([{ id: 'abcdef123456', level: 'fact', sim: 0.5, kind: '版本', mine: ['0.2.137'], theirs: ['0.2.136'] }])
+  const rlTwo = Meow.conflictWarn([{ id: 'abcdef123456', level: 'fact', sim: 0.5, kind: '版本', mine: ['0.2.137'], theirs: ['0.2.136'] }], undefined, 'update')
+  check('RL10 两种说法不混：写入说「这条照样写下了」，改动说「这条改动照样落库了」', rlOne.includes('写下来了') && rlTwo.includes('落库') && !rlTwo.includes('写下了'))
+  check('RL11 空表：没有冲突就没有这句提醒（返回空串，不占回执）', Meow.conflictWarn([]) === '' && Meow.conflictWarn(undefined) === '')
+}
+
+// RL12（0.2.137）：源码锚点——两张路都要走同一个函数，别各写一份文案。
+{
+  const rlSrc = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  check(
+    'RL12 源码：改动侧调用同一个 conflictWarn，只是多带一个 update 模式',
+    rlSrc.includes('conflictWarn(conflictCandidates(siblings, patch.content, projNow), db, "update")') && rlSrc.includes('db.list(found.level, { status: "active" })'),
+  )
+}
+
 for (const d of disposers) {
   try {
     d()

@@ -9254,5 +9254,67 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// FC（0.2.137）：冲突雷达补上「改内容」这条路，并且文案走三语 labels 而不是写死在代码里。
+{
+  const meowPath137 = join(root, 'vendor', 'meow-memory', 'lib', 'index.js')
+  const meowSrc137 = readFileSync(meowPath137, 'utf8')
+  const M137 = await import(pathToFileURL(meowPath137).href)
+  const list137 = [{ id: 'abcdef123456', level: 'fact', sim: 0.5, kind: '版本', mine: ['0.2.137'], theirs: ['0.2.132'] }]
+
+  const writeSaid = M137.conflictWarn(list137)
+  const updSaid = M137.conflictWarn(list137, undefined, 'update')
+  check('FC 行为: 写入与改动两种说法不混（写下了 / 改动落库了）', writeSaid.includes('写下来了') && updSaid.includes('改动照样落库了') && !updSaid.includes('写下来了'))
+  check('FC 行为: 改动侧也给出收场路（stale / supersedes），不是只提醒', updSaid.includes('stale') && updSaid.includes('supersedes'))
+  check('FC 行为: 两边都点出两个值（它写 0.2.132 / 你这次写 0.2.137）', writeSaid.includes('0.2.132') && writeSaid.includes('0.2.137') && updSaid.includes('0.2.132'))
+  check('FC 行为: 无冲突时一个字都不加（改动侧同样）', M137.conflictWarn([]) === '' && M137.conflictWarn(undefined, undefined, 'update') === '')
+  check('FC 行为: 日期型冲突在改动侧也认（kind=日期）', M137.conflictWarn([{ id: 'y2', level: 'fact', sim: 0.4, kind: '日期', mine: ['2026-11-09'], theirs: ['2026-11-02'] }], undefined, 'update').includes('日期'))
+
+  check(
+    'FC 源码: 改动侧复用同一个函数，只是多带一个 update 模式',
+    meowSrc137.includes('conflictWarn(conflictCandidates(siblings, patch.content, projNow), db, "update")'),
+  )
+  check(
+    'FC 源码: 只改状态不查冲突（没动正文就没有新结论可比）',
+    meowSrc137.indexOf('if (ok && typeof patch.content === "string") {') < meowSrc137.indexOf('const siblings = db.list(found.level, { status: "active" })'),
+  )
+  check(
+    'FC 源码: 比对时排除自己（自己跟自己的旧正文当然不一样）',
+    meowSrc137.includes('.filter((r) => r.id !== found.row.id)'),
+  )
+  check(
+    'FC 源码: 文案走 safeKeyed（用户改过 prompts 时缺键也不许把整次写入炸掉）',
+    meowSrc137.includes('safeKeyed("conflict.item"') && meowSrc137.includes('safeKeyed("conflict.headUpdate"'),
+  )
+  check(
+    'FC 源码: 冲突提醒与「已更新」拼在同一个 note 里出去（不许只报一个）',
+    meowSrc137.includes('const said = conflictNote.length > 0 ? `${note}\\n${conflictNote}` : note;'),
+  )
+
+  const need137 = ['conflict.item', 'conflict.head', 'conflict.headUpdate', 'conflict.kindVersion', 'conflict.kindDate', 'conflict.join']
+  const miss137 = ['zh', 'en', 'pt-br'].filter((lg) => {
+    const t = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', lg, 'labels.md'), 'utf8')
+    return !need137.every((k) => t.includes(`- ${k}:`))
+  })
+  check('FC 三语: 六个文案键 zh/en/pt-br 齐全', miss137.length === 0, miss137.join(',') || 'zh/en/pt-br 全在')
+  const en137 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'en', 'labels.md'), 'utf8')
+  check('FC 三语: 英文那份是英文说法（it says {theirs}），不是中文搬家', en137.includes('it says {theirs}') && !en137.includes('它写 {theirs}'))
+  const pt137 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'prompts', 'pt-br', 'labels.md'), 'utf8')
+  check('FC 三语: 葡语那份也翻过了（ele diz {theirs}）', pt137.includes('ele diz {theirs}'))
+
+  const pkg137 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'FC 版本与文档一起走（9.143 / 149）',
+    pkg137.version.split('.').map((x) => Number(x))[2] >= 137 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.143 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 149 '),
+  )
+  const idx137 = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  check(
+    'FC 版本: 代码里的 version 常量与 package.json 同号',
+    idx137.includes(`export const version = '${pkg137.version}'`),
+    pkg137.version,
+  )
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

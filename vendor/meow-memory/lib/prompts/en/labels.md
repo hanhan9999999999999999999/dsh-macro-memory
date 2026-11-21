@@ -71,6 +71,12 @@
 - reflect.incidentRepeat: · This is not the first time: {detail}. An isolated blip cannot explain it — write a lesson (symptom → root cause → fix → how to notice it earlier next time) instead of one more one-liner.
 - reflect.incidentNoFollowup: · You reflected before and wrote nothing into memory afterwards ({count} time(s) in the ledger) — that reflection was wasted; don't stop at impressions this time.
 - reflect.unknownTool: a tool
+- conflict.kindVersion: version
+- conflict.kindDate: date
+- conflict.join: ; 
+- conflict.item: {level} {id} ({kind}: it says {theirs}, you just wrote {mine})
+- conflict.head: ⚠️ The store already says this same thing differently: {items}. This entry was still written — but if the old one is superseded by this, the right move is to pass supersedes (or set its status to stale via memory_update: nothing is deleted, it can be undone), instead of leaving two versions side by side; ignore this if they describe different things.
+- conflict.headUpdate: ⚠️ After this edit the store still says the same thing differently: {items}. The edit was applied anyway — but two versions sleeping side by side means the next recall cannot tell which one to trust: if those entries are superseded by this edit, set their status to stale (nothing is deleted, it can be undone; a fresh write can also do it in one step with supersedes) instead of leaving both; ignore this if they describe different things.
 - remember.error.content: memory_remember: content is required — add what you want remembered and try again
 - remember.error.project: memory_remember: project is required — use "{global}" for globally applicable information, or the project name (comma-separate several projects) — add it and try again
 - remember.error.keywords: memory_remember: keywords is required — give 8-13 content keywords for retrieval (don't use the project name as a keyword) — add them and try again
