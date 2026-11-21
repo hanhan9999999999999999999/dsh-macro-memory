@@ -2037,6 +2037,22 @@ var IDENT_STEM_CREDIT = 0.5;
 var IMP_BAND = 0.85;
 var RECENCY_FLOOR = 0.6;
 
+// [macro-fusion 0.2.159] 时间锚：问句自己指了一个具体时刻（版本号 / 日期），它问的就是
+// 「那一刻发生了什么」。这类问句上，新鲜度折扣与 stale 惩罚是在帮倒忙——被取代的是「现在的
+// 准则」，不是「那一次交付的记录」。实测「0.2.146 加了什么」：正解是那条已 stale 的交付记录
+// （bm25 4.864 对 4.849，本来就同档），stale 折扣 0.6 把它从榜首摁到第二。
+// 只管这一件事：锚点上不折时间、不折状态。分档门槛、词分、覆盖度一个都不动（都量过，见 INTERNAL 9.166）。
+var TIME_ANCHOR_RE = /\d+\.\d+\.\d+|20\d\d[-/.年]\d{1,2}([-/.月]\d{1,2})?/;
+function anchorListOf(q) {
+  const out = [];
+  for (const m of String(q ?? "").matchAll(new RegExp(TIME_ANCHOR_RE.source, "g"))) out.push(m[0]);
+  return out;
+}
+function timeAnchorOf(q, opts) {
+  if (opts && opts.timeAnchor === false) return false;
+  return TIME_ANCHOR_RE.test(String(q ?? ""));
+}
+
 // 按证据分档：先按词分排，再从头扫，凡是掉到本档锚点 85% 以下就开新档。
 // 档号升序即证据强度降序；权重只在同档内比较，跨档永远不许越级。
 function bandize(hits, rawKey) {
@@ -2364,6 +2380,12 @@ function search(query, docs, opts = {}) {
   // 有 impW = 1 + (importance-1)*0.25——两个打分器口径不一致。这里对齐同一口径，并且只做加成、
   // 不做碾压：BM25 代表「说的是不是这件事」，重要度只该在同题竞争里把铁律抬上来，不该让一条
   // 沾边的 4 分压过高度相关的 1 分（0.15 级的加成永远翻不过 6 倍以上的 bm25 差）。
+  const timeAnchor = timeAnchorOf(query, opts);
+  const anchorToks = timeAnchor ? anchorListOf(query) : [];
+  const anchorSel = timeAnchor ? (di) => {
+    const hay = String(docs[di].title ?? "") + " " + String(docs[di].content ?? "") + " " + String(docs[di].project ?? "");
+    return anchorToks.some((t) => hay.includes(t));
+  } : null;
   const impOf = (d) => {
     const v = Math.round(Number(d?.importance));
     return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
@@ -2372,11 +2394,12 @@ function search(query, docs, opts = {}) {
     if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
-    if (now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+    const anchored = anchorSel === null ? false : anchorSel(di);
+    if (!anchored && now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
       w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
     }
     const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
-    const stW = statusWeight(docs[di].status);
+    const stW = anchored ? 1 : statusWeight(docs[di].status);
     hits.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
       _raw: raw[di],
@@ -2395,7 +2418,7 @@ function search(query, docs, opts = {}) {
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -2429,6 +2452,12 @@ function keywordHitScore(query, docs, opts = {}) {
   const keep = (ts) => ts.filter((t) => t.length >= 2);
   const q = keep(tokenize(query));
   if (docs.length === 0) return [];
+  const timeAnchor = timeAnchorOf(query, opts);
+  const anchorToks = timeAnchor ? anchorListOf(query) : [];
+  const anchorSel = timeAnchor ? (di) => {
+    const hay = String(docs[di].title ?? "") + " " + String(docs[di].content ?? "") + " " + String(docs[di].project ?? "");
+    return anchorToks.some((t) => hay.includes(t));
+  } : null;
   // [macro-fusion 0.2.151] 与 search() 同口径：虚词不进证据（两个打分器不许两套词表）
   const funcDropped = opts.funcFloor === false ? [] : funcTermsOf([...new Set(q)]);
   const qUse = funcDropped.length === 0 ? q : q.filter((t) => !funcDropped.includes(t));
@@ -2476,11 +2505,12 @@ function keywordHitScore(query, docs, opts = {}) {
     const coverage = len > 0 ? overlap / len : 0;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
-    if (now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+    const anchored = anchorSel === null ? false : anchorSel(di);
+    if (!anchored && now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
       w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
     }
     const impW = 1 + (docs[di].importance - 1) * 0.25;
-    const stW = statusWeight(docs[di].status);
+    const stW = anchored ? 1 : statusWeight(docs[di].status);
     const titleHit = tokenize(docs[di].title ?? "").some((t) => qTf.has(t));
     out.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
@@ -8816,6 +8846,8 @@ export {
   switchHomeDir,
   tokenize,
   identsOf,
+  timeAnchorOf,
+  TIME_ANCHOR_RE,
   verbatimOf,
   topicDrift,
   trustCommandDefinition,

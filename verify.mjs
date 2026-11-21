@@ -9462,7 +9462,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 }
 
 
-// FR（0.2.158）：面板层——引力可调、局部图 N 跳、标签随距离淡出。
+// FR（0.2.159）：面板层——引力可调、局部图 N 跳、标签随距离淡出。
 // 这一组钉三件事：纯函数与面板接线是真的（不是写在文档里）、默认值只有一个来源、
 // 以及「面板改了什么，请求前缀一个字节都没变」。第三件是这一版敢做的全部理由。
 {
@@ -9520,6 +9520,73 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+
+// GZ（0.2.159）：问句自带版本号/日期，就按那一刻排——但只免两样折扣，其余一个字节不动。
+// 这一组量的是「口径」：豁免窄到能一句话说清、两个打分器同口径、免的是排序折扣不是事实状态。
+{
+  const eng = readFileSync(
+    join(root, 'vendor', 'meow-memory', 'lib', 'index.js'),
+    'utf8',
+  )
+  check(
+    'GZ 单一来源: 时间锚只认一份正则定义，别的模块不许自己写一份「版本号长什么样」',
+    eng.split('var TIME_ANCHOR_RE =').length - 1 === 1 &&
+      !readFileSync(join(root, 'lib', 'macro', 'defs', 'update.js'), 'utf8').includes('TIME_ANCHOR') &&
+      !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('TIME_ANCHOR'),
+  )
+  check(
+    'GZ 同口径: 两个打分器（search / keywordHitScore）都认锚，且旧写法一处不剩',
+    eng.split('const anchored = anchorSel === null ? false : anchorSel(di);').length - 1 === 2 &&
+      eng.split('!anchored && now !== null').length - 1 === 2 &&
+      eng.split('const stW = anchored ? 1 : statusWeight').length - 1 === 2 &&
+      eng.includes('!timeAnchor && now !== null') === false &&
+      eng.includes('const stW = timeAnchor ? 1') === false,
+  )
+  check(
+    'GZ 只免两样: 词分与覆盖度一个字没动（动了就是改判据，不是改口径）',
+    eng.split('s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
+      eng.split('const coverage = len > 0 ? overlap / len : 0;').length - 1 === 1 &&
+      eng.split('w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));').length - 1 === 2 &&
+      eng.split('anchorHit').length - 1 === 1,
+  )
+  check(
+    'GZ 可审计: explain 里点出 anchorHit——排名为什么这样，看得出是锚起了作用',
+    eng.includes('...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {})'),
+  )
+  check(
+    'GZ 可关: 探针要靠「关掉它变差」证伪这条判据，所以开关必须真在',
+    /function timeAnchorOf\([\s\S]{0,200}timeAnchor === false/.test(eng) &&
+      eng.includes('  timeAnchorOf,') &&
+      eng.includes('  TIME_ANCHOR_RE,'),
+  )
+  const fx159 = JSON.parse(readFileSync(join(root, 'tools', 'fixtures', 'gold-recall.json'), 'utf8'))
+  check(
+    'GZ 量得到: 夹具里有 10 条「问句点名某个版本/日期」的问句，正解都在语料里',
+    Array.isArray(fx159.anchor) &&
+      fx159.anchor.length === 10 &&
+      fx159.anchor.every((one) => {
+        const want = Array.isArray(one.want) ? one.want : [one.want]
+        return want.every((id) => fx159.docs.some((d) => String(d.id).startsWith(String(id))))
+      }),
+  )
+  const probeGold159 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+  check(
+    'GZ 自带阴性对照: 探针里有一条「关掉时间锚后必须变差」，否则这条判据可能在白写',
+    probeGold159.includes('G18 时间锚') &&
+      probeGold159.includes('关掉时间锚后 45 池没有变差——阴性对照失效') &&
+      probeGold159.includes('为了排名把 stale 洗成了 active'),
+  )
+  const int159 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des159 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  check(
+    'GZ 有记: INTERNAL 9.166 写清缺口与三个被否的思路，DESIGN 171 写清豁免为什么这么窄',
+    int159.includes('## 9.166') &&
+      int159.includes('0.911') &&
+      int159.includes('0.933') &&
+      des159.includes('## 171') &&
+      des159.includes('问句里的日期是条件，不是噪声'),
+  )
+}
 
 // FE（0.2.139）：链是 8 位前缀近似出来的——接手者可能已不在库里，前缀也可能撞车。
 // 这一组钉住「近似要说清楚」：三态、两句新文案、以及全库只扫一遍。
@@ -9583,7 +9650,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const meowMod = await import('./vendor/meow-memory/lib/index.js')
   check('FW 纯函数：三档权重（active 1 / stale 0.6 / archived 0.35 / 缺省 1）', meowMod.statusWeight('active') === 1 && meowMod.statusWeight('stale') === 0.6 && meowMod.statusWeight('archived') === 0.35 && meowMod.statusWeight(void 0) === 1)
   check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW,') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
-  check('FW 源码: docs 把 status 带进打分器（不带就等于没降权）', meowSrc.includes('status: r.status') && meowSrc.includes('const stW = statusWeight(docs[di].status)'))
+  check('FW 源码: docs 把 status 带进打分器（不带就等于没降权）', meowSrc.includes('status: r.status') && /const stW = (anchored \? 1 : )?statusWeight\(docs\[di\]\.status\)/.test(meowSrc))
   check('FW 源码: explain 里有 statusWeight 分项', meowSrc.includes('statusWeight: Math.round(stW * 1e3) / 1e3'))
   const docsFw = [
     { id: 'a', level: 'fact', content: '同题同文，只有状态不同', keywords: [], importance: 3, updated_at: Date.now(), status: 'active' },
@@ -9793,8 +9860,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.158（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.158'"),
+    'GV 版本: 代码里是 0.2.159（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.159'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9922,8 +9989,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.158（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.158'"),
+    'GW 版本: 代码里是 0.2.159（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.159'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10070,8 +10137,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.158（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.158'"),
+    'VV 版本: 代码里是 0.2.159（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.159'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10248,9 +10315,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.158（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.158' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.158'"),
+    'GX19 版本已到 0.2.159（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.159' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.159'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10350,10 +10417,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.158',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.158' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.158'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.158'),
+    'VY15 版本三处一致 0.2.159',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.159' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.159'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.159'),
   )
 }
 
@@ -10393,10 +10460,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.158（三处一致）',
-    pkgWz.version === '0.2.158' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.158'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.158'),
+    'WZ9 版本已到 0.2.159（三处一致）',
+    pkgWz.version === '0.2.159' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.159'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.159'),
   )
 }
 

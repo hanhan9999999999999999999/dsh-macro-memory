@@ -398,6 +398,50 @@ if (denseUsable) {
   }
 }
 
+// ── G18（0.2.159）时间锚：问句自己指了一个时刻，就别按「现在」折它 ─────────────
+// 这一条量的是「口径」不是「技巧」：问「0.2.146 加了什么」，答的该是那一次的交付记录，
+// 哪怕它现在已经 stale；问「现在主线推进到哪一版」，该按现在的状态排。
+// 只免两样折扣（新鲜度、状态），词分与覆盖度一个都不许动——动了就不是锚点，是改判。
+{
+  const anchorM = measure(fx.anchor, docs)
+  const offAll = measure(fx.queries, docs, { timeAnchor: false })
+  const sigOf = (q, opts) =>
+    V.search(q, docs, { k: docs.length, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join('|')
+  const plainQs = [...fx.queries, ...fx.paraphrase].map((x) => x.q).filter((q) => !V.timeAnchorOf(q))
+  const drifted = plainQs.filter((q) => sigOf(q) !== sigOf(q, { timeAnchor: false }))
+
+  const aq = '0.2.146 加了什么'
+  const on = V.search(aq, docs, { k: docs.length, explain: true })
+  const off = V.search(aq, docs, { k: docs.length, explain: true, timeAnchor: false })
+  const onById = new Map(on.map((h) => [String(h.id), h]))
+  const bm25Same = off.every((h) => onById.get(String(h.id)) !== undefined && onById.get(String(h.id)).explain.bm25 === h.explain.bm25)
+  const exempted = on.filter((h) => h.explain.anchorHit === true)
+  const noDiscount = exempted.length > 0 && exempted.every((h) => h.explain.recencyWeight === 1 && h.explain.statusWeight === 1)
+  const staleFirst = String(on[0].id) === '0mwq5zzv'
+  const staleSecondOff = String(off[0].id) !== '0mwq5zzv'
+  const staleStayedStale = String(onById.get('0mwq5zzv').status ?? 'stale') !== 'active'
+
+  const formsOk = ['0.2.146', '2026-11-21', '2026年11月'].every((t) => V.timeAnchorOf(`什么时候 ${t}`) === true)
+  const plainOk = ['评测台为什么封存', '现在主线推进到哪一版', '跑评测要不要先报预算'].every((t) => V.timeAnchorOf(t) === false)
+
+  const wrong = []
+  if (!(anchorM.hit1 >= 0.7 && anchorM.hit3 === 1)) wrong.push(`锚点组 hit@1=${anchorM.hit1.toFixed(3)} hit@3=${anchorM.hit3.toFixed(3)}`)
+  if (!(offAll.hit1 < base.hit1)) wrong.push('关掉时间锚后 45 池没有变差——阴性对照失效')
+  if (drifted.length !== 0) wrong.push(`${drifted.length} 条非锚问句被影响了`)
+  if (!bm25Same) wrong.push('词分被改了（锚点只许免折扣）')
+  if (!noDiscount) wrong.push('免折的条目里 recency/status 仍不是 1')
+  if (!staleFirst || !staleSecondOff) wrong.push('0.2.146 的正解没回到榜首（或关掉后也还在榜首）')
+  if (!staleStayedStale) wrong.push('为了排名把 stale 洗成了 active')
+  if (!formsOk || !plainOk) wrong.push('锚点形态识别不对')
+  check(
+    'G18 时间锚：问句自带版本号/日期就按「那一刻」排，只免新鲜度与状态两样折扣，词分一个都不动',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `锚点组 hit@1=${anchorM.hit1.toFixed(3)} hit@3=${anchorM.hit3.toFixed(3)}；关掉后 45 池 hit@1=${offAll.hit1.toFixed(3)} < 开时 ${base.hit1.toFixed(3)}；非锚问句漂移 0/${plainQs.length}；词分不变、免折 ${exempted.length} 条`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
