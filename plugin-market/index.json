@@ -102,7 +102,7 @@
                                              "source":  {
                                                             "type":  "git",
                                                             "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                                            "commit":  "58b3dc488c5deaea41a22e9369dae3a7c0d0994b"
+                                                            "commit":  "877e7c252ba0673e7c2542f00a9ea324e1178fef"
                                                         }
                                          }
                                      ],
@@ -110,7 +110,7 @@
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit":  "58b3dc488c5deaea41a22e9369dae3a7c0d0994b"
+                                       "commit":  "877e7c252ba0673e7c2542f00a9ea324e1178fef"
                                    }
                     }
                 ]
