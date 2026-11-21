@@ -3726,6 +3726,9 @@ function searchTool(dir) {
       // [macro-fusion 0.2.154] 稠密能上就上：模型 / 依赖缺一个立刻退回词法，
       // 答案与 0.2.153 逐位相同（这条由 probe-cost 的 C5 快照守着）。
       const ranked = await rankForSearch(query, docs, { k: docs.length, explain });
+      // [macro-fusion 0.2.155] 闸门在排序之后、裁剪之前：命中长得像，不等于问的是库里的事。
+      const gate = await denseGate(query, docs, { k: docs.length, explain });
+      if (gate.fired) ranked.length = 0;
       const topScore = ranked.length > 0 ? ranked[0].score : 0;
       const aboveFloor = minRel > 0 && topScore > 0 ? ranked.filter((h, i) => i === 0 || h.score >= topScore * minRel) : ranked;
       // [macro-fusion 0.2.143] 裁之前先问一句「被裁的是不是榜上某条的接手者」——是就提上来。
@@ -3778,14 +3781,18 @@ function searchTool(dir) {
       const explicitLevels = typeof parsed.level === "string" && parsed.level.trim().length > 0;
       // [macro-fusion 0.2.51] 显式给了合法层却零命中，也是「只在某几层里查」——不说明就会被读成「库里没有」。
       const scopeNote = hits.length === 0 && levelValid.length > 0 ? `这次只在 ${levelValid.join(" / ")} 层里查了，零命中：别的层就算有同关键词也看不到——要全层查就去掉 level 参数（默认 fact / lesson / topic / rules）。` : "";
-      const plain = hits.length === 0 && !explicitLevels && !statusDead ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules\uFF0Csoul \u4E0E user \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"soul,user"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
+      const plain = hits.length === 0 && !explicitLevels && !statusDead && !gate.fired ? `${BASE_NOTE}\u672C\u6B21\u96F6\u547D\u4E2D\uFF1A\u9ED8\u8BA4\u68C0\u7D22\u8303\u56F4\u662F fact/lesson/topic/rules\uFF0Csoul \u4E0E user \u5C42\u4E0D\u53C2\u4E0E\u5173\u952E\u8BCD\u68C0\u7D22\uFF08\u8981\u67E5\u5B83\u4EEC\u8BF7\u663E\u5F0F\u4F20 level\uFF0C\u5982 {"level":"soul,user"}\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u5E93\u521A\u542F\u7528\uFF0C\u4E5F\u53EF\u80FD\u786E\u5B9E\u8FD8\u6CA1\u6709\u53EF\u68C0\u7D22\u7684\u8BB0\u5FC6\u3002` : BASE_NOTE;
       // [macro-fusion 0.2.140] 降权是藏在分数里的，读者看不见——那就把它说出来：
       // 有几条不是在用的、它们被降到多重、想只看在用的该加什么参数。没有这类命中时一个字符都不多花。
       const offNow = reordered.filter((h) => String(byId.get(h.id)?.status ?? "active") !== "active");
       const statusDownNote = offNow.length === 0
         ? ""
         : safeKeyed("search.statusDown", "这次命中有 {n} 条不是在用的（stale=已完结或被取代，archived=作废）：它们已按 {stale} / {arch} 降权排在后面，别当成现在的结论用；只要在用的就在参数里加 status:\"active\"。", { n: String(offNow.length), stale: String(STATUS_WEIGHT.stale), arch: String(STATUS_WEIGHT.archived) });
-      const note = [plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
+      // [macro-fusion 0.2.155] 闸门挡下来的要单独解释：零命中可能是「库里没有」，也可能是「这一问跟库不沾边」。
+      const gateNote = gate.fired
+        ? `这次零命中不是「库里没有」，是这条问句跟记忆库不沾边：${gate.why}；最近的那条是 ${String(gate.nearest ?? '').slice(0, 8)}。真要硬看候选，就把这道闸关掉（环境里设 MEOW_DENSE_ABSTAIN=0），或者把门槛调低（MEOW_DENSE_ABSTAIN=0.3）。`
+        : "";
+      const note = [plain, gateNote, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote, relNote, liftNote, relClampNote, dedupeNote, statusDownNote].filter((s) => s.length > 0).join("\n");
       return {
         note,
         hits: reordered.map((h) => {
@@ -8488,6 +8495,78 @@ async function denseRank(query, docs, opts = {}) {
   return { ranked: scored.slice(0, top), covered, total: docs.length };
 }
 
+// [macro-fusion 0.2.155] 稠密空手闸门：问句与库里任何一条都不沾边时，宁可不给答案。
+//
+// 为什么词法做不到：负样本里「火星上一天有多少小时」命中的那个词 df=1（idf 3.31），
+// 是全库最稀的词——词法上它跟「真正相关」长得一模一样，只能靠语义分。
+// 实测（40 条 gold 语料，全库最大余弦）：正样本最低 0.477，负样本除一条 0.521 外全在 0.412 以下；
+// 门槛 0.44 时负样本挡掉 13/14、正样本误杀 0/58。
+//
+// 三条约束：
+//   1. 只在「全库都有向量」时判——只覆盖一部分时最大值会被低估，会把真问题当无关问题掐掉。
+//   2. 稠密没就绪（没装依赖 / 没模型 / 被 MEOW_DENSE=0 关掉）一律不判，行为与 0.2.154 逐位相同。
+//   3. 门槛可调：MEOW_DENSE_ABSTAIN=<0~1>；给 0 或 off 就是关掉这道闸。
+const DENSE_ABSTAIN_COS_DEFAULT = 0.44;
+const DENSE_ABSTAIN_ENV = 'MEOW_DENSE_ABSTAIN';
+let denseGateLast = null;
+
+function denseAbstainCos() {
+  const raw = String(process.env?.[DENSE_ABSTAIN_ENV] ?? '').trim();
+  if (raw === '') return DENSE_ABSTAIN_COS_DEFAULT;
+  if (raw === '0' || raw.toLowerCase() === 'off') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : DENSE_ABSTAIN_COS_DEFAULT;
+}
+
+// 这一问与全库最近的一条有多近（0~1）。全库没向量就返回 null——宁可不说，也不猜。
+async function denseNearest(query, docs, opts = {}) {
+  if (denseDisabled()) return null;
+  const rt = await denseLoad(opts);
+  if (rt.state !== 'ready') return null;
+  const list = Array.isArray(docs) ? docs : [];
+  if (list.length === 0) return null;
+  const qv = await denseEmbed([String(query ?? '')], opts);
+  if (qv === null || qv.length === 0) return null;
+  const q0 = qv[0];
+  let max = -1;
+  let id = null;
+  let covered = 0;
+  for (const d of list) {
+    const v = denseVecs.get(denseKeyOf(d));
+    if (v === void 0) continue;
+    covered++;
+    const c = denseDot(q0, v);
+    if (c > max) { max = c; id = String(d.id); }
+  }
+  if (covered !== list.length) return { covered, total: list.length, max: max >= 0 ? max : 0, id };
+  return { covered, total: list.length, max: max >= 0 ? max : 0, id };
+}
+
+// 闸门判决：{ fired, cos, th, why }。why 是给人看的一句话，回执里会用到。
+async function denseGate(query, docs, opts = {}) {
+  const th = denseAbstainCos();
+  const info = { fired: false, cos: null, th, why: '', nearest: null, covered: 0, total: 0 };
+  if (th <= 0) { info.why = '闸门关着（MEOW_DENSE_ABSTAIN=0）'; denseGateLast = info; return info; }
+  if (denseDisabled()) { info.why = '稠密被 MEOW_DENSE=0 关掉，不判'; denseGateLast = info; return info; }
+  const near = await denseNearest(query, docs, opts);
+  if (near === null) { info.why = '稠密没就绪，不判'; denseGateLast = info; return info; }
+  info.covered = near.covered;
+  info.total = near.total;
+  info.nearest = near.id;
+  if (near.covered !== near.total) {
+    info.why = `向量只覆盖 ${near.covered}/${near.total} 条，最大值会被低估，这一轮不判`;
+    denseGateLast = info;
+    return info;
+  }
+  info.cos = near.max;
+  info.fired = near.max < th;
+  info.why = info.fired
+    ? `与全库最近的一条（${String(near.id).slice(0, 8)}）余弦只有 ${near.max.toFixed(3)}，低于门槛 ${th}`
+    : `最近一条余弦 ${near.max.toFixed(3)}，不低于门槛 ${th}`;
+  denseGateLast = info;
+  return info;
+}
+
 // RRF(k=60)：名次换分，不拿余弦跟 BM25 直接相加——两个量的尺度本来就无关，
 // 相加等于让「谁的单位大」决定排序（实测直接相加时照抄池掉到 0.867）。
 function fuseDenseHits(lexHits, denseRes, docs, opts = {}) {
@@ -8574,6 +8653,8 @@ async function searchHybrid(query, docs, opts = {}) {
 export {
   CONFIG_DEFAULTS,
   clearDenseCache,
+  denseGate,
+  denseNearest,
   denseStatus,
   denseWarm,
   config as Config,

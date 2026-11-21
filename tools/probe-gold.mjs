@@ -261,6 +261,36 @@ if (denseUsable) {
   )
 }
 
+// ── G15（0.2.155）稠密空手闸门：问句与全库最近的一条差得远，就不给答案 ─────────────
+// 词法这边已经证明分不开：负样本里「火星上一天有多少小时」命中的那个词 df=1（全库最稀），
+// 词法上它跟真正相关长得一模一样。语义分能分开——实测正样本最低余弦 0.477、
+// 负样本除「Python 的 GIL」0.558 外全在 0.412 以下，门槛 0.44 时负样本挡 13/14、正样本误杀 0/58。
+// 条数固定：有模型报「挡住几条 + 掐掉了几条正样本」，没模型报「一条都没判」——
+// 后一条不是凑数，它是「可选性」这件事本身的验收项（关了闸门不许有任何副作用）。
+const gateBlocked = []
+for (const q of NEG_QUERIES) {
+  const g = await V.denseGate(q, docs, {})
+  if (g.fired) gateBlocked.push(q)
+}
+const gateKilled = []
+for (const { q } of [...fx.queries, ...fx.paraphrase]) {
+  const g = await V.denseGate(q, docs, {})
+  if (g.fired) gateKilled.push(q)
+}
+if (denseUsable) {
+  check(
+    'G15 稠密空手闸门：与库不沾边的问句至少挡 12/14，且一条正样本都不许被掐（可选层，没模型时这条不判）',
+    gateBlocked.length >= 12 && gateKilled.length === 0,
+    `挡住 ${gateBlocked.length}/14，误掐 ${gateKilled.length}/58；漏过去：${NEG_QUERIES.filter((q) => !gateBlocked.includes(q)).join(' / ') || '无'}`,
+  )
+} else {
+  check(
+    'G15 没有稠密就不判：闸门一条都不许触发（可选层不许在没模型时改变任何回执）',
+    gateBlocked.length === 0 && gateKilled.length === 0,
+    `挡住 ${gateBlocked.length}/14、误掐 ${gateKilled.length}/58，状态 ${denseSt.state}`,
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

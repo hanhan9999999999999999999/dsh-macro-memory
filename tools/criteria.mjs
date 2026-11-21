@@ -503,9 +503,10 @@ export function contractChecklist({
         meowIndexSrc.includes('k 给的是') &&
         meowIndexSrc.includes('content_max 给的是') &&
         /const rows = statusDead \? \[\] : levels\.flatMap/.test(meowIndexSrc) &&
-        // 拼装清单：七个变量都在、顺序不变；允许后面继续加（0.2.86 加了 relNote / relClampNote）——
+        // 拼装清单：七个变量都在、顺序不变；允许前后继续加（0.2.86 加了 relNote / relClampNote，
+        // 0.2.155 加了 gateNote——闸门要排在 plain 后面，零命中时它是唯一的解释）——
         // 原来逐字钉整行，正当加一条提示就会红，等于逼人「红了就改判据」。
-        /\[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndexSrc) &&
+        /\[plain(?:, \w+)*, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndexSrc) &&
         meowIndexSrc.includes('const minRel = relRaw !== void 0') &&
         meowIndexSrc.includes('const aboveFloor = minRel > 0 && topScore > 0') &&
         meowIndexSrc.includes('要看全量就传 min_rel=0') &&

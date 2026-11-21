@@ -2746,14 +2746,14 @@ function makeHostCtx() {
     /\$\{levelAsked\.join\("、"\)\}」不在七层里/.test(meowIndex48) &&
       /\$\{levelBad\.join\("、"\)\}（不在七层里）/.test(meowIndex48) &&
       /const scopeNote = hits\.length === 0 && levelValid\.length > 0/.test(meowIndex48) &&
-      /const note = \[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndex48),
+      /const note = \[plain(?:, \w+)*, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meowIndex48),
     'note 拼装',
   )
   // 老话在那行模板串里是 \uXXXX 转义的，断言前先还原（0.2.48 的教训：别把中文写成转义再去 includes）。
   const unesc48 = (s) => s.replace(/\\u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
   check(
     'search: 没给 level 的老话一个字不变（本次零命中：默认检索范围是 fact/lesson/topic/rules）',
-    /hits\.length === 0 && !explicitLevels && !statusDead \? `\$\{BASE_NOTE\}/.test(meowIndex48) &&
+    /hits\.length === 0 && !explicitLevels && !statusDead(?: && !gate\.fired)? \? `\$\{BASE_NOTE\}/.test(meowIndex48) &&
       unesc48(meowIndex48).includes('本次零命中：默认检索范围是 fact/lesson/topic/rules'),
     '原有默认支',
   )
@@ -3305,7 +3305,7 @@ function makeHostCtx() {
   )
   check(
     'search: 状态值全错时不许再报「本次零命中：默认检索范围…」（两件事别混）',
-    /const plain = hits\.length === 0 && !explicitLevels && !statusDead \?/.test(meow56),
+    /const plain = hits\.length === 0 && !explicitLevels && !statusDead(?: && !gate\.fired)? \?/.test(meow56),
     'plain',
   )
   check(
@@ -3325,7 +3325,7 @@ function makeHostCtx() {
   )
   check(
     'search: 四条参数提示并进 note，且顺序在老的层名/范围提示之后',
-    /const note = \[plain, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meow56),
+    /const note = \[plain(?:, \w+)*, levelNote, scopeNote, statusNote, daysNote, kNote, cmNote(?:, \w+)*\]\.filter\(\(s\) => s\.length > 0\)\.join\("\\n"\)/.test(meow56),
     'note',
   )
   check(
@@ -9666,8 +9666,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.154（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.154'"),
+    'GV 版本: 代码里是 0.2.155（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.155'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9795,8 +9795,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.154（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.154'"),
+    'GW 版本: 代码里是 0.2.155（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.155'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9943,8 +9943,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.154（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.154'"),
+    'VV 版本: 代码里是 0.2.155（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.155'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10121,9 +10121,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.154（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.154' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.154'"),
+    'GX19 版本已到 0.2.155（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.155' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.155'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10223,10 +10223,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.154',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.154' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.154'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.154'),
+    'VY15 版本三处一致 0.2.155',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.155' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.155'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.155'),
   )
 }
 
@@ -10266,14 +10266,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.154（三处一致）',
-    pkgWz.version === '0.2.154' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.154'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.154'),
+    'WZ9 版本已到 0.2.155（三处一致）',
+    pkgWz.version === '0.2.155' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.155'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.155'),
   )
 }
 
-/** ───────── XA（0.2.154）：检索先建表、再记指纹、最后缓存 ───────── */
+/** ───────── XA（0.2.155）：检索先建表、再记指纹、最后缓存 ───────── */
 {
   const MX = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const Mk = await import('./vendor/meow-memory/lib/index.js')
