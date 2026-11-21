@@ -6736,6 +6736,73 @@ check(
   )
 }
 
+// RM0-RM9（0.2.138）：取代句从 0.2.117 起就写在旧条目正文里，可没有任何人在读它——
+// 改一条退位的记忆时回执照样说「已更新」，读一条退位的记忆时也看不出该去读哪条。
+// 这一组走真工具验「链在回执里说得出来」。
+{
+  const rmWs = mkdtempSync(join(tmpdir(), 'meow-succession-'))
+  Meow.trustWorkspace(rmWs)
+  const rmExec = { agent: { session: { header: { cwd: rmWs, id: 'sess-succession' } } } }
+  const rmRun = (name, args) => tools.get(name).execute(args, rmExec)
+  const rmText = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+  const rmKw = ['取代链探针', '交付态', '接手', '退位', '账本', '回执', '可追溯', '探针', '版本号', '链路']
+  await rmRun('memory_remember', {
+    content: '取代链探针：0.2.136 交付态，冲突雷达只装在写入侧。',
+    project: '探针取代链',
+    keywords: rmKw,
+    importance: 2,
+    level: 'fact',
+  })
+  const rmDb = Meow.getDb(rmWs, '.dsh-meow')
+  const rmOldId = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('0.2.136 交付态'))?.id ?? '')
+  check('RM0 准备：旧条目已写下', rmOldId.length > 0, rmOldId.slice(0, 8))
+  const rmNew = await rmRun('memory_remember', {
+    content: '取代链探针：0.2.138 交付态，取代句要有人读——回执点名链上位置。',
+    project: '探针取代链',
+    keywords: rmKw,
+    importance: 2,
+    level: 'fact',
+    supersedes: [rmOldId],
+  })
+  const rmNewId = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('0.2.138 交付态'))?.id ?? '')
+  const rmNewShort = rmNewId.slice(0, 8)
+  const rmOldShort = rmOldId.slice(0, 8)
+  check('RM1 准备：新条目接手了旧条目（supersedes 生效）', rmNewId.length > 0 && rmText(rmNew).includes('取代') === true)
+
+  const rmReadOld = rmText(await rmRun('memory_read', { id: rmOldId, neighbors: 0 }))
+  check('RM2 读旧条：说出「这条已被人接手」并点名接手的那条', rmReadOld.includes('⛓ 这条已被人接手') && rmReadOld.includes(rmNewShort), rmReadOld.split('\n').find((l) => l.includes('⛓')) ?? '（没有 ⛓ 行）')
+  const rmReadNew = rmText(await rmRun('memory_read', { id: rmNewId, neighbors: 0 }))
+  check('RM3 读新条：说出「这条接手过」并点名被它顶掉的旧条', rmReadNew.includes('⛓ 这条接手过 1 条') && rmReadNew.includes(rmOldShort), rmReadNew.split('\n').find((l) => l.includes('⛓')) ?? '（没有 ⛓ 行）')
+  check('RM4 读新条：旧条的状态一起说清楚（stale，只作史证）', rmReadNew.includes('stale') && rmReadNew.includes('史证'))
+
+  const rmUpdOld = rmText(await rmRun('memory_update', { id: rmOldId, content: '取代链探针：0.2.136 交付态，改了一条早就退位的话。' }))
+  check('RM5 改旧条：回执既说「已更新」也当场说「这是退位的那条」（两条都是真的）', rmUpdOld.includes('已更新') && rmUpdOld.includes('⛓ 这条已被人接手'))
+  check('RM6 改旧条：告诉人正确做法是改接手的那条', rmUpdOld.includes('就去改那条') || rmUpdOld.includes('supersedes'))
+
+  await rmRun('memory_remember', {
+    content: '取代链探针丙：一条没有谱系的独苗，回执里不该多出链。',
+    project: '探针取代链空',
+    keywords: [...rmKw, '独苗'],
+    importance: 1,
+    level: 'fact',
+  })
+  const rmLonelyId = String(rmDb.list('fact', { status: 'active' }).find((r) => String(r.content ?? '').includes('独苗'))?.id ?? '')
+  const rmLonely = rmText(await rmRun('memory_read', { id: rmLonelyId, neighbors: 0 }))
+  check('RM7 无链不提：没有谱系的条目不许多一行（省 token）', rmLonely.length > 0 && !rmLonely.includes('⛓'))
+
+  const chainMod = await import(pathToFileURL(join(root, 'lib/macro/chain.js')).href)
+  check('RM8 解析：取代句拆成 id / 开头 / 日期三段', (() => {
+    const got = chainMod.supersededBy('正文在这里（已被取代：abc12345「旧开头」, 2026-11-21）尾巴')
+    return got !== null && got.id8 === 'abc12345' && got.head === '旧开头' && got.day.length > 0
+  })())
+  check('RM9 闭嘴：没工作区 / 没库时不编链', chainMod.successionNote({ workspace: '', id: rmOldId }) === '' && chainMod.successionNote({ workspace: join(tmpdir(), 'no-such-ws-138'), id: rmOldId }) === '')
+  try {
+    rmSync(rmWs, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
 for (const d of disposers) {
   try {
     d()

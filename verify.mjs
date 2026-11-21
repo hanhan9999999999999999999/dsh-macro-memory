@@ -2872,7 +2872,7 @@ function makeHostCtx() {
   )
   check(
     'read: 融合层不被空回执沉默（defs/read.js 自己说话）',
-    /\[macro-fusion 0\.2\.52\][\s\S]{0,400}?const said = String\(main\.text \?\? ''\)\.trim\(\)\n\s+if \(said\.length === 0\) \{/.test(
+    /\[macro-fusion 0\.2\.52\][\s\S]{0,400}?let said = String\(main\.text \?\? ''\)\.trim\(\)\n\s+if \(said\.length === 0\) \{/.test(
       readSrc49,
     ) &&
       readSrc49.includes('读取这次没有任何回执') &&
@@ -9313,6 +9313,55 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'FC 版本: 代码里的 version 常量与 package.json 同号',
     idx137.includes(`export const version = '${pkg137.version}'`),
     pkg137.version,
+  )
+}
+
+// FD（0.2.138）：取代句从 0.2.117 起写在旧条目正文里，却没人读——现在回执点名链上位置。
+{
+  const chainPath = join(root, 'lib', 'macro', 'chain.js')
+  const chainSrc = readFileSync(chainPath, 'utf8')
+  const C = await import(pathToFileURL(chainPath).href)
+  const updSrc = readFileSync(join(root, 'lib', 'macro', 'defs', 'update.js'), 'utf8')
+  const readSrc = readFileSync(join(root, 'lib', 'macro', 'defs', 'read.js'), 'utf8')
+  const toolsSrc = readFileSync(join(root, 'lib', 'macro', 'tools.js'), 'utf8')
+
+  const p1 = C.supersededBy('正文（已被取代：abc12345「旧开头」，2026-11-21）尾巴')
+  check('FD 解析: 取代句拆成 id / 开头 / 日期', p1 !== null && p1.id8 === 'abc12345' && p1.head === '旧开头' && p1.day === '2026-11-21', JSON.stringify(p1))
+  const p2 = C.supersededBy('正文（已被取代：abc12345）')
+  check('FD 解析: 只有 id 也认（开头、日期缺了就不编）', p2 !== null && p2.id8 === 'abc12345' && p2.head === '' && p2.day === '')
+  check('FD 解析: 没有取代句返回 null（不许伪造一段链）', C.supersededBy('一条普通记忆，什么也没被取代') === null)
+  check(
+    'FD 解析: 半角逗号也认（别因为一个标点就把整条链读丢）',
+    (C.supersededBy('正文（已被取代：abc12345「旧开头」, 2026-11-21）尾') ?? {}).day === '2026-11-21',
+  )
+
+  check('FD 闭嘴: 没工作区 / id 为空 / 库不存在一律空串', C.successionNote({ workspace: '', id: 'x' }) === '' && C.successionNote({ workspace: '/tmp', id: '' }) === '' && C.successionNote({ workspace: join(tmpdir(), 'fd-no-ws'), id: 'abc' }) === '')
+  const s1 = C.successionOf({ workspace: '', id: 'abc' })
+  check('FD 闭嘴: missing 三态分开说（不是一句「没有」）', s1.missing === 'no-workspace' && C.successionOf({ workspace: '/tmp', id: '' }).missing === 'bad-arg')
+
+  check(
+    'FD 源码: 链要在改之前读（memory_update 换正文会连取代句一起换掉）',
+    updSrc.indexOf('const chain = successionNote(') < updSrc.indexOf("const main = await flow.call('memory_update'"),
+  )
+  check('FD 源码: 读也要带链，而且并进正文（预算按含链的长度算）', readSrc.includes('if (chain.length > 0) said = `${said}\\n\\n${chain}`') && readSrc.indexOf('said = `${said}') < readSrc.indexOf('const bodyEst = estTokens(said)'))
+  check('FD 源码: 回执三条一起出（正文说明 / 星图链接 / 链），不许只留一条', updSrc.includes("return [said, linked, chain].filter((one) => typeof one === 'string' && one.length > 0).join('\\n\\n')"))
+  check('FD 源码: meowDir 真的从装配处传下来（不是写死 .dsh-meow）', toolsSrc.includes('createUpdate({ flow, meowDir })') && toolsSrc.includes('createRead({ flow, meowDir })'))
+  check(
+    'FD 源码: 链是读出来的，不是维护出来的（不建表、不加列、不建索引）',
+    !/ALTER TABLE|CREATE INDEX|CREATE TABLE/i.test(chainSrc),
+  )
+  check(
+    'FD 源码: 先 existsSync 再 getDb（否则一句提示会顺手建出一个空库）',
+    chainSrc.indexOf('existsSync(dbFile(') < chainSrc.indexOf('Meow.getDb('),
+  )
+  check('FD 源码: 取代句常量与写侧同源（两边不共用就会越读越偏）', chainSrc.includes("export const SUPERSEDE_MARK = '（已被取代：'") && readFileSync(join(root, 'lib', 'macro', 'defs', 'remember.js'), 'utf8').includes("const SUPERSEDE_MARK = '（已被取代：'"))
+
+  const pkg138 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  check(
+    'FD 版本与文档一起走（9.144 / 150）',
+    pkg138.version.split('.').map((x) => Number(x))[2] >= 138 &&
+      readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.144 ') &&
+      readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 150 '),
   )
 }
 
