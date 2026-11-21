@@ -6,7 +6,7 @@
  *   M2 但回执点名：「另一层已有几乎一样的条目（fact xxxxxxxx，重复度 100%）」+ 两条出路
  *   M3 检索侧折叠：默认参数下同一句话只列一次，尾注报出折了几条，并给 dedupe: false
  *   M4 阴性对照：传 dedupe: false 就回两条——说明 M3 折掉的正是那一条，不是把结果砍半
- *   M5 折叠保留的是分数最高的那条（不是随便砍一条）
+ *   M5 折叠保留的是「在用 → 较新 → 分高」挑出来的那条（0.2.141 起：分数不再一票决定）
  *   M6 不同内容不误折（fact / lesson 各有分工时两条都列）
  *   M7 同层重复仍走合并（新逻辑没有把「同一层」这条老路弄坏）
  *   M8 参数面：schema 里 dedupe 是 boolean、默认 true，三语文案都有这个键
@@ -105,10 +105,29 @@ const s2 = await call('memory_search', { query: '发布前备份 还原', dedupe
 const hits2 = s2.hits ?? []
 check('M4 阴性对照：dedupe: false 时两条都列（说明 M3 砍掉的正是这一条，不是恒砍）', hits2.length === 2, `${hits2.length} 条 ${hits2.map((h) => h.level).join(',')}`)
 check('M4 不折叠时不该再报折叠尾注', !String(s2.note ?? '').includes('另有 1 条内容几乎一样'), flat(s2.note).slice(-90))
+// 0.2.141：折叠的裁决权从「分数」交回「状态 → 时间 → 分数」。
+// 这里两条都是 active，所以该留的是较新的那条；若时间也打平才轮到分数。
+const rowM5 = new Map()
+for (const level of ['fact', 'lesson']) for (const r of db.list(level, {})) rowM5.set(String(r.id), r)
+const rankM5 = (h) => {
+  const r = rowM5.get(String(h.id)) ?? {}
+  return {
+    st: V.statusWeight?.(r.status ?? h.status) ?? 1,
+    at: Number(r.updated_at ?? h.updated_at ?? 0) || 0,
+    sc: Number(h.score ?? 0) || 0,
+  }
+}
+const orderM5 = [...(hits2 ?? [])].sort((a, b) => {
+  const x = rankM5(a)
+  const y = rankM5(b)
+  if (x.st !== y.st) return y.st - x.st
+  if (x.at !== y.at) return y.at - x.at
+  return y.sc - x.sc
+})
 check(
-  'M5 折叠保留的是分数最高的那条（M3 保留的分数 = M4 榜首分数）',
-  hits1.length === 1 && hits2.length === 2 && hits1[0].score === hits2[0].score,
-  `${hits1[0]?.score} vs ${hits2[0]?.score}`,
+  'M5 折叠保留的是「在用 → 较新 → 分高」挑出来的那条（分数不再一票决定）',
+  hits1.length === 1 && hits2.length === 2 && String(hits1[0].id) === String(orderM5[0]?.id),
+  `keep=${String(hits1[0]?.id).slice(0, 8)} 期望=${String(orderM5[0]?.id).slice(0, 8)}`,
 )
 
 // ── M6：不同内容不误折 ────────────────────────────────────────────────────
