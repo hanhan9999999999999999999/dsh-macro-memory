@@ -257,7 +257,7 @@ git clone <THIS_REPO> dsh-macro-memory
 ## 质量：怎么证明它没坏
 
 ```bash
-node tools/check-all.mjs          # 24 支自检，3,187 条断言，197s
+node tools/check-all.mjs          # 24 支自检，3,187 条断言，约 200s
 node verify.mjs                   # 单支：宿主契约 + 浏览器装配
 node tools/doctor.mjs             # 体检：两棵树字节一致、加载面、注入长度、队列、账本
 ```
