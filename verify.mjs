@@ -9373,7 +9373,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     updSrc.indexOf('const chain = successionNote(') < updSrc.indexOf("const main = await flow.call('memory_update'"),
   )
   check('FD 源码: 读也要带链，而且并进正文（预算按含链的长度算）', readSrc.includes("const extras = [prov, chain].filter(Boolean).join('\\n')") && readSrc.includes('said = `${said}\\n\\n${extras}`') && readSrc.indexOf('said = `${said}') < readSrc.indexOf('const bodyEst = estTokens(said)'))
-  check('FD 源码: 回执三条一起出（正文说明 / 星图链接 / 链），不许只留一条', updSrc.includes("return [said, linked, chain].filter((one) => typeof one === 'string' && one.length > 0).join('\\n\\n')"))
+  // [0.2.157] 回执从三条变四条：留底那句插在正文说明之后、链接与链之前。
+  check('FD 源码: 回执四条一起出（正文说明 / 留底 / 星图链接 / 链），不许只留一条', updSrc.includes("return [said, revNote, linked, chain].filter((one) => typeof one === 'string' && one.length > 0).join('\\n\\n')"))
   check('FD 源码: meowDir 真的从装配处传下来（不是写死 .dsh-meow）', toolsSrc.includes('createUpdate({ flow, meowDir })') && toolsSrc.includes('createRead({ flow, meowDir })'))
   check(
     'FD 源码: 链是读出来的，不是维护出来的（不建表、不加列、不建索引）',
@@ -9413,6 +9414,53 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 150 '),
   )
 }
+
+// FQ（0.2.157）：可更新性的另一半——按句改（便宜）＋改前留一版（改坏了能退）。
+// 这一组钉四件事：局部修改的参数只在融合层、留底在写之前、闸门常量只有一个出口、
+// 留底表不许污染「被读过」。
+{
+  const revPath = join(root, 'lib', 'macro', 'revisions.js')
+  const revSrc = readFileSync(revPath, 'utf8')
+  const updSrc157 = readFileSync(join(root, 'lib', 'macro', 'defs', 'update.js'), 'utf8')
+  const provSrc157 = readFileSync(join(root, 'lib', 'macro', 'provenance.js'), 'utf8')
+  const R = await import(pathToFileURL(revPath).href)
+
+  check(
+    'FQ 口径: 局部修改三个参数（patch / append / restore）与 allowShrink 都在 schema 里，并被说明成互斥',
+    ['patch', 'append', 'restore', 'allowShrink'].every((k) => new RegExp(`^\\s+${k}[:(]`, 'm').test(updSrc157)) &&
+      updSrc157.includes('不能同时给'),
+  )
+  check(
+    'FQ 口径: 它们只在融合层消费，不进 pick 白名单（vendor 的 schema 是 additionalProperties:false，传下去会被打回）',
+    updSrc157.includes("pick({ ...args, content }, ['id', 'content', 'status', 'importance', 'goal', 'project', 'keywords'])") &&
+      !/'patch'/.test(updSrc157.slice(updSrc157.indexOf('pick({ ...args, content }'))),
+  )
+  check(
+    'FQ 留底: 写之前先留底（写成功而留底失败＝改坏了没退路）',
+    updSrc157.indexOf('saveRevision(') < updSrc157.indexOf("flow.call('memory_update'"),
+  )
+  check(
+    'FQ 闸门: 缩水门槛与留底上限是常量，只有一个出口（探针与清理都读它）',
+    revSrc.includes('const REVISION_KEEP = 3') && revSrc.includes('const SHRINK_FLOOR = 0.7') && revSrc.includes('export { REVISION_KEEP, SHRINK_FLOOR }'),
+  )
+  check(
+    'FQ 闭嘴: 没库不建库、留底表不许碰使用计数（读元数据不该让它变成「被用过」）',
+    !revSrc.includes('markAccessed(') && revSrc.indexOf('existsSync(') < revSrc.indexOf('Meow.getDb(') && revSrc.includes("out.missing = 'no-db'"),
+  )
+  check(
+    'FQ 来源: 来源一行把「改过几次」也算来源（只在真留过底时出现）',
+    provSrc157.includes("import { revisionNote } from './revisions.js'") && provSrc157.includes('revisionNote({ workspace, dir, id })'),
+  )
+
+  const patched = R.applyPatches('甲这一段乙', [{ find: '这一段', replace: '那一段' }])
+  check(
+    'FQ 行为: 按句改只动那一句；找不到 / 多处命中一个字都不写',
+    patched.ok && patched.content === '甲那一段乙' &&
+      R.applyPatches('甲乙', [{ find: '丙', replace: 'x' }]).ok === false &&
+      R.applyPatches('的的', [{ find: '的', replace: 'x' }]).ok === false,
+  )
+}
+
 
 // FE（0.2.139）：链是 8 位前缀近似出来的——接手者可能已不在库里，前缀也可能撞车。
 // 这一组钉住「近似要说清楚」：三态、两句新文案、以及全库只扫一遍。
@@ -9686,8 +9734,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.156（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.156'"),
+    'GV 版本: 代码里是 0.2.157（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.157'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -9815,8 +9863,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.156（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.156'"),
+    'GW 版本: 代码里是 0.2.157（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.157'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -9963,8 +10011,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.156（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.156'"),
+    'VV 版本: 代码里是 0.2.157（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.157'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10141,9 +10189,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.156（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.156' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.156'"),
+    'GX19 版本已到 0.2.157（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.157' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.157'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10243,10 +10291,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.156',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.156' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.156'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.156'),
+    'VY15 版本三处一致 0.2.157',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.157' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.157'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.157'),
   )
 }
 
@@ -10286,10 +10334,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.156（三处一致）',
-    pkgWz.version === '0.2.156' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.156'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.156'),
+    'WZ9 版本已到 0.2.157（三处一致）',
+    pkgWz.version === '0.2.157' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.157'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.157'),
   )
 }
 

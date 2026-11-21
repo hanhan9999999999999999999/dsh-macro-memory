@@ -17,6 +17,9 @@
  *   G10 换说法组：问句不抄正文用词时还能不能找到（0.2.152）
  *   G11 阴性对照：关键词退回「当正文」时两个池都不许更好（0.2.152）
  *
+ *   G16 来源一行：四种来路各说各的话，没库时闭嘴（0.2.156）
+ *   G17 改前留一版：按句改只动那一句、找不到/多处命中一个字都不写、留底最多 3 版（0.2.157）
+ *
  * 用法：node tools/probe-gold.mjs
  */
 import { root } from './_root.mjs'
@@ -338,6 +341,60 @@ if (denseUsable) {
     } catch {
       /* Windows 上 sqlite 还开着句柄时删不掉，留在临时目录里也无害 */
     }
+  }
+}
+
+// ── G17（0.2.157）改前留一版：按句改便宜，但不能变成「整段删」或「改坏了没退路」 ──────
+// 判据分两半：纯函数那半（找得到/找不到/多处命中/缩水闸）不碰库就能量；
+// 库那一半（留底、上限 3 版、取回上一版）用临时 home 真写一遍。
+{
+  const REV = await import(pathToFileURL(join(root, 'lib', 'macro', 'revisions.js')).href)
+  const home = mkdtempSync(join(tmpdir(), 'probe-gold-rev-'))
+  const V2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const d = V2.getDb(home, '.dsh-meow')
+  const body = '这条记忆讲的是 WAL：写入先落 -wal 文件，checkpoint 之后才合进主库。'
+  d.p(
+    `INSERT INTO lesson (id, title, content, importance, keywords, status, source_session, hit_count, created_at, updated_at, last_accessed_at, corrected, project)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run('probe-rev001', '', body, 1, '[]', 'active', null, 0, Date.now(), Date.now(), null, 0, null)
+
+  const hit = REV.applyPatches(body, [{ find: '写入先落', replace: '写入先写进' }])
+  const miss = REV.applyPatches(body, [{ find: '这句话不在正文里', replace: 'x' }])
+  const many = REV.applyPatches('的的的', [{ find: '的', replace: '之' }])
+  const app = REV.appendTo('上一段。', '下一段。')
+  const shrunk = REV.shrinkGuard('一'.repeat(100), '一'.repeat(10))
+  const shrunkOk = REV.shrinkGuard('一'.repeat(100), '一'.repeat(10), true)
+  const shortOk = REV.shrinkGuard('一'.repeat(20), '一'.repeat(5))
+
+  const s1 = REV.saveRevision({ workspace: home, id: 'probe-rev001', content: body, reason: 'patch' })
+  const s2 = REV.saveRevision({ workspace: home, id: 'probe-rev001', content: body, reason: 'patch' })
+  for (let i = 0; i < 5; i += 1) REV.saveRevision({ workspace: home, id: 'probe-rev001', content: `${body}（第 ${i} 版）`, reason: 'append' })
+  const kept = REV.revisionCount({ workspace: home, id: 'probe-rev001' })
+  const back1 = REV.revisionContent({ workspace: home, id: 'probe-rev001', back: 1 })
+  const silent = REV.revisionNote({ workspace: join(home, 'nope'), id: 'probe-rev001' }) === '' && REV.revisionContent({ workspace: join(home, 'nope'), id: 'probe-rev001' }) === null
+  const notMade = !existsSync(join(home, 'nope', '.dsh-meow', 'memory.db'))
+
+  const wrong = []
+  if (!(hit.ok && hit.content.includes('写入先写进') && !hit.content.includes('写入先落'))) wrong.push('唯一命中没只动那一句')
+  if (!(!miss.ok && miss.why.includes('找不到'))) wrong.push('找不到还敢写')
+  if (!(!many.ok && many.why.includes('3 次'))) wrong.push('多处命中不拦')
+  if (!(app.ok && app.content === '上一段。\n\n下一段。')) wrong.push('追加没空一行')
+  if (shrunk.ok) wrong.push('缩水三成没拦')
+  if (!shrunkOk.ok) wrong.push('allowShrink 也不放行')
+  if (!shortOk.ok) wrong.push('短文本被闸门误拦')
+  if (!(s1.saved === true && s2.saved === false && s2.why === 'same-as-last')) wrong.push('逐字相同的旧正文重复记了')
+  if (kept !== 3) wrong.push(`留底 ${kept} 版（应为 3）`)
+  if (!(typeof back1 === 'string' && back1.length > 0)) wrong.push('取不回上一版')
+  if (!silent || !notMade) wrong.push('没库时没闭嘴／顺手建了空库')
+  check(
+    'G17 改前留一版：按句改只动那一句，找不到与多处命中一个字都不写，留底 3 版且能退回上一版',
+    wrong.length === 0,
+    wrong.length === 0 ? '纯函数 7 条 + 留底 4 条都对' : wrong.join(' / '),
+  )
+  try {
+    rmSync(home, { recursive: true, force: true })
+  } catch {
+    /* Windows 上 sqlite 还开着句柄时删不掉，留临时目录里无害 */
   }
 }
 
