@@ -9658,6 +9658,61 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 }
 
+// HB（0.2.161）：关键词字段更值钱——真库没有标题，keywords 是唯一的结构化桥。
+// 这一组量的是「一个数该值多少、写在哪」：抬到斜带中间（不是边缘），且三处兜底同一个来源。
+{
+  const eng = readFileSync(
+    join(root, 'vendor', 'meow-memory', 'lib', 'index.js'),
+    'utf8',
+  )
+  check(
+    'HB 单一来源: 两个关键词权重只定义一次，别的模块不许自己写一份「关键词值多少」',
+    eng.split('var KW_TF_W =').length - 1 === 1 &&
+      eng.split('var FIELD_KW_W_DEF =').length - 1 === 1 &&
+      !readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8').includes('KW_TF_W') &&
+      !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('KW_TF_W'),
+  )
+  check(
+    'HB 三处兜底同源: kwTfW 在索引/缓存键/取索引三处都读常量，旧字面量一处不剩（否则换权重后缓存会喂旧表）',
+    eng.split('opts.kwTfW : KW_TF_W').length - 1 === 3 &&
+      eng.includes('opts.kwTfW : 0.25') === false &&
+      eng.split('opts.fieldKwW : FIELD_KW_W_DEF').length - 1 === 1 &&
+      eng.includes('opts.fieldKwW : 0.35') === false,
+  )
+  check(
+    'HB 同读数取保守值: 0.35 / 0.6 与 0.5 / 0.6 读数完全相同，但 0.5 会破「标签不是正文」，所以只能取 0.35',
+    eng.includes('var KW_TF_W = 0.35;') &&
+      eng.includes('var FIELD_KW_W_DEF = 0.6;') &&
+      eng.includes('同读数选不破老规矩的那一个'),
+  )
+  check(
+    'HB 可覆盖可审计: 两个数都从模块导出，探针与验收用同一个数；opts 仍可逐次覆盖',
+    eng.includes('  KW_TF_W,\n  FIELD_KW_W_DEF,') &&
+      eng.includes('Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0') &&
+      eng.includes('Number.isFinite(opts.fieldKwW)'),
+  )
+  const probeGold161 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+  check(
+    'HB 自带阴性对照: 探针里四条对照都必须能让 G20 变红（退回旧口径 / 抬过头 / 平台外同分 / 照抄漂移）',
+    probeGold161.includes('G20 关键词更值钱') &&
+      probeGold161.includes('旧口径下锚点池没变差') &&
+      probeGold161.includes('关键词一路抬到 1/1.2 照抄池也没变差') &&
+      probeGold161.includes('平台外的组合也与默认同分') &&
+      probeGold161.includes('照抄池 ${drift} 条排名被动了'),
+  )
+  const int161 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+  const des161 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+  check(
+    'HB 有记: INTERNAL 9.168 写清真库 title 全空、伪标题被否、斜带读数，DESIGN 173 写清「别为空转权重找活干」',
+    int161.includes('## 9.168') &&
+      int161.includes('0.940') &&
+      int161.includes('0.961') &&
+      int161.includes('/0.500/0.800') &&
+      des161.includes('## 173') &&
+      des161.includes('空转'),
+  )
+}
+
 // FE（0.2.139）：链是 8 位前缀近似出来的——接手者可能已不在库里，前缀也可能撞车。
 // 这一组钉住「近似要说清楚」：三态、两句新文案、以及全库只扫一遍。
 {
@@ -9930,8 +9985,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.160（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.160'"),
+    'GV 版本: 代码里是 0.2.161（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.161'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10059,8 +10114,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.160（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.160'"),
+    'GW 版本: 代码里是 0.2.161（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.161'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10207,8 +10262,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.160（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.160'"),
+    'VV 版本: 代码里是 0.2.161（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.161'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10385,9 +10440,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.160（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.160' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.160'"),
+    'GX19 版本已到 0.2.161（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.161' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.161'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10487,10 +10542,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.160',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.160' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.160'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.160'),
+    'VY15 版本三处一致 0.2.161',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.161' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.161'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.161'),
   )
 }
 
@@ -10499,14 +10554,22 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const MWz = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const Mz = await import('./vendor/meow-memory/lib/index.js')
 
-  check('WZ1 常量在：kwTfW 默认 0.25，且允许 0（关掉 tf 只留字段加成）', MWz.includes('const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25;'))
+  check(
+    'WZ1 常量在：kwTfW 默认读 KW_TF_W（0.2.161 起 0.35），且允许 0（关掉 tf 只留字段加成）',
+    MWz.includes('const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W;') &&
+      MWz.includes('var KW_TF_W = 0.35;'),
+  )
   check(
     'WZ2 kwSeparate 默认开：正文 BM25 只吃 title + content（opts.kwSeparate === false 才回退）',
     MWz.includes('const kwToks = opts.kwSeparate === false ? null : docs.map(') &&
       MWz.includes('const dText = opts.kwSeparate === false'),
   )
   check('WZ3 关键词计数按 kwTfW 打折写进同一张 df 表（候选资格不掉）', MWz.includes('m.set(t, (m.get(t) ?? 0) + kwTfW);'))
-  check('WZ4 0.2.133 的字段加成还在（FIELD_KW_W 可调，默认 0.35）', MWz.includes('const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : 0.35;'))
+  check(
+    'WZ4 0.2.133 的字段加成还在（FIELD_KW_W 可调，默认读 FIELD_KW_W_DEF = 0.6）',
+    MWz.includes('const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;') &&
+      MWz.includes('var FIELD_KW_W_DEF = 0.6;'),
+  )
 
   // 行为：同一篇正文 + 标签，标签只有 1/4 的重量
   const dWz = (id, content, keywords = []) => ({ id, level: 'fact', title: '', content, keywords, importance: 1, project: 'wz', updated_at: 1763e9, last_accessed_at: 1763e9 })
@@ -10530,10 +10593,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.160（三处一致）',
-    pkgWz.version === '0.2.160' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.160'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.160'),
+    'WZ9 版本已到 0.2.161（三处一致）',
+    pkgWz.version === '0.2.161' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.161'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.161'),
   )
 }
 

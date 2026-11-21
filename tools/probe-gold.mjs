@@ -511,6 +511,100 @@ if (denseUsable) {
   )
 }
 
+// ── G20（0.2.161）关键词字段更值钱：真库里 title 全空，keywords 是唯一的结构化桥 ─────────
+// 这一条量的是「一个数该值多少」：不是把关键词抬得越高越好，而是抬到平台里——
+// 抬过头照抄池就开始掉（tf1/fw1.2 → 0.911），抬回来（旧口径 tf0.25/fw0.35）锚点池就掉到 0.700。
+// 平台内部的组合读数必须与默认**完全同分**，否则就不是平台，是一个捏出来的点。
+{
+  const base = measure(fx.queries, docs)
+  const pBase = measure(fx.paraphrase, docs)
+  const aBase = measure(fx.anchor, docs)
+
+  const sig = (list, opts) =>
+    list
+      .map(({ q }) => V.search(q, docs, { k: K, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join(','))
+      .join('|')
+
+  // ① 平台：三个平台内组合与默认逐条同分
+  const plateau = [
+    { kwTfW: 0.3, fieldKwW: 0.7 },
+    { kwTfW: 0.325, fieldKwW: 0.65 },
+    { kwTfW: 0.325, fieldKwW: 0.7 },
+  ]
+  // 平台看的是「排名与读数一处不动」，不是分数一模一样——权重不同，分数本来就该有一点差。
+  // 平台只认读数（hit@1 / hit@3 / MRR）：同分并列的条目在平台内会换位子，读数一处不动才是判据。
+  const orderOf = (list, opts) => list.length + ':' + list.reduce((n, { q }) => n + V.search(q, docs, { k: 3, ...opts }).length, 0)
+  const trip = (o) => {
+    const m = [measure(fx.queries, docs, o), measure(fx.paraphrase, docs, o), measure(fx.anchor, docs, o)]
+    const r = (x) => Math.round(x * 1e3) / 1e3
+    return m.map((x) => `${r(x.hit1)}/${r(x.hit3)}/${r(x.mrr)}`).join(' ')
+  }
+  const tripBase = trip({})
+  const plateauOk = plateau.every((o) => trip(o) === tripBase)
+
+  // ② 旧口径回退：锚点池必须真的变差（说明这两个数确实在起作用）
+  const aOld = measure(fx.anchor, docs, { kwTfW: 0.25, fieldKwW: 0.35 })
+
+  // ③ 抬过头：照抄池必须变差（说明不是「越大越好」）
+  const qHot = measure(fx.queries, docs, { kwTfW: 1, fieldKwW: 1.2 })
+
+  // ④ 照抄池零漂移：默认 vs 旧口径逐条排名相同
+  const ranksOf = (list, opts) =>
+    list.map(({ q, want }) => {
+      const ids = V.search(q, docs, { k: K, ...opts }).map((h) => String(h.id))
+      return ids.findIndex((id) => want.includes(id))
+    })
+  const rDefault = ranksOf(fx.queries, {})
+  const rOld = ranksOf(fx.queries, { kwTfW: 0.25, fieldKwW: 0.35 })
+  const drift = rDefault.reduce((n, r, i) => n + (r === rOld[i] ? 0 : 1), 0)
+
+  // ⑤ 导出的常量就是默认值：显式传回它们必须与 {} 逐条同分
+  const exportedOk = sig(fx.anchor, { kwTfW: V.KW_TF_W, fieldKwW: V.FIELD_KW_W_DEF }) === sig(fx.anchor, {})
+
+  // ⑥ 换说法池不许被代价掉
+  const pNew = measure(fx.paraphrase, docs)
+
+  // ⑦ 平台边缘的反面：平台**外**必须真的不同分，否则「平台」就是随口一说的范围
+  const qEdge = measure(fx.anchor, docs, { kwTfW: 0.4, fieldKwW: 0.45 })
+
+  // ⑧ 同读数取保守值：0.5 / 0.6 的读数与默认一模一样，却会把「只在 keywords 里提到的条目」
+  // 压过「正文命中的条目」——0.2.152 的「标签不是正文」在前，读数打平时只能选不破规矩的那个。
+  const pairDocs = [
+    { id: 'P', level: 'fact', title: '', content: '甲乙丙丁戊己', keywords: ['口径'], importance: 1, project: 'g20', updated_at: 1763e9, last_accessed_at: 1763e9 },
+    { id: 'Q', level: 'fact', title: '', content: '口径甲乙丙丁', keywords: [], importance: 1, project: 'g20', updated_at: 1763e9, last_accessed_at: 1763e9 },
+  ]
+  const pairScore = (opts, id) => {
+    const h = V.search('口径', pairDocs, { k: 2, ...opts }).find((x) => String(x.id) === id)
+    return Number(h?.score ?? 0)
+  }
+  const tagBelowBody = (opts) => pairScore(opts, 'Q') > pairScore(opts, 'P')
+  const invariantKept = tagBelowBody({})
+  const hotBreaks = tagBelowBody({ kwTfW: 0.5, fieldKwW: 0.6 }) === false
+
+  const wrong = []
+  if (!plateauOk) wrong.push('平台内组合与默认不同分（判据不是平台）')
+  if (!(aOld.hit1 <= 0.75 && aOld.mrr < aBase.mrr)) {
+    wrong.push(`旧口径下锚点池没变差（hit@1=${aOld.hit1.toFixed(3)}）——阴性对照失效`)
+  }
+  if (!(qHot.hit1 < base.hit1)) wrong.push('关键词一路抬到 1/1.2 照抄池也没变差（判据不是门槛）')
+  if (drift !== 0) wrong.push(`照抄池 ${drift} 条排名被动了`)
+  if (!exportedOk) wrong.push('导出的 KW_TF_W / FIELD_KW_W_DEF 不是实际默认值')
+  if (!(pNew.hit1 >= pBase.hit1 && pNew.hit3 >= pBase.hit3)) wrong.push('换说法池被代价掉了')
+  if (Math.round(qEdge.hit1 * 1e3) === Math.round(aBase.hit1 * 1e3) && Math.round(qEdge.mrr * 1e3) === Math.round(aBase.mrr * 1e3)) {
+    wrong.push('平台外的组合也与默认同分（平台边界不实）')
+  }
+  if (!invariantKept) wrong.push('默认值把「只在 keywords 里提到的条目」压过了正文命中的条目（破 0.2.152 的规矩）')
+  if (!hotBreaks) wrong.push('0.5/0.6 居然没破规矩——那这条对照就白写了')
+
+  check(
+    'G20 关键词更值钱：抬到平台（不是捏一个点），旧口径锚点池掉、抬过头照抄池掉、照抄池零漂移',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `默认 照抄 ${base.hit1.toFixed(3)}/换说法 ${pNew.hit1.toFixed(3)}（hit@3 ${pNew.hit3.toFixed(3)}）/锚点 ${aBase.hit1.toFixed(3)}·MRR ${aBase.mrr.toFixed(3)}；平台 ${plateau.length}/${plateau.length} 同分；旧口径锚点 ${aOld.hit1.toFixed(3)}·MRR ${aOld.mrr.toFixed(3)}；抬过头照抄 ${qHot.hit1.toFixed(3)}；照抄漂移 ${drift} 条`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

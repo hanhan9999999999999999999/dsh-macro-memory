@@ -2059,6 +2059,12 @@ function timeAnchorOf(q, opts) {
 // 真库 59 问上量过——触发 25 条里 18 条确实没中（覆盖 75%），误报 7 条。
 var WEAK_COVER = 0.2;
 var WEAK_GAP = 0.95;
+// [macro-fusion 0.2.161] 关键词字段被低估：真库 569 条 title 全空，keywords 是唯一的结构化桥，
+// 而它只按 0.25 倍词频、+0.35 加成参与打分。抬到 0.35 / 0.6——读数与 tf 0.5/0.6 完全相同，
+// 但 0.5 会把「只在 keywords 里提到的条目」压过「正文命中的条目」，破坏 0.2.152 立下的「标签不是正文」。
+// 同读数选不破老规矩的那一个；tf 再往下（0.3/0.6）换说法池就掉回 0.429。
+var KW_TF_W = 0.35;
+var FIELD_KW_W_DEF = 0.6;
 function hintWordsOf(hit, query) {
   const raw = hit && hit.keywords;
   let list = [];
@@ -2246,7 +2252,7 @@ function indexSignature(docs) {
 function buildSearchIndex(docs, opts = {}, sig = null) {
   const n = docs.length;
   const useField = opts.fieldBoost !== false;
-  const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25;
+  const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W;
   const dText = opts.kwSeparate === false
     ? docText
     : (d) => [String(d.title ?? ''), String(d.content ?? '')].join(' ');
@@ -2314,7 +2320,7 @@ const SEARCH_INDEX_CACHE_MAX = 4;
 const searchIndexCache = new Map();
 
 function indexPathKey(docs, opts) {
-  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25}${opts.inverted === false ? 0 : 1}`;
+  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}`;
 }
 
 // 调用方也可以直接传 opts.index（自己缓存那张表）；签名或口径对不上就自己重建——
@@ -2323,7 +2329,7 @@ function searchIndexOf(docs, opts) {
   const key = indexPathKey(docs, opts);
   const given = opts.index;
   if (given && given.__n === docs.length && given.__sig === indexSignature(docs) &&
-      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : 0.25}`) {
+      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}`) {
     return given;
   }
   if (opts.cache === false) return buildSearchIndex(docs, opts, key);
@@ -2371,7 +2377,7 @@ function search(query, docs, opts = {}) {
   const index = searchIndexOf(docs, opts);
   const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings } = index;
   const FIELD_TITLE_W = 0.6;
-  const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : 0.35;
+  const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
   const COORD_W = 0.35;
   const k1 = 1.5;
   const b = 0.75;
@@ -8933,6 +8939,8 @@ export {
   hintWordsOf,
   WEAK_COVER,
   WEAK_GAP,
+  KW_TF_W,
+  FIELD_KW_W_DEF,
   verbatimOf,
   topicDrift,
   trustCommandDefinition,
