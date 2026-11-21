@@ -52,7 +52,7 @@
                                                       "order":  "desc"
                                                   }
                                   },
-                     "publishTimestamp": 1795302768
+                     "publishTimestamp": 1795305125
                  },
     "plugins":  [
                     {
@@ -92,25 +92,25 @@
                                          "sortKeys":  {
                                                           "updated":  1795136086
                                                       },
-                                         "publishTimestamp": 1795302768,
-                                         "version":  "0.2.170"
+                                         "publishTimestamp": 1795305125,
+                                         "version":  "0.2.171"
                                      },
                         "versions":  [
                                          {
-                                             "version":  "0.2.170",
-                                             "publishTimestamp": 1795302768,
+                                             "version":  "0.2.171",
+                                             "publishTimestamp": 1795305125,
                                              "source":  {
                                                             "type":  "git",
                                                             "url":  "https://gh-proxy.com/https:/github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                                            "commit": "09fbd4f24936c1c76ca7286e4bd6bcafc0b71c8c"
+                                                            "commit": "3faaa4bcac57162c617d8d371210ac58d2bb139c"
                                                         }
                                          }
                                      ],
-                        "version":  "0.2.170",
+                        "version":  "0.2.171",
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://gh-proxy.com/https:/github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit": "09fbd4f24936c1c76ca7286e4bd6bcafc0b71c8c"
+                                       "commit": "3faaa4bcac57162c617d8d371210ac58d2bb139c"
                                    }
                     }
                 ]
