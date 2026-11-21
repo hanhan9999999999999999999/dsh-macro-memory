@@ -52,7 +52,7 @@
                                                       "order":  "desc"
                                                   }
                                   },
-                     "publishTimestamp": 1795296390
+                     "publishTimestamp": 1795298600
                  },
     "plugins":  [
                     {
@@ -62,8 +62,8 @@
                                       "zh":  "宏记忆"
                                   },
                         "description":  {
-                                            "en":  "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory\u0027s seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 13,275 B (−76.6%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart.",
-                                            "zh":  "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 13,275 B（−76.6%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。"
+                                            "en":  "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory\u0027s seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 13,366 B (−76.5%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart.",
+                                            "zh":  "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 13,366 B（−76.5%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。"
                                         },
                         "icon":  "icon.png",
                         "author":  "主人 \u0026 小代码酱",
@@ -92,25 +92,25 @@
                                          "sortKeys":  {
                                                           "updated":  1795136086
                                                       },
-                                         "publishTimestamp": 1795296390,
-                                         "version":  "0.2.167"
+                                         "publishTimestamp": 1795298600,
+                                         "version":  "0.2.168"
                                      },
                         "versions":  [
                                          {
-                                             "version":  "0.2.167",
-                                             "publishTimestamp": 1795296390,
+                                             "version":  "0.2.168",
+                                             "publishTimestamp": 1795298600,
                                              "source":  {
                                                             "type":  "git",
                                                             "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                                            "commit": "ab7313f4367b5ef2135335d45cf3e2bc0409d31e"
+                                                            "commit": "d307d188da498e15915f9efe64581b4d62f61b64"
                                                         }
                                          }
                                      ],
-                        "version":  "0.2.167",
+                        "version":  "0.2.168",
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit": "ab7313f4367b5ef2135335d45cf3e2bc0409d31e"
+                                       "commit": "d307d188da498e15915f9efe64581b4d62f61b64"
                                    }
                     }
                 ]
