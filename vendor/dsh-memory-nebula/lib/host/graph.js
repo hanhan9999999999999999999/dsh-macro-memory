@@ -22,6 +22,9 @@ import {
   cut,
   hash32,
 } from './text.js'
+// [macro-fusion 0.4.0 · P4] 实体层单独一个文件：它只读节点、只产一份可序列化的 list，
+// 与建边逻辑没有任何耦合。关掉它只需 `entityLayer: false`，图里就当没这回事。
+import { collectEntities } from './entities.js'
 
 /**
  * 通用文件名：跨工作区时不作为「同一实体」的证据。
@@ -242,7 +245,8 @@ export function* buildGraphSteps(input) {
       nodes: [],
       edges: [],
       clusters: [],
-      stats: { nodes: 0, edges: 0, workspaces: 0, byType: {}, byWorkspace: {}, byLevel: {}, orphans: 0 },
+      stats: { nodes: 0, edges: 0, workspaces: 0, byType: {}, byWorkspace: {}, byLevel: {}, orphans: 0, entities: 0 },
+      entityLayer: null,
       builtAt: now,
     }
   }
@@ -1162,10 +1166,22 @@ export function* buildGraphSteps(input) {
     yield 'output'
   }
 
+  // [macro-fusion 0.4.0 · P4] 实体层：从「同一项目/路径/工具/版本」这四类硬事实里
+  // 抽出锚点，供召回按实体找「关于 X 的一切」。它不进 nodes、不进 edges：
+  // 度数、聚类、孤岛、面板条数全按「记忆」算，混进实体节点会把这些读数一起改写。
+  // 只留可序列化的 `list`：图的缓存是 JSON，Map 存不住，读回来用 indexOf() 现建索引。
+  const entityLayer = input.entityLayer === false
+    ? null
+    : (() => {
+        const layer = collectEntities(nodes, { minMembers: input.entityMinMembers })
+        return layer.list.length ? { list: layer.list, stats: layer.stats } : null
+      })()
+
   return {
     nodes: outNodes,
     edges: outEdges,
     clusters: clusters.slice(0, 60),
+    entityLayer,
     stats: {
       nodes: nodes.length,
       edges: finalEdges.length,
@@ -1176,6 +1192,8 @@ export function* buildGraphSteps(input) {
       byLevel,
       orphans,
       avgDegree: Math.round((finalEdges.length * 2 * 100) / Math.max(1, nodes.length)) / 100,
+      // 实体数单独报：想知道「这一层到底抽出了多少东西」，不用再翻列表
+      entities: entityLayer ? entityLayer.list.length : 0,
     },
     builtAt: now,
   }
@@ -1211,6 +1229,20 @@ export const HYGIENE_META = {
   unread: { label: '没人读过', hint: '写下一周以上、一次都没被检索命中过' },
   thin: { label: '关系是凑的', hint: '边很多，但没有一条强关系（实体/项目级），全是关键词撞出来的' },
   orphan: { label: '孤立', hint: '一条边都没有：要么是独特知识，要么是没人会再想起的碎片' },
+  // [macro-fusion 0.4.0] 写入端通胀三连：这三条看的不是「记忆写错了」，而是
+  // 「检索与写入被同一批词反复喂」——写入方（包括我自己）会针对召回机制优化自己。
+  selfecho: {
+    label: '关键词自证',
+    hint: 'keywords 里超过七成逐字出现在正文里：这些词靠 BM25 本来就能命中，堆上去等于没扩召回面（自证，不是扩展）',
+  },
+  unused: {
+    label: '召回过没人读',
+    hint: '被检索命中过、却一次都没被 memory_read 打开过：排进了候选，但没人真去读。注意记账从 0.4.0 起，更早的读没有被记（老库这一格会偏大）',
+  },
+  inflate: {
+    label: '写得多收得少',
+    hint: '近 30 天 fact 层条数增速是结论层（rules / lesson）的 3 倍以上：原子事实在堆，没人把它收成结论',
+  },
 }
 
 const HY_MAX = 40
@@ -1637,7 +1669,71 @@ export function* auditHygieneSteps({ nodes, edges, nodeIds = null, tokensById = 
     sim: Number(p.j.toFixed(3)),
   }))
 
-  const items = { dup, oversize, stale, unread, thin, orphan }
+  // [macro-fusion 0.4.0] 写入端通胀三连（P2.5）。这三条不是「记忆写错了」，
+  // 而是「检索与写入被同一批词反复喂」——写入方（包括 AI 自己）会针对召回机制优化自己：
+  // 关键词挑能命中自己的词、正文写成关键词的复读、事实一条条堆而结论不增。
+  mark('inflate')
+  const SELF_ECHO_MIN_KW = 3
+  const SELF_ECHO_RATE = 0.7
+  const selfechoAll = []
+  for (const n of memories) {
+    const kws = kwOf(n)
+    // 只有 1–2 个关键词的条目，1/2 = 50% 也能算「高」——样本太小的比例不是信号。
+    if (kws.length < SELF_ECHO_MIN_KW) continue
+    const body = String(n.content || '').toLowerCase()
+    if (!body) continue
+    let echo = 0
+    for (const k of kws) if (k && body.includes(k)) echo++
+    const rate = echo / kws.length
+    if (rate <= SELF_ECHO_RATE) continue
+    selfechoAll.push({ id: n.id, label: n.label, ws: n.wsTitle, level: n.level, rate: Number(rate.toFixed(2)), echo, kws: kws.length })
+  }
+  // 自证率高的先吵：1.00 才是「关键词全是正文的复读机」，0.75 只是偏。
+  selfechoAll.sort((a, b) => b.rate - a.rate || b.kws - a.kws)
+  const selfechoTotal = selfechoAll.length
+  const selfecho = selfechoAll.slice(0, HY_MAX)
+
+  // 「召回过没人读」：命中过（排进过候选）却一次都没被 memory_read 打开。
+  // 只对真记了 read_count 的源成立（meow 从 0.4.0 起）；别的适配器没这个数就不参与，
+  // 否则 hits 一有就全部假阳。老库这一格偏大是必然的——以前的读没被记过。
+  const unusedAll = memories
+    .filter((n) => typeof n.reads === 'number' && n.status === 'active' && (n.hits || 0) > 0 && !n.reads)
+    .sort((a, b) => (b.hits || 0) - (a.hits || 0))
+  const unusedTotal = unusedAll.length
+  const unused = unusedAll
+    .slice(0, HY_MAX)
+    .map((n) => ({ id: n.id, label: n.label, ws: n.wsTitle, level: n.level, hits: n.hits || 0 }))
+
+  // 层通胀：近 30 天 fact 条数 vs 结论层（rules / lesson）。看增速比值、不看绝对量，
+  // 所以要有最小样本——新库里 fact 3 条、结论层 0 条也是「无限倍」，那不是病。
+  const INFLATE_DAYS = 30
+  const INFLATE_RATIO = 3
+  const INFLATE_MIN = 6
+  const inflateSince = now - INFLATE_DAYS * DAY
+  let factNew = 0
+  let semNew = 0
+  for (const n of memories) {
+    if ((n.createdAt || 0) < inflateSince) continue
+    if (n.level === 'fact') factNew++
+    else if (n.level === 'rules' || n.level === 'lesson') semNew++
+  }
+  const inflateX = semNew > 0 ? factNew / semNew : factNew
+  const inflateTotal = factNew >= INFLATE_MIN && factNew > semNew * INFLATE_RATIO ? 1 : 0
+  // 这一类是「整库一个判断」，不是逐条清单：命中就给一行汇总，id 留空（面板别当记忆跳）。
+  const inflate = inflateTotal
+    ? [
+        {
+          id: '',
+          label: `近 ${INFLATE_DAYS} 天：fact ${factNew} 条 / 结论层 ${semNew} 条（${Number(inflateX.toFixed(1))}×）`,
+          ws: '',
+          level: 'fact',
+          fact: factNew,
+          semantic: semNew,
+        },
+      ]
+    : []
+
+  const items = { dup, oversize, stale, unread, thin, orphan, selfecho, unused, inflate }
   // 计数用「全部命中」，列表只留前 HY_MAX 条：payload 有上限，数字不失真。
   const full = {
     dup: dupPairs.length,
@@ -1646,6 +1742,9 @@ export function* auditHygieneSteps({ nodes, edges, nodeIds = null, tokensById = 
     unread: unreadAll.length,
     thin: thinTotal,
     orphan: orphanAll.length,
+    selfecho: selfechoTotal,
+    unused: unusedTotal,
+    inflate: inflateTotal,
   }
   const counts = {}
   const shown = {}

@@ -787,8 +787,10 @@
     // 只诊断、不改记忆——这里点进去看，改不改由人（或 AI）决定。
     const hy = ov.hygiene
     if (hy && hy.total) {
-      const HORDER = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan']
-      const HMIN = { dup: 1, stale: 1, thin: 1, oversize: 2, unread: 6, orphan: 6 }
+      // [macro-fusion 0.4.0] 后三项是写入端通胀（P2.5）：前六项看「这条记忆本身」，
+      // 后三项看「写入与检索被同一批词反复喂」——同一张卡片里放，但门槛比前六项高，免得噪声常驻。
+      const HORDER = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan', 'selfecho', 'unused', 'inflate']
+      const HMIN = { dup: 1, stale: 1, thin: 1, oversize: 2, unread: 6, orphan: 6, selfecho: 3, unused: 3, inflate: 1 }
       const kinds = HORDER.filter((k) => (hy.counts?.[k] || 0) >= (HMIN[k] || 1))
       if (kinds.length) {
         const head = el('div', 'src src-click')
@@ -827,6 +829,12 @@
               jump = it.id
             } else if (k === 'unread') {
               text = (it.label || '').slice(0, 26) + ' · ' + it.days + T(' 天')
+              jump = it.id
+            } else if (k === 'selfecho') {
+              text = (it.label || '').slice(0, 26) + ' · ' + Math.round((it.rate || 0) * 100) + '%' + T(' 自证') + ' (' + it.echo + '/' + it.kws + ')'
+              jump = it.id
+            } else if (k === 'unused') {
+              text = (it.label || '').slice(0, 26) + T(' · 命中 ') + it.hits + T(' 次没读过')
               jump = it.id
             } else {
               text = (it.label || '').slice(0, 28)
@@ -2476,6 +2484,9 @@
       const dupIt = (hy.items.dup || []).find((x) => x.a.id === n.id || x.b.id === n.id)
       const overIt = (hy.items.oversize || []).find((x) => x.id === n.id)
       const thinIt = (hy.items.thin || []).find((x) => x.id === n.id)
+      // [macro-fusion 0.4.0] 写入端通胀也贴到单条上：自证与「召回过没人读」都是逐条的毛病。
+      const echoIt = (hy.items.selfecho || []).find((x) => x.id === n.id)
+      const unusedIt = (hy.items.unused || []).find((x) => x.id === n.id)
       const notes = []
       if (staleIt) notes.push(T('还挂着 active，但「') + (staleIt.by.label || '').slice(0, 24) + T('」更新更全——这条可能该并进去'))
       if (dupIt) {
@@ -2484,6 +2495,8 @@
       }
       if (overIt) notes.push(T('正文 ') + overIt.size + T(' 字，属于本库最长的一批，读一次很贵'))
       if (thinIt) notes.push(T('连接 ') + thinIt.degree + T(' 条但平均强度只有 ') + thinIt.avg + T('，多半是关键词撞出来的'))
+      if (echoIt) notes.push(T('关键词有 ') + echoIt.echo + '/' + echoIt.kws + T(' 个逐字出现在正文里——这些词靠 BM25 本来就能命中，等于没扩召回面'))
+      if (unusedIt) notes.push(T('被检索命中过 ') + unusedIt.hits + T(' 次，却一次都没被读过：排进候选但没人真去读'))
       if (notes.length) {
         const box = el('div', 'd-hygiene')
         box.id = 'd-hygiene'

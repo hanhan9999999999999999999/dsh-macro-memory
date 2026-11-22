@@ -126,6 +126,36 @@ if (writeSnap || !existsSync(snapPath)) {
     same40 && same1200, firstDiff || `${qs.length} 问 × 两档全同`)
 }
 
+// ── C5b/C5c（0.4.0 P5）换代归因：共现到底改了什么，改的是不是只有它 ─────────
+// C5 守的是「同一代之内，改性能不许改答案」。0.4.0 P5 是有意的召回换代（共现自学习），
+// 所以快照换代一次是允许的——但必须证明「变的那部分只来自共现通道，不是顺手把打分改了」。
+// 做法是给「关掉共现、桥照开」这一态单独冻一份快照（cost-snap-handonly.json）：
+//   C5b 关掉共现时，top-5 必须逐位回到那份冻结态 —— 锁住「不打分乱动」；
+//   C5c 打开共现时，至少有一问的答案必须与冻结态不同 —— 锁住「通道不空转」。
+// 两条合起来才有意义：只锁 C5b 等于允许通道白接，只锁 C5c 等于允许打分浮动。
+const handPath = join(root, 'tools', 'fixtures', 'cost-snap-handonly.json')
+if (existsSync(handPath)) {
+  const hand = JSON.parse(readFileSync(handPath, 'utf8'))
+  const offSnap = (corpus) => qs.map((q) =>
+    V.search(q, corpus, { k: 5, coocLearn: false }).map((h) => `${h.id}:${(h.score ?? 0).toFixed(6)}`))
+  const pairSame0 = (a, b) => a.length === b.length && a.every((row, i) => row.length === b[i].length && row.every((x, j) => x === b[i][j]))
+  const off40 = offSnap(corpora[40])
+  const off1200 = offSnap(corpora[1200])
+  let diff0 = ''
+  for (let i = 0; i < off40.length; i++) {
+    if (!pairSame0([hand.m['40'][i]], [off40[i]])) {
+      diff0 = `第 ${i + 1} 问「${qs[i]}」冻结态 ${hand.m['40'][i].join(',')} → 现在 ${off40[i].join(',')}`
+      break
+    }
+  }
+  check('C5b 换代归因：关掉共现时，top-5 逐位回到「只关共现」那份冻结快照',
+    pairSame0(hand.m['40'], off40) && pairSame0(hand.m['1200'], off1200), diff0 || `${qs.length} 问 × 两档全同`)
+  let moved = 0
+  for (let i = 0; i < off40.length; i++) if (nowSnap.m['40'][i].join(',') !== off40[i].join(',')) moved++
+  check('C5c 共现通道不空转：打开共现后至少有一问的答案与关闭时不同（否则这条通道等于白接）',
+    moved > 0, `40 条池上 ${moved}/${qs.length} 问答案不同`)
+}
+
 // ── C6 缓存不许答旧库：等长改写（同一秒、字数一模一样）跑不掉 ───────────────
 // 指纹原来只看 content.length：改一个词但字数不变、updated_at 又落在同一秒，
 // 旧表就会被当成新库用，用户看到的答案是他改之前的。这条专守这个缝——

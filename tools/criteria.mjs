@@ -613,7 +613,7 @@ export function contractChecklist({
         searchDefSrcS.includes('limit 是 graph / bridge 的条数') &&
         searchDefSrcS.includes('只在 bridge 模式生效，这次没用上') &&
         /if \(mode\.bad\) return badModeText\(mode\)/.test(searchDefSrcS) &&
-        /const text = await runSearch\(flow, args, exec, flags(?:, budget)?\)/.test(searchDefSrcS) &&
+        /const text = await runSearch\(flow, args, exec, flags(?:, budget)?(?:, config)?\)/.test(searchDefSrcS) &&
         /const notes = modeNotes\(mode\.name, args, flags\)/.test(searchDefSrcS),
       detail: searchDefSrcS.includes('function modeOf(')
         ? 'ok'
@@ -708,9 +708,9 @@ export function contractChecklist({
     },
     {
       id: 'admin-hygiene-kind',
-      label: '体检的类别是枚举：给错要挡住并列出六个键（不许照跑一遍、把「没查」打成「这一类是 0」）',
+      label: '体检的类别是枚举：给错要挡住并列出全部九个键（不许照跑一遍、把「没查」打成「这一类是 0」）',
       ok:
-        adminSrcP.includes("const HYGIENE_KINDS = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan']") &&
+        adminSrcP.includes("const HYGIENE_KINDS = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan', 'selfecho', 'unused', 'inflate']") &&
         /function guardHygiene\(args\)/.test(adminSrcP) &&
         /const name = raw\.trim\(\)\.toLowerCase\(\)/.test(adminSrcP) &&
         adminSrcP.includes('if (!HYGIENE_KINDS.includes(name))') &&
@@ -1080,7 +1080,7 @@ export function readAnswerKind(text) { return 'ok' }`,
         '[c.scope, lim.note].filter(Boolean).join',
         'const budget = guideBudget(config.guideMaxChars)',
         'L0 注入：现在',
-        "const HYGIENE_KINDS = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan']",
+        "const HYGIENE_KINDS = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan', 'selfecho', 'unused', 'inflate']",
         'function guardHygiene(args) {',
         'const name = raw.trim().toLowerCase()',
         'if (!HYGIENE_KINDS.includes(name)) {',

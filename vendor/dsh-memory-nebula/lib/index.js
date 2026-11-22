@@ -199,7 +199,9 @@ export function apply(ctx) {
             description: '别的记忆工具刚返回的记忆 id（meow 的 id 或星图的完整 id），用来从这些点向外交扩散。',
           },
           limit: { type: 'number', description: '返回条数，默认 10，上限 30。' },
-          hops: { type: 'number', description: '扩散跳数，默认 2；1=只看直接邻居，2=邻居的邻居。' },
+          hops: { type: 'number', description: '扩散跳数，默认 2；1=只看直接邻居，2=邻居的邻居。第二跳起会按「邻居与查询还有没有关系」提前停。' },
+          entity: { type: 'boolean', description: '是否按实体（项目名/路径/工具名/版本号）带同组记忆。默认开。' },
+          dynamic_hops: { type: 'boolean', description: '第二跳是否按词面收。默认开；关掉=跳满（0.4.0 前）。' },
         },
         required: [],
         additionalProperties: false,
@@ -213,8 +215,29 @@ export function apply(ctx) {
         const pLimit = numParam('limit', args.limit, { min: 1, max: 30, def: 10 })
         const pHops = numParam('hops', args.hops, { min: 0, max: 3, def: 2 })
         const notes = [pLimit.note, pHops.note].filter(Boolean)
-        const res = await nebula.recallAsync(query, { limit: pLimit.value, hops: pHops.value, seedIds: ids })
-        const base = formatHits(res, ids.length ? `种子来自你给的 ${ids.length} 条记忆 id` : '')
+        // [macro-fusion 0.4.0 · P4] 两个开关默认开：实体层只读不写，动态跳数只省不亏。
+        // 关法三条：工具参数 entity=false / dynamic_hops=false，或环境变量 NEBULA_ENTITY_LAYER=0
+        // / NEBULA_DYNAMIC_HOPS=0（整机回滚，不用改配置也不动记忆）。
+        const entityOn = args.entity !== false && String(process.env.NEBULA_ENTITY_LAYER ?? '') !== '0'
+        const dynamicOn = args.dynamic_hops !== false && String(process.env.NEBULA_DYNAMIC_HOPS ?? '') !== '0'
+        const res = await nebula.recallAsync(query, {
+          limit: pLimit.value,
+          hops: pHops.value,
+          seedIds: ids,
+          entityLayer: entityOn,
+          dynamicHops: dynamicOn,
+        })
+        let base = formatHits(res, ids.length ? `种子来自你给的 ${ids.length} 条记忆 id` : '')
+        // 两条读数只在「这次确实发生了」时加一行：命中了实体、或扩散中途停了。
+        // 常态不写，免得把每次检索的尾巴都撑长。
+        const extra = []
+        if (Array.isArray(res.entities) && res.entities.length > 0) {
+          extra.push(`实体：${res.entities.map((e) => `${e.label}(${e.members})`).join('、')}`)
+        }
+        if (res.hops && res.hops.dynamic && res.hops.used < res.hops.asked) {
+          extra.push(`只走了 ${res.hops.used} 跳（问 ${res.hops.asked}）：${res.hops.skippedNeighbors} 条邻居与查询无词面关系，停了。`)
+        }
+        if (extra.length) base = `${base}\n${extra.join('\n')}`
         return notes.length ? `${base}\n${notes.join('\n')}` : base
       },
     }),

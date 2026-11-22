@@ -24,6 +24,12 @@ const noop = () => {}
 // 在 0.3.0 会整片假红（47 条），而它想说的只是「不早于 0.2.N」。主版本更高一律算过。
 const verAtLeast = (v, maj, min, pat) =>
   v[0] > maj || (v[0] === maj && (v[1] > min || (v[1] === min && v[2] >= pat)))
+// [0.4.0] 版本号的单一来源：HZ16 已经说过「别把版本写死」，但 GV/GW/VV/GX19/VY15/WZ9
+// 六处还留着 '0.3.0' 的字面量。升级到 0.4.0 时它们会整片假红，而它们想说的只是
+// 「package.json / lib/index.js / README 三处同号」。改成从 package.json 现取版本，
+// 以后只改 package.json + lib/index.js + README，判据一处都不用动。
+const PKG_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 let failures = 0
 function check(label, ok, extra) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra === undefined ? '' : '  ' + extra}`)
@@ -903,6 +909,9 @@ function makeHostCtx() {
   // 3) 被 check-all 点名的那几支，凡是要读本仓文件的，一律从 _root.mjs 取。
   //    两支例外有明确理由，写在表里而不是「漏了」：
   //    probe-inject 只经相对 import 读 vendor；check-yaml 只读 DSH 安装与 profile。
+  //    支数是知识：28 = 原 24 支 + 0.3.1 的 probe-mq（查询分解量尺）+ 0.4.0 的 probe-consolidate
+  //    （写入端巩固量尺）、probe-hygiene（写入端通胀量尺）与 probe-supersede（自动取代量尺）。少一支说明有人从套件里
+  //    摘了东西，多一支说明新加的判据没在基线里记账——两种都要在这里显形。
   const steps = [...checkAll.matchAll(/^\s*\['([^']+\.mjs)'/gm)].map((m) => m[1])
   const NO_ROOT = {
     'tools/probe-inject.mjs': '只经相对 import 读 vendor，不拼仓内路径',
@@ -912,7 +921,8 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    steps.length === 24 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    // 30 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
+    steps.length === 30 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -3500,7 +3510,7 @@ function makeHostCtx() {
   )
   check(
     'search: 模式名不合法时一句都不查（先挡住，再谈检索）',
-    /const mode = modeOf\(args\)[\s\S]{0,400}?if \(mode\.bad\) return badModeText\(mode\)[\s\S]{0,600}?const text = await runSearch\(flow, args, exec, flags, budget\)/.test(
+    /const mode = modeOf\(args\)[\s\S]{0,400}?if \(mode\.bad\) return badModeText\(mode\)[\s\S]{0,600}?const text = await runSearch\(flow, args, exec, flags, budget(?:, config)?\)/.test(
       searchSrc,
     ),
     'badMode',
@@ -3531,7 +3541,7 @@ function makeHostCtx() {
   check(
     'search: 老的「不认识就当 local」写法一行都不剩（注释里提一句可以，代码里不行）',
     !/^\s*const mode = String\(args\.mode/m.test(searchSrc) &&
-      /async function runSearch\(flow, args, exec, flags = \{\}, budget = \{ value: null, note: '' \}\)/.test(searchSrc),
+      /async function runSearch\(flow, args, exec, flags = \{\}, budget = \{ value: null, note: '' \}(?:, mqConfig = \{\})?\)/.test(searchSrc),
     'legacy',
   )
   check(
@@ -3576,6 +3586,732 @@ function makeHostCtx() {
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('0.2.58') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('模式名没对上'),
     '文档',
+  )
+}
+
+// A58b. 查询分解（0.4.0 P1 / PLAN-0.4 §5 P1）：原榜一个字不动，子问句只补空位。
+{
+  const searchSrcMq = readFileSync(join(root, 'lib', 'macro', 'defs', 'search.js'), 'utf8')
+  const indexSrcMq = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const toolsSrcMq = readFileSync(join(root, 'lib', 'macro', 'tools.js'), 'utf8')
+  const mq = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', 'search.js')).href)
+
+  check(
+    'mq: 开关默认 off，写错/大小写错的都当 off（不猜用户想要什么）',
+    /multiQuery: 'off'/.test(indexSrcMq) &&
+      mq.multiQueryMode({}) === 'off' &&
+      mq.multiQueryMode({ multiQuery: 'on' }) === 'off' &&
+      mq.multiQueryMode({ multiQuery: ' CONServative ' }) === 'conservative',
+    'multiQueryMode',
+  )
+  check(
+    'mq: 配置真的接进了检索工具（不是只写在 schema 里）',
+    toolsSrcMq.includes('createSearch({ flow, config })') &&
+      searchSrcMq.includes('export function createSearch({ flow, config = {} })') &&
+      /const text = await runSearch\(flow, args, exec, flags, budget, config\)/.test(searchSrcMq),
+    'plumbing',
+  )
+  check(
+    'mq: 并列焦点切得开（连接词 + 疑问词壳剥掉）',
+    JSON.stringify(mq.decomposeQuery('饱和脂肪跟反式脂肪哪个更伤心脏')) === '["饱和脂肪","反式脂肪"]' &&
+      JSON.stringify(mq.decomposeQuery('主人在 m147821 说的 readme 要求 以及 m121175 的参考用法')) ===
+        '["主人在 m147821 说的 readme 要求","m121175 的参考用法"]',
+    'decompose',
+  )
+  check(
+    'mq: 多个问号也切，最多三段（再多就是在猜句子结构）',
+    mq.decomposeQuery('这两个插件的检索谁更快？哪个更省 token？').length === 2 &&
+      mq.decomposeQuery('主人在 m147821 说的 readme 要求 以及 m121175 的参考用法 还有 m00310 的 goal').length === 3,
+    'decompose-multi',
+  )
+  check(
+    'mq: 没有并列焦点就返回空数组，不硬拆（单实体、空串、纯问句）',
+    mq.decomposeQuery('为什么记忆插件变强了').length === 0 &&
+      mq.decomposeQuery('稠密向量层开着吗').length === 0 &&
+      mq.decomposeQuery('').length === 0 &&
+      mq.decomposeQuery('这句话没有并列焦点就原样返回').length === 0,
+    'decompose-empty',
+  )
+  check(
+    'mq: 子问句放宽档位收口，但有三道闸门（每问两行 / score>0 / 段数上限）',
+    searchSrcMq.includes('min_rel: 0, band_keep: false') &&
+      /if \(added >= MQ_MAX_ROWS_PER_SUB\) break/.test(searchSrcMq) &&
+      /if \(Number\.isFinite\(score\) && score <= 0\) continue/.test(searchSrcMq) &&
+      /const MQ_MAX_SUBS = 3/.test(searchSrcMq),
+    'gates',
+  )
+  check(
+    'mq: 原榜一条都不丢（value.hits 只追加，顺序与正文不动）',
+    searchSrcMq.includes('hits: [...baseHits, ...shown.map((one) => one.hit)]') &&
+      searchSrcMq.includes('— 问句拆开再查一遍（原榜一个字没动）—'),
+    'append-only',
+  )
+  check(
+    'mq: 顺序对（预算收紧 → 分解补充 → 扩散），否则重查会把补充段冲掉',
+    searchSrcMq.indexOf('const fit = await fitBudget(') > 0 &&
+      searchSrcMq.indexOf('const fit = await fitBudget(') < searchSrcMq.indexOf('main = await augmentByDecompose') &&
+      searchSrcMq.indexOf('main = await augmentByDecompose') < searchSrcMq.indexOf('const wantExpand = args.expand !== false'),
+    'order',
+  )
+  check(
+    'mq: 有没有补、补了几条都记进 flags（尾注要能说实话）',
+    searchSrcMq.includes('flags.multiQuery = subs.join') &&
+      searchSrcMq.includes('flags.multiQueryRows = shown.length') &&
+      searchSrcMq.includes('flags.multiQueryAgree = agree.length') &&
+      searchSrcMq.includes('flags.multiQuerySkipped = true'),
+    'flags',
+  )
+}
+// A58c. 写入端巩固（0.4.0 P2 / PLAN-0.4 §5 P2）：三条件全成立才说话，suggest 一个字不写库。
+{
+  const indexSrcCo = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const toolsSrcCo = readFileSync(join(root, 'lib', 'macro', 'tools.js'), 'utf8')
+  const rememberSrcCo = readFileSync(join(root, 'lib', 'macro', 'defs', 'remember.js'), 'utf8')
+  const co = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', 'remember.js')).href)
+
+  const at = new Date('2026-11-22T08:00:00Z')
+  const mk = (n, extra = {}) => ({
+    id: `0co${n}aaaa`,
+    level: 'fact',
+    created_at: '2026-11-20T10:00:00Z',
+    keywords: ['记忆插件', '检索', '巩固'],
+    content: `第 ${n} 条：同一件事的第 ${n} 次记录，正文够长才看得出首行是哪句。`,
+    ...extra,
+  })
+  const mine = ['记忆插件', '检索']
+  const three = [mk(1), mk(2), mk(3)]
+  const sig = (patch = {}) => co.consolidateSignals({ hits: three, semanticHits: [], newId: '0coNEW00', keywords: mine, cap: 8, ...patch })
+
+  check(
+    'co: 开关默认 suggest（只贴材料，库不动），三档归一，写错当 off',
+    /consolidate: 'suggest'/.test(indexSrcCo) &&
+      co.consolidateMode({}) === 'suggest' &&
+      co.consolidateMode({ consolidate: 'off' }) === 'off' &&
+      co.consolidateMode({ consolidate: ' WRITE ' }) === 'write' &&
+      co.consolidateMode({ consolidate: 'on' }) === 'off',
+    'consolidateMode',
+  )
+  check(
+    'co: 配置真的接进了写入工具（不是只写在 schema 里）',
+    toolsSrcCo.includes('createRemember({ flow, config })') &&
+      rememberSrcCo.includes('export function createRemember({ flow, config = {} })') &&
+      /const mode = consolidateMode\(config\)/.test(rememberSrcCo),
+    'plumbing',
+  )
+  check(
+    'co: 三条件全成立才 fire（同话题 3 条 + 语义层有空位 + 还没有巩固句）',
+    sig().kind === 'fire' && sig().repeated === true && sig().room === true && sig().pending === true && sig().rows.length === 3,
+    'fire',
+  )
+  check(
+    'co: 少任何一个条件都不说话（2 条 → none；语义层满 → merge；已巩固 → none）',
+    sig({ hits: three.slice(0, 2) }).kind === 'none' &&
+      sig({ semanticHits: new Array(8).fill({ id: 'x' }) }).kind === 'merge' &&
+      sig({
+        hits: three.map((one) => ({ ...one, content: `${one.content}（已巩固进：0old1111「旧摘要」，2026-11-21）` })),
+      }).kind === 'none',
+    'three-gates',
+  )
+  check(
+    'co: 不是同话题的不算重复（keywords 交集只有 1 个就跳过，新写的那条自己也不进候选）',
+    sig({ hits: [mk(1, { keywords: ['记忆插件', '别的'] }), mk(2, { keywords: ['检索'] }), mk(3, { keywords: [] })] }).rows.length === 0 &&
+      sig({ hits: [three[0], three[1], mk(3, { id: '0coNEW00' })] }).rows.length === 2,
+    'shared-keywords',
+  )
+  check(
+    'co: 摘要首行是日期 + project + 关键词，正文是这几条的开头（temporal 的收益全在首行）',
+    co.consolidateSummary({ rows: sig().rows, project: '宏记忆', keywords: mine, at }) ===
+      '2026-11-22 · 巩固（宏记忆）：记忆插件、检索\n- 第 1 条：同一件事的第 1 次记录，正文够长才看得出首行是哪句。\n- 第 2 条：同一件事的第 2 次记录，正文够长才看得出首行是哪句。\n- 第 3 条：同一件事的第 3 次记录，正文够长才看得出首行是哪句。',
+    'summary',
+  )
+  check(
+    'co: 巩固句与取代句同款形状（短 id + 开头 24 字 + 日期），只说并进哪条、不写判决',
+    (() => {
+      const line = co.consolidateLineOf({ newId: '0coNEW00', newHead: '这是一条很长的摘要首行，长到需要被截断成二十四个字为止才肯停下来的那种长度', at })
+      return line.startsWith('（已巩固进：0coNEW00「') && line.endsWith('，2026-11-22）') && !line.includes('作废')
+    })(),
+    'line',
+  )
+  check(
+    'co: suggest 一个字不写库——只有 write 分支里才碰 memory_remember / memory_update，且巩固不动作废',
+    (() => {
+      const body = rememberSrcCo.slice(rememberSrcCo.indexOf('async function consolidateAfterWrite'), rememberSrcCo.indexOf('async function markSuperseded'))
+      return (
+        rememberSrcCo.indexOf("if (mode !== 'write' || signal.kind !== 'fire') return note") > 0 &&
+        rememberSrcCo.indexOf("if (mode !== 'write' || signal.kind !== 'fire') return note") <
+          rememberSrcCo.indexOf("flow.tryCall('memory_remember'") &&
+        /memory_update', \{ id: one\.id, content: next \}/.test(rememberSrcCo) &&
+        body.length > 500 &&
+        !body.includes("status: 'stale'") &&
+        !body.includes("status: 'archived'")
+      )
+    })(),
+    'suggest-only',
+  )
+  check(
+    'co: 巩固挂在最后（取代和连线都做完了），否则材料里会出现刚被顶掉的那条',
+    rememberSrcCo.indexOf("const linked = await flow.applyLinks(newId, args.links, exec, 'remember')") <
+      rememberSrcCo.indexOf('const note = await consolidateAfterWrite(') &&
+      rememberSrcCo.indexOf("const superseded = await markSuperseded(") < rememberSrcCo.indexOf('const note = await consolidateAfterWrite('),
+    'order',
+  )
+  // H6 事故（0.4.0）：巩固检查调 memory_search，meow 把 20 条记进 seen 且 bumpHit，于是写完一条
+  // 紧接着问 similar 会得到「可选的候选一条都没有」。修法是给 meow 的检索加一个内部开关：
+  // 默认照旧记账（对外查询一个字不改），只有插件自己的诊断查询显式传 internal 才跳过。
+  {
+    const meowInternal = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+    const body = rememberSrcCo.slice(
+      rememberSrcCo.indexOf('async function consolidateAfterWrite'),
+      rememberSrcCo.indexOf('async function markSuperseded'),
+    )
+    check(
+      'co: meow 检索有 internal 开关，默认 false＝照旧记账（对外查询行为一个字不改）',
+      /internal: \{\s*\n\s*type: "boolean",\s*\n\s*default: false,/.test(meowInternal) &&
+        meowInternal.includes('这次查询不进本会话的「已端给你看过」账'),
+      'internal-param',
+    )
+    check(
+      'co: internal 关的是 bumpHit + markSearched 两件事，不是只关记账（否则通胀指标仍被污染）',
+      /if \(parsed\.internal !== true\) \{\s*\n\s*for \(const h of hits\) db\.bumpHit\(h\.level, h\.id\);\s*\n\s*markSearched\(/.test(
+        meowInternal,
+      ),
+      'internal-guard',
+    )
+    check(
+      'co: 巩固检查两枪都传 internal: true，主写入与更新一个字都不带',
+      (body.match(/internal: true/g) ?? []).length === 2 &&
+        !/memory_remember'[^\n]*internal/.test(rememberSrcCo) &&
+        !/memory_update'[^\n]*internal/.test(rememberSrcCo),
+      'internal-passed',
+    )
+  }
+}
+// A58d. 写入端通胀体检（0.4.0 P2.5 / PLAN-0.4 §5 P2.5）：九类里新增的三类要真判得出来，
+//       而且「召回过没人读」的记账口径只许有一个入口（memory_read）。
+//       这三条守的是同一条不变量：**报警必须来自信号，不能来自「写得多」这个事实本身**。
+{
+  const graphSrcHy = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'graph.js'), 'utf8')
+  const adminSrcHy = readFileSync(join(root, 'lib', 'macro', 'defs', 'admin.js'), 'utf8')
+  const meowSrcHy = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const readSrcHy = readFileSync(join(root, 'lib', 'macro', 'defs', 'read.js'), 'utf8')
+  const adapterSrcHy = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'adapters', 'meow.js'), 'utf8')
+  const hy = await import(pathToFileURL(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'graph.js')).href)
+  const rd = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', 'read.js')).href)
+
+  const DAY = 86400000
+  const now = Date.now()
+  const mkNode = (id, level, kw, content, hits, reads, ageDays, status = 'active') => ({
+    id,
+    level,
+    label: String(content).slice(0, 24),
+    content,
+    keywords: kw,
+    hits,
+    reads,
+    status,
+    importance: 2,
+    createdAt: now - ageDays * DAY,
+    updatedAt: now - ageDays * DAY,
+  })
+  const audit = (nodes, edges = []) => {
+    const it = hy.auditHygieneSteps({ nodes, edges })
+    let r = it.next()
+    while (!r.done) r = it.next()
+    return r.value
+  }
+  // 自证阳性：4 个关键词全部逐字出现在正文里（挑词挑到自己身上了）
+  const echoYes = mkNode('hy-echo', 'fact', ['插件', '检索', '预算', '星图'], '这个插件用检索吃预算，星图连着插件。', 0, 0, 1)
+  // 阴性一：只有 2 个关键词（1/2 = 50% 也能顶到「高」，样本太小不算信号）
+  const echoFew = mkNode('hy-echo-few', 'fact', ['插件', '检索'], '这个插件用检索吃预算。', 0, 0, 1)
+  // 阴性二：3 个关键词里 2 个在正文（0.67 < 0.7）
+  const echoPart = mkNode('hy-echo-part', 'fact', ['插件', '检索', '不存在的词'], '这个插件用检索吃预算。', 0, 0, 1)
+  // 召回过没人读阳性 / 阴性（读过、没命中过、别的源没这个字段）
+  const unusedYes = mkNode('hy-unused', 'fact', ['预算'], '预算的事。', 5, 0, 2)
+  const unusedRead = mkNode('hy-read', 'fact', ['预算'], '预算的事。', 5, 1, 2)
+  const unusedNoHit = mkNode('hy-nohit', 'fact', ['预算'], '预算的事。', 0, 0, 9)
+  const noReadsField = { id: 'hy-norm', level: 'fact', label: '别的源', content: '没有 read_counts 概念', keywords: ['x'], hits: 9, status: 'active', importance: 2, createdAt: now, updatedAt: now }
+  const facts8 = Array.from({ length: 8 }, (_, i) => mkNode(`hy-f${i}`, 'fact', ['x'], `原子事实 ${i}`, 0, 0, i + 1))
+  const out = audit([echoYes, echoFew, echoPart, unusedYes, unusedRead, unusedNoHit, noReadsField, ...facts8])
+
+  check(
+    'hy: 体检从六类变九类，三个新类都有 label 与 hint（不是只加 key）',
+    ['selfecho', 'unused', 'inflate'].every(
+      (k) => hy.HYGIENE_META[k] && hy.HYGIENE_META[k].label.length > 0 && hy.HYGIENE_META[k].hint.length > 30,
+    ) &&
+      graphSrcHy.includes('selfecho: selfechoTotal') &&
+      graphSrcHy.includes('unused: unusedTotal') &&
+      graphSrcHy.includes('inflate: inflateTotal'),
+    'nine-kinds',
+  )
+  check(
+    'hy: 关键词自证只抓「全部逐字都在正文里」的那条：<3 个词不判、0.67 不算',
+    out.items.selfecho.length === 1 && out.items.selfecho[0].id === 'hy-echo' && out.items.selfecho[0].rate === 1,
+    JSON.stringify(out.items.selfecho.map((x) => [x.id, x.rate, `${x.echo}/${x.kws}`])),
+  )
+  check(
+    'hy: 召回过没人读只抓「命中过且一次没读」：读过的、没命中的（那是 unread 的活）都不抓',
+    out.items.unused.length === 1 && out.items.unused[0].id === 'hy-unused' && out.items.unused[0].hits === 5,
+    JSON.stringify(out.items.unused.map((x) => [x.id, x.hits])),
+  )
+  check(
+    'hy: 别的源没记过 read_count 就不参与这条（否则 hits 一有就全假阳）',
+    !out.items.unused.some((x) => x.id === 'hy-norm') &&
+      adapterSrcHy.includes("reads: cols.has('read_count') ? Number(row.read_count) || 0 : 0"),
+    'no-reads-field',
+  )
+  check(
+    'hy: 层通胀看增速比值：fact 8 / 结论 0 → 报；6 / 2 = 恰好 3× 不报（要严格大于）',
+    out.counts.inflate === 1 &&
+      audit([
+        mkNode('hy-r1', 'rules', ['x'], '准则', 0, 0, 1),
+        mkNode('hy-l1', 'lesson', ['x'], '教训', 0, 0, 2),
+        ...Array.from({ length: 6 }, (_, i) => mkNode(`hy-g${i}`, 'fact', ['x'], `事实 ${i}`, 0, 0, i + 1)),
+      ]).counts.inflate === 0,
+    'inflate-ratio',
+  )
+  check(
+    'hy: 通胀是「整库一个判断」，只给一行汇总且 id 留空（面板不许把它当记忆去跳）',
+    out.items.inflate.length === 1 && out.items.inflate[0].id === '' && /fact \d+ 条 \/ 结论层 \d+ 条/.test(out.items.inflate[0].label),
+    out.items.inflate[0]?.label,
+  )
+  check(
+    'hy: macro 白名单与 schema enum 两边同步（加一处漏一处，模型要么传不进来、要么传进来被打回）',
+    (() => {
+      const m = adminSrcHy.match(/const HYGIENE_KINDS\s*=\s*\[([^\]]*)\]/)
+      const kinds = m ? m[1].split(',').map((x) => x.trim().replace(/['"\s]/g, '')).filter(Boolean) : []
+      const e = adminSrcHy.match(/kind: \{ type: 'string', enum: \[([^\]]*)\]/)
+      const enums = e ? e[1].split(',').map((x) => x.trim().replace(/['"\s]/g, '')).filter(Boolean) : []
+      return kinds.length === 9 && enums.length === 9 && kinds.join(',') === enums.join(',')
+    })(),
+    'whitelist-sync',
+  )
+  check(
+    'hy: 九类的 counts 齐、total 是九类之和（少一类 total 就对不上，面板会写「共 N 项」却只画八行）',
+    ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan', 'selfecho', 'unused', 'inflate'].every((k) => k in out.counts) &&
+      out.total === Object.values(out.counts).reduce((a, b) => a + b, 0),
+    `total=${out.total}`,
+  )
+  check(
+    'hy: read_count 只由 memory_read 记（bumpRead 在 meow 里恰两处：定义 + 读成功那一次）',
+    (meowSrcHy.match(/bumpRead\(/g) ?? []).length === 2 &&
+      /db\.bumpRead\(row\.level, row\.id\)/.test(meowSrcHy) &&
+      !/markAccessed[\s\S]{0,200}bumpRead[\s\S]{0,200}markAccessed/.test(meowSrcHy),
+    'bumpRead-once',
+  )
+  check(
+    'hy: 老库补列后 read_count 一律 0（「没记过」不许读成「读过」），并且 fromRow 缺列时也给 0',
+    /ALTER TABLE \$\{level\} ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0/.test(meowSrcHy) &&
+      /read_count: Number\(r\.read_count \?\? 0\)/.test(meowSrcHy) &&
+      meowSrcHy.includes('read_count INTEGER NOT NULL DEFAULT 0'),
+    'migrate',
+  )
+  check(
+    'hy: 巩固抬头：读到带巩固句的记忆先说「它是材料，不是现状」，没巩固句一个字不说',
+    rd.consolidatedNote('正文\n（已巩固进：0coNEW00「摘要头」，2026-11-22）').includes('0coNEW00') &&
+      rd.consolidatedNote('正文\n（已巩固进：0coNEW00「摘要头」，2026-11-22）').includes('没作废') &&
+      rd.consolidatedNote('正文里什么都不带') === '' &&
+      rd.consolidatedNote('（已巩固进：0coNEW00，2026-11-22）').includes('0coNEW00'),
+    'read-banner',
+  )
+  check(
+    'hy: 巩固抬头排在链与出处之前（读者先要知道「这是历史材料」，再看它从哪来）',
+    /const extras = \[consolidatedNote\(main\.value\?\.content\), prov, chain\]\.filter\(Boolean\)\.join\('\\n'\)/.test(readSrcHy),
+    'banner-order',
+  )
+}
+// A58e. 自动取代（0.4.0 P3 / PLAN-0.4 §5 P3）：认出「库里那条是同一件事的旧说法」，
+//       默认只给建议、apply 才动库。守的是一条不变量：**判据只吃硬事实（版本/日期/状态/数值/路径），
+//       不吃「读起来像」**——宁可漏报，也不能把两条说的是不同对象的话判成互相顶掉。
+{
+  const supSrcAs = readFileSync(join(root, 'lib', 'macro', 'supersede.js'), 'utf8')
+  const remSrcAs = readFileSync(join(root, 'lib', 'macro', 'defs', 'remember.js'), 'utf8')
+  const libSrcAs = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
+  const meowSrcAs = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const sp = await import(pathToFileURL(join(root, 'lib', 'macro', 'supersede.js')).href)
+
+  check(
+    'as: autoSupersede 三态：没配是 suggest，写错退到 off（这个开关会改别人记忆的状态，配错必须最保守）',
+    sp.supersedeMode({}) === 'suggest' &&
+      sp.supersedeMode({ autoSupersede: 'apply' }) === 'apply' &&
+      sp.supersedeMode({ autoSupersede: ' APPLY ' }) === 'apply' &&
+      sp.supersedeMode({ autoSupersede: 'off' }) === 'off' &&
+      sp.supersedeMode({ autoSupersede: 'yes' }) === 'off' &&
+      sp.supersedeMode({ autoSupersede: 1 }) === 'off',
+    [sp.supersedeMode({}), sp.supersedeMode({ autoSupersede: 'yes' })].join(','),
+  )
+  check(
+    'as: 版本号漂移：两边各有自己的版本才算（都写着同一个版本不报，只有一边写了也不报）',
+    (() => {
+      const hit = sp.conflictOf('当前 0.4.1，判据全绿', '当前 0.4.0，判据全绿')
+      return (
+        hit?.kind === '版本' &&
+        hit.mine.join() === '0.4.1' &&
+        hit.theirs.join() === '0.4.0' &&
+        sp.conflictOf('当前 0.4.0', '当前 0.4.0') === null &&
+        sp.conflictOf('当前 0.4.1', '没写版本') === null
+      )
+    })(),
+    JSON.stringify(sp.conflictOf('当前 0.4.1', '当前 0.4.0')),
+  )
+  check(
+    'as: 日期漂移：同一件事换了日子（2026-11-23 顶掉 2026-11-22）',
+    (() => {
+      const hit = sp.conflictOf('2026-11-23 收尾', '2026-11-22 收尾')
+      return hit?.kind === '日期' && hit.mine.join() === '2026-11-23' && hit.theirs.join() === '2026-11-22'
+    })(),
+    JSON.stringify(sp.conflictOf('2026-11-23 收尾', '2026-11-22 收尾')),
+  )
+  check(
+    'as: 状态词反转：一边说做完了、另一边说没做——这是结论互斥，比数字更要紧',
+    (() => {
+      const hit = sp.conflictOf('P3 已落地，判据全绿', 'P3 未开始')
+      return hit?.kind === '状态' && hit.mine.join() === '已落地' && hit.theirs.join() === '未开始'
+    })(),
+    JSON.stringify(sp.conflictOf('P3 已落地', 'P3 未开始')),
+  )
+  check(
+    'as: 数值按单位比：27 支 vs 26 支报；27 支 vs 26 条不报（跨单位不是同一件事）',
+    (() => {
+      const hit = sp.conflictOf('现在 27 支 suite', '现在 26 支 suite')
+      return (
+        hit?.kind === '数值' &&
+        hit.unit === '支' &&
+        hit.mine.join() === '27' &&
+        hit.theirs.join() === '26' &&
+        sp.conflictOf('27 支 suite', '26 条断言') === null
+      )
+    })(),
+    JSON.stringify(sp.conflictOf('现在 27 支 suite', '现在 26 支 suite')),
+  )
+  check(
+    'as: 路径漂移：同一个文件名换了目录才报，同一条路径不报',
+    (() => {
+      const hit = sp.conflictOf('落点在 tools/probe-p3.mjs', '落点在 lib/probe-p3.mjs')
+      return (
+        hit?.kind === '路径' &&
+        hit.mine.join() === 'tools/probe-p3.mjs' &&
+        hit.theirs.join() === 'lib/probe-p3.mjs' &&
+        sp.conflictOf('落点在 tools/probe-p3.mjs', '落点在 tools/probe-p3.mjs') === null
+      )
+    })(),
+    JSON.stringify(sp.conflictOf('落点在 tools/probe-p3.mjs', '落点在 lib/probe-p3.mjs')),
+  )
+  const hitsAs = [
+    { id: 'aaaaaaaa-1', level: 'fact', content: '当前 0.4.0，判据全绿', similarity: 0.62, repeat: 0.42 },
+    { id: 'bbbbbbbb-2', level: 'fact', content: '现在 26 支 suite', similarity: 0.55, repeat: 0.51 },
+    { id: 'cccccccc-3', level: 'fact', content: '现在 25 支 suite', similarity: 0.5, repeat: 0.31 },
+    { id: 'dddddddd-4', level: 'fact', content: '完全无关的一条', similarity: 0.12, repeat: 0.9 },
+  ]
+  const candAs = sp.conflictCandidatesOf({ hits: hitsAs, content: '当前 0.4.1，现在 27 支 suite', newId: 'eeeeeeee-9' })
+  check(
+    'as: 候选三条门槛：相似度 <0.3 不算；数值/路径还要求逐字重复度 ≥0.5（否则「3 条」「5 条」满库乱撞）',
+    candAs.length === 2 && candAs[0].id === 'aaaaaaaa-1' && candAs[1].id === 'bbbbbbbb-2' && !candAs.some((c) => c.id === 'dddddddd-4' || c.id === 'cccccccc-3'),
+    JSON.stringify(candAs.map((c) => [c.id, c.kind, c.sim, c.repeat])),
+  )
+  check(
+    'as: 自己刚写的这条、和别人已经点名要取代的那几条都不再建议（短 id 与完整 id 两种写法都认）',
+    sp.conflictCandidatesOf({ hits: hitsAs, content: '当前 0.4.1，现在 27 支 suite', newId: 'aaaaaaaa-1' }).length === 1 &&
+      sp.conflictCandidatesOf({ hits: hitsAs, content: '当前 0.4.1，现在 27 支 suite', newId: '', skipIds: ['aaaaaaaa'] }).length === 1 &&
+      sp.conflictCandidatesOf({ hits: hitsAs, content: '当前 0.4.1，现在 27 支 suite', newId: '', skipIds: ['aaaaaaaa-1'] }).length === 1,
+    'skip',
+  )
+  check(
+    'as: 最多 3 条（多出来的不硬塞进回执），按相似度降序',
+    (() => {
+      const many = Array.from({ length: 6 }, (_, i) => ({
+        id: `many-${i}`,
+        level: 'fact',
+        content: `当前 0.4.${i}`,
+        similarity: 0.9 - i * 0.05,
+        repeat: 0.9,
+      }))
+      const got = sp.conflictCandidatesOf({ hits: many, content: '当前 0.4.9', newId: '' })
+      return got.length === 3 && got[0].sim > got[1].sim && got[1].sim > got[2].sim
+    })(),
+    'max3',
+  )
+  check(
+    'as: 没候选就一个字都不加（suggest 与 apply 两种抬头都得是空串，不能印一个空标题）',
+    sp.supersedeSuggestNote([]) === '' && sp.supersedeApplyLead([]) === '',
+    'empty',
+  )
+  check(
+    'as: 建议抬头明说「只建议、一个字没动库」并给出可照抄的 supersedes 写法；apply 抬头明说可反悔',
+    (() => {
+      const s = sp.supersedeSuggestNote(candAs)
+      const a = sp.supersedeApplyLead(candAs)
+      return (
+        s.includes('suggest') &&
+        s.includes('一个字没动库') &&
+        s.includes("supersedes: ['aaaaaaaa'") &&
+        a.includes('apply') &&
+        a.includes('反悔')
+      )
+    })(),
+    'banner',
+  )
+  check(
+    'as: 判据只吃硬事实：两条正则与 meow 的 VERSION_TOKEN / DATE_TOKEN 逐字相同（两处判据不许各写一套）',
+    (() => {
+      const pick = (src, name) => {
+        const m = src.match(new RegExp(`(?:const|let|var) ${name} = (/[^\\n]+)`))
+        // meow 是打包产物（`var X = /…/g;`），本仓是手写（`const X = /…/g`）：比的是正则本身，不是声明式。
+        return m ? m[1].replace(/[;\s]+$/, '') : ''
+      }
+      return (
+        pick(supSrcAs, 'VERSION_TOKEN') !== '' &&
+        pick(supSrcAs, 'VERSION_TOKEN') === pick(meowSrcAs, 'VERSION_TOKEN') &&
+        pick(supSrcAs, 'DATE_TOKEN') === pick(meowSrcAs, 'DATE_TOKEN')
+      )
+    })(),
+    'same-regex',
+  )
+  check(
+    'as: 写入路径真的接上了：off 连检索都不打、suggest 只加字、apply 才走 markSuperseded（复用同一个处置通道）',
+    remSrcAs.includes('const autoMode = supersedeMode(config)') &&
+      remSrcAs.includes("if (autoMode !== 'off' && newId)") &&
+      remSrcAs.includes('skipIds: [...sup.ids, ...sup.extra]') &&
+      remSrcAs.includes('lead: supersedeApplyLead(cands)') &&
+      supSrcAs.includes('internal: true'),
+    'wired',
+  )
+  check(
+    'as: 配置三处同值（默认 / 白名单 / schema）：加一处漏一处，模型要么配不上、要么配了被 schema 打回',
+    /autoSupersede: 'suggest'/.test(libSrcAs) &&
+      (() => {
+        const m = libSrcAs.match(/const MACRO_KEYS = \[([^\]]*)\]/)
+        const keys = m ? m[1].split(',').map((x) => x.trim().replace(/['"\s]/g, '')).filter(Boolean) : []
+        return keys.includes('autoSupersede') && keys.includes('consolidate') && keys.includes('multiQuery')
+      })() &&
+      libSrcAs.includes('autoSupersede: z.string().default(MACRO_DEFAULTS.autoSupersede)'),
+    'config-sync',
+  )
+}
+
+// A58f. 实体层与动态跳数（0.4.0 P4 / PLAN-0.4 §5 P4）：星图原来只会「按词面找邻居」。
+//       这一版加两层：①实体层——把同一项目名/路径/工具名/版本号下的记忆归成一组；
+//       ②动态跳数——扩散到第二跳时，先问「这个邻居与本次查询还有没有关系」，没有就停。
+//       守的不变量：实体层**不进 nodes/edges**（度数/聚类/孤岛全按「记忆」算，
+//       混进实体节点会让所有读数一起改写）；动态跳数**只收软边**，硬边（策展/同实体/跨项目）照走。
+{
+  const fEntSrc = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'entities.js'), 'utf8')
+  const fGraphSrc = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'graph.js'), 'utf8')
+  const fRecallSrc = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'recall.js'), 'utf8')
+  const fCacheSrc = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'graphcache.js'), 'utf8')
+  const fNebulaIdxSrc = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'index.js'), 'utf8')
+  const fEnt = await import(pathToFileURL(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'entities.js')).href)
+
+  check(
+    'as: 实体层只认四类硬事实（项目名 / 路径 / 工具名 / 版本号）：不收「读起来像名字」的词',
+    [...fEnt.ENTITY_KINDS].sort().join(',') === 'path,project,tool,version',
+    [...fEnt.ENTITY_KINDS].join(','),
+  )
+  check(
+    'as: 一条记忆独占的实体不进层（minMembers=2）：只有一条提到的东西当不了桥',
+    (() => {
+      const one = fEnt.collectEntities([{ i: 0, project: 'solo-proj', blob: '就这一条' }])
+      const two = fEnt.collectEntities([
+        { i: 0, project: 'pair-proj', blob: '' },
+        { i: 1, project: 'pair-proj', blob: '' },
+      ])
+      return one.list.length === 0 && two.list.length === 1 && two.list[0].members.length === 2
+    })(),
+    'min-members',
+  )
+  check(
+    'as: 实体名太短（<4 字）不收：p1 这种会把半个库连成一团',
+    fEnt.collectEntities([
+      { i: 0, project: 'p1', blob: '' },
+      { i: 1, project: 'p1', blob: '' },
+    ]).list.length === 0,
+    'short-label',
+  )
+  check(
+    'as: 层上限与每条上限（400 / 6）：不封顶的话一次建图就能把实体表撑成第二个图',
+    fEnt.ENTITY_MAX === 400 &&
+      fEnt.ENTITY_MIN_MEMBERS === 2 &&
+      fEnt.ENTITY_PER_NODE === 6 &&
+      fEnt.ENTITY_SEED === 0.6,
+    [fEnt.ENTITY_MAX, fEnt.ENTITY_MIN_MEMBERS, fEnt.ENTITY_PER_NODE, fEnt.ENTITY_SEED].join(','),
+  )
+  check(
+    'as: 实体键认「类型|值」两种写法都能查（list 可 JSON 往返，Map 存不住，索引现建）',
+    (() => {
+      const nodes = [
+        { i: 0, project: 'demo-proj', blob: 'tools/probe-entity.mjs 是量尺' },
+        { i: 1, project: 'demo-proj', blob: '再看 tools/probe-entity.mjs 一轮' },
+      ]
+      const layer = fEnt.collectEntities(nodes)
+      const revived = JSON.parse(JSON.stringify(layer))
+      const idx = fEnt.indexOf(revived)
+      return (
+        layer.list.length === 2 &&
+        idx.byKey.size === 2 &&
+        idx.byNode.size === 2 &&
+        fEnt.entitySeedsOf('再看 tools/probe-entity.mjs', revived).length >= 1
+      )
+    })(),
+    'roundtrip',
+  )
+  check(
+    'as: 实体层不进 nodes、也不进 edges：只挂在 graph.entityLayer 上（否则度数/聚类/孤岛全要重写）',
+    fGraphSrc.includes('const entityLayer = input.entityLayer === false') &&
+      fGraphSrc.includes('entityLayer,') &&
+      fGraphSrc.includes('entities: entityLayer ? entityLayer.list.length : 0,') &&
+      !fGraphSrc.includes("type: 'entity-layer'"),
+    'layer-only',
+  )
+  check(
+    'as: 关掉整层只要一个开关：entityLayer:false（回滚一条配置，不用改记忆）',
+    fGraphSrc.includes('input.entityLayer === false') && fRecallSrc.includes("opts.entityLayer !== false"),
+    'off-switch',
+  )
+  check(
+    'as: 动态跳数只收软边：策展/同实体/跨项目是硬证据，不看词面也要走',
+    fRecallSrc.includes("const HARD_EDGE = new Set(['explicit', 'entity', 'project'])") &&
+      fRecallSrc.includes('if (dynamicHops && !HARD_EDGE.has(link.type))'),
+    'hard-edge',
+  )
+  check(
+    'as: 第二跳真的会跑：第一跳用种子能量、第二跳起用上一跳给的能量（0.4.0 之前 e0 恒 0，第二跳从来没跑过）',
+    fRecallSrc.includes('const e0 = hop === 0 ? energy[from] : propagate[from] || 0'),
+    'two-hop',
+  )
+  check(
+    'as: 跳数三个数一起报（问到几跳 / 走了几跳 / 砍掉几个邻居）：只说「省了」会掩盖「变笨了」',
+    fRecallSrc.includes('hops: { asked: hops, used: hopsUsed') &&
+      fRecallSrc.includes('skippedNeighbors: skipped') &&
+      fRecallSrc.includes('stoppedAt: hopsStopped || null'),
+    'hops-report',
+  )
+  check(
+    'as: 实体命中也进回执（label/type/members），否则用户看不出「这条为什么被带出来」',
+    fRecallSrc.includes('entities: entityHits.map(') && fRecallSrc.includes('dynamic: dynamicHops'),
+    'entity-report',
+  )
+  check(
+    'as: 缓存要存实体层，且 entities.js 进建图指纹：不存则重启后实体悄悄消失，不进指纹则改了抽取规则旧层照旧被信',
+    fCacheSrc.includes('entityLayer: graph.entityLayer || null') &&
+      /const IMPL_FILES = \[[^\]]*'entities\.js'[^\]]*\]/.test(fCacheSrc),
+    'cache',
+  )
+  check(
+    'as: nebula_recall 给了两个参数与两条整机回滚开关（NEBULA_ENTITY_LAYER / NEBULA_DYNAMIC_HOPS）',
+    fNebulaIdxSrc.includes('entity: { type: \'boolean\'') &&
+      fNebulaIdxSrc.includes('dynamic_hops: { type: \'boolean\'') &&
+      fNebulaIdxSrc.includes("process.env.NEBULA_ENTITY_LAYER") &&
+      fNebulaIdxSrc.includes("process.env.NEBULA_DYNAMIC_HOPS"),
+    'tool-flags',
+  )
+  check(
+    'as: 动态跳数的门槛只在第二跳生效（第一跳是星图最基本的语义，不该被词面砍）',
+    fRecallSrc.includes('if (hop >= 1 && m < DYNAMIC_MIN_MATCH)') && fRecallSrc.includes('const DYNAMIC_MIN_MATCH = 0.2'),
+    'hop-gate',
+  )
+}
+
+// A58g. 共现自学习扩词（0.4.0 P5 / PLAN-0.4 §5 P5）：换说法档原来全靠 SYN_GROUPS 那张手工表。
+//       主人一句话点破——「出现新的情况就无法适应了不是吗」。这一版把等价说法从人手里的表
+//       搬到库里的 keywords：库带来什么词，共现就从什么词上长。
+//       守的不变量：①词源必须是 keywords（bigram 切片上没有「词」这回事，学出来全是碎片）
+//       ②同一条 +2、同 project 只认跨文档（否则共享汉字降权等于没降）③只扩问句、不进覆盖度分母
+//       ④关得掉（coocLearn:false 退回手工表口径，synBridge:false 连共现一起关）
+{
+  const fMeowSrc = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const fCoocProbeSrc = readFileSync(join(root, 'tools', 'probe-cooc.mjs'), 'utf8')
+  const fCostSrc = readFileSync(join(root, 'tools', 'probe-cost.mjs'), 'utf8')
+  const fGoldSrc = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+  const fMeow = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+
+  check(
+    'as: 共现的词源是 keywords，不是 tokenize 切片（切片上没有「词」，学出来全是碎片）',
+    fMeowSrc.includes('function coocWordsOf(d)') &&
+      fMeowSrc.includes('const raw = d && d.keywords;') &&
+      !/function buildCoocSyn\(docs, n\)[\s\S]{0,1200}tokenize\(/.test(fMeowSrc),
+    'word-source',
+  )
+  check(
+    'as: 六个门是有数的常量：同条 2 / 跨文档 1 / 共享汉字降到 1 / 次数 2 / 条件概率 0.25 / 每词 6',
+    fMeow.COOC_W_SAME === 2 && fMeow.COOC_W_PROJ === 1 && fMeow.COOC_SHARE_HAN_W === 1 &&
+      fMeow.COOC_MIN_COUNT === 2 && fMeow.COOC_MIN_RATIO === 0.25 && fMeow.COOC_TOP_PER_TERM === 6,
+    `${fMeow.COOC_W_SAME}/${fMeow.COOC_W_PROJ}/${fMeow.COOC_SHARE_HAN_W}/${fMeow.COOC_MIN_COUNT}/${fMeow.COOC_MIN_RATIO}/${fMeow.COOC_TOP_PER_TERM}`,
+  )
+  check(
+    'as: 同 project 那层只认跨文档（本项目并集减掉自己）：同条内部的词对不重复计',
+    fMeowSrc.includes('const others = unionArr.filter((w) => !self.has(w));'),
+    'project-cross-doc',
+  )
+  check(
+    'as: 三道门各在位：次数不够丢、条件概率太低丢、共享汉字降权',
+    fMeowSrc.includes('if (c < COOC_MIN_COUNT) continue;') &&
+      fMeowSrc.includes('if (ratio < COOC_MIN_RATIO) continue;') &&
+      fMeowSrc.includes('coocShareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w'),
+    'gates',
+  )
+  check(
+    'as: 形态门：单字 / 纯数字 / 超 8 字 / 太短英文都不进表（没中文的要求小写标识符）',
+    fMeowSrc.includes('if (s.length < 2 || s.length > 8) continue;') &&
+      fMeowSrc.includes('if (/^[0-9.]+$/.test(s)) continue;') &&
+      fMeowSrc.includes('/^[a-zA-Z][a-zA-Z0-9_.-]{2,}$/'),
+    'shape',
+  )
+  check(
+    'as: 扩出来的词合流在同一个出口：手工表在前、共现表在后，一共最多 6 个',
+    fMeowSrc.includes('function synExpandOf(qTerms, df, n, cooc)') &&
+      fMeowSrc.includes('.slice(0, SYN_MAX_PER_TERM)'),
+    'merge',
+  )
+  // 纯函数行为：同条一次够、单字不够、词不在 keywords 里学不到
+  check(
+    'as: 行为对照：同一条里的两个真词一次就连上，而正文里的切片碎片一个都不进表',
+    (() => {
+      const mk = (id, p, content, keywords) => ({ id, project: p, title: '', content, keywords, level: 'fact', importance: 1, status: 'active' })
+      const cooc = fMeow.buildCoocSyn([mk('a', 'p1', '地面空间配置', ['苹果', '香蕉']), mk('b', 'p2', '', [])], 2)
+      const words = cooc ? [...cooc.keys()] : []
+      return words.includes('苹果') && !words.some((w) => ['名空', '置面', '到配'].includes(w))
+    })(),
+    'behaviour',
+  )
+  check(
+    'as: 开关在索引那一层生效：coocLearn:false 时索引里根本没有共现表（不是有表不用）',
+    fMeowSrc.includes('opts.coocLearn === false ? null : buildCoocSyn(docs, n)'),
+    'switch',
+  )
+  check(
+    'as: 缓存键带上共现口径位（两种口径各占一张表，不许互相串答案）',
+    fMeowSrc.split('coocLearn').length - 1 >= 4,
+    `coocLearn 出现 ${fMeowSrc.split('coocLearn').length - 1} 次`,
+  )
+  check(
+    'as: 八个新符号都从模块导出（探针与验收读的是同一份数据）',
+    ['SYN_MAX_PER_TERM', 'COOC_W_SAME', 'COOC_W_PROJ', 'COOC_SHARE_HAN_W', 'COOC_MIN_COUNT', 'COOC_MIN_RATIO', 'COOC_TOP_PER_TERM', 'buildCoocSyn']
+      .every((k) => k in fMeow),
+    'exports',
+  )
+  check(
+    'as: 探针 probe-cooc 自成一档（K1 词源 / K2 两级证据 / K3 三道门 / K4 真进召回 / K5 大库更准 / K6 常量与开关）',
+    ['K1 共现只从 keywords', 'K2 同一条记忆里的两个词', 'K3 条件概率门', 'K4 共现没把该找的弄丢', 'K5 库越大越连得上', 'K6 六个门是有数的常量']
+      .every((s) => fCoocProbeSrc.includes(s)),
+    'probe-cooc',
+  )
+  check(
+    'as: 换代归因两条：C5b 关掉共现逐位回到冻结快照、C5c 打开后至少一问不同（通道不空转）',
+    fCostSrc.includes('cost-snap-handonly.json') &&
+      fCostSrc.includes('C5b 换代归因') &&
+      fCostSrc.includes('C5c 共现通道不空转'),
+    'cost-attrib',
+  )
+  check(
+    'as: 宽池那格的增量必须能归因到共现（关掉共现要消失），而不是「池子大看着更好」',
+    fGoldSrc.includes('widePNoCooc') && fGoldSrc.includes('coocAttrib'),
+    'gold-attrib',
+  )
+  check(
+    'as: 表形态判据放宽到英文标识符（四处同步：probe-gold / probe-recall / verify HB2 / verify HZ12）',
+    fGoldSrc.includes('/^[a-z][a-z0-9_]*$/') &&
+      readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8').includes('/^[a-z][a-z0-9_]*$/') &&
+      readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').split('/^[a-z][a-z0-9_]*$/').length - 1 >= 2,
+    'shape-relax',
   )
 }
 
@@ -3997,7 +4733,7 @@ function makeHostCtx() {
   const fusionSrc64 = readFileSync(join(root, 'tools', 'probe-fusion.mjs'), 'utf8')
   check(
     'hyg: 体检的类别按白名单守，不认识的当场说清「没跑」',
-    adminSrc64.includes("const HYGIENE_KINDS = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan']") &&
+    adminSrc64.includes("const HYGIENE_KINDS = ['dup', 'stale', 'thin', 'oversize', 'unread', 'orphan', 'selfecho', 'unused', 'inflate']") &&
       /function guardHygiene\(args\)/.test(adminSrc64) &&
       /const name = raw\.trim\(\)\.toLowerCase\(\)/.test(adminSrc64) &&
       adminSrc64.includes('if (!HYGIENE_KINDS.includes(name)) {') &&
@@ -5653,11 +6389,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 0.2.167：memory_search 加了 band_keep，单项上界 6,500 → 7,500（实测 6,852）。
   // 0.2.170：疑问框架剥离在 explain 里要说清改过什么，整字面量 105,000 → 106,000（实测 105,156）。
   // 0.2.171：历史补录整段是三十行真逻辑，106,000 → 110,000（实测 108,705）；再涨就该拆工具。
+  // 0.4.0 P4：星图加实体层 + 动态跳数（nebula_recall 多两个参数、回执多两行），110,000 → 112,000（实测 110,452）。
   check(
-    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 110,000',
+    '脚本: 体积判据量的是 schema（24,000 + 单项 7,500），整字面量另有粗胖线 112,000',
     probeSrc.includes('const BUDGET_BYTES = 24000') &&
       probeSrc.includes('const TOOL_BUDGET = { memory_search: 7500 }') &&
-      probeSrc.includes('const LITERAL_CEIL = 110000') &&
+      probeSrc.includes('const LITERAL_CEIL = 112000') &&
       probeSrc.includes('ok(sum <= BUDGET_BYTES') &&
       probeSrc.includes("'体积：单项 schema ' + name + ' 没有膨胀'"),
   )
@@ -9383,7 +10120,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'FD 源码: 链要在改之前读（memory_update 换正文会连取代句一起换掉）',
     updSrc.indexOf('const chain = successionNote(') < updSrc.indexOf("const main = await flow.call('memory_update'"),
   )
-  check('FD 源码: 读也要带链，而且并进正文（预算按含链的长度算）', readSrc.includes("const extras = [prov, chain].filter(Boolean).join('\\n')") && readSrc.includes('said = `${said}\\n\\n${extras}`') && readSrc.indexOf('said = `${said}') < readSrc.indexOf('const bodyEst = estTokens(said)'))
+  check('FD 源码: 读也要带链，而且并进正文（预算按含链的长度算）', readSrc.includes("const extras = [consolidatedNote(main.value?.content), prov, chain].filter(Boolean).join('\\n')") && readSrc.includes('said = `${said}\\n\\n${extras}`') && readSrc.indexOf('said = `${said}') < readSrc.indexOf('const bodyEst = estTokens(said)'))
   // [0.2.157] 回执从三条变四条：留底那句插在正文说明之后、链接与链之前。
   check('FD 源码: 回执四条一起出（正文说明 / 留底 / 星图链接 / 链），不许只留一条', updSrc.includes("return [said, revNote, linked, chain].filter((one) => typeof one === 'string' && one.length > 0).join('\\n\\n')"))
   check('FD 源码: meowDir 真的从装配处传下来（不是写死 .dsh-meow）', toolsSrc.includes('createUpdate({ flow, meowDir })') && toolsSrc.includes('createRead({ flow, meowDir })'))
@@ -9745,10 +10482,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       !readFileSync(join(root, 'lib', 'macro', 'fusion.js'), 'utf8').includes('SYN_GROUPS'),
   )
   check(
-    'HB2 表能对齐: 每组 ≥2 条、每个词两字（tokenize 只产二元组，一字词永远命不中）、无跨组重复',
+    'HB2 表能对齐: 每组 ≥2 条、每个词中文两字或英文标识符（tokenize 只产二元组，一字词永远命不中）、无跨组重复',
     Array.isArray(meow162.SYN_GROUPS) &&
       meow162.SYN_GROUPS.length >= 12 &&
-      meow162.SYN_GROUPS.every((g) => g.length >= 2 && g.every((w) => [...w].length === 2)) &&
+      // [macro-fusion 0.4.0 · P5] 0.4.0 起表里收英文技术名词，英文没有「两字」这回事：
+      // 中文仍必须恰好两字（防止拿长短语当同义词），英文按小写标识符放行。
+      meow162.SYN_GROUPS.every((g) => g.length >= 2 && g.every((w) => /^[\u4e00-\u9fff]{2}$/.test(w) || /^[a-z][a-z0-9_]*$/.test(w))) &&
       new Set(meow162.SYN_GROUPS.flat()).size === meow162.SYN_GROUPS.flat().length,
   )
   check(
@@ -9757,7 +10496,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'HB2 只扩问句: 开关与权重都从 opts 读，默认读常量（一处兜底，不是每处各写一遍）',
-    eng.includes('const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df);') &&
+    eng.includes('const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn);') &&
       eng.includes('const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;') &&
       eng.split('opts.synW : SYN_W').length - 1 === 1,
   )
@@ -9775,7 +10514,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'HB2 可审计: 表与函数从模块导出，探针和验收读的是同一份数据',
-    eng.includes('  SYN_GROUPS,\n  SYN_W,\n  synExpandOf,') &&
+    eng.includes('  SYN_GROUPS,\n  SYN_W,') &&
+      eng.includes('  synExpandOf,') &&
+      eng.includes('  buildCoocSyn,') &&
       typeof meow162.synExpandOf === 'function',
   )
   check(
@@ -10587,8 +11328,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     const flat177 = groups177.flat()
     const hasPair = (a, b) => groups177.some((g) => g.includes(a) && g.includes(b))
     check(
-      'HZ12 表扩到 18 组，且扩的是「同一个动作的两种叫法」：发版那一族并进一组，不是又添几个近义词',
-      groups177.length === 18 &&
+      'HZ12 表至少 18 组，且扩的是「同一个动作的两种叫法」：发版那一族并进一组，不是又添几个近义词',
+      groups177.length >= 18 &&
         hasPair('推送', '上传') && hasPair('推送', '发布') && hasPair('推送', '提交') &&
         hasPair('自测', '自检') && hasPair('自测', '体检') &&
         hasPair('封存', '归档') && hasPair('封存', '冻结') &&
@@ -10596,8 +11337,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `${groups177.length} 组 / ${new Set(flat177).size} 个词`,
     )
     check(
-      'HZ12 表形态一条没破：每组至少两个词、每个词恰好两字、无跨组重复、SYN_W 仍在 (0,1)',
-      groups177.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => [...w].length === 2)) &&
+      'HZ12 表形态一条没破：每组至少两个词、每个词中文两字或英文标识符、无跨组重复、SYN_W 仍在 (0,1)',
+      groups177.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => /^[\u4e00-\u9fff]{2}$/.test(w) || /^[a-z][a-z0-9_]*$/.test(w))) &&
         new Set(flat177).size === flat177.length &&
         typeof Meow177.SYN_W === 'number' && Meow177.SYN_W > 0 && Meow177.SYN_W < 1,
       `SYN_W=${Meow177.SYN_W}`,
@@ -11300,8 +12041,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.3.0（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.3.0'"),
+    `GV 版本: 代码里是 ${PKG_VERSION}（与 package.json / README 同号由基线与 doctor 各自守一条）`,
+    idxSrc.includes(VERSION_LITERAL),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -11431,8 +12172,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.3.0（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.3.0'"),
+    `GW 版本: 代码里是 ${PKG_VERSION}（与 package.json / README 同号由基线与 doctor 各自守一条）`,
+    gwIdx.includes(VERSION_LITERAL),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11579,8 +12320,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.3.0（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.3.0'"),
+    `VV 版本: 代码里是 ${PKG_VERSION}（与 package.json / README 同号由基线与 doctor 各自守一条）`,
+    idIdx.includes(VERSION_LITERAL),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11761,9 +12502,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.3.0（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.3.0' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.3.0'"),
+    `GX19 版本已到 ${PKG_VERSION}（两处一致）`,
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === PKG_VERSION &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(VERSION_LITERAL),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11867,10 +12608,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.3.0',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.3.0' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.3.0'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.3.0'),
+    `VY15 版本三处一致 ${PKG_VERSION}`,
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === PKG_VERSION &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(VERSION_LITERAL) &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes(PKG_VERSION),
   )
 }
 
@@ -11918,10 +12659,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.3.0（三处一致）',
-    pkgWz.version === '0.3.0' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.3.0'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.3.0'),
+    `WZ9 版本已到 ${PKG_VERSION}（三处一致）`,
+    pkgWz.version === PKG_VERSION &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(VERSION_LITERAL) &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes(PKG_VERSION),
   )
 }
 

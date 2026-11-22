@@ -116,7 +116,7 @@ ok(GUIDE_TEXT.includes(statusEnum), '手册：memory_update 的 status 与 schem
 
 const kindEnum = byName.memory_admin.parameters.properties.kind.enum
 const kindWords = (ACTIONS.hygiene.hint.match(/（([^）]+)）/) ?? [])[1] ?? ''
-ok(kindEnum.length === 6 && kindWords.split('/').length === 6, '手册：体检六类（schema 枚举 = 提示词里的六个中文类目）', kindEnum.length + ' vs ' + kindWords.split('/').length)
+ok(kindEnum.length === 9 && kindWords.split('/').length === 9, '手册：体检九类（schema 枚举 = 提示词里的九个中文类目）', kindEnum.length + ' vs ' + kindWords.split('/').length)
 
 // ── 三、对外数字：README 与两份市场索引里写的常驻注入字符数，必须等于实测 ────────
 const guideLen = GUIDE_TEXT.length

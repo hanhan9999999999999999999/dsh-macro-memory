@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 适配器：meow-memory
  *
  * 数据面：每个工作区目录下的 `.dsh-meow/memory.db`（SQLite，7 张层表）
@@ -245,6 +245,9 @@ export function* scanSteps(store) {
           keywords,
           sessionId: String(row.source_session ?? ''),
           hits: Number(row.hit_count) || 0,
+          // [macro-fusion 0.4.0] 真被 memory_read 打开过几次（老库没这列 → 0）。
+          // 体检的 unused 判的是「召回过但没人读」，所以这两个数必须分开传上来。
+          reads: cols.has('read_count') ? Number(row.read_count) || 0 : 0,
           createdAt: toMs(row.created_at),
           updatedAt: toMs(row.updated_at),
           accessedAt: toMs(row.last_accessed_at),

@@ -30,7 +30,10 @@ const KEEP = 3 // 盘上最多留几份；旧的多半只是「万一要回滚�
 // 为什么要有它：缓存只看来源签名（库的大小与时间戳）。来源没变、插件升了级、
 // 边算法改了 —— 签名一模一样，盘上那份旧图会被一直当成正确答案，
 // 用户永远看不到新算法算出来的关联。代价是一行 sha1，一次进程只算一次。
-const IMPL_FILES = ['graph.js', 'text.js']
+// [macro-fusion 0.4.0 · P4] `entities.js` 也是「输出会变的源码」：实体层的抽取规则改了，
+// 图里的 entityLayer 就该跟着变。只认 graph.js 的话，改抽取规则不会让缓存失效，
+// 盘上那份旧实体层会被一直当成新答案读出来。
+const IMPL_FILES = ['graph.js', 'text.js', 'entities.js']
 let implMemo = ''
 
 export function implFingerprint() {
@@ -217,6 +220,11 @@ export async function saveGraphCache(dir, signature, { nodes, ledgers, graph, im
       nodes: graph.nodes,
       edges: graph.edges,
       stats: graph.stats,
+      // [macro-fusion 0.4.0 · P4] 实体层也要落盘：它在 buildGraph 里只是一份
+      // `{list:[{key,type,label,members}]}`（没有 Map），天生可序列化。
+      // 不存的话，重启读盘之后图还在、实体却悄悄消失——召回会静默退回 0.4.0 之前的行为，
+      // 而且这种退化没有任何报错，最难发现。
+      entityLayer: graph.entityLayer || null,
       builtAt: graph.builtAt,
       muteCount: graph.muteCount || 0,
       // 簇（工作区围成的团）也要一起存：读盘恢复端出的是「上次建图那一刻」的图，

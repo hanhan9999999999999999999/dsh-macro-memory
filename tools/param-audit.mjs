@@ -141,6 +141,15 @@ const EXTRA = {
   'memory_update': ['links', 'patch', 'append', 'restore', 'allowShrink'],
 }
 
+// [macro-fusion 0.4.0] WITHHELD：vendor 侧有、统一工具**故意**不暴露的参数。
+// 与 EXTRA 是相反方向：EXTRA 记「融合层自己加的能力」，这里记「我们主动关掉的入口」。
+// 为什么必须显式记账而不是静默跳过：1.1 守的病正是「融合层把上游能力克扣掉」——少一个参数而没人说，
+// 和漏掉一个参数长得一模一样。而 internal 是唯一一个「暴露给模型就等于毁掉它自己」的参数：
+// 模型一旦能传，就能把自己的查询伪装成「没端给用户看过」，seen 账本与召回次数立刻不可信。
+const WITHHELD = {
+  'memory_search.internal': '只给插件内部诊断（写入后判该不该巩固）：暴露给模型等于允许它伪造「这条没端给用户看过」',
+}
+
 // ── 4. 断言 ───────────────────────────────────────────────────────────────
 let failed = 0
 function check(ok, name, detail) {
@@ -155,6 +164,7 @@ const missing = []
 const requiredLost = []
 const covered = []
 const narrowed = []
+const withheld = []
 
 // integer ⊂ number：原 schema 写 number、我们写 integer 属于「收窄」。这些字段都是条数/跳数，
 // 真实调用只会传整数，收窄不丢能力；但必须显式记下来，而不是当没看见。
@@ -174,6 +184,11 @@ for (const [vendorTool, entry] of vendorDefs) {
   let ok = true
   for (const [pname, pschema] of Object.entries(vendorProps)) {
     const mapped = paramMap[pname] ?? pname
+    const holdKey = `${vendorTool}.${pname}`
+    if (!(mapped in props) && WITHHELD[holdKey]) {
+      withheld.push(holdKey)
+      continue
+    }
     if (!(mapped in props)) {
       missing.push(`${vendorTool}.${pname} → ${route.to}.${mapped}（统一工具里没这个参数）`)
       ok = false
@@ -210,6 +225,15 @@ for (const [vendorTool, entry] of vendorDefs) {
 }
 
 check(missing.length === 0, '1.1 原工具的每个参数都还能传进去', missing.length ? missing.join('；') : `${covered.length} 个工具全过`)
+// 双向钉：既要求「登记的确实没暴露」，也要求「没暴露的确实登记了」。只钉一头的话，
+// 记账条目过期（统一工具后来真把它暴露了）会静默留着，白名单从此替真实退化打掩护。
+check(
+  withheld.length === Object.keys(WITHHELD).length,
+  '1.1b 故意不暴露的参数都记账，记账也没过期',
+  withheld.length
+    ? `${withheld.join('、')}（理由写在 WITHHELD）`
+    : 'WITHHELD 记着的那个参数现在在统一工具里有了——不是记账过期就是它被悄悄放出来了',
+)
 if (narrowed.length) console.log(`INFO  number→integer 收窄（条数/跳数，不影响真实调用）：${narrowed.join('；')}`)
 check(requiredLost.length === 0, '1.2 原来必填的字段没有失守', requiredLost.join('；') || 'schema 必填或运行时守')
 

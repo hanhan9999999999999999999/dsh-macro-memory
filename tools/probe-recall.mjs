@@ -1151,10 +1151,13 @@ const needGroups = [
 ]
 const groupHas = (a, b) => synGroups14.some((g) => g.includes(a) && g.includes(b))
 check(
-  'R14 新版五组都在表里，且表形态没破（组数 ≥18、每词两字、无跨组重复）',
+  'R14 新版五组都在表里，且表形态没破（组数 ≥18、中文两字或英文标识符、无跨组重复）',
   synGroups14.length >= 18 &&
     needGroups.every(([a, b]) => groupHas(a, b)) &&
-    synGroups14.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => [...w].length === 2)) &&
+    // [macro-fusion 0.4.0 · P5] 0.4.0 起表里允许英文技术名词（push / cache / timeout 那一类）：
+    // 中文两字这条规则原本是为了防「拿一个长短语当同义词」，英文没有「两字」这回事，
+    // 所以英文按「小写字母开头的标识符」放行，中文仍然要求恰好两字。
+    synGroups14.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => typeof w === 'string' && (/^[\u4e00-\u9fff]{2}$/.test(w) || /^[a-z][a-z0-9_]*$/.test(w)))) &&
     new Set(flat14).size === flat14.length,
   `${synGroups14.length} 组 / ${new Set(flat14).size} 个词，无跨组重复`,
 )

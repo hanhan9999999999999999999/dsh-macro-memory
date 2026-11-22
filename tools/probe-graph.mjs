@@ -251,7 +251,7 @@ check('G2 拿到第一条的完整 id', typeof firstId === 'string' && firstId.l
   check(
     'H6 同一对在工具里逐字只有四成，与面板的「相似」差 ≥0.4',
     Number.isFinite(rep) && rep > 0 && rep < 0.5 && sim - rep >= 0.4,
-    `面板 ${sim} / 工具 ${rep}`,
+    `面板 ${sim} / 工具 ${rep} / 回执 ${near.slice(0, 200).replace(/\n/g, ' ⏎ ')}`,
   )
 
   const stale = text(await run('memory_admin', { action: 'hygiene', kind: 'stale' }))

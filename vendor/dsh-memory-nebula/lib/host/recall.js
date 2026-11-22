@@ -7,6 +7,9 @@
  * 并且每条带出来的记忆都会附上「为什么带它出来」的证据链。
  */
 import { tokenize, idf, clip } from './text.js'
+// [macro-fusion 0.4.0 · P4] 实体层：查询里点了名（比如「memory_search 的 budget 怎么算」）
+// 就把那个实体下面的记忆全带上。它只加种子能量，不改 nodes/edges，关掉不留痕。
+import { entitySeedsOf, entitySeedNodes } from './entities.js'
 
 /** 扩散衰减系数：一跳打这个折，二跳再打一次。 */
 const HOP_DECAY = 0.58
@@ -14,6 +17,18 @@ const HOP_DECAY = 0.58
 const MAX_HOPS = 2
 /** 每跳最多从多少个高能节点继续传。 */
 const FRONTIER_WIDTH = 110
+/**
+ * [macro-fusion 0.4.0 · P4] 动态跳数的门槛：目标节点与查询的词面重合低于这个值，
+ * 第二跳就不再走过去。0.2 = 六个词里至少沾一个。
+ * 这条门槛只在 hop≥1 生效：第一跳是「直接邻居」，那是星图最基本的语义，不该被砍。
+ */
+const DYNAMIC_MIN_MATCH = 0.2
+/**
+ * [macro-fusion 0.4.0 · P4] 硬边：这些边本身就是「同一件事」的证据（人工策展、同一标识、
+ * 跨工作区同项目），不需要再看词面。动态跳数只对软边（关键词/语义/共激活）要求匹配——
+ * 否则「这条记忆写的是半个句子」会被当成「没关系」，把真正的另一半砍掉。
+ */
+const HARD_EDGE = new Set(['explicit', 'entity', 'project'])
 
 /**
  * 归一化一组 memory id：允许传完整 node id，也允许传 meow 的裸 uid。
@@ -286,6 +301,28 @@ export function recall(graph, query, opts = {}) {
     }
   }
 
+  // ---------- 2.6 实体种子（P4） ----------
+  // 「关于 memory_search 的一切」这种问法，词面命中只能捞到正文里恰好写了全名的那几条；
+  // 实体层知道哪些记忆共享同一个工具名/路径/项目/版本，一次就能把另一半带上来。
+  // 能量比文本种子低（ENTITY_SEED = 0.6）：实体是「同一件事」的证据，但不如「正文直接命中」硬。
+  const entityOn = opts.entityLayer !== false && qNorm.length > 0
+  const entityHits = entityOn ? entitySeedsOf(query, graph.entityLayer, { limit: 8 }) : []
+  const entityPairs = entityHits.length ? entitySeedNodes(entityHits, graph.entityLayer) : []
+  /** 实体成员集合：动态跳数用它给「同一实体的邻居」放行。 */
+  const entityMember = new Set()
+  for (const s of entityPairs) {
+    if (!(s.i >= 0 && s.i < n)) continue
+    if (entityMember.has(s.i)) continue
+    const node = nodes[s.i]
+    if (!selectable(node)) continue
+    entityMember.add(s.i)
+    if (s.energy > seedE[s.i]) {
+      seedE[s.i] = s.energy
+      energy[s.i] = Math.max(energy[s.i], s.energy)
+      via[s.i] = via[s.i] || { from: -1, type: 'entity', w: Math.round(s.energy * 1000) / 1000 }
+    }
+  }
+
   // ---------- 3. 邻接表 ----------
   let adjCached = ADJ_CACHE.get(graph)
   if (!adjCached || adjCached.n !== n || adjCached.m !== edges.length) {
@@ -303,6 +340,22 @@ export function recall(graph, query, opts = {}) {
 
   // ---------- 4. 扩散 ----------
   const propagate = new Float64Array(n)
+  // [macro-fusion 0.4.0 · P4] 动态跳数：不再「跳满 hops 为止」，而是每跳先问
+  // 「这个邻居与本次查询还有没有关系」。没有就停——省下的不只是预算，
+  // 更是不让第二跳把同项目里那些只因为「同一个工作区」而被连上的记忆一起点亮。
+  const dynamicHops = opts.dynamicHops !== false && qTokens.size > 0
+  const qCap = Math.max(1, Math.min(qTokens.size, 6))
+  const matchOf = (j) => {
+    if (entityMember.has(j)) return 1
+    const bag = tokensOf[j]
+    if (!bag) return 0
+    let hit = 0
+    for (const t of qTokens) if (bag.has(t)) hit++
+    return hit / qCap
+  }
+  let hopsUsed = 0
+  let hopsStopped = ''
+  let skipped = 0
   let frontier = []
   for (let i = 0; i < n; i++) if (energy[i] > 0) frontier.push(i)
   frontier.sort((a, b) => energy[b] - energy[a])
@@ -312,7 +365,11 @@ export function recall(graph, query, opts = {}) {
     const next = new Map()
     for (const from of frontier) {
       const src = nodes[from]
-      const e0 = energy[from]
+      // [macro-fusion 0.4.0 · P4] 第一跳用种子能量，第二跳起用上一跳给它的那份能量。
+      // 原来这里一律读 energy[]，而 energy[] 只在种子里写过——于是第二跳每个节点的 e0 都是 0，
+      // 被下面那道 `< 0.06` 直接跳过，next 恒空、循环立刻 break。
+      // 也就是说 `hops: 2` 从来没有真的走过第二跳，MAX_HOPS 与「二跳再打一次」的注释都是空的。
+      const e0 = hop === 0 ? energy[from] : propagate[from] || 0
       if (e0 < 0.06) continue
       // 来源节点是「标签」不是「记忆」：能量落在它身上是对的（能看出这条记忆用过什么），
       // 但不能让它当一个超级中转站，把 20 多条记忆一视同仁地全点亮。
@@ -321,7 +378,18 @@ export function recall(graph, query, opts = {}) {
         const target = nodes[link.to]
         if (!crossWorkspace && target.ws !== src.ws) continue
         const damp = target.level === 'source' ? 0.55 : 1
-        const gain = e0 * link.w * HOP_DECAY * fromDamp * damp
+        let gain = e0 * link.w * HOP_DECAY * fromDamp * damp
+        if (dynamicHops && !HARD_EDGE.has(link.type)) {
+          const m = matchOf(link.to)
+          // 第二跳起：与查询毫无词面关系的邻居不再走过去（第一跳不受限，见 DYNAMIC_MIN_MATCH）
+          if (hop >= 1 && m < DYNAMIC_MIN_MATCH) {
+            skipped++
+            if (!hopsStopped) hopsStopped = `跳 ${hop + 1}`
+            continue
+          }
+          // 有关系也不是全给：词面各占一半，剩下的看关系本身
+          gain *= 0.45 + 0.55 * m
+        }
         if (gain < 0.02) continue
         const prev = next.get(link.to) || 0
         if (gain > prev + 1e-6) {
@@ -334,6 +402,7 @@ export function recall(graph, query, opts = {}) {
       }
     }
     if (next.size === 0) break
+    hopsUsed = hop + 1
     frontier = [...next.entries()].sort((a, b) => b[1] - a[1]).slice(0, FRONTIER_WIDTH).map((x) => x[0])
   }
 
@@ -432,6 +501,10 @@ export function recall(graph, query, opts = {}) {
     unknown: unknownTerms,
     hits,
     scanned: scored.length,
+    // [macro-fusion 0.4.0 · P4] 三个数一起报：命中集、平均跳数、被砍掉的串味邻居。
+    // 只看「省了预算」不算数——跳数下降如果伴随命中集下降，那是变笨不是变省。
+    hops: { asked: hops, used: hopsUsed, stoppedAt: hopsStopped || null, skippedNeighbors: skipped, dynamic: dynamicHops },
+    entities: entityHits.map((x) => ({ label: x.label, type: x.type, members: x.members })),
     // [macro-fusion 0.2.39] 图里一共多少节点：空命中要能分清「图是空的」和「图里真没有」。
     // scanned 是「算进候选的条数」，查询词一个都对不上时它本来就是 0——拿它当凭据会把两种空命中混成一种。
     nodes: n,

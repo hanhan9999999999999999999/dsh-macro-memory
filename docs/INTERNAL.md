@@ -10862,3 +10862,365 @@ const verAtLeast = (v, maj, min, pat) =>
 **HZ16**（7 条）：helper 定义一处 + 引用 ≥60；旧形态零残留（**先剥掉注释行再数**，注释里正是要讲清旧形态长什么样）；
 阳性对照 `verAtLeast([0,3,0],0,2,38) === true && verAtLeast([0,2,37],0,2,38) === false`（防 helper 被写成恒真）；
 发布面三字段；files 白名单；README 里程碑与条目；文档锚。
+
+## 9.189 查询分解要先证明它真在动：一把专门量「并列焦点句」的尺子（0.3.1）
+
+**病**：查询分解（`decomposeQuery` + `augmentByDecompose`，开关 `macro.multiQuery`）落地时只带了 9 条**结构**判据
+（`verify.mjs` 的 A58b 块）：它们能证明「原榜一个字不动」「顺序没反」「开关默认关」，证明不了**补进来的东西有没有用**。
+在 gold 45 问上跑两态对照，读数完全相同（1.000 / 0.977 / 0.929 / 0.889 hit@1）——那不是「机制有用」，而是
+**机制没被触发**：67 条问句里只有 1 条被 `decomposeQuery` 切开（1.5%），补入 0 条。
+
+**尺子**：`tools/probe-mq.mjs`。语料不新造——从 `tools/fixtures/gold-recall.json` 的 40 条真实样张里配对，
+问句形如「X 跟 Y 哪个更麻烦」（X、Y 取两条样张各自第一个关键词）。规则写死在探针里，所以配对是确定的，
+语料仍然是冻结的。它量的正是机制瞄准的那类句子：一句里两个并列焦点，各有一条记忆只讲其中一半。
+
+**读数（2026-11-22 实测）**：
+
+| 项 | off | conservative |
+| --- | --- | --- |
+| 被切开 | — | 20 / 20 |
+| 补充条目 | — | 35 条（17/20 题有补充），其中含正解 1 题 |
+| hit@1 / hit@3 | 0.650 / 0.900 | 0.650 / 0.900 |
+| 召回命中率（不要求名次） | 0.950 | **1.000** |
+| MRR | 0.777 | 0.784 |
+| 名次变差 / 变前 | — | 0 题 / 0 题 |
+| 延迟 p50（窄池） | 0.13ms | 0.39ms（2.99×） |
+| 延迟 p50（宽池 60 条，重复 40 轮） | 0.49ms | 1.23ms（2.49×） |
+
+**据此改了两条验收标准**（原标准是这一版自己先在 `docs/PLAN-0.4.md` 里写下的）：
+
+1. **「`conservative` 下 hit@3 必须高于 `off`」→ 改判三条**：原榜前 3 逐条不变 / 名次只许不变或变差 /
+   召回命中率不降且至少 1 题由 miss 变命中。理由：补充条目**只落原榜尾部**，前三名的名次在数学上不可能改善；
+   要求 hit@3 提升，等于要求实现违反自己刚定的不变量。这条自相矛盾的验收标准留在原地，下一个人写探针时
+   第一反应会是「探针写错了」，而不是「标准错了」。
+2. **「延迟 p50/p95 增幅 ≤ 2×」→ 改判「p50 绝对增量 ≤ 5ms」**：`conservative` 每题从 1 次检索变 3 次，
+   倍数必然 >2×。0.13→0.39ms 与 0.49→1.23ms 的差别用户感知为零；真正要守的红线是「不许引入模型、网络、
+   磁盘 IO」——那是数量级变化，写进 MQ9 的断言理由里。
+
+**判据 MQ1–MQ9**：切得开（20/20、每段 ≥2 字、≤3 段）/ 四个代表句切法逐字钉住（含两个「无焦点返回空」）/
+原榜前 3 逐条不动 / 名次不变差 / 有增量（补充 ≥10 条且至少救回 1 题）/ gold 四档逐题零漂移 /
+阴性对照（子查询换空数组 → 补充恒为 0）/ 源码常量与探针同一把尺子（`MQ_MAX_SUBS = 3`、
+`MQ_MAX_ROWS_PER_SUB = 2`、`min_rel: 0`、`band_keep: false`、调用点各一处）/ 延迟绝对增量。
+`tools/probe-mq.mjs` 已进 `tools/check-all.mjs` 的 `STEPS`（紧跟 `probe-gold`），套件 24 → **25 支**，
+断言 3,323 → **3,341**（P1 的 9 条 `mq:` + probe-mq 的 9 条判据；中间那个 3,331 是过渡态，见下）。
+
+**这一支差点在基线上不存在**：`tools/check-all.mjs` 的 `countPass = (text) => (text.match(/^PASS/gm) ?? []).length`，
+数的是**行首 `PASS`**。第一版 `probe-mq` 照 probe-gold 的表面样子用了 `  ✓ / ✗`，于是 `tools/baselines.json`
+记成 `"tools/probe-mq.mjs": 0`——9 条判据等于没记账，而 `check-all` 的结论仍是「断言数与基线一致」。
+0 条在账本里合法（`check-client-bundle` / `check-yaml` 是只读脚本），所以**没有任何地方会报这个错**。
+改成与 `tools/probe-gold.mjs` 一模一样的 `console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra…}`)` 后重记基线，
+9 条才真正进账。**探针的输出格式是账本接口，不是装饰。**
+
+**连带红的一条老断言**：`verify.mjs` 的「check-all 里要读本仓的每一支都从 _root.mjs 取根」写死了
+`steps.length === 24`。加一支就红——这不是判据太严，而是**支数本身是知识**：少一支说明有人从套件里摘了东西。
+改成 `steps.length === 25` 并在注释里写明 25 的来路（24 + `probe-mq`），比改成 `>= 24` 诚实。
+
+**教训**：判据守的不变量，必须让「实现允许的改动」与「想要看到的收益」落在同一侧。
+append-only 是被明确写死的不变量，那么收益就只能出现在**尾部**（召回、MRR），不可能出现在头部（hit@k）。
+验收标准先于实现写在计划里时就要做这道乘法，否则量尺建好那天才发现它量的是一个不可能事件。
+
+**没做的事**：不要求提升 hit@3（见上）；不给 `conservative` 加早停（如「原榜第一名的分数远高于第二名就跳过子查询」）——
+它能把平均倍数压回 1.5× 左右，但也会把「原榜本来就模糊」的那些题一起跳掉，而那正是唯一有收益的一档；
+真要做，先拿这把尺子量一遍收益损失，再决定。
+
+## 9.190 写入端巩固：九条判据全绿也证明不了「它没偷偷写库」（0.4.0）
+
+**病**：写入端巩固（`lib/macro/defs/remember.js` 的 `consolidate*` 一族，开关 `macro.consolidate`，三档
+`off / suggest / write`）落地时带了 9 条判据（`verify.mjs` 的 A58c 块：开关归一、plumbing、三条件、少一条不说话、
+关键词交集、摘要首行、巩固句形状、suggest 不写库、顺序）。听起来齐了——但**九条里有八条钉在纯函数上**
+（`consolidateSignals` / `consolidateSummary` / `consolidateLineOf` 的输入输出），它们证明的是「信号算得对」，
+不是「`suggest` 态真的一次写都没有」。而 P2 的全部风险恰好只在后一句上：一旦 `suggest` 偷偷落了库，用户会以为
+只是被提醒了一句，实际库里已经多出一条谁都没同意的摘要——而且那条摘要还长得像正常的 topic，事后无从分辨。
+
+**尺子**：`tools/probe-consolidate.mjs`。不连真库、不写文件、不看时钟，拿一个假 `flow` 桩把
+`createRemember().execute()` 整条跑通，然后**数调用**：
+
+| 配置 | `memory_search` | `memory_remember`（巩固） | `memory_update` | 回执 |
+| --- | --- | --- | --- | --- |
+| 不配（默认写成 `suggest`） | 2（同话题 + 语义层） | 0 | 0 | 贴材料 + 现成调用形状 + 「库里这一个字都没动」 |
+| `off` | 0 | 0 | 0 | 与「没有这个功能」逐字节相同 |
+| 写错值（`definitely-not-a-mode`） | 0 | 0 | 0 | 同上（退到最保守那档） |
+| `write` | 2 | 1（`level: 'topic'`，首行 `YYYY-MM-DD · 巩固（project）：关键词`） | 3（每条尾补一句「已巩固进」，**不带 status**） | 落了哪条、每条补没补上 |
+| `write` + 语义层已满 | 2 | 0 | 0 | 「该并条，不是再加一条」 |
+| 只有 2 条同话题 / 这批已巩固过 | 2 | 0 | 0 | 一个字都不加 |
+
+**判据 P1–P10**：默认档就是 suggest / suggest 只发 2 次 search 且写 0 次 / 语义层那次带 `level=rules,fact` /
+off 与写错值逐字节相同且一次 search 都不发 / write 恰好多 1 条 topic 且首行是日期 / 3 条各补一句且不带 status /
+回执说实话（落的是哪条、谁没补上）/ 语义层满时即使 write 也不落新条 / 三条件不成立时一个字不加 /
+探针与实现共用同一份判断（`signal.kind` 与摘要首行都由实现自己算，探针不另立口径）。
+
+**踩的坑：同名调用要按通道分开数**。桩的计数写成 `calls.filter((one) => one.name === 'memory_remember')`
+时 P2 直接红在「suggest 态写了 1 条」——因为**主写入本身就调 `flow.call('memory_remember')`**，巩固走的是
+`flow.tryCall('memory_remember')`。同一个名字两条通道，计数不分开，问「巩固有没有多写一条」的答案永远是「有」。
+桩里改成 `of()` 只数 `tryCall`、`main()` 只数 `call`，读数才对得上。**任何「有没有多做一次」的断言，先把
+同名调用的通道分清楚，再谈次数。**
+
+**尺子顺手抓到一个真 bug**：`write` 态在原实现里是 `if (mode !== 'write') return note`——于是语义层已满
+（`kind === 'merge'`，该提示「并进已有那条而不是再造一条」）时，`write` 会**照样新建一条 topic 摘要**，
+恰好做反。改成 `if (mode !== 'write' || signal.kind !== 'fire') return note`：merge 只提示，不自动落。
+理由写进注释：语义层满了该并进哪一条，规则判不出来——随便挑一条并进去会把两件事焊在一起，比不并更糟。
+
+**变异证明能红**：把 `CONSOLIDATE_SEMANTIC_CAP` 由 `8` 改成 `99` → 恰红 1 条（P8，因为 8 条语义条目
+不再「满」），其余 9 条仍绿 → 改回 `8` → 全绿。一次只动一个常量，红的条数可预测，才知道判据之间没串。
+
+`tools/probe-consolidate.mjs` 已进 `tools/check-all.mjs` 的 `STEPS`（紧跟 `probe-mq`），套件 25 → **26 支**；
+连带那条 `steps.length === 25` 的支数断言同步改成 26，注释里的来路也一起改（24 + `probe-mq` + `probe-consolidate`）。
+
+**没做的事**：不自动并条（merge 态只提示，见上）；不判断「哪条语义条目该承载这件事」（要语义相似度，
+而 0.2.176 的实测已经把稠密那条路否掉了）；不在 `suggest` 态写任何「建议过」的痕迹——写痕迹就等于写库，
+下一次读出来会像是已经处理过了。
+
+## 9.191 内部诊断查询不能替用户「看过」：一次巩固检查把相似检索关掉了（0.4.0）
+
+**病**：P2 的巩固检查在每次 `memory_remember` 之后打两枪 `memory_search`（同话题 + 语义层）。九条判据全绿、
+十二支探针全绿、`verify.mjs` ALL PASS——然后 `tools/probe-graph.mjs` 的 H6 稳定红：
+
+```
+FAIL  H6 同一对在工具里逐字只有四成，与面板的「相似」差 ≥0.4  面板 1 / 工具 NaN
+```
+
+回执原文（诊断时给这条 detail 补了「回执」段，留着有益）：
+
+> 相似检索没算成：可比的候选一条都没有（库里 4 条，这一轮已经端给你看过的都排除了）。
+
+根因不在探针，在两条**没有参数可关的副作用**：`vendor/meow-memory/lib/index.js:4333-4334` 每次
+`memory_search` 都 `db.bumpHit(h.level, h.id)` 再 `markSearched(workspace, sessionId, hits.map(h => h.id), dir)`
+（写 `.dsh-meow/seen-<session>.json`）。巩固检查为了「判该不该巩固」把同话题 20 条全记进 `searched`，
+接着用户写完了顺口问一句「跟这条像的有哪些」（`memory_search({ mode: 'similar', id })`），
+`:4529` 的 `rows.filter(r => r.id !== found.row.id && !seen.has(r.id))` 把候选排空——**工具在它最该用的
+时刻被上一次内部查询关掉了**。`bumpHit` 还顺手抬起 `hit_count`，让 P2.5 要做的 `unused`
+（「召回过但从没人读」）指标从第一天起就是脏的。
+
+**为什么判据没抓住**：A58c 那 9 条钉的是「巩固**算得对不对**」，`probe-consolidate` 的桩 flow 只数**调用次数**
+（2 次 search、0 次写），桩里的 `memory_search` 没有副作用。**「多发了一枪查询」在计数上是正确的，
+在状态上是破坏性的**——两个维度，桩只盯了一个。H6 是既有判据，它守的是同一张表里的另一种用户行为
+（写完一条问相似），这次是它替 P2 挡的刀。
+
+**修法**：给 meow 的检索加一个内部开关，默认不改任何对外行为：
+1. `vendor/meow-memory/lib/index.js:4069` 之后加 `internal: { type: 'boolean', default: false }`，
+   schema 描述写清「只给插件内部诊断用……模型不该传它」；
+2. `:4333` 处包一层 `if (parsed.internal !== true) { bumpHit…; markSearched… }`；
+3. `lib/macro/defs/remember.js` 的 `consolidateAfterWrite` 把 `internal: true` 放进两枪共用的 `base`；
+4. macro 侧 `createSearch` 的参数是白名单，`internal` 不会漏给模型——只有 `flow.tryCall` 直连 bridge 才传得进来。
+
+为什么不是 `releaseSeen(workspace, sessionId, dir)`（meow 已导出）：它**整批清空** `injected` + `searched`，
+会把真正的「防重复端」账本一起洗掉，比不修更坏。为什么不是伪造旁路会话：插件层（`lib/client.js`）
+根本没有 `sessionId` 通路，宿主从 `exec` 推断给 meow，伪造不了。
+
+**新增判据（verify A58c 的 `co:` 三条 + `probe-consolidate` 两条）**：
+- `co: meow 检索有 internal 开关，默认 false＝照旧记账`（钉 schema 文案与 `default: false`）；
+- `co: internal 关的是 bumpHit + markSearched 两件事`（只关记账不关 bump 会让通胀指标继续脏）；
+- `co: 巩固检查两枪都传 internal: true，主写入与更新一个字都不带`（切片 `consolidateAfterWrite` 数 `internal: true` 恰 2 处，
+  且 `memory_remember'` / `memory_update'` 同行不许出现 `internal`）；
+- `P11` 桩里直接看两次 search 的 `payload.internal === true`；`P11b` 写路径不许漏进 `internal`。
+
+**能红证明**：把 `base` 里的 `internal: true` 删掉 → `P11` 实跑红（`undefined,undefined`），
+`co: internal-passed` 的计数由 2 变 1 → 红；改回 → 12 条全绿。改完 `probe-graph.mjs` 从
+`FAIL H6（工具 NaN）` 回到 `PASS H6 面板 1 / 工具 0.42`。
+
+**教训**：判据要分两层看——「这次调用发生了吗」（次数）和「这次调用留下了什么」（状态）。
+**只数调用的量尺，会为每一种副作用盖章**。凡是给既有工具加「内部探路」的调用，先问一句：
+这个工具在成功路径上还写了哪些账？把「不写账」做成一等参数，比事后清理账本便宜得多。
+
+**又踩一次编码坑（同一条红线第二次）**：这节第一次是用 `Add-Content` 追加的，pwsh 默认按 ANSI 写，
+中文整段变乱码（1,242 个替换字符，从第 10,973 行起），且 `verify.mjs` 的乱码检查（`mojibake`/BOM）会因此红。
+修法：用 node 按 UTF-8 读回、截掉坏尾、`fs.writeFileSync(..., 'utf8')` 写回，再用 edit 工具追加正文。
+**文档也只能用 write/edit 改，pwsh 一律不碰文本内容**——`9.189` 那次是源码，这次是文档，是同一条红线的第二例。
+
+**没做的事**：不给 `memory_find_similar` 加同样的开关（它本来就是读路径，`markSearched` 记录的正是它端出去的命中）；
+不试图把 `seen` 改成可按 id 精确回滚（要跨进程读 `.dsh-meow/seen-*.json`，为了省一次查询引入文件竞态不划算）。
+
+## 9.192 判据红了，耗时就会「变快」：尺子被改短的第三种形态（0.4.0）
+
+**病**：给 vendor 的 `memory_search` 加了 `internal` 之后，`tools/param-audit.mjs` 的
+`1.1 原工具的每个参数都还能传进去` 当场红了——`memory_search.internal → memory_search.internal（统一工具里没这个参数）`。
+这条红是**对的**：它守的病正是「融合层把上游能力克扣掉」，而我们确实少给了一个参数。
+真正出问题的是**它红的副作用**：`tools/param-audit.mjs:309-312` 在 `failed > 0` 时直接 `process.exit(1)`，
+于是这一支的耗时从 20.6s 掉到 **1.6s**，`--update-baselines` 把 1.6s 记成了新基线。下一轮我把它修绿，
+它报 20.7s，相对刚被改短的 1.6s 就是「**慢了 13.0 倍**」，提示语还会说「别直接 --update-baselines 把慢记成正常」。
+
+**真相：那 20 秒不是算，是等，而且一直都在**。
+- `node --cpu-prof` 聚合：18,564 个样本里 **98.0% 是 `(idle)`**，脚本逻辑 1.18s 就打出了 `ALL PASS`；
+- 之后 `process._getActiveHandles()` 剩两个 `Socket addr={}`（没有 listen 的 socketpair），进程挂到 21.06s 才退出；
+- `git show HEAD:tools/baselines.json` 里 param-audit 的耗时基线**本来就是 `20643` ms、预算 `83000` ms**——
+  这 20 秒是长期存在的既有悬挂，不是这一轮引入的。
+
+**为什么这事值得单独一节**：「基线变快」平时是被当成好消息的，于是它从不触发任何检查。
+而它有三种来路，只有一种是真优化：真优化、**判据变红后提前 `process.exit`**、测量口径变了。
+第三种最难看出来，因为红与绿都是「合法状态」。一条支从红转绿时，它的耗时基线必须**手工回填到绿态读数**，
+否则基线里躺着的是一个「失败路径」的速度。
+
+**修法（两条，都在这一轮落地）**：
+1. **参数白名单**：`tools/param-audit.mjs` 新增 `WITHHELD`，记「vendor 有、统一工具**故意**不暴露」的参数：
+   `'memory_search.internal': '只给插件内部诊断（写入后判该不该巩固）：暴露给模型等于允许它伪造「这条没端给用户看过」'`。
+   循环里 `if (!(mapped in props) && WITHHELD[holdKey]) { withheld.push(holdKey); continue }`。
+   另加 **1.1b 双向钉**：`withheld.length === Object.keys(WITHHELD).length` ——
+   登记了就必须真没暴露，没暴露的必须登记；记账条目过期（统一工具后来把它放出来了）也会红。
+   param-audit 13 → 14 条。
+   为什么不改成「在统一工具里也加 internal」：那等于把伪造口交给模型，0.4.0 的修复会当场作废；
+   为什么必须显式记账而不是循环里 `continue` 掉：**少一个参数而没人说，和漏掉一个参数长得一模一样**——
+   白名单替真退化打掩护，是这类名单最常见的死法。
+2. **数据面记账**：`node tools/make-vendor-manifest.mjs` 重记 `vendor/VENDOR.json`
+   （44 文件 / 1,986,065 B / `7f56b793b6f48a26`），doctor 的 `PATCHES` 新增 `[macro-fusion 0.4.0]` 条目
+   （`file: 'vendor/meow-memory/lib/index.js'`），防 vendor 升级静默冲掉这个开关。
+
+**教训**：①「耗时变短」要和「判据变红」放在一起读——先问这一支在基线上是红的还是绿的；
+②给上游工具加参数之前，先跑一遍 `node tools/param-audit.mjs`：它守的是「不许克扣」，故意保留的参数必须写成白名单，
+**写不出理由就别加那个参数**；③「跑完了却不退出」这种问题看日志永远看不出来，只能靠
+`--cpu-prof` 的 idle 比例（98%）加 `process._getActiveHandles()`（两个 Socket）；④诊断用的临时脚本别落在
+`tools/` 里——我在排查时把 HEAD 版临时写成 `_tmp-param-audit-orig`（去掉 .mjs 后缀是刻意的：本节的判据会抓
+`tools/<名字>.mjs` 并对不存在的报红，临时文件删掉之后那个名字就成了幽灵）——它当时立刻被 doctor 报成一个漂移
+（对方缺），删掉才复绿。
+
+## 9.193 六把尺子都在量「库里躺着什么」，没有一把量「写进来的一直在变多」（0.4.0）
+
+**病**：`memory_admin(action="hygiene")` 从 0.2.x 起有六个 kind——dup（重复）、stale（该更新）、thin（关系凑数）、oversize（超重）、unread（没人读）、orphan（孤立）。六把尺子量的都是**已落库条目的形状**：两条像不像、有多久没动、边上连了几条、正文多长、有没有人召回、有没有人连。这六个问题都以「库里已经有 N 条」为前提，而记忆插件真正的退化往往发生在写入端——一天写三十条 `fact`、一周攒不出一条 `lesson`，六把尺子全部安静：每条 fact 都新鲜、都不重复、都不孤立、都不超重。库在长胖，结论层没长。
+
+**三条新尺子**（`vendor/dsh-memory-nebula/lib/host/graph.js` 的 `auditHygieneSteps`，`:1324` 起）：
+
+| kind | label | 判据 | 为什么是这个形状 |
+| --- | --- | --- | --- |
+| `selfecho` | 关键词自证 | 关键词逐字出现在正文里的比例 `rate = echo / kws`，`kws >= 3` 且 `rate > 0.7` | 关键词的全部作用是扩召回面；逐字出现在正文里，BM25 靠正文本来就能命中，这个词等于没写。`kws < 3` 不判：1/2 = 50% 不是信号，是样本太少 |
+| `unused` | 召回过没人读 | `hit_count > 0` 且 `read_count === 0` | 召回与阅读是两件事：排进候选不等于有人真去读。只报「召回过的」，因为一次没召回的条目归 unread，两条尺子不重叠 |
+| `inflate` | 写得多收得少 | 近 30 天 `fact` 新增 `>= 6` 且 `> 结论层（rules/lesson）新增 × 3` | 一个比值。绝对量说不出问题：小库一周写 8 条 fact 是正常建库，大库一周写 8 条也是零增长 |
+
+**为什么三条都用比值/对照，不用绝对量**：绝对量要跟「这个库应该有多少条」比，而那个数没人知道，任何阈值都是编的。比值只需要库自己跟自己比——「关键词自证率」「召回与阅读的差」「两种层的增速差」。代价是阈值要留出噪声带，于是三条各自带一个下限：`SELF_ECHO_MIN_KW = 3`、`reads` 字段必须在（见下）、`INFLATE_MIN = 6`。判定还刻意取严格不等：`rate <= 0.7` 不报、`6 / 2` 恰好 3 倍不报——边界上的样本是噪声，报出来只会训练用户忽略报警。
+
+**`read_count` 是这一版唯一新增的持久化字段**：meow 表原来只有 `hit_count`（召回次数）与 `last_accessed_at`，`memory_read` 成功路径只调 `markAccessed(...)`，读了几次没人记。于是「召回过没人读」这一类根本无法从现有数据算出来——`hit_count > 0` 里既包含「读了」也包含「没读」。四处改动：①`COMMON_COLS` 加 `read_count INTEGER NOT NULL DEFAULT 0`；②`upgrade()` 的 LEVELS 循环补 `ALTER TABLE ${level} ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0`（meow 原生的幂等补列机制，`PRAGMA table_info` 先查再加）；③`MemoryDb.bumpRead(level, id)`（`UPDATE ... SET read_count = read_count + 1, last_accessed_at = ?`）；④`memory_read` 的 execute 在 `markAccessed(...)` 之后调一次。**只加在读路径，不加在检索路径**——检索加了就等于把「召回」记成「阅读」，这一类的全部意义就没了。
+
+**`reads` 字段缺席时整类不参与**：`adapters/meow.js` 里 `reads: cols.has('read_count') ? Number(row.read_count) || 0 : 0`，而 `unused` 的过滤器写的是 `typeof n.reads === 'number' && ...` —— 别的适配器（文件库、外部推入的条目）没有这个字段，`undefined` 一进来，`(n.hits || 0) > 0` 就足以让整类假阳。宁可这一类在那种库上不显示，也不给一份「所有被召回过的都算没人读」的假账单。
+
+**老库偏大这件事要写在回执里**：记账从 0.4.0 起，更早的条目 `read_count` 全是 0，`unused` 会把「0.4.0 之前读过很多次」的条目一起报出来。这不是 bug 也不是能修的——那段历史没记。`HYGIENE_META.unused.hint` 里写明「记账从 0.4.0 起，老库偏大」，用户在面板上先看到这句话，再看列表。
+
+**`inflate` 只产出一行，且 `id` 为空串**：它是整库一个判断，不是某条记忆的属性。面板上每一条都带 `showDetail(it.id)`，若给它一个真 id，用户点进去会看到「一条与通胀无关的记忆」。所以 `items.inflate` 恒为长度 1 的数组、`id: ''`，label 形如 `近 30 天：fact 32 条 / 结论层 4 条（8.0×）`，读的人看到的是形状，不是一个可以跳的条目。
+
+**「巩固」（P2）与「取代」（0.2.117）不是一回事，抬头也要分开**：`read.js` 新增 `consolidatedNote(content)`，认 `（已巩固进：<id>「<head>」，<date>）` 这一句，抬头写「这条是历史材料（DATE 被收进 ID「HEAD」）：它没作废，细节只在这里；但要看现在的口径，读那一条。」取代是**退位**（`status` 变 stale，条目离开「在用」集合），巩固是**归档**（`status` 不动，条目仍在用，只是要点已被抽走）。两句话不能合并，否则读的人会以为被巩固的条目失效了。抬头排在 `prov` / `chain` 之前：它是「这条现在还该不该照着做」的回答，比出处更要紧。
+
+**判据**：`verify.mjs` 新增 A58d 块 13 条 `hy:`（九类元数据 / selfecho 三态 / unused 三态 / reads 缺字段不参与 / inflate 阳性与 6/2 阴性对照 / 只给一行且 id 空 / 白名单与 enum 同序九项 / counts 求和 / `bumpRead` 恰两处 / 老库补列 / `consolidatedNote` 四态 / extras 拼接顺序）；`tools/probe-hygiene.mjs` 18 条 H1–H18，其中 H11–H16 跑真 sqlite（写完 `read_count = 0`、读一次 1、再读 2、`memory_search` 只加 `hit_count`、读不存在的 id 不记、手工建的老表打开后自动补列）——桩里数调用只能证明「调了」，证明不了「记在正确的列上」。
+
+**能红证明**（做完即改回）：①注释掉 `memory_read` 里的 `db.bumpRead(row.level, row.id)` → H12/H13/H14 全红（`reads = 0`）；②去掉 `unused` 过滤器里的 `&& !n.reads` → H4 红（`[["p-unused",5],["p-read",5]]`，读过的条目也进了「召回过没人读」）。两条都是「看起来能跑、判据不响」的典型，靠阴性对照才抓得住。
+
+**这一版踩的四个坑**：
+
+1. **`probe-words.mjs` 的「体检六类」是文案与 schema 的同步尺**，写死 `kindEnum.length === 6`。改白名单只跑 `verify.mjs` 会全绿，红在「口径总账」那一支——`verify` 管代码契约，`probe-words` 管**说给模型看的话**跟代码是不是同一份。这类判据要单独跑，别只看一个总账。
+2. **`PANEL_SUMMARY` 从 220 字涨破 200 字上限**：`memory_admin` 的 `description` 是 `ACTIONS` 表拼出来的，我给 hygiene 的 hint 加长三项后总长 220，撞上 `probe-words` 的可读性尺（≤200 字）。修法不是放宽尺子，是**缩文案**：九个类目在 hint 里只留可认的缩写（「关系凑数」→「凑数」、「关键词自证」→「自证」、「召回过没人读」→「召回没读」、「写得多收得少」→「写多收少」），全称留在 `HYGIENE_META` 与面板详情里。194 字，尺子不动。
+3. **`verify.mjs` 里「check-all 里每一支都从 `_root.mjs` 取根」写死 `steps.length === 26`**：加第七支探针就红。支数在这里是知识（防有人摘套装），所以改了 27 并写明来路，而不是把判据放宽成 `>= 26`。
+4. **`13,366 B` 这个对外数字变了**：schema 多六个 enum 项 + description 变短，`probe-host.mjs` 的 D3 实测 13,372 B。README 三处、市场索引两份各一处要一起改（`−76.5%` → `−76.4%`）。这类数字跟注入字符数一样，是**实测值的快照**，改 schema 就要跟着改。
+
+**第五个坑不是这一版引入的，但这版又踩了一次**：用 `Get-Content -Raw` + `Set-Content -Encoding utf8` 批改 `README.md` 与两份 `plugin-market/*.json`，中文整段被按 GBK 解码再按 UTF-8 编码写回，三个文件当场坏掉（`README.md` 98,732 → ? B）。救命的是 profile 树里的安装副本（P2 收尾同步时是最新的），`Copy-Item` 拷回来即完全恢复；随后试图用「UTF-8 解码 → GBK(936) 编码 → 写回字节」逆变换补救，只救回大半（`−`、`→` 这类 GBK 无映射的字符被替换成 `?`，全长从 98,732 掉到 97,253）——**这类损伤不可逆**。教训第三次，这次写死：**文本内容只用 `write` / `edit` 改；`pwsh` 只能做 `Copy-Item` / `Get-FileHash` / 跑 node，碰 `Get-Content`+`Set-Content` 组合必坏**。另外补一条判据侧的观察：`pwsh` 读 UTF-8 文件在控制台显示成乱码是**显示问题**，判断文件好坏得用 `node -e "readFileSync(...).toString('utf8')"` 数 `U+FFFD`——我差点把完好的 `INTERNAL.md`（821,596 B、11,074 行、0 个 `U+FFFD`）当成坏文件重写。
+
+**这一版没做**：`selfecho` 只比关键词与正文的字面重合，不比语义（同义改写不算自证，那是 embedding 的活）；`inflate` 只比 `fact` 与 `rules|lesson` 两层，没有把 `topic` 纳入（`topic` 是长文，条数增速跟结论层不是一个量级，混进来会让比值失真）；`unused` 不区分「召回过一次没读」与「召回过五十次没读」，只报后者更急（按 hits 降序排，读的人自己看）；三条都没有自动修动作——体检只负责把「写得多、收得少」摆在面板上，收不收归人。
+
+## 9.194 「判得出冲突」与「替人处置冲突」之间隔着一步，这一步一直是人走的（0.4.0）
+
+meow 从 0.2.x 起就有 `conflictCandidates`：写入时把同层近邻捞出来，比两边的版本号与日期 token，认出「同一件事的另一种说法」就在回执里印一段提醒。提醒写得清楚，出口也写清楚了（`supersedes` / `memory_update`）——但它**只到提醒为止**。要不要标 stale、标哪一条，全靠人读完那段话再动手。
+
+问题不在提醒的质量，在于这一步的成本落错了人。长期库里最伤的不是「库里有一条过期的」，而是**旧结论冒充现状**：它排在前面，句式与新的那条一模一样笃定，读的人没有理由怀疑它。要让插件自己把账做对，就得把「判」与「处置」接起来——判可以机械，处置必须可回滚。
+
+**判据刻意窄：只吃五类硬事实。**
+
+| 类 | 怎么判 | 为什么算硬事实 |
+| --- | --- | --- |
+| 版本 | 两边各有自己的版本号，且不重合 | `0.4.1` 与 `0.4.0` 是同一个对象的两个状态 |
+| 日期 | 两边各有自己的日期，且不重合 | 同上，换的是时间 |
+| 状态 | 一边「已落地/已完成/已上线」，另一边「未开始/未做/禁用」 | 结论互斥，比数字更要紧 |
+| 数值 | 同一单位（支/条/个/次/毫秒/秒/%/B/KB/MB）的数字不同 | 「27 支」与「26 支」说的就是同一把尺子量了两次 |
+| 路径 | 同一个文件名换了目录 | 主语没变、地方变了 |
+
+不吃「读起来像」。这不是保守，是**代价不对称**：漏报只是少一条建议，误杀会让人丢掉一条真结论（而且丢掉的方式很安静——它变成 stale，读不到了）。所以宁可漏。
+
+**两道门槛不是一回事。** 相似度 `SUPERSEDE_SIM = 0.3`（与 meow 的 `CONFLICT_SIM` 同值）决定「够不够格当候选」；数值与路径两类另要逐字重复度 `SUPERSEDE_REPEAT = 0.5`——因为「3 条」「某个脚本的路径」这种 token 满库都是，光靠相似度会天天撞。版本/日期/状态**不吃**第二道门槛：它们是硬事实，重复度低也照样是改口（一次只改了一个版本号，重复度本来就低）。
+
+**三态开关 `autoSupersede`**，与 0.4.0 的 `consolidate` 同一条纪律（未配 = 默认档、写错 = 最保守档）：
+
+- `off`：连那一枪检索都不打。关掉一个开关不该仍收一次检索成本。
+- `suggest`（默认）：只把建议贴在回执尾部，**一个字不动库**，并给出可照抄的 `supersedes: ['xxxxxxxx']`。建议里明说「只建议」——读者不该去猜这一句是不是已经生效。
+- `apply`：才真走 0.2.117 的 `markSuperseded`（标 stale + 正文留「（已被取代：…）」），抬头写明「自动取代」并给反悔办法。
+
+写错的值一律当 `off`，不是当 `suggest`：这个开关会改别人记忆的状态，配错必须退到「什么都不做」那一档。
+
+**为什么不新开一条写路。** `apply` 复用 `markSuperseded`——它已经写清了六种「看起来像成功」的失败（没找到 / 已归档 / 已标过 / 短 id 多命中 / 写库失败 / 就是自己），并且已经有反悔办法。自动取代若自己再写一遍处置逻辑，就会出现「人点名取代」与「自动取代」两套行为，其中一套迟早落后。
+
+**放置位置在 `lib/macro/supersede.js`，不在 `defs/` 里。** `defs/` 是「一文件一工具」的目录，`verify.mjs` 的结构判据数它**恰好 8 个文件**，并且要求文件名与工具名逐个对齐。`supersede.js` 不是工具，是 `remember` 的实现细节，放进 `defs/` 会立刻打红两条结构判据（这一版就是这么撞上的：第一版放在 `defs/` 下，`结构: defs 恰好 8 个工具文件` 当场红）。
+
+**两条正则与 meow 逐字相同**（`VERSION_TOKEN` / `DATE_TOKEN`），而 `verify.mjs` 的 `as:` 判据直接把两侧字面量抓出来比。为什么不去 import：那两个是 meow 的模块内私有常量、没有导出；为一个内部判据新开 API，改动面比复制两行正则大，而复制会漂——所以用判据钉住。比较时要容忍声明式差异（meow 是打包产物 `var X = /…/g;`，本仓手写 `const X = /…/g`），比的是正则本身。
+
+**接线顺序**：人点名的 `markSuperseded` → 自动取代 → `applyLinks` → 巩固。巩固必须在最后，否则「巩固材料」里会出现刚被顶掉的那条（与 0.2.x 的顺序理由同源）。自动取代与巩固同时开时，回执是「原回执 + 建议段 + 巩固段」，建议是加法（探针 S15 钉的是「suggest 的回执 = 无建议的回执为前缀」）。
+
+**skip 集的两种写法都要认**：人已经用 `supersedes` 点名的那几条不再出现在建议里（他刚处置过），刚写的这条也不能建议取代自己。人给的是短 id（8 位），hits 里是完整 id，所以 `conflictCandidatesOf` 同时用完整 id 与 `slice(0, 8)` 匹配。
+
+**上限 3 条**：多出来的不硬塞进回执，也不假装处置了。
+
+**判据与量尺**：`verify.mjs` 的 A58e 十四条 `as:`（三态 / 五类阳性与各自的阴性对照 / `sim < 0.3` / `repeat < 0.5` / skip 两种写法 / 上限 3 / 无候选不加字 / 抬头文案 / 两条正则与 meow 逐字相同 / 写入路径接线 / `MACRO_DEFAULTS`+`MACRO_KEYS`+schema 三处同值）+ `tools/probe-supersede.mjs` 十五条 S1–S15（桩 flow 数真调用：`off` 零检索、`suggest` 一枪 `internal: true` 且零 `memory_update`、`apply` 真标 stale 且旧正文留取代句、人点名的不重复建议、与 meow 的 `conflictCandidates` 同结论）。**能红证明**（做完即改回）：①把 `suggest` 分支改成也走 `markSuperseded` → S2 红（回执里没有「一个字没动库」）；②去掉数值/路径的 `repeat` 门槛 → S7 红（`repeat=0.31` 的也进来了）。
+
+**这一版踩的两个坑**：
+
+1. **`probe-consolidate.mjs` 的三条 P 判据红**：它的桩 flow 数「巩固发了几枪 `memory_search`」，而 `autoSupersede` 默认 `suggest` 会自己多打一枪。修法不是放宽那三条，而是在那一支的 `run()` 里显式 `autoSupersede: 'off'`——**一支量尺只量一件事**，两个功能混在同一张调用账上，红起来分不清是谁多打的。
+2. **`verify.mjs` 里「check-all 里要读本仓的每一支都从 `_root.mjs` 取根」写死 `steps.length === 27`**，加第八支探针就红。与 P2.5 那条同一个坑（26 → 27 刚踩过一次），这次改成 28 并把来路写进注释。支数在这里是知识，不是可以放宽的魔数。
+
+**这一版没做**：不比语义（「同一件事换个说法」若是同义改写而非 token 漂移，判不出来——那是 embedding 的活，也是 P2' 与 P5 的位置）；不做级联（A 取代 B、B 又取代 C 时不会顺手把 A 也标掉）；不改召回权重（stale 的条目靠既有的 `statusFactor` 降权，取代关系本身不加权）；`apply` 没有「整批确认」入口——一次写入最多动 3 条，多的分两次调。
+
+## 9.195 评测里最容易换掉的不是精度，是「这一次到底测了什么」（0.4.0）
+
+主人 2026-11-22 的口径是「只跑 gold 评测，不允许跑 llm」。检索侧的 gold 判分有三个隐形开关，任何一个走偏，读数照样打印，只是它测的已经不是那件事——而三次都是**安静地**偏，没有一处抛错。
+
+**坑 1：库的默认行为替你把结果收口了。** `vendor/meow-memory/lib/index.js:2380` 的 `trimByBand(hits, k, opts)`：`var RESULT_MIN_KEEP = 5;`、`const keepAll = opts.bandKeep === false || minKeep === 0;`、`const keep = keepAll ? sliced.length : Math.min(sliced.length, Math.max(minKeep, sameBand));`，`sameBand` 只数 `!(h._band > 0)`。首跑 `avg_retrieved 4.9`、`hit@5 === hit@10 === hit@20`（multi-hop 三个数全是 0.5284）。这不是 bug——产品上「问一句给你 5 条最可信的」正是主人要的；但 OmniMemEval 的契约是固定 top-k。修法在评测侧：`E:\Temp\omni-eval\sidecar.mjs` 里 `Meow.search(q, docs, { k: docs.length, bandKeep: false })`。**改插件默认值等于为了让尺子好看去改被量的东西**；`band_keep` 本来就是 `memory_search` 对用户开放的开关，评测显式关掉才与旧基线同口径。教训：评测调用库时，凡是「帮用户收口」的默认值都要显式关掉，否则你量的是产品体验，不是检索质量。
+
+**坑 2：store 名里带版本号，换版本名就是换了一套空库。** `stores\locomo_exp_user_0_speaker_a_omni4` 是 user_id 原样落盘，ingestion 用 `--version omni4` 写完，search 用 `--version omni4b` 去问，指向的是另一批从没写过的目录：判分全 0、`avg_retrieved 0.0`、`/health` 显示 `users 20 / memories 0`，而每条记录 `status: success_empty`、context 里只剩 `Memories for user Caroline:` 这样的空壳。**空库不报错**。教训：拿不到数时先看 `memories` 计数与 `status`，别先怀疑打分器；`--version` 在 ingestion 与 search 之间是同一个键，不是随手起的标签。
+
+**坑 3：结果缓存按 version 复用，改了逻辑也不重算。** 重跑同 version 时脚本打印 `Loaded existing results for group 9`，直接读 `results/locomo/macromem-omni4/tmp/macromem_locomo_search_results_{i}.json`。修法是先把 12 个分片（10 个分片 + `merged_search_results.json` + `search_status.json`）**移**到 `tmp_stale_band\`——移动不删除，结论不对还能翻回去看。
+
+**读数（2026-11-22，LoCoMo 1,536 题剔 category 5，自写 `score_locomo.py`，无 LLM）**：hit@5 `0.6159` / hit@10 `0.6953` / hit@20 `0.7546` / recall@20 `0.6822` / MRR `0.4953` / nDCG@10 `0.5029` / `avg_retrieved 17.77` / `avg_context_chars 5947.2` / `empty_rate 0`。分类 hit@20：multi-hop `0.7447`（282 题）、temporal `0.7882`（321）、open-domain `0.4783`（92）、single-hop `0.7753`（841）。对照 `E:\Temp\omni-eval\report_retrieval.json`（2026-11-20，同一台机同一数据集，被测代码 0.2.x，`avg_retrieved 19.99`）：hit@20 `0.651 → 0.7546`、MRR `0.3768 → 0.4953`、nDCG@10 `0.3933 → 0.5029`；分类 hit@20 multi-hop `0.5319 → 0.7447`、temporal `0.7103 → 0.7882`。
+
+**这两组数只在一个方向上可信**：本次给出的条目**更少**（17.77 < 19.99）却命中更高，所以「检索变好了」这个方向是硬的；绝对差值不能当受控 A/B（中间隔了上百个版本改动），也不能换算成准确率——gold 命中是「该捞的捞到了」，不是「答对了」。端到端 LLM-judge 自 2026-11-20 起仍未重测。
+
+**没做的事**：不动插件的 `RESULT_MIN_KEEP`（产品行为）；不改 gold 集合（LoCoMo 官方 evidence）；不给 scorer 加平滑或截断（hit@k / recall@k / MRR / nDCG@10 都是标准式）；不因为 open-domain 只有 0.4783 就去调那一类——92 题，单次运行，噪声比差值大。
+
+## 9.196 「两跳」这个功能从来没跑过第二跳，而没有一支探针问过它（0.4.0 P4）
+
+星图的扩散一直只按「词面像不像」找邻居：`recall.js` 用 BM25 选种子，再沿边按 `gain = e0 * w * HOP_DECAY` 走一到两跳。这带来两个洞，一个看得见、一个看不见。
+
+**看得见的洞**：实体（项目名、文件路径、工具名、版本号）在图里没有位置。两条记忆都写着 `lib/macro/supersede.js`，它们之间会长一条 `entity` 边（`text.js` 的 `ENT_RULES` 抽出来的 `file` 实体），但「这条路径出现在哪些记忆里」这件事没人能回答——面板问不出，召回也没法从「用户提了这条路径」直接跳到那一组记忆。
+
+**看不见的洞**：`recall.js` 的扩散循环里 `const e0 = energy[from]`，而 `energy[]` 只在种子阶段写过（`recall.js:265/275/295/321`）。第二跳的 frontier 全是**非种子**节点，`energy[from]` 恒为 0，被下面那道 `if (e0 < 0.06) continue` 整片跳过 → `next.size === 0` → `break`。也就是说 `MAX_HOPS = 2` 与「二跳再打一次」的注释一直是空的，`hops: 2` 实际效果就是 `hops: 1`。**没有一条判据发现过这件事**：探针都只问「一跳能不能捞到」，没人问过「第二跳到底跑没跑」。修法是 `const e0 = hop === 0 ? energy[from] : propagate[from] || 0`——`propagate[]` 正是上一跳给它算出的最大 gain，语义上就是「第一跳衰减再乘一次」。修完 `probe-entity` 的 E31 量到 `used: 2`（修前恒 1），E24 量到一条策展边把无关记忆带进来（`m:3@0.111`）。
+
+**为什么实体不做成节点。** 第一版想过把实体也塞进 `nodes`/`edges`，让度数、聚类、面板都统一。不行的理由很硬：`nodes` 的口径是「记忆」——节点数、平均度数、孤立数、聚类、召回结果位、`nebula_inspect` 的分页，全部按它算。混进 400 个实体节点，这些读数一起改写，召回还要在每一处过滤「这条是实体不是记忆」。所以做成独立一层 `graph.entityLayer = { list, stats }`：只有可序列化的裸数据，不参与任何图算法，召回时按 `entitySeedsOf` 找命中、按 `byNode` 反查成员。回滚是一条 `entityLayer: false`。
+
+**实体只认四类硬事实**：`project` / `path` / `tool` / `version`（`ENTITY_KINDS`）。不收「读起来像名字」的词——`p1` 这种 2 字项目名会把半个库连成一团，所以 `ENTITY_MIN_LABEL = 4`；只在一条记忆里出现的实体当不了桥，所以 `ENTITY_MIN_MEMBERS = 2`；层上限 `ENTITY_MAX = 400`、每条记忆最多 `ENTITY_PER_NODE = 6`（不封顶的话一次建图就能把实体表撑成第二个图）。键是 `type|value`，`indexOf(layer)` 从 `list` 现建 `byKey`/`byNode`——**图缓存是 JSON，`Map` 存不住**，读回来必须自愈。
+
+**动态跳数：软边按词面收，硬边照走。** 第二跳开始，每条边先问「这个邻居与本次查询还有没有关系」：`matchOf(j)` = 查询词与该节点词袋的交集 / `min(qTokens.size, 6)`，实体成员直接算 1。`m < DYNAMIC_MIN_MATCH = 0.2` 就 `skipped++` 并跳过；有关系也不是全给，`gain *= 0.45 + 0.55 * m`。`HARD_EDGE = new Set(['explicit','entity','project'])` 三条不看词面——策展是人工判断、同实体是同一个标识、跨项目是同一个项目名，这三样都不是「读起来像」。门槛只在 `hop >= 1` 生效：第一跳是星图最基本的语义，被词面砍掉就不是星图了。
+
+**一个必须诚实写下的实测上限**：纯 Hebbian 共激活边的权重上限是 `0.440`（`probe-entity` 里 4 次与 16 次会话都是 0.440）。两跳衰减后 `spread * 0.62` 只有 0.309 × 0.44 × 0.58 × 0.62 ≈ **0.049**，正好卡在合成阶段 `total < 0.05` 的门槛下面。意思是：**「拦掉串味邻居」省的是计算，不是结果**——那些条目本来就进不了结果集。所以 E21 量「拦没拦」（`skippedNeighbors > 0` 而关掉时是 0），E23 量「结果集与不拦时完全一致（没丢东西）」，不假设串味条目一定进得来。要让第二跳真的产出条目，得是强链路（`explicit` w=1 → `m:3@0.111`）。
+
+**回执三个数一起报**：`hops: { asked, used, stoppedAt, skippedNeighbors, dynamic }`。只说「省了」会掩盖「变笨了」——用户看到 `问 2 跳 / 走 1 跳 / 砍掉 7 条邻居` 才知道这次是「没有相关的」还是「被砍了」。工具侧两个开关 `entity` / `dynamic_hops`（默认开），整机回滚另有环境变量 `NEBULA_ENTITY_LAYER=0` / `NEBULA_DYNAMIC_HOPS=0`。
+
+**判据**：`verify.mjs` 的 A58f 十四条 `as:`（四类 KIND / minMembers 两态 / 短名不收 / 四常量 / JSON 往返 + `indexOf` / 层不进 nodes-edges / 关层开关 / `HARD_EDGE` 字面 / 第二跳能量来源 / hops 三数 / entities 回执 / 缓存与指纹 / 工具两参数两环境变量 / 门槛只在 hop≥1）+ `tools/probe-entity.mjs` 的 E1–E31。**三条能红证明**（做完已还原）：①`e0` 回退成 `energy[from]` → E21/E22/E24/E31 红；②`!HARD_EDGE.has(link.type)` 去掉 → E23/E24 红（`on=m:1,m:2 off=m:1,m:2,m:4`）；③`input.entityLayer === false` 写成 `false` → E29 红。
+
+**连带踩到的四个既有判据**：①`verify.mjs` 的「每支都从 `_root.mjs` 取根」——新探针用静态相对 `import '../vendor/…'`，在 check-all 的 neutral cwd 下 `ERR_MODULE_NOT_FOUND`，改成 `root` + `pathToFileURL`；这条判据本来就是为了抓这种「偷用 cwd」；②`param-audit` 要求 `nebula_recall` 的每个参数在统一工具 `memory_search` 里有对应，新参数必须同时加到 `lib/macro/defs/search.js` 的 schema 与 `pick(args, …)` 白名单；③`probe-toolsize` 的整字面量粗胖线 110,000 → 112,000（实测 110,452，加的是真功能，按老规矩只留 ~1.5%）；④`probe-host` 的 D3 要求 README 与市场索引写的 schema 体积等于实测——加两个参数让 13,372 → 13,567，README 的「宿主投影后 11,544 B」也得一起改。**文档里的体积数与断言总数是同一类东西：会随功能变，而且每一份都有判据钉着。**
+
+**没做的事**：不做面板按实体浏览（P4 只到引擎与回执）；不改召回权重与 `total` 门槛（要动得先有 gold 读数支撑）；不做实体级联（实体只展开一层成员）；不把实体抽取规则从 `text.js` 挪进 `entities.js`（`text.js` 的 `extractEntities` 已经在图里跑了一遍，再抽一次是重复劳动）。
+
+## 9.197 换说法档的分数是人手抄出来的：十八组词表补了 +0.215（0.4.0 P5）
+
+`probe-gold` 的换说法档一直是全表最难看的一格。0.2.176 那版读数 0.857，靠的是 `SYN_GROUPS` 里**十八组人手写下的等价说法**（推送↔push、自检↔自测……）。写 P5 之前本来打算「再多抄二十组」，主人一句话把这方案否了：**「换说法档现在高度依赖那 18 组手工词表 这是不行的 出现新的情况就无法适应了不是吗」**。这句否得对，而且理由能算出来：把桥关掉（`synBridge: false`）实测换说法只剩 **0.714（10/14）**，比 0.2.176 那版还少一题——**这半年纯词面通道其实略微退步了**（关键词抬权、覆盖度折价、分档收口都在改词面形状），换说法档最终能到 0.929，全是那十八组表补的 **+0.215**。词表没覆盖的领域，第二天就退回 0.714。
+
+**先诊断，再挑机制。** 十四道换说法里关桥只失手四道，四道全是同一种病：**问句用一种说法、正文用另一种，且一字不共享**——「什么时候才轮到把代码放到远端仓库」（正文写「推送」）、「它自己什么时候该回头反省一次」（正文写「反思」）、「自测怎么才算真的测到了东西」（正文写「自检」，词交集为 **0**）、「自动筛掉结果…开个小门」。所以问题不是「排序不好」，是「两个词之间没有任何一条路」。
+
+**第一版做错了，留档。** 想当然地从 `tokenize` 的二元组上统计共现：每篇取 idf 前 8 个 token、两两计数、`count >= 2` 且 `ratio >= 0.25` 且不共享汉字才收。真库 635 条实测——**22,956 个 token 里只有 223 个词长出了扩词，全是跨词碎片**（`地全→门读`、`名空→空间→置面→到配`），十四道换说法**一道都没扩到**，净增量 0。根因一句话：**meow 的 `tokenize` 是滑窗二元组，它没有「词」这个概念**。在它上面统计出来的「共现」是「这两个切片挨得近」，不是「这两个词说的是一件事」。词面这一层根本没有可比的东西，只能借人写下的东西——`keywords`。
+
+**第二版：从 keywords 学长，两级证据。** `buildCoocSyn(docs, n)` 只吃每条的 `keywords`（`coocWordsOf` 兼容三种形态：真数组 / 逗号顿号分隔 / JSON 字符串；词长 2–8、纯数字丢、没中文的必须是小写标识符，否则 `push` 这种真词会被误杀）。两级证据：**同一条记忆里的两个词 +`COOC_W_SAME = 2`**（一次就过线——同一句话里同时被作者列进关键词，是最强的等价信号）；**同 project 只认跨文档 +`COOC_W_PROJ = 1`**。第二级当初差点写错：如果直接把「本项目所有词」pairUp 一次，那么任意一对词只要「同一条 + 同 project」就自动凑到 2 分，共享汉字的降权等于没降。改成让每条记忆与「本项目所有词的并集**减掉自己**」交叉、双向各记一次——一对词在两条记忆里各出现一次才净得 2 分。
+
+**三道门 + 形态门。** 次数 `COOC_MIN_COUNT = 2`；条件概率 `COOC_MIN_RATIO = 0.25`（`count / df`，注意同条一次就是 2，所以想让比例掉下去只能把 `df` 做大——`probe-cooc` 的 K3 为此把「咖啡」造到 9 条、只 1 条带「牛奶」，算出 0.22 < 0.25 才真的挡住）；共享汉字降权到 `COOC_SHARE_HAN_W = 1`（`自测`/`自检` 只差一个字，那不是「两种叫法」，要两条记忆反复出现才算数）。再加每词 `COOC_TOP_PER_TERM = 6` 与合流上限 `SYN_MAX_PER_TERM = 6`——**扩词是桥，不是主力**，桥词太多就会把排序搅成噪声。合流点是 `synExpandOf(qTerms, df, n, cooc)` 的第四参：手工表在前、共现表在后，一共取前六个。
+
+**开关与缓存口径位。** `coocLearn: false` 时索引里**根本不建表**（不是「有表不用」），`synBridge: false` 是整层回滚。`__opts`、`indexPathKey`、缓存比较串三处都带上 `coocLearn` 这一位——少这一位，两种口径会共一张表、互相串答案，`probe-cost` 的 C5b 会红得莫名其妙（这在 P0 阶段踩过一次，同样的坑）。
+
+**读数（2026-11-22，零 LLM）。** 窄池 40 条：换说法 0.929 **不动**（窄池只有 40 条，共现样本不够救那四道）；宽池 146 条：照抄 0.977 → **1.000**、换说法 0.929 → **1.000（14/14）**、关掉共现退回 0.929 —— **增量 100% 归因到共现通道**；真库 635 条 40 问：hit@1 0.925 **不动**、MRR 0.963。**「宽池比窄池好」这件事本身就是结论**：共现要样本，库越大越连得上（`probe-cooc` 的 K5 是这个性质的微缩版：两条记忆才连得上，一条永远空表）。
+
+**必须写下的边界。** 那四道 miss 需要的桥词（自测 / 反省 / 远端 / 仓库 / 筛掉 / 接班 / 小门）在真库 keywords 里 **`df = 0`**——从来没被任何人写下来过。**任何「从库里统计」的机制都救不了它：那是词典问题，不是检索问题。** 共现自学习能做的，是把「库里已经有人这么叫过」的等价说法自动接起来，让人不必预先枚举；它做不到「凭空知道一个新领域怎么说」。这条边界正好也是它比手工表的优势所在——手工表也有同一条边界，只是那条边界还被钉在十八组上再也不动。
+
+**判据。** `tools/probe-cooc.mjs` 的 K1–K6 十八条（K1 词源只从 keywords 长、碎片不进表 / K2 同条一次够 + 同 project 只认跨文档 + 同 project 多词互相连得上 / K3 条件概率门 + 共享汉字两道 + 形态门 / K4 共现没把该找的弄丢 + `synBridge:false` 整层回滚 / K5 库越大越连得上 / K6 六常量与两条开关口径各占一张表）；`verify.mjs` 的 A58g 十四条 `as:`；`probe-gold` 的 G-W4 改成守机制三条（宽池 top-K 至少一处不同 / 照抄档不倒退 / 换说法增量在 `coocLearn:false` 时**必须消失**）；`probe-cost` 的 C5b（关共现 top-5 逐位回到冻结快照）与 C5c（开共现至少一问答案不同）。
+
+**连带踩到的五个既有判据。** ①`probe-gold` G21 与 `probe-recall` R14 的「表里每个词都是两个汉字」——表里现在收 `push`/`cache`/`timeout`，放宽成「中文两字或英文标识符」；`verify.mjs` 的 HB2 与 HZ12 四处同款；②HB2 的「只扩问句」断言原本写 `synExpandOf(qKept, df)`，第四参加上后要跟着改；③HB2 的「可审计」断言查导出符号串，新增 `buildCoocSyn` 必须同步；④HZ12 的「表扩到 18 组」原写 `=== 18`，改成 `>= 18`——**这条判据本来是防「表退回去」，用等号就把「再加词表」也判成了红**；⑤`probe-cost` 的 C5 快照：换机制后必须用 `--write-snap` 重冻，而 C5b 的对照**只能拿「只差一个变量」的那一态**——最初拿「P5 之前的快照」比，红在旧快照是「开桥」状态且 `SYN_GROUPS` 已从 18 组变 38 组，两处差异叠在一起，谁也说不清是哪个变了。于是另冻一份 `tools/fixtures/cost-snap-handonly.json`（只关共现），对照才有意义。
+
+**没做的事**：不动 `SYN_W` 手工表的权重（表还在，是最后一道兜底）；不做跨工作区的共现（同 project 已经带项目边界，跨 ws 会把两个不相干项目连起来）；不做词向量 / 不做 LLM 侧扩展（那是 P2' 的范围，要先有主人点头）；不把共现表落盘（跟索引一起建，几毫秒，落盘反而多一份要失效的东西）。
+

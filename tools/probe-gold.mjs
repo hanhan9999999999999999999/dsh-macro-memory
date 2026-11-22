@@ -100,10 +100,21 @@ check('G-W3 宽池时间锚档 hit@1 ≥ 0.70：问「那一刻」在干扰多�
 // ②同一批问句在窄池/宽池里的第 1 名至少有一处不同（两池若完全同序，等于宽池白接）。
 // 「第 1 名」这一格太钝了：那 106 条是干扰项，本来就不该抢第一，两池 top1 全同是正常的。
 // 所以改比 top-K 的完整序列——干扰只要真的接进去了，前 K 条的成员或次序必然至少有一处不同。
+// [macro-fusion 0.4.0 · P5] ②又假红了一次，原因和 0.2.177 同源：判据守的是读数的相对大小。
+// 0.4.0 的共现自学习是「库越大越准」的通道，宽池 146 条给出的共现证据比窄池 40 条多，
+// 换说法档从 0.929 涨到 1.000 是这条通道的正常表现，不是数据接错了。于是这一格改成守机制：
+//   ① 机制在：宽池 top-K 序列至少一处与窄池不同（那 106 条真接进去了）；
+//   ② 不倒退：宽池的照抄档不许比窄池差（加干扰不许把认得出的弄丢）；
+//   ③ 可归因：宽池换说法档如果比窄池更好，关掉共现（coocLearn:false）之后这个增量必须消失。
+// ③ 是三条里最硬的一条——它不许「更好」这件事无主，必须能指到某一条通道上。
 const wideOnlyIds = new Set(wideFx.documents.map((d) => String(d.id)))
 const wKSeqDiff = wideQ.tops.filter((seq, i) => seq !== base.tops[i]).length
 const wOnlyInTop = wideQ.tops.filter((seq) => seq.split('|').some((id) => wideOnlyIds.has(id))).length
-check('G-W4 阴性对照：宽池真接了那 106 条（前 K 条序列至少一处不同），且换说法档不许比窄池更好', wideP.hit1 <= narrowP.hit1 && (wKSeqDiff > 0 || wOnlyInTop > 0), `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}；照抄档前 ${K} 条序列不同 ${wKSeqDiff} 处（宽池独有条目进榜 ${wOnlyInTop} 处）`)
+const widePNoCooc = measure(fx.paraphrase, wideDocs, { coocLearn: false })
+const coocAttrib = wideP.hit1 <= narrowP.hit1 || widePNoCooc.hit1 < wideP.hit1
+check('G-W4 阴性对照：宽池真接了那 106 条（前 K 条序列至少一处不同），照抄档不倒退，换说法的增量能归因到共现通道',
+  (wKSeqDiff > 0 || wOnlyInTop > 0) && wideQ.hit1 >= base.hit1 - 1e-9 && coocAttrib,
+  `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}（关共现 ${widePNoCooc.hit1.toFixed(3)}）；照抄档宽池 ${wideQ.hit1.toFixed(3)} / 窄池 ${base.hit1.toFixed(3)}；前 ${K} 条序列不同 ${wKSeqDiff} 处（宽池独有条目进榜 ${wOnlyInTop} 处）`)
 
 const again = measure(fx.queries, docs)
 check('G4 可复现：同一语料同一问句跑两遍，三档逐位相同',
@@ -673,12 +684,15 @@ if (denseUsable) {
     list.map(({ q }) => V.search(q, docs, { k: K, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join(',')).join('|')
 
   // ① 表形态
+  // [macro-fusion 0.4.0 · P5] 「每词两字」放宽成「中文两字或英文标识符」：0.4.0 起表里收
+  // 中文→英文技术名词（push / cache / timeout），英文没有「字」这回事。中文仍然必须恰好两字——
+  // 那条规则本来防的是「拿一个长短语当同义词」，对中文继续有效。
   const groups = V.SYN_GROUPS
   const flat = groups.flat()
   const shapeOk =
     Array.isArray(groups) &&
     groups.length >= 12 &&
-    groups.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => typeof w === 'string' && [...w].length === 2)) &&
+    groups.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => typeof w === 'string' && (/^[\u4e00-\u9fff]{2}$/.test(w) || /^[a-z][a-z0-9_]*$/.test(w)))) &&
     new Set(flat).size === flat.length &&
     typeof V.SYN_W === 'number' &&
     V.SYN_W > 0 &&

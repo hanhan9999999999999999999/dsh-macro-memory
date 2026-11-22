@@ -455,6 +455,7 @@ var COMMON_COLS = `
   status TEXT NOT NULL DEFAULT 'active',
   source_session TEXT,
   hit_count INTEGER NOT NULL DEFAULT 0,
+  read_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   last_accessed_at INTEGER
@@ -565,6 +566,11 @@ var MemoryDb = class {
       }
       if (level === "topic" && !cols.has("project")) {
         this.db.exec("ALTER TABLE topic ADD COLUMN project TEXT");
+      }
+      // [macro-fusion 0.4.0] 「召回过」与「真读过」是两件事，体检的 unused 要靠后者。
+      // 老库补列（DEFAULT 0 不会把历史读当成没读，只是从这一版起开始记）。
+      if (!cols.has("read_count")) {
+        this.db.exec(`ALTER TABLE ${level} ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0`);
       }
       const legacy = this.p(`SELECT id FROM ${level}`).all();
       for (const { id } of legacy) {
@@ -782,6 +788,15 @@ var MemoryDb = class {
   }
   bumpHit(level, id) {
     this.p(`UPDATE ${level} SET hit_count = hit_count + 1, last_accessed_at = ? WHERE id = ?`).run(
+      Date.now(),
+      id
+    );
+  }
+  /** [macro-fusion 0.4.0] 真被 read 打开一次。与 bumpHit 分开记：
+   *  检索命中不等于读——命中只证明「排进了候选」，读过才证明「这段正文进过上下文」。
+   *  体检的 unused 判的是后者（hit_count > 0 且 read_count = 0）。 */
+  bumpRead(level, id) {
+    this.p(`UPDATE ${level} SET read_count = read_count + 1, last_accessed_at = ? WHERE id = ?`).run(
       Date.now(),
       id
     );
@@ -1175,6 +1190,9 @@ var MemoryDb = class {
       goal: r.goal == null ? null : String(r.goal),
       source_session: r.source_session == null ? null : String(r.source_session),
       hit_count: Number(r.hit_count ?? 0),
+      // [macro-fusion 0.4.0] 真被 memory_read 打开过几次。老库补列前是 undefined → 0，
+      // 所以「0 次」在这里永远是「没记过」，不是「记过但没读」——体检的 unused 靠这条区分。
+      read_count: Number(r.read_count ?? 0),
       created_at: Number(r.created_at),
       updated_at: Number(r.updated_at),
       last_accessed_at: r.last_accessed_at == null ? null : Number(r.last_accessed_at)
@@ -2258,8 +2276,40 @@ var SYN_GROUPS = [
   ["封存", "冻结", "归档", "下线", "停用"],
   ["底线", "下限", "地板", "门槛"],
   ["口径", "说法", "叫法", "定义"],
+  // [macro-fusion 0.4.0 · P5] 查询扩展第二段：口语 → 术语、中文 → 英文技术名词、常见错写。
+  // 三条纪律不变：只扩问句不扩库、扩出来的词必须 df>0（没人命中就白算）、权重仍走 SYN_W < 1。
+  // 与上面 18 组一样，组内互扩、组间不许有重复词（G21 的表形态判据会当场打红）。
+  // 英文词按整词 tokenize（不受中文二元组限制），所以这里允许 2 字符以上的小写英文。
+  ["卡住", "阻塞", "挂起", "卡死"],
+  ["崩了", "崩溃", "报错", "出错", "失败"],
+  ["令牌", "token"],
+  ["缓存", "cache"],
+  ["配置", "config"],
+  ["索引", "index"],
+  ["接口", "api", "端点"],
+  ["字段", "field"],
+  ["备份", "快照", "存档"],
+  ["回滚", "还原", "恢复"],
+  ["接线", "挂载", "接入", "拼装"],
+  ["提速", "变快", "加速"],
+  ["省下", "节省", "少花"],
+  ["修好", "修复", "修掉", "补回"],
+  ["日志", "log"],
+  ["文档", "readme", "手册"],
+  ["词表", "同义", "近义"],
+  ["切片", "分片", "chunk"],
+  ["向量", "vector"],
+  ["超时", "timeout", "逾时"],
 ];
 var SYN_W = 0.6;
+// [macro-fusion 0.4.0 · P5] 扩词还有一道高频门：df 占全库三成以上的词，扩了只是把噪声撒到每一条上
+// （idf 本来就低，收益≈0，却能把不相关条目抬进榜）。0.35 是「够常见但不至于到处都有」的分界，
+// 判据量两件事：①df 超过 35% 的词一个都不许扩；②照抄池/锚点池逐条零漂移（扩表不能改老读数）。
+// 第三参 n 缺省时这道门关着——老调用方（探针/外部脚本）行为一字不变。
+var SYN_MAX_DF_RATIO = 0.35;
+// 每个问句词最多扩几个：手工表一组平均 3~4 个，自学习最多 6 个，合流后按 6 截断。
+// 截断是为了防「一个高频问句词被扩成一串，把整条 query 稀释掉」——扩词是桥，不是主力。
+var SYN_MAX_PER_TERM = 6;
 var SYN_MAP = null;
 function synMapOf() {
   if (SYN_MAP !== null) return SYN_MAP;
@@ -2273,14 +2323,21 @@ function synMapOf() {
   }
   return SYN_MAP;
 }
-function synExpandOf(qTerms, df) {
+// [macro-fusion 0.4.0 · P5] 两个来源合流：手工表是种子（管「人已经确定的等价说法」），
+// 共现表是自学习（管「新领域、新术语、新缩写——从来没人告诉过我它们是一回事」）。
+// 第四参 cooc 缺省 null 时，行为与 0.3.0 一字不差：老探针和外部脚本调三个参数照样跑。
+function synExpandOf(qTerms, df, n, cooc) {
   const map = synMapOf();
+  const cap = Number.isFinite(n) && n > 0 ? Math.max(1, Math.floor(n * SYN_MAX_DF_RATIO)) : Infinity;
   const out = /* @__PURE__ */ new Map();
+  const usable = (a, list) => !qTerms.includes(a) && !list.includes(a) && (df.get(a) ?? 0) > 0 && (df.get(a) ?? 0) <= cap;
   for (const t of qTerms) {
-    const alts = map.get(t);
-    if (alts === void 0) continue;
-    const use = alts.filter((a) => !qTerms.includes(a) && (df.get(a) ?? 0) > 0);
-    if (use.length > 0) out.set(t, use);
+    const manual = map.get(t) ?? [];
+    const learned = cooc instanceof Map ? cooc.get(t) ?? [] : [];
+    const use = [];
+    for (const a of manual) if (usable(a, use)) use.push(a);
+    for (const a of learned) if (usable(a, use)) use.push(a);
+    if (use.length > 0) out.set(t, use.slice(0, SYN_MAX_PER_TERM));
   }
   return out.size > 0 ? out : null;
 }
@@ -2521,6 +2578,155 @@ function indexSignature(docs) {
   return `${docs.length}:${h >>> 0}`;
 }
 
+// [macro-fusion 0.4.0 · P5] 自学习扩词：等价说法不再只靠手工表。
+// 手工表（SYN_GROUPS）管「我已经知道的说法」，新领域、新术语、新缩写它一概不认识；
+// 而库里每一条记忆都带着人写的 keywords——那就是一份随库更新的真词表。
+// 于是共现从 keywords 上统计，而不是从 tokenize 出来的 bigram 上统计：
+// bigram 里混着「名空/置面/地全/门读」这类跨词边界的碎片（真库里 223 个有扩词的词几乎全是碎片），
+// keywords 里则全是真词（实测 2,866 个词、2,845 个有扩词，抽样 `推送→push/发版/github`、
+// `基线→阴性对照/量具/doctor`、`预算→key/花钱/评测` 全是真语义关联）。
+// 两级证据：同一条记忆里两个关键词同时出现 = 强（+2）；同一个 project 里两条记忆各自的词 = 弱（+1）。
+// 剪枝两道（都在判据里量）：
+//   ① 次数 ≥ 2，偶发一次不算关联；
+//   ② 条件概率 cooc(a,b)/df(a) ≥ 0.25——a 出现十次只有一次带 b，那不算 a 的另一种说法。
+// 共享汉字的词对（自测/自检、切片/片段）只记弱证据：它们可能是真同义，也可能是字面撞车，
+// 一律排除会丢掉「自测≡自检」这种真桥，一律算强又会把字面族噪声顶上来，所以降到 +1 让它自己争。
+var COOC_W_SAME = 2;
+// 同 project 那层只算「跨文档」：一条记忆的关键词与同项目里**别的**记忆的关键词相交才算，
+// 同一条内部的词对不重复计——否则「同一条 + 同 project」会自动凑到 2 分，
+// 共享汉字的降权就等于没降。实现上每条记忆与「本项目所有词的并集减掉自己」交叉，
+// 双向各记一次，所以一对词「在两条记忆里各出现一次」净得 2 分，正好够线；
+// 「只出现在同一条里」得 0 分（那是同条层的活，权重 2）。
+var COOC_W_PROJ = 1;
+var COOC_SHARE_HAN_W = 1;
+var COOC_MIN_COUNT = 2;
+var COOC_MIN_RATIO = 0.25;
+var COOC_TOP_PER_TERM = 6;
+
+// keywords 字段有两种形态：真数组，或者一整串（逗号/顿号分隔，个别是 JSON 字符串）。
+// 这里要的是原词，不是 tokenize 出来的 bigram——「阴性对照」必须保持四个字。
+function coocWordsOf(d) {
+  const raw = d && d.keywords;
+  let list = [];
+  if (Array.isArray(raw)) list = raw;
+  else if (typeof raw === "string" && raw.trim().length > 0) {
+    const t = raw.trim();
+    if (t.startsWith("[")) {
+      try {
+        const j = JSON.parse(t);
+        list = Array.isArray(j) ? j : t.split(/[,，、;；]/);
+      } catch {
+        list = t.split(/[,，、;；]/);
+      }
+    } else list = t.split(/[,，、;；]/);
+  }
+  const out = [];
+  for (const w of list) {
+    const s = String(w ?? "").trim();
+    if (s.length < 2 || s.length > 8) continue;
+    if (!/[\u4e00-\u9fff]/.test(s) && !/^[a-zA-Z][a-zA-Z0-9_.-]{2,}$/.test(s)) continue;
+    if (/^[0-9.]+$/.test(s)) continue;
+    if (!out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+function coocShareHan(a, b) {
+  if (!/[\u4e00-\u9fff]/.test(a) || !/[\u4e00-\u9fff]/.test(b)) return false;
+  for (const ch of a) if (b.includes(ch)) return true;
+  return false;
+}
+
+function buildCoocSyn(docs, n) {
+  const pairs = new Map();
+  // 两级证据分别记账：同条层（强）与项目层（弱）各一张表，最后按「强在前、弱补位」合流。
+  // 混在一张表里按比例排序的话，项目层的词会把同条层的桥词挤出前六——实测宽池换说法因此从
+  // 14/14 掉回 13/14（救回来的那一题正是被项目层顶掉的）。
+  const projPairs = new Map();
+  const bumpIn = (map, a, b, w) => {
+    const cur = map.get(a);
+    if (cur === void 0) map.set(a, /* @__PURE__ */ new Map([[b, w]]));
+    else cur.set(b, (cur.get(b) ?? 0) + w);
+  };
+  const pairUp = (list, w) => {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        if (a === b) continue;
+        const ww = coocShareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w;
+        bumpIn(pairs, a, b, ww);
+        bumpIn(pairs, b, a, ww);
+      }
+    }
+  };
+  const kwDf = new Map();
+  for (const d of docs) {
+    const words = coocWordsOf(d);
+    if (words.length === 0) continue;
+    for (const w of words) kwDf.set(w, (kwDf.get(w) ?? 0) + 1);
+    pairUp(words, COOC_W_SAME);
+  }
+  const byProject = new Map();
+  for (const d of docs) {
+    const words = coocWordsOf(d);
+    if (words.length === 0) continue;
+    const p = String(d.project ?? "全局");
+    if (!byProject.has(p)) byProject.set(p, []);
+    byProject.get(p).push(words);
+  }
+  for (const [, list] of byProject) {
+    if (list.length < 2) continue;
+    const union = new Set();
+    for (const ws of list) for (const w of ws) union.add(w);
+    const unionArr = [...union];
+    for (const ws of list) {
+      const self = new Set(ws);
+      const others = unionArr.filter((w) => !self.has(w));
+      if (others.length === 0) continue;
+      for (const a of ws) {
+        for (const b of others) {
+          const ww = coocShareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
+          bumpIn(projPairs, a, b, ww);
+          bumpIn(projPairs, b, a, ww);
+        }
+      }
+    }
+  }
+  // 一张表的门与排序：次数、条件概率、比例降序。
+  const pickFrom = (map, a, dfa) => {
+    const others = map && map.get(a);
+    if (!others || dfa <= 0) return [];
+    const keep = [];
+    for (const [b, c] of others) {
+      if (c < COOC_MIN_COUNT) continue;
+      const ratio = c / dfa;
+      if (ratio < COOC_MIN_RATIO) continue;
+      keep.push([b, ratio]);
+    }
+    keep.sort((x, y) => y[1] - x[1]);
+    return keep.map(([b]) => b);
+  };
+  const out = new Map();
+  const terms = /* @__PURE__ */ new Set([...pairs.keys(), ...projPairs.keys()]);
+  for (const a of terms) {
+    const dfa = kwDf.get(a) ?? 0;
+    if (dfa <= 0) continue;
+    const strong = pickFrom(pairs, a, dfa);
+    const weak = pickFrom(projPairs, a, dfa);
+    if (strong.length === 0 && weak.length === 0) continue;
+    const seen = new Set();
+    const list = [];
+    for (const w of strong.concat(weak)) {
+      if (seen.has(w)) continue;
+      seen.add(w);
+      list.push(w);
+    }
+    out.set(a, list.slice(0, COOC_TOP_PER_TERM));
+  }
+  return out.size > 0 ? out : null;
+}
+
 function buildSearchIndex(docs, opts = {}, sig = null) {
   const n = docs.length;
   const useField = opts.fieldBoost !== false;
@@ -2576,11 +2782,14 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   }
   const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? '')))) : null;
   const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ''))))) : null;
+  // [macro-fusion 0.4.0 · P5] 共现表跟索引一起建（库一变就重算，不需要额外失效逻辑）。
+  // coocLearn:false 一键回到「只有手工表」的旧口径，用来做开/关对照。
+  const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n);
   return {
     __n: n,
     __sig: sig ?? indexSignature(docs),
-    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}`,
-    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField
+    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}`,
+    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn
   };
 }
 
@@ -2592,7 +2801,7 @@ const SEARCH_INDEX_CACHE_MAX = 4;
 const searchIndexCache = new Map();
 
 function indexPathKey(docs, opts) {
-  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}`;
+  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}`;
 }
 
 // 调用方也可以直接传 opts.index（自己缓存那张表）；签名或口径对不上就自己重建——
@@ -2601,7 +2810,7 @@ function searchIndexOf(docs, opts) {
   const key = indexPathKey(docs, opts);
   const given = opts.index;
   if (given && given.__n === docs.length && given.__sig === indexSignature(docs) &&
-      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}`) {
+      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.coocLearn === false ? 0 : 1}`) {
     return given;
   }
   if (opts.cache === false) return buildSearchIndex(docs, opts, key);
@@ -2650,7 +2859,7 @@ function search(query, docs, opts = {}) {
   if (q.length === 0 && idents.length === 0) return [];
   // [macro-fusion 0.2.153] 切词与建表挪进索引：这部分跟「问什么」无关，只跟「库里有什么」有关。
   const index = searchIndexOf(docs, opts);
-  const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings } = index;
+  const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn } = index;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
   const COORD_W = Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF;
@@ -2678,7 +2887,10 @@ function search(query, docs, opts = {}) {
   }
   const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
   // 同义扩词只扩问句：表里没有的词、库里 df=0 的词都不进（扩了也没人能命中，白算一遍）。
-  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df);
+  // [macro-fusion 0.4.0 · P5] 第四参是索引随库自建出来的共现表——手工表管「人确定过的说法」，
+  // 共现表管「库里自己长出来的说法」。opts.coocLearn === false 时 index.coocSyn 为 null，
+  // 这里就干净地退回只有手工表的老行为。
+  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn);
   const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;
   // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
   const coverLenRelief = Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF;
@@ -4066,6 +4278,11 @@ function searchTool(dir) {
           type: "boolean",
           default: true,
           description: "\u9ed8\u8ba4\u53ea\u7ed9\u548c\u699c\u9996\u540c\u4e00\u91cf\u7ea7\u7684\u547d\u4e2d\uff08\u5206\u6570\u4e0d\u5230\u699c\u9996 85% \u7684\u6574\u6279\u6536\u53e3\uff09\uff1b\u4f20 false = \u8fde\u4f4e\u5206\u5019\u9009\u4e00\u5e76\u5c55\u5f00\u3002"
+        },
+        internal: {
+          type: "boolean",
+          default: false,
+          description: "只给插件内部诊断用（例如写完一条记忆后检查是否该巩固）：这次查询不进本会话的「已端给你看过」账，也不计召回次数。模型不该传它。"
         }
       }
     },
@@ -4330,8 +4547,14 @@ function searchTool(dir) {
         fresh.push(h);
       }
       const hits = [...blind, ...fresh];
-      for (const h of hits) db.bumpHit(h.level, h.id);
-      markSearched(workspace, sessionId ?? "unknown", hits.map((h) => h.id), dir);
+      // [macro-fusion 0.4.0] internal=true：插件自己的诊断查询不算「这一轮端给用户看过」。
+      // 不关的话，写完一条紧接着问 memory_search({mode:"similar", id})，候选会被这批记成已看过而排空，
+      // 回执变成「可比的候选一条都没有」；同时 bumpHit 会抬 hit_count，让「召回过但没人读」这类通胀指标失真。
+      // 默认 false = 对外查询照旧记账；只有 flow.tryCall 直连 bridge 才传得进来（macro 侧检索工具的参数是白名单）。
+      if (parsed.internal !== true) {
+        for (const h of hits) db.bumpHit(h.level, h.id);
+        markSearched(workspace, sessionId ?? "unknown", hits.map((h) => h.id), dir);
+      }
       const reordered = [...hits].sort((a, b) => (b.score - a.score) || ((b.updated_at ?? 0) - (a.updated_at ?? 0)));
       // [macro-fusion 0.2.123] context=N：给每条命中带上同层相邻的 N 条（默认 0，一个字节都不多花）
       const ctxSpan = Math.min(3, Math.max(0, Math.trunc(Number(parsed.context ?? 0)) || 0));
@@ -4663,6 +4886,9 @@ function readTool(dir) {
       }
       const { row } = found;
       markAccessed(workspace, sessionIdOf(exec) ?? "unknown", [row.id], dir);
+      // [macro-fusion 0.4.0] 读到正文才记一次 read：这是 unused 体检（hit_count>0 却从没读过）
+      // 唯一的记账点，所以只放在这里——检索、注入、面板都不许冒充「读」。
+      db.bumpRead(row.level, row.id);
       return {
         found: true,
         id: row.id,
@@ -9540,7 +9766,16 @@ export {
   QUESTION_FRAME,
   SYN_GROUPS,
   SYN_W,
+  SYN_MAX_DF_RATIO,
+  SYN_MAX_PER_TERM,
   synExpandOf,
+  COOC_W_SAME,
+  COOC_W_PROJ,
+  COOC_SHARE_HAN_W,
+  COOC_MIN_COUNT,
+  COOC_MIN_RATIO,
+  COOC_TOP_PER_TERM,
+  buildCoocSyn,
   identsOf,
   timeAnchorOf,
   TIME_ANCHOR_RE,

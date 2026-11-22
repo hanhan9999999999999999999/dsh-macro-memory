@@ -183,6 +183,93 @@ else {
 console.log('\n== 补丁账本 ==')
 const PATCHES = [
   {
+    marker: '[macro-fusion 0.4.0]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: [
+      "内部诊断查询不该替用户「看过」（0.4.0）：写入端巩固（P2）在每次 memory_remember 之后打两枪 memory_search 判「该不该把同话题几条并成一条摘要」，而 meow 的检索在成功路径上顺手做两件事——db.bumpHit 抬召回次数、markSearched 把这一批 id 写进 .dsh-meow/seen-<session>.json。于是用户写完一条紧接着问「跟这条像的有哪些」（memory_search 的 mode=similar）时，候选被上一次内部查询排空，回执变成「可比的候选一条都没有」；hit_count 也被抬起，让「召回过但从没人读」这类通胀指标从第一天起就是脏的。",
+      "病在「多发了一枪查询」这件事在计数上完全正确、在状态上却是破坏性的：探针把 search 的调用次数数得清清楚楚（2 次），桩里的 search 没有副作用，所以九条判据加十二支探针全绿，最后是既有的 H6（写完一条问相似）替它挡的刀。",
+      "修法：给 memory_search 加 internal: { type: 'boolean', default: false }，schema 描述写清「只给插件内部诊断用……模型不该传它」；命中之后包一层 if (parsed.internal !== true) { bumpHit…; markSearched… }。默认 false = 一切对外查询照旧记账，一个字不改。",
+      "为什么不干脆 releaseSeen(workspace, sessionId, dir)：它整批清空 injected + searched，会把真正的「防重复端」账本一起洗掉，比不修更坏。为什么不伪造旁路会话：插件层（lib/client.js）没有 sessionId 通路，宿主从 exec 推断给 meow，伪造不了。",
+      "模型拿不到这个参数：macro 侧 createSearch 的参数是白名单，只有 flow.tryCall 直连 bridge 才传得进来。",
+      "基准：verify.mjs 的 A58c 三条 co:（开关默认 false 且照旧记账 / internal 关的是 bumpHit 与 markSearched 两件事 / 巩固两枪都传 internal: true 而主写入与更新一个字都不带）+ tools/probe-consolidate.mjs 的 P11 与 P11b（桩里直接看 payload.internal）；tools/probe-graph.mjs 的 H6 从 FAIL（工具 NaN）回到 PASS（面板 1 / 工具 0.42）。",
+    ].join('\n\n'),
+  },
+  {
+    marker: '[macro-fusion 0.4.0]',
+    file: 'vendor/dsh-memory-nebula/lib/host/graph.js',
+    what: [
+      "写入端通胀体检（0.4.0，P2.5）：记忆体检原来只有六个 kind（重复/该更新/关系凑数/超重/没人读/孤立），六把尺子量的都是「库里已经躺着的东西」的形状，没有一把量「写进来的一直在变多、收成结论的却没变」。这一段加三把：selfecho（关键词逐字出现在正文里的比例 > 0.7 报「关键词自证」——那些词靠 BM25 本来就能命中，等于没扩召回面）、unused（hit_count > 0 却 read_count 为 0，报「召回过没人读」——排进候选但没人真去读）、inflate（近 30 天 fact 增速 > 结论层 rules/lesson 增速 3 倍且至少 6 条，报「写得多收得少」）。",
+      "三把尺子都是比值/对照，不是绝对量：selfecho 带 SELF_ECHO_MIN_KW = 3（关键词不到 3 个时 1/2 = 50% 不是信号），严格 rate <= 0.7 不报；inflate 带 INFLATE_MIN = 6（库里一共 3 条 fact 谈不上通胀），条件写成 factNew > semNew * INFLATE_RATIO（严格大于，6/2 恰好 3 倍不报）。",
+      "unused 的过滤器刻意要求 typeof n.reads === 'number'：read_count 是 0.4.0 才进 meow 表的字段，adapter 拿不到列就填 undefined，别的适配器（文件库/外部）根本没有这个概念——不做这个判断，hits 一有就整类假阳。",
+      "inflate 命中时只产出一行，且 id 为空串：它是整库一个判断，不是某条记忆的属性，面板不许把它当可跳转的条目渲染。",
+      "为什么这件事必须同时改三处：判定在 vendor 的 graph.js、白名单在 lib/macro/defs/admin.js 的 HYGIENE_KINDS（与 schema enum 必须同序）、渲染在 vendor 的 web/app.js 的 HORDER/HMIN。少一处就出现「工具能传、面板不显示」或「面板有、模型传不进去」。记账从 0.4.0 起：更早的库 read_count 全为 0，unused 对老库偏大（回执 hint 里已写明）。",
+      "基准：verify.mjs 的 A58d 十三条 hy:（九类元数据 / selfecho 三态 / unused 三态 / reads 缺字段不参与 / inflate 阳性与 6/2 阴性对照 / 只给一行且 id 空 / 白名单与 enum 同序九项 / counts 求和 / bumpRead 恰两处 / 老库补列 / consolidatedNote 抬头四态）+ tools/probe-hygiene.mjs 十八条 H1–H18（含真 sqlite 的 read_count 递增与老库自动补列）。能红证明：注释掉 memory_read 里的 db.bumpRead → H12–H14 红；去掉 unused 过滤器里的 !n.reads → H4 红。",
+    ].join('\n\n'),
+  },
+  {
+    marker: '[macro-fusion 0.4.0]',
+    file: 'lib/macro/supersede.js',
+    what: [
+      "写入端自动取代（0.4.0，P3）：meow 从 0.2.x 起就有 conflictCandidates（同一件事的另一种说法）——但它只在回执里印一段提醒，要不要标 stale 全靠人点。长期库里最伤的不是「有条过期的」，而是「旧结论冒充现状」：它排在前面、读起来一样笃定。这一段把「判」与「处置」接起来：判在 lib/macro/supersede.js（新文件，在 lib/macro/ 下、不在 defs/ 里——defs 只放工具定义，verify 的结构判据数它恰好 8 个文件），处置复用 0.2.117 的 markSuperseded，不新开一条写路。",
+      "判据刻意窄：只吃硬事实五类——版本号不同、日期不同、状态词反转（一边「已落地」一边「未开始」）、同一单位的数值不同、同一文件名换了目录。不吃「读起来像」：宁可漏报，也不能把两条说的是不同对象的话判成互相顶掉（误杀会让人丢掉一条真结论，漏报只是少一条建议）。",
+      "两处门槛不是一回事：相似度 SUPERSEDE_SIM = 0.3（跟 meow 的 CONFLICT_SIM 同值，低于这个连候选都不算）；数值与路径两类另要 SUPERSEDE_REPEAT = 0.5（逐字重复度）——因为「3 条」「tools/x.mjs」这种 token 满库都是，光靠相似度会天天撞。版本/日期/状态不吃第二道门槛：它们是硬事实，重复度低也照样是改口。",
+      "VERSION_TOKEN 与 DATE_TOKEN 与 meow 里那两条逐字相同（verify 的 as: 判据直接把两侧字面量抓出来比）。为什么不去 import meow 的：那两个是模块内私有常量、没导出，复制一份再钉住字面量，比让它导出一个新 API 更小的改动面。",
+      "三态开关 autoSupersede：off 连检索那一枪都不打（关一个开关不该仍收成本）；suggest（默认）只把建议贴在回执尾部、一个字不动库，并给可照抄的 supersedes 写法；apply 才真走 markSuperseded。写错的值一律当 off——这个开关会改别人记忆的状态，配错必须退到最保守那一档（与 consolidateMode 同一条纪律）。",
+      "skip 集同时认完整 id 与短 id：人已经用 supersedes 点名的那几条不再出现在建议里（他刚处置过），刚写的这条也不能建议取代自己。",
+      "上限 3 条：多出来的不硬塞进回执，也不假装处置了。",
+      "位置在 lib/macro/defs/remember.js 的 execute 里：人点名的 markSuperseded 之后、applyLinks 之前、巩固之前——巩固材料里不该出现刚被顶掉的那条（与 0.2.x 的顺序理由同源）。",
+      "基准：verify.mjs 的 A58e 十四条 as:（三态 / 五类阳性与阴性 / sim<0.3 / repeat<0.5 / skip 两种写法 / 上限 3 / 无候选不加字 / 抬头文案 / 两条正则与 meow 逐字相同 / 写入路径接线 / 配置三处同值）+ tools/probe-supersede.mjs 十五条 S1–S15（桩 flow 数调用：off 零检索、suggest 一枪 internal 且零 update、apply 真标 stale、人点名的不重复建议、与 meow 的 conflictCandidates 同结论）。能红证明：把 suggest 分支改成也走 markSuperseded → S2 红；去掉 repeat 门槛 → S7 红。",
+    ].join('\n\n'),
+  },
+  {
+    marker: '[macro-fusion 0.4.0]',
+    file: 'vendor/dsh-memory-nebula/lib/host/entities.js',
+    what: [
+      "实体层（0.4.0，P4）：星图一直只连「记忆↔记忆」，问「关于 X 的一切」只能靠关键词命中。两条记忆都写着 lib/macro/supersede.js，它们之间会长一条 entity 边（text.js 的 ENT_RULES 抽出来的 file 实体），但「这条路径出现在哪些记忆里」这件事没人答得出——面板问不出，召回也没法从「用户提了这条路径」直接跳到那一组记忆。这个文件把实体抽成独立一层。",
+      "为什么不把实体做成节点：nodes 的口径是「记忆」——节点数、平均度数、孤立数、聚类、召回结果位、nebula_inspect 的分页全按它算。混进 400 个实体节点，这些读数一起改写，召回还要在每一处过滤「这条是实体不是记忆」。所以层里只有可序列化的裸数据 list，不参与任何图算法；回滚是一条 entityLayer: false。",
+      "只收四类硬事实：project（记忆自带字段，人写的）、path（盘符路径与 ≥2 段斜杠路径，限定后缀白名单）、tool（memory_/nebula_/macro_/dsh_ 前缀）、version（三段版本号）。刻意不收人名与普通名词——那要靠分词与统计，抽错一次就把两条无关记忆连上，而星图的错边比缺边贵得多：缺边只是少一条路，错边会把「关于 X 的一切」混进别的东西。",
+      "四个上限都是「防止层变成第二个图」：ENTITY_MIN_MEMBERS = 2（只出现一次的不是锚点，是指纹）、ENTITY_MAX = 400（按成员数降序取前 400）、ENTITY_PER_NODE = 6（一条记忆挂太多实体等于没挂）、ENTITY_MIN_LABEL = 4（p1 这种两字项目名会把半个库连成一团）。",
+      "键是 type|value，索引要能自愈：图缓存存的是 JSON，Map 存不住，所以 indexOf(layer) 每次从 list 现建 byKey/byNode（400 条是微秒级），ensureLayer 见到 byKey 不是 Map 就重建。不这么做，重启之后实体层会「在但查不到」，召回静默退回旧行为。",
+      "基准：verify.mjs 的 A58f 十四条 as:（四类 KIND 排序 / minMembers 两态 / 短名不收 / 四常量 / JSON 往返 + indexOf / 层不进 nodes-edges / 关层开关 / HARD_EDGE 字面 / 第二跳能量来源 / hops 三数 / entities 回执 / 缓存与指纹 / 工具两参数两环境变量 / 门槛只在 hop≥1）+ tools/probe-entity.mjs 的 E1–E31。能红证明：把 graph.js 里 input.entityLayer === false 写成 false → E29 红。",
+    ].join('\n\n'),
+  },
+  {
+    marker: '[macro-fusion 0.4.0 · P4]',
+    file: 'vendor/dsh-memory-nebula/lib/host/recall.js',
+    what: [
+      "动态跳数 + 实体种子（0.4.0，P4）：扩散原来只看「这条边长不长」，不看「这次查询和那个邻居还有没有关系」，于是第二跳会把整片无关记忆一起带进来。现在 hop >= 1 时先算 matchOf(j)——查询词与该节点词袋的交集 / min(qTokens.size, 6)，实体成员直接算 1；低于 DYNAMIC_MIN_MATCH = 0.2 就 skipped++ 并跳过，有关系也不是全给：gain *= 0.45 + 0.55 * m。",
+      "硬边不看词面：HARD_EDGE = {explicit, entity, project} 三条照走——人工策展是人的判断、同实体是同一个标识、跨项目是同一个项目名，这三样都不是「读起来像」。所以「星图不该被词面砍掉人的判断」这条在实现里是白名单，不是调参。",
+      "门槛只在 hop >= 1 生效：第一跳是星图最基本的语义（词面本来就该先抓），被它砍掉就不是星图了。dynamicHops 关掉时 skippedNeighbors 与 stoppedAt 都归零，回执如实说「没开」，不假装省了。",
+      "顺带修掉一个既有沉默 bug（不是 P4 引入）：扩散循环里 const e0 = energy[from]，而 energy[] 只在种子阶段写过（:265/:275/:295/:321）。第二跳的 frontier 全是非种子节点，e0 恒为 0，被 if (e0 < 0.06) continue 整片跳过 → next.size === 0 → break。也就是说 MAX_HOPS = 2 与「二跳再打一次」的注释一直是空的，hops: 2 的实际效果就是 hops: 1，而没有任何一条判据发现过它（探针都只问「一跳能不能捞到」）。修法是 const e0 = hop === 0 ? energy[from] : propagate[from] || 0——propagate[] 正是上一跳给它算出的最大 gain。",
+      "回执三个数一起报：hops: { asked, used, stoppedAt, skippedNeighbors, dynamic }。只说「省了」会掩盖「变笨了」；用户看到「问 2 跳 / 走 1 跳 / 砍掉 7 条邻居」才知道这次是「没有相关的」还是「被砍了」。",
+      "一个必须诚实写下的实测上限：纯 Hebbian 共激活边权重封顶 0.440（2 session 0.389，4/8/16 session 0.440），两跳衰减后 spread * 0.62 只有 0.309 × 0.44 × 0.58 × 0.62 ≈ 0.049，正好卡在合成阶段 total < 0.05 门槛下面——「拦掉串味邻居」省的是计算，不是结果，那些条目本来就进不了结果集。所以 E21 量「拦没拦」、E23 量「结果集与不拦时完全一致（没丢东西）」，不假设串味条目一定进得来；第二跳真能产出条目靠强链路（explicit w=1 → m:3@0.111）。",
+      "基准：tools/probe-entity.mjs 的 E21/E22/E23/E24/E31 + verify.mjs 的 A58f。能红证明：把 e0 回退成 energy[from] → E21/E22/E24/E31 红（dyn=0 full=0、used:1）；把 !HARD_EDGE.has(link.type) 去掉 → E23/E24 红（on=m:1,m:2 off=m:1,m:2,m:4）。",
+    ].join('\n\n'),
+  },
+  {
+    marker: '[macro-fusion 0.4.0 · P4]',
+    file: 'vendor/dsh-memory-nebula/lib/host/graphcache.js',
+    what: [
+      "缓存要跟着实体层一起失效与落盘（0.4.0，P4）：IMPL_FILES 从 ['graph.js','text.js'] 扩成 ['graph.js','text.js','entities.js']——建图算法指纹不只管图算法，实体抽取规则改了同样是「输出会变」。少这一项，改了 entities.js 之后老缓存照样命中，实体层按旧规则呈现，而这种不一致不会报错。",
+      "entityLayer 必须进 saveGraphCache 的 graph 字段：缓存只存 nodes/edges/stats 的话，重启后实体层悄悄消失，召回静默退回「只按词面找邻居」——又是一次沉默降级。落盘时以 graph.entityLayer || null 兜底，老缓存读回来是 undefined 也不炸。",
+      "VERSION 停在 4：v8 序列化对多字段没有兼容问题，多一个 entityLayer 只是多一段 JSON；抬版本会让所有人的缓存无条件重建一次，而这次改动不需要。",
+      "基准：verify.mjs 的 A58f 里「缓存 entityLayer + IMPL_FILES 正则」与 probe-entity 的 E27/E28（缓存往返自愈、指纹含 entities.js）。",
+    ].join('\n\n'),
+  },
+  {
+    marker: '[macro-fusion 0.4.0 · P5]',
+    file: 'vendor/meow-memory/lib/index.js',
+    what: [
+      "共现自学习扩词（0.4.0，P5）：换说法档的高分原来全靠 SYN_GROUPS 那张手工表，主人一句话点破——「出现新的情况就无法适应了不是吗」。这一段把等价说法从人手里的表搬到库里的 keywords：buildCoocSyn(docs, n) 从每条记忆的 keywords 建共现表，库带来什么词，桥就从什么词上长。",
+      "第一版做错过一次，值得留档：从 tokenize 的 bigram 上统计共现，实测真库 635 条里 22,956 个 token 只长出 223 个词，全是「地全→门读」「名空→空间」这类跨词碎片，14 条换说法问句一条都没扩到。根因是 meow 的 tokenize 是滑窗二元组，它没有「词」的概念——词面这一层根本没有可比的东西可用，只能借人写下的 keywords。",
+      "两级证据：同一条记忆里的两个词 +COOC_W_SAME(2)，一次就过线；同 project 只认跨文档（每条记忆与「本项目所有词的并集减掉自己」交叉，双向各记一次 → 一对词在两条记忆里各出现一次净得 2 分）。为什么不直接把 project 并集 pairUp 一次：那样「同一条 + 同 project」会自动凑到 2 分，共享汉字的降权（COOC_SHARE_HAN_W=1）就等于没降。",
+      "三道门：次数 COOC_MIN_COUNT=2、条件概率 COOC_MIN_RATIO=0.25（count/df，同条一次就是 2，所以要让比例掉下去只能把 df 做大）、共享汉字降到 1（自测/自检 这种只差一个字的不是「两种叫法」，要两条记忆反复出现才算数）；再加形态门（2–8 字、纯数字丢、没中文的必须是小写标识符）与每词 COOC_TOP_PER_TERM=6 的上限——扩词是桥，不是主力。",
+      "合流与开关：synExpandOf(qTerms, df, n, cooc) 第四参是索引自建的共现表，手工表在前、共现表在后，一共最多 SYN_MAX_PER_TERM=6 个；coocLearn:false 时索引里根本不建表（不是「有表不用」），synBridge:false 是整层回滚。缓存键与 __opts 比较串都带上 coocLearn 位——少这一位，两种口径会共一张表、互相串答案。",
+      "读数（2026-11-22，零 LLM）：窄池 40 条换说法 0.929 不动、宽池 146 条 0.929→1.000（14/14，关掉共现退回 0.929）、真库 635 条 40 问 hit@1 0.925 不动。宽池比窄池好这件事本身就是证据：共现要样本，库越大越连得上（probe-cooc 的 K5 是这个性质的微缩版）。代价是这件事只能救「库里出现过的词」——自测/反省/远端那几个桥词在 keywords 里 df=0，任何「从库里统计」的机制都学不到，那是词典问题不是检索问题。",
+      "基准：tools/probe-cooc.mjs（K1 词源 / K2 两级证据 / K3 三道门 / K4 真进召回 / K5 大库更准 / K6 常量与开关，18 条）、verify.mjs 的 A58g 14 条、probe-gold 的 G-W4（宽池增量必须能归因到共现：关掉就消失）、probe-cost 的 C5b/C5c（关共现逐位回到冻结快照，开共现至少一问不同）。",
+    ].join('\n\n'),
+  },
+  {
     marker: '[macro-fusion 0.2.118]',
     file: 'lib/macro/fusion.js',
     what: [
