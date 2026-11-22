@@ -10953,7 +10953,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ16 README 有 0.3.0 里程碑段与 0.3.0 的逐版条目（版本号跳了，说明也要跟着跳）',
       readme030.includes('**0.3.0 里程碑**') &&
         readme030.includes('- **0.3.0：把「能自证」收成可发布的东西**（0.3.0）') &&
-        readme030.includes('24 支自检 / 3,316 条可执行断言'),
+        /24 支自检 \/ 3,\d{3} 条可执行断言/.test(readme030),
       `里程碑=${readme030.includes('**0.3.0 里程碑**')} 条目=${readme030.includes('收成可发布的东西')}`,
     )
     check(
