@@ -2065,6 +2065,44 @@ var LEVEL_INTENT_RATIO = 0.5;
 // 背景叙述里没有它。只在问句是求值型（该写/该填/几个/几轮/多少）时开，且只抬不在榜首的条目：
 // 榜首本来就是它要说的话，再抬一次只会把别处的正解压得更深。
 var TIP_ASSERT_W = 1.2;
+// [macro-fusion 0.2.176] 状态问句直通「现状仓」：问「现在到哪一版」时，答案不在字面里——
+// 问句是「主线/推进/哪一版」，条目写的是「项目现状（0.2.175）…HEAD dcbebbe」，一个词都不重合。
+// 实测真库 581 条池里那条 pos=-1（连候选都不是），读者拿到的是「分级放行」这种阶段偏好。
+// 做法不是加大同义词表（那是拿一题一题喂出来的），而是承认这类问法问的是「当前局面」，
+// 由 project 层里标记为现状/待办的那条按 updated_at 最新者直答。
+// 两道自限：问句点了标识符（有 verbHay）就交回词法；问句在问原因/方法（为什么/怎么/要不要）
+// 就不是问状态，不干预——否则「现在这个参数为什么是 0.25」会被塞一条项目现状。
+var STATUS_RE = /到哪一版|推进到|进展到|主线停在哪|当前待办|现在待办|项目现状|现状如何|现状是什么|现在什么情况|截至|最近一次|最新版本/;
+var STATUS_OFF_RE = /为什么|怎么|如何|缘由|踩过|技巧|办法|该不该|要不要|能不能|可不可以|是否/;
+var STATUS_TODO_RE = /待办|todo/i;
+var STATUS_NOW_RE = /项目现状|到哪一版|进展|推进到|最新版本|截至|最近一次/;
+var STATUS_DIGEST_MAX = 3;
+function statusDigestOf(docs, query, hasIdent, opts) {
+  if (opts.statusDigest === false) return null;
+  if (hasIdent) return null;
+  const q = String(query ?? "");
+  if (!STATUS_RE.test(q) || STATUS_OFF_RE.test(q)) return null;
+  // 问哪个仓就只翻哪个仓：问「待办」时拿「项目现状」那条来答，读起来像答非所问。
+  const wants = [];
+  if (STATUS_TODO_RE.test(q)) wants.push(/待办/);
+  if (STATUS_NOW_RE.test(q)) wants.push(/项目现状/);
+  if (wants.length === 0) return null;
+  const picked = [];
+  for (let di = 0; di < docs.length; di++) {
+    const d = docs[di];
+    if (String(d?.level ?? "") !== "project") continue;
+    const kw = Array.isArray(d.keywords) ? d.keywords.join(" ") : "";
+    const hay = kw + " " + String(d.content ?? "").slice(0, 40);
+    if (!wants.some((re) => re.test(hay))) continue;
+    const t = Number(d.updated_at ?? d.created_at ?? 0) || 0;
+    picked.push({ di, t });
+  }
+  if (picked.length === 0) return null;
+  // 同一个仓往往有多条（「当前待办」按日期整理过几版），只抬一条会让读者看到旧的；
+  // 按 updated_at 降序取前 STATUS_DIGEST_MAX 条一起上浮，都是这一仓的东西，不越权。
+  picked.sort((a, b) => b.t - a.t);
+  return picked.slice(0, STATUS_DIGEST_MAX).map((x) => x.di);
+}
 var TIP_RE = /该写|该填|写什么值|要改几个|改几个|要改几条|改几条|几轮|要跑几|几条要改|哪个值/;
 var ASSERT_RE = /必须是|一律|只认|只有|至少|一定|不许|绝不|禁止|都要|全都|统一|固定为|只能是|必须|务必/g;
 function tipAssertOn(text) {
@@ -2706,8 +2744,9 @@ function search(query, docs, opts = {}) {
   };
   const lvIntent = intentLevelsOf(query);
   const tipOn = tipAssertOn(query) && opts.tipAssert !== false;
+  const statusDig = statusDigestOf(docs, query, verbHay !== null, opts);
   for (let di = 0; di < docs.length; di++) {
-    if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
+    if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
     const lvHit = lvIntent !== null && lvIntent.has(String(docs[di].level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
@@ -2794,6 +2833,44 @@ function search(query, docs, opts = {}) {
     if (tipAssertW > 0) {
       h.score *= 1 + tipAssertW * tr;
       if (h.explain !== void 0) h.explain.tipAssert = true;
+    }
+  }
+  // [macro-fusion 0.2.176] 现状仓落地：分数跟「榜首的实际分数」走（不跟词分走，它词分可能就是 0），
+  // 只高一头 15%——够进第一档排前面，又不至于把「同一次提问里真正命中标识符」的那条埋掉
+  //（那种问句在 statusDigestOf 里已经被 hasIdent 挡回去了，这里只是不越权）。
+  if (statusDig !== null && statusDig !== void 0) {
+    let topScore = 0;
+    let topRaw = 0;
+    const digIds = new Set(statusDig.map((di) => String(docs[di].id)));
+    for (const h of hits) {
+      if (digIds.has(String(h.id))) continue;
+      if (Number(h.score) > topScore) topScore = Number(h.score);
+      if (Number(h._raw) > topRaw) topRaw = Number(h._raw);
+    }
+    for (let si = 0; si < statusDig.length; si++) {
+      const di = statusDig[si];
+      const digId = String(docs[di].id);
+      const share = 1.15 - si * 0.03;
+      const digScore = topScore > 0 ? topScore * share : share;
+      const digRaw = topRaw > 0 ? topRaw * share : share;
+      const exist = hits.find((h) => String(h.id) === digId);
+      if (exist === void 0) {
+        const d = docs[di];
+        hits.push({
+          ...d,
+          _raw: digRaw,
+          cover: 0,
+          score: digScore,
+          ...opts.explain === true ? { explain: { bm25: 0, statusDigest: true, score: Math.round(digScore * 1e3) / 1e3 } } : {}
+        });
+      } else {
+        if (digRaw > Number(exist._raw)) exist._raw = digRaw;
+        if (digScore > Number(exist.score)) exist.score = digScore;
+        if (exist.explain !== void 0) {
+          exist.explain.statusDigest = true;
+          if (typeof exist.explain.score === "number") exist.explain.score = Math.round(Number(exist.score) * 1e3) / 1e3;
+        }
+      }
     }
   }
   bandize(hits, '_raw');

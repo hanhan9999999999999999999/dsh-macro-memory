@@ -41,12 +41,17 @@ const docs = fx.docs
 const byId = new Map(docs.map((d) => [d.id, d]))
 const K = 5
 
+// 时效题（fixture 里标 live: true）的答案是「此刻库里那条」，冻结快照天然答不了——
+// 以前每过一版就得回去改 want，改的是标注不是引擎，反而把「这题测不出来」这件事藏起来。
+// 现在它们不进分母，只在 miss 里留一行记号，说明「这条要拿真库量，不在这里量」。
 function measure(list, corpus, opts = {}) {
   let h1 = 0
   let h3 = 0
   let mrr = 0
   const miss = []
-  for (const { q, want } of list) {
+  const scored = list.filter((x) => x.live !== true)
+  for (const item of list) if (item.live === true) miss.push({ q: item.q, want: item.want, got: [], rank: -2 })
+  for (const { q, want } of scored) {
     const hits = V.search(q, corpus, { k: K, ...opts })
     const ids = hits.map((h) => String(h.id))
     const rank = ids.findIndex((id) => want.includes(id))
@@ -55,19 +60,19 @@ function measure(list, corpus, opts = {}) {
     mrr += rank >= 0 ? 1 / (rank + 1) : 0
     if (rank !== 0) miss.push({ q, want, got: ids.slice(0, 3), rank })
   }
-  const n = list.length
-  return { n, hit1: h1 / n, hit3: h3 / n, mrr: mrr / n, miss }
+  const n = scored.length
+  return { n, live: list.length - n, hit1: h1 / n, hit3: h3 / n, mrr: mrr / n, miss }
 }
 
 check('G0 语料：40 条样张 + 45 条照抄词问句 + 14 条换说法问句，层与状态都真（不是全 fact 的假语料）',
   docs.length === 40 && fx.queries.length === 45 && fx.paraphrase.length === 14 &&
     new Set(docs.map((d) => d.level)).size >= 3 &&
     docs.some((d) => d.status !== 'active'),
-  `${docs.length} 条 / ${fx.queries.length} 问 + ${fx.paraphrase.length} 换说法 / 层 ${new Set(docs.map((d) => d.level)).size} 种 / 关键词均 ${(docs.reduce((a, d) => a + d.keywords.length, 0) / docs.length).toFixed(1)} 个`)
+  `${docs.length} 条 / ${fx.queries.length} 问（其中 ${fx.queries.filter((q) => q.live === true).length} 条时效题不进分母）+ ${fx.paraphrase.length} 换说法 / 层 ${new Set(docs.map((d) => d.level)).size} 种 / 关键词均 ${(docs.reduce((a, d) => a + d.keywords.length, 0) / docs.length).toFixed(1)} 个`)
 
 const base = measure(fx.queries, docs)
-const fmt = (m) => `hit@1=${m.hit1.toFixed(3)} hit@3=${m.hit3.toFixed(3)} MRR=${m.mrr.toFixed(3)}（${m.n} 问）`
-for (const m of base.miss) console.log(`      未中第 1：rank=${m.rank} ${m.q} → want ${m.want.join('/')}，got ${m.got.join(',')}`)
+const fmt = (m) => `hit@1=${m.hit1.toFixed(3)} hit@3=${m.hit3.toFixed(3)} MRR=${m.mrr.toFixed(3)}（${m.n} 问${m.live ? ` + ${m.live} 条时效题不计分` : ''}）`
+for (const m of base.miss) console.log(m.rank === -2 ? `      时效题（不进分母）：${m.q} → 答案随库变，只在真库量` : `      未中第 1：rank=${m.rank} ${m.q} → want ${m.want.join('/')}，got ${m.got.join(',')}`)
 
 check('G1 hit@1 ≥ 0.88：问自然一句，第一条就得是那条', base.hit1 >= 0.88, fmt(base))
 check('G2 hit@3 ≥ 0.95：排第二和找不到分开记账，前者才是可修的', base.hit3 >= 0.95, `hit@3=${base.hit3.toFixed(3)}`)
@@ -83,7 +88,7 @@ const wideQ = measure(fx.queries, wideDocs)
 const wideP = measure(fx.paraphrase, wideDocs)
 const wideA = measure(fx.anchor, wideDocs)
 const narrowP = measure(fx.paraphrase, docs)
-for (const m of wideQ.miss) console.log(`      宽池未中第 1：rank=${m.rank} ${m.q} → want ${m.want.join('/')}，got ${m.got.join(',')}`)
+for (const m of wideQ.miss) if (m.rank !== -2) console.log(`      宽池未中第 1：rank=${m.rank} ${m.q} → want ${m.want.join('/')}，got ${m.got.join(',')}`)
 check('G-W1 宽池（146 条）照抄档 hit@1 ≥ 0.93：池子放大三倍多，认得出的还得认得出', wideQ.hit1 >= 0.93, `宽池 ${fmt(wideQ)}`)
 check('G-W2 宽池换说法档 hit@1 ≥ 0.71：这一档才是用户真会这么问的样子，不许靠 40 条样张的房间大小拿分', wideP.hit1 >= 0.71, `宽池 ${fmt(wideP)}`)
 check('G-W3 宽池时间锚档 hit@1 ≥ 0.70：问「那一刻」在干扰多的池子里照样要认得出', wideA.hit1 >= 0.7, `宽池 ${fmt(wideA)}`)
@@ -610,8 +615,12 @@ if (denseUsable) {
 
   const wrong = []
   if (!plateauOk) wrong.push('平台内组合与默认不同分（判据不是平台）')
-  if (!(aOld.hit1 <= 0.75 && aOld.mrr < aBase.mrr)) {
-    wrong.push(`旧口径下锚点池没变差（hit@1=${aOld.hit1.toFixed(3)}）——阴性对照失效`)
+  // [0.2.176] 判据从「旧口径 hit@1 ≤ 0.75」改成「比默认更差」：0.75 是照着当年 10 条锚点题
+  // 写死的绝对线（8/10 → 7/10 刚好踩线）。0.2.176 把两条时效题标成 live 之后锚点档变 9 条，
+  // 同一处退步变成 8/9 → 7/9，读数从 0.700 抬到 0.778，硬线就跟「它有没有变差」无关了。
+  // 阴性对照要问的是「这一刀是不是在干活」，那就直接比默认——别写死分母。
+  if (!(aOld.hit1 < aBase.hit1 && aOld.mrr < aBase.mrr)) {
+    wrong.push(`旧口径下锚点池没变差（默认 ${aBase.hit1.toFixed(3)}/${aBase.mrr.toFixed(3)} vs 旧 ${aOld.hit1.toFixed(3)}/${aOld.mrr.toFixed(3)}）——阴性对照失效`)
   }
   if (!(qHot.hit1 < base.hit1)) wrong.push('关键词一路抬到 1/1.2 照抄池也没变差（判据不是门槛）')
   if (drift !== 0) wrong.push(`照抄池 ${drift} 条排名被动了`)
@@ -1032,6 +1041,69 @@ if (denseUsable) {
     'G25 回执的欠账要报出来：账平、名次不动、非枚举、有出口',
     wrong.length === 0,
     wrong.length === 0 ? `折掉 ${t} 条，保留 ${a.length} 条（关掉收口 ${b.length} 条），名次一位不动` : wrong.join(' / '),
+  )
+}
+
+// ── G26（0.2.176）状态问句该去「现状仓」取，不该去词面上撞 ─────────────────────────
+// 真库里问「现在主线推进到哪一版」，答案就一条：project 层那条「项目现状」。
+// 可它跟问句一个词都不重（问句说「主线/推进/哪一版」，条目说「24 支自检/3,249 条断言」），
+// 纯词法连候选都进不去。这不是调参能修的，是「哪类问题该去哪个仓取」的结构问题。
+// 这一条既量它真能取到，也量它不乱动：问原因/问方法不拦、带标识符不拦、问待办时别拿现状来答。
+{
+  const T = (id, level, title, content, kw, upd) => ({
+    id, level, title, content, keywords: kw, importance: 2, status: 'active',
+    project: 'g26', created_at: upd, updated_at: upd, last_accessed_at: upd,
+  })
+  const docs26 = [
+    T('0s26a0001', 'project', '项目现状（0.2.176）', '项目现状（0.2.176）：D:\\dsh-home\\vendor\\dsh-macro-memory，24 支自检全绿，3,249 条断言，HEAD 待定', ['项目现状', '交付态', '整备完毕'], '2026-11-22T10:00:00.000Z'),
+    T('0s26a0005', 'project', '项目现状（0.2.150）', '项目现状（0.2.150）：近分带里 importance 也能改判', ['项目现状', '交付态'], '2026-11-15T10:00:00.000Z'),
+    T('0s26a0002', 'project', '当前待办（2026-11-22 整理）', '当前待办（2026-11-22 整理）：①是否 push ②清理 vecprobe ③重启才吃到新版', ['当前待办', '待办', 'todo'], '2026-11-22T09:00:00.000Z'),
+    T('0s26a0006', 'project', '当前待办（2026-11-20 整理）', '当前待办（2026-11-20 整理）：①宽池换说法档要抬起来 ②稠密接入待评估', ['当前待办', '待办'], '2026-11-20T09:00:00.000Z'),
+    T('0s26a0003', 'lesson', '推送之前要问主人', '推送之前必须问主人点头，不许自己 push 到远端仓库', ['推送', '问主人', '远端仓库'], '2026-11-18T09:00:00.000Z'),
+    T('0s26a0004', 'rules', '上传 GitHub 的规矩', '上传 GitHub 的规矩：只传到主人的仓库，分支不许动 main，要 push 先问', ['上传', 'github', 'push'], '2026-11-19T09:00:00.000Z'),
+    T('0s26a0009', 'topic', '评测线为什么封存', '评测线为什么封存：榜单口径变了三轮，冻结快照答不了时效题，索性封存', ['评测线', '封存', '缘由'], '2026-11-21T09:00:00.000Z'),
+  ]
+  const q1 = '现在主线推进到哪一版'
+  const on1 = V.search(q1, docs26, { k: 3, explain: true })
+  const off1 = V.search(q1, docs26, { k: 3, statusDigest: false, explain: true })
+  const q2 = '现在待办有哪些'
+  const on2 = V.search(q2, docs26, { k: 3 })
+  const off2 = V.search(q2, docs26, { k: 3, statusDigest: false })
+  // 对象问句：问的是「现在这笔规矩怎么算」，不是「现在到哪一步」——现状仓不许插话
+  const q3 = '现在推送欠账什么规矩'
+  const on3 = V.search(q3, docs26, { k: 3 }).map((h) => String(h.id))
+  const off3 = V.search(q3, docs26, { k: 3, statusDigest: false }).map((h) => String(h.id))
+  // 问原因不拦（问的是「为什么」，现状仓答不了）
+  const q4 = '评测线为什么封存'
+  const on4 = V.search(q4, docs26, { k: 3 }).map((h) => String(h.id))
+  // 带标识符不拦：问的是「那一刻」，交回词法与时间锚
+  const q5 = '0.2.150 主线停在哪一版'
+  const on5 = V.search(q5, docs26, { k: 3 }).map((h) => String(h.id))
+  const off5 = V.search(q5, docs26, { k: 3, statusDigest: false }).map((h) => String(h.id))
+
+  const wrong = []
+  const top1 = String(on1[0]?.id)
+  if (top1 !== '0s26a0001') wrong.push(`状态问句没进现状仓（首位 ${top1}）`)
+  if (String(off1[0]?.id) === '0s26a0001') wrong.push('关掉 statusDigest 之后现状仓还在首位——说明不是这一刀在起作用')
+  if (on1.find((h) => String(h.id) === '0s26a0001')?.explain?.statusDigest !== true) wrong.push('被抬的那条 explain 里没有 statusDigest 记号')
+  if (off1.some((h) => h?.explain?.statusDigest === true)) wrong.push('关掉之后 explain 里还留着记号')
+  if (String(on2[0]?.id) !== '0s26a0002') wrong.push(`问待办时首位是 ${String(on2[0]?.id)}，不是最新那条待办`)
+  if (on2.some((h) => String(h.id) === '0s26a0001')) wrong.push('问待办时把「项目现状」也塞进来了——答非所问')
+  // 待办句不能用「关掉就找不到」当阴性对照：问句里「待办」二字与条目标题词面重合，
+  // 关掉这一刀词法照样会选最新那条待办。这里要验的是**分流**——问待办时别把「项目现状」端上来。
+  if (on2.filter((h) => ['0s26a0002', '0s26a0006'].includes(String(h.id))).length < 2) {
+    wrong.push('待办句没把两条待办一起抬上来——只抬一条的旧行为回来了')
+  }
+  if (on3.join(',') !== off3.join(',')) wrong.push('对象问句（现在推送欠账什么规矩）被现状仓动了名次')
+  if (on4[0] !== '0s26a0009') wrong.push(`问「为什么」时现状仓插了话（首位 ${on4[0]}）`)
+  if (on5.join(',') !== off5.join(',')) wrong.push('带版本号的锚点问句被现状仓动了名次')
+
+  check(
+    'G26 状态问句直通现状仓：问「到哪一版」去现状仓取，问待办只翻待办仓，问原因/问某版不插话',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `状态句 首位=${top1}（关掉后 ${String(off1[0]?.id)}）；待办句 首位=${String(on2[0]?.id)}（关掉后 ${String(off2[0]?.id)}）；对象句/原因句/锚点句 关前后逐位相同`
+      : wrong.join(' / '),
   )
 }
 

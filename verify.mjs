@@ -10479,6 +10479,87 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `9.182 在=${internal175.includes('## 9.182')} 187 在=${design175.includes('## 187')}`,
     )
   }
+  // ── HZ11（0.2.176）状态问句直通现状仓，以及那些被否掉的方向不许复活 ──
+  {
+    const eng176 = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+    const gold176 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+    const recall176 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+    const internal176 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+    const design176 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    const fx176 = JSON.parse(readFileSync(join(root, 'tools', 'fixtures', 'gold-recall.json'), 'utf8'))
+    check(
+      'HZ11 局面词是「局面词」，不是时间词：泛时间词一个都不许留在 STATUS_RE 里',
+      eng176.includes('var STATUS_RE = /到哪一版|推进到|进展到|主线停在哪|当前待办|现在待办|项目现状|现状如何|现状是什么|现在什么情况|截至|最近一次|最新版本/;') &&
+        !/var STATUS_RE = \/[^/]*(?<!\u9879\u76ee)(现在|当前|目前|如今|最新)(?![^/]*版本)[^/]*\/;/.test(eng176) &&
+        eng176.includes('var STATUS_NOW_RE = /项目现状|到哪一版|进展|推进到|最新版本|截至|最近一次/;') &&
+        eng176.includes('var STATUS_OFF_RE = /为什么|怎么|如何|缘由|踩过|技巧|办法|该不该|要不要|能不能|可不可以|是否/;') &&
+        eng176.includes('var STATUS_TODO_RE = /待办|todo/i;') &&
+        eng176.includes('var STATUS_DIGEST_MAX = 3;'),
+      `STATUS_RE 在=${eng176.includes('var STATUS_RE = /到哪一版|推进到|进展到')}`,
+    )
+    check(
+      'HZ11 三道自限都在：关得掉、带标识符让路、问原因让路；只扫 project 层',
+      eng176.includes('if (opts.statusDigest === false) return null;') &&
+        eng176.includes('if (hasIdent) return null;') &&
+        eng176.includes('if (!STATUS_RE.test(q) || STATUS_OFF_RE.test(q)) return null;') &&
+        eng176.includes('if (String(d?.level ?? "") !== "project") continue;') &&
+        eng176.includes('picked.sort((a, b) => b.t - a.t);') &&
+        eng176.includes('return picked.slice(0, STATUS_DIGEST_MAX).map((x) => x.di);'),
+      `自限三处在=${eng176.includes('if (hasIdent) return null;')}`,
+    )
+    check(
+      'HZ11 分数跟榜首走而不是跟自己的词分走：词分 0 也要抬得起来（跟词分走就永远是 0）',
+      eng176.includes('const share = 1.15 - si * 0.03;') &&
+        eng176.includes('const digScore = topScore > 0 ? topScore * share : share;') &&
+        eng176.includes('const digRaw = topRaw > 0 ? topRaw * share : share;'),
+      `share 公式在=${eng176.includes('1.15 - si * 0.03')}`,
+    )
+    check(
+      'HZ11 词分为 0 的条目也得进候选：跳过条件要给它留门，否则后面抬它抬的是空气',
+      eng176.includes('!(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))'),
+      `跳过条件已放开=${eng176.includes('statusDig.includes(di)')}`,
+    )
+    check(
+      'HZ11 两处落地：定义一次、调用一次；post-pass 在 bandize 之前（进档前改分才有意义）',
+      (eng176.match(/statusDigestOf\(/g) || []).length === 2 &&
+        eng176.indexOf('const statusDig = statusDigestOf(docs, query, verbHay !== null, opts);') <
+          eng176.indexOf("bandize(hits, '_raw');") &&
+        eng176.includes('explain: { bm25: 0, statusDigest: true, score: Math.round(digScore * 1e3) / 1e3 }'),
+      `statusDigestOf( 出现 ${(eng176.match(/statusDigestOf\(/g) || []).length} 次`,
+    )
+    check(
+      'HZ11 时效题标 live：不进分母，也不许每过一版回去改 want',
+      fx176.queries.some((q) => q.live === true) &&
+        fx176.anchor.some((q) => q.live === true) &&
+        gold176.includes('const scored = list.filter((x) => x.live !== true)') &&
+        gold176.includes('return { n, live: list.length - n,'),
+      `live 题 ${fx176.queries.filter((q) => q.live === true).length + fx176.anchor.filter((q) => q.live === true).length} 条`,
+    )
+    check(
+      'HZ11 阴性对照不再写死分母：G20 改成「比默认更差」，0.75 那条绝对线是照 10 条题写的',
+      gold176.includes('aOld.hit1 < aBase.hit1 && aOld.mrr < aBase.mrr') &&
+        !gold176.includes('aOld.hit1 <= 0.75'),
+      `对照判据已换=${gold176.includes('aOld.hit1 < aBase.hit1')}`,
+    )
+    check(
+      'HZ11 行为探针齐全：G26 状态仓 / R13 状态仓五条 / 文档 9.183 与 188',
+      gold176.includes('G26 状态问句直通现状仓') &&
+        recall176.includes('R13 状态问句去现状仓取') &&
+        recall176.includes('R13 关得掉：statusDigest:false 时它不是第一') &&
+        internal176.includes('## 9.183') &&
+        internal176.includes('去仓里取，别去词面上撞') &&
+        design176.includes('## 188') &&
+        design176.includes('状态是「仓」，不是「词」'),
+      `G26 在=${gold176.includes('G26 ')} R13 在=${recall176.includes('R13 ')} 9.183 在=${internal176.includes('## 9.183')}`,
+    )
+    check(
+      'HZ11 稠密检索的否决写在案上：三档全输的表与结论都在文档里，下一个版本别再探一遍',
+      internal176.includes('稠密检索这三档全输，正式否决') &&
+        internal176.includes('| 照抄 45 | **0.933** | 0.644 |') &&
+        design176.includes('否决也是一等结论'),
+      `否决表在=${internal176.includes('稠密检索这三档全输，正式否决')}`,
+    )
+  }
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10814,8 +10895,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.175（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.175'"),
+    'GV 版本: 代码里是 0.2.176（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.176'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10945,8 +11026,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.175（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.175'"),
+    'GW 版本: 代码里是 0.2.176（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.176'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11093,8 +11174,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.175（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.175'"),
+    'VV 版本: 代码里是 0.2.176（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.176'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11125,7 +11206,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VW6 放行条件放行「无词分但有原样证据」',
-    (MW.match(/if \(raw\[di\] <= 0 && rawVerbatim\[di\] === null\) continue;/g) || []).length === 2,
+    // [0.2.176] 放行条件多了一条出口：现状仓条目词分必然是 0（问句和它一个词都不重），
+    // 它靠 statusDigest 进候选。原来的两处判断留在原处，只在后面接了一段 —— 这里认两种写法。
+    (MW.match(/if \(raw\[di\] <= 0 && rawVerbatim\[di\] === null\) continue;/g) || []).length +
+      (MW.match(/if \(raw\[di\] <= 0 && rawVerbatim\[di\] === null && !\(statusDig !== null/g) || []).length === 2,
   )
   check('VW7 旧的 raw 内补分已撤（raw 里不再出现 identBonus 累加）', !MW.includes('raw[di] += unitRaw * vb.ratio'))
 
@@ -11272,9 +11356,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.175（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.175' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.175'"),
+    'GX19 版本已到 0.2.176（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.176' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.176'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11378,10 +11462,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.175',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.175' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.175'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.175'),
+    'VY15 版本三处一致 0.2.176',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.176' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.176'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.176'),
   )
 }
 
@@ -11429,10 +11513,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.175（三处一致）',
-    pkgWz.version === '0.2.175' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.175'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.175'),
+    'WZ9 版本已到 0.2.176（三处一致）',
+    pkgWz.version === '0.2.176' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.176'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.176'),
   )
 }
 

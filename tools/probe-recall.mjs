@@ -985,6 +985,94 @@ check(
   `默认 ${s12on.toFixed(3)} / 权重0 ${s12zero.toFixed(3)} / 关了 ${s12off.toFixed(3)}`,
 )
 
+// ── R13（0.2.176）状态问句直通现状仓 ────────────────────────────────────────────
+// 真库里问「现在主线推进到哪一版」，要的是一条 project 层的「项目现状」，而它和问句
+// 一个词都不重——纯词法连候选都进不去。这一组用四条受控语料把这件事钉住，顺带钉住「它不乱动」。
+const R13_DOCS = [
+  {
+    id: '0r13a0001',
+    level: 'project',
+    content: '项目现状（0.2.176）：24 支自检全绿，成本快照已换代，这一轮整备完毕。',
+    title: '',
+    keywords: ['项目现状', '交付态'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1763e9,
+    last_accessed_at: 1763e9,
+  },
+  {
+    id: '0r13a0002',
+    level: 'project',
+    content: '当前待办（2026-11-22 整理）：①是否推远端 ②清理临时模型目录 ③重启才吃到新版。',
+    title: '',
+    keywords: ['当前待办', '待办'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1762e9,
+    last_accessed_at: 1762e9,
+  },
+  {
+    id: '0r13a0003',
+    level: 'lesson',
+    content: '推送之前必须问主人点头，不许自己往远端仓库推。',
+    title: '',
+    keywords: ['推送', '问主人', '远端仓库'],
+    importance: 3,
+    status: 'active',
+    updated_at: 1761e9,
+    last_accessed_at: 1761e9,
+  },
+  {
+    id: '0r13a0004',
+    level: 'topic',
+    content: '评测线为什么封存：榜单口径变了三轮，冻结快照答不了时效题，索性封存。',
+    title: '',
+    keywords: ['评测线', '封存', '缘由'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1760e9,
+    last_accessed_at: 1760e9,
+  },
+]
+const pos13 = (hits, id) => hits.findIndex((h) => String(h.id).startsWith(id))
+const Q13 = '现在主线推进到哪一版'
+const r13on = V.search(Q13, R13_DOCS, { k: 10 })
+const r13off = V.search(Q13, R13_DOCS, { k: 10, statusDigest: false })
+check(
+  'R13 状态问句去现状仓取：词面一个都不重，也要把「项目现状」抬到第一',
+  pos13(r13on, '0r13a0001') === 0,
+  `现状条第 ${pos13(r13on, '0r13a0001') + 1} 名`,
+)
+check(
+  'R13 关得掉：statusDigest:false 时它不是第一（阴性对照，说明是这一刀在起作用）',
+  pos13(r13off, '0r13a0001') !== 0,
+  `关掉后现状条${pos13(r13off, '0r13a0001') === -1 ? '不在候选里' : `第 ${pos13(r13off, '0r13a0001') + 1} 名`}`,
+)
+const r13objA = V.search('现在推送欠账什么规矩', R13_DOCS, { k: 10 })
+const r13objB = V.search('现在推送欠账什么规矩', R13_DOCS, { k: 10, statusDigest: false })
+check(
+  'R13 对象问句不插手：问「现在这笔规矩怎么算」时开关前后逐位同序（泛时间词不算局面词）',
+  r13objA.map((h) => String(h.id)).join(',') === r13objB.map((h) => String(h.id)).join(','),
+  `同序=${r13objA.map((h) => String(h.id).slice(0, 9)).join(',')}`,
+)
+const r13why = V.search('评测线为什么封存', R13_DOCS, { k: 10 })
+const r13anchor = V.search('0.2.150 主线停在哪一版', R13_DOCS, { k: 10 })
+const r13anchorOff = V.search('0.2.150 主线停在哪一版', R13_DOCS, { k: 10, statusDigest: false })
+check(
+  'R13 问原因、问「某版本那一刻」都不拦：现状仓答不了缘由，也不该替时间锚抢答',
+  r13why[0] && String(r13why[0].id).startsWith('0r13a0004') &&
+    r13anchor.map((h) => String(h.id)).join(',') === r13anchorOff.map((h) => String(h.id)).join(','),
+  `原因句首位=${String(r13why[0]?.id).slice(0, 9)}；锚点句与关掉时同序`,
+)
+const sdCalls = (SRC.match(/statusDigestOf\(/g) || []).length
+check(
+  'R13 只在两处落地：定义一次、search 里调用一次；被抬的那条带 explain.statusDigest 记号',
+  sdCalls === 2 &&
+    r13on.find((h) => String(h.id).startsWith('0r13a0001'))?.explain?.statusDigest === undefined &&
+    V.search(Q13, R13_DOCS, { k: 10, explain: true }).some((h) => h.explain?.statusDigest === true),
+  `statusDigestOf( 出现 ${sdCalls} 次（定义 1 + 调用 1）`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {
