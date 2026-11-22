@@ -1118,6 +1118,57 @@ if (denseUsable) {
   )
 }
 
+// ── G27（0.2.178）时间状语里的标识符是坐标，不是主语 ─────────────────────────────
+// 「0.2.148 的时候基线收敛了两轮吗」问的是「那个时候发生了什么」，0.2.148 只是坐标；
+// 「0.2.148 那一版交付了什么」里的 0.2.148 才是主语，问的就是那一条。
+// 旧行为里 bandize 有一条特权通道：谁在 keywords 首位写版本号就直接进 -1 档，
+// 于是「0.2.148 已交付」这种条目在两条问句下都稳坐第一——问过程的那条永远被压。
+{
+  const T = (id, level, title, content, kw, upd) => ({
+    id, level, title, content, keywords: kw, importance: 2, status: 'active',
+    project: 'g27', created_at: upd, updated_at: upd, last_accessed_at: upd,
+  })
+  const docs27 = [
+    T('0s27a0001', 'lesson', '发版基线至少要收敛两轮',
+      '发版基线至少要收敛两轮：第一轮把漂移记下来，第二轮确认读数不再动，第三轮才算稳定。收敛的是读数，不是心情。',
+      ['发版', '基线', '收敛', '两轮'], '2026-11-19T09:00:00.000Z'),
+    T('0s27a0002', 'fact', '0.2.148 已交付：标识符补分落地',
+      '0.2.148 已交付：标识符补分落地，主语位上的版本号加成，24 支自检全绿，镜像已同步，远端索引 pin 到同一个 commit，两份索引字节数不变，探针与文档都补齐了，doctor 与 check-market 两道门都过，收工。',
+      ['0.2.148', '交付', '标识符'], '2026-11-14T09:00:00.000Z'),
+    T('0s27a0003', 'rules', '版本号不许当主语',
+      '版本号不许当主语：写 keywords 时先写这事在讲什么，版本号放后面。',
+      ['版本号', 'keywords', '惯例'], '2026-11-16T09:00:00.000Z'),
+  ]
+  const q1 = '0.2.148 的时候基线收敛了两轮吗'
+  const on1 = V.search(q1, docs27, { k: 3, explain: true })
+  const off1 = V.search(q1, docs27, { k: 3, anchorIdentBand: true, explain: true })
+  const q2 = '0.2.148 那一版交付了什么'
+  const on2 = V.search(q2, docs27, { k: 3 }).map((h) => String(h.id))
+  const off2 = V.search(q2, docs27, { k: 3, anchorIdentBand: true }).map((h) => String(h.id))
+
+  const wrong = []
+  if (process.env.G27_DEBUG) {
+    console.log('ON ', JSON.stringify(on1.map((h) => [h.id, h.score, h.explain])))
+    console.log('OFF', JSON.stringify(off1.map((h) => [h.id, h.score, h.explain])))
+  }
+  const t1 = String(on1[0]?.id)
+  const t1o = String(off1[0]?.id)
+  if (t1 !== '0s27a0001') wrong.push(`时间状语问句首位是 ${t1}，不是讲基线收敛的那条`)
+  if (t1o !== '0s27a0002') {
+    wrong.push(`关掉坐标判定后首位是 ${t1o}，不是把版本号写进 keywords 首位的那条——特权档没在起作用，阴性对照失效`)
+  }
+  if (on2.join(',') !== off2.join(',')) wrong.push('指认那一条的问句被坐标判定误伤了（开关前后名次不同）')
+  if (on2[0] !== '0s27a0002') wrong.push(`指认问句首位是 ${on2[0]}，不是那条交付记录`)
+
+  check(
+    'G27 时间状语里的标识符是坐标：问「0.2.148 的时候…」去讲过程那条，问「0.2.148 那一版…」才去交付那条',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `坐标句 首位=${t1}（关掉后 ${t1o}）；指认句 首位=${on2[0]}（开关前后逐位相同）`
+      : wrong.join(' / '),
+  )
+}
+
 check('G6 每个 want 都在语料里（问句指向的答案真的存在）', orphans.length === 0, orphans.join(' | '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

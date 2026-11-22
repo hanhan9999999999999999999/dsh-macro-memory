@@ -10270,11 +10270,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `免档判据在=${eng.includes('h._ident === true || h._subj === 1')}`,
     )
     check(
-      'HZ7 开关给得出：identSubjBand 关免档、identSubj 关加权、identSubjW 手动给权重（默认 0）',
+      'HZ7 开关给得出：identSubjBand 关免档、identSubj 关加权、identSubjW 手动给权重（默认 0），0.2.178 又多一个出口——时间状语里的标识符不进特权档',
       eng.includes('const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;') &&
-        eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,') &&
+        // [0.2.178] 免档条件多了一个 `|| !identHardOk`：时间状语里的标识符是坐标，不是主语，
+        // 它不该走 bandize 的 -1 特权档。断言的形态跟着改，但守的东西没变。
+        eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,') &&
+        eng.includes('const identHardOk = !(anchorCoord && opts.anchorIdentBand !== true);') &&
         eng.includes('if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) {'),
-      '三个出口都在',
+      '四个出口都在',
     )
     check(
       'HZ7 没发生的事不许在 explain 里留个 0：subjBonus 只在真加了权重时出现',
@@ -10640,6 +10643,83 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `9.184 在=${internal177.includes('## 9.184 ')} 189 在=${design177.includes('## 189')}`,
     )
   }
+  // ── HZ13（0.2.178）时间状语里的标识符是坐标，不是主语 ─────────────────────────
+  // 真库里「0.2.148 的时候基线收敛了两轮吗」被一条把 0.2.148 写进 keywords 首位的
+  // 「0.2.148 已交付」压住（want bm25 22.293 却排第 2）。根因不是词法，是 bandize 的
+  // -1 特权档 + post-pass 的加法加成：谁在主语位提到那串标识符就直接进特权档。
+  // 这一版把「时间状语里的标识符」判成坐标：不给档位、不给加成、也不进 _subj。
+  // 判据必须是**结构词**（的时候/那会儿/当时），泛时间词（现在/最新）会把
+  // 「现在某个东西怎么规矩」这种对象问句也卷进来——0.2.176 局面词那一刀已经踩过。
+  {
+    const eng178 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const gold178 = readFileSync(new URL('./tools/probe-gold.mjs', import.meta.url), 'utf8')
+    const recall178 = readFileSync(new URL('./tools/probe-recall.mjs', import.meta.url), 'utf8')
+    const internal178 = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+    const design178 = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+    const coordRe178 = /var ANCHOR_COORD_RE = (\/[^\n]*\/);/.exec(eng178)
+    const coordBody178 = coordRe178 === null ? '' : coordRe178[1]
+    check(
+      'HZ13 判据只认结构词：的时候/那会儿/当时 在表里，现在/当前/最新 一个都不许进（否则对象问句被卷进来）',
+      coordBody178.includes('的时候') &&
+        coordBody178.includes('那时候') &&
+        coordBody178.includes('当时') &&
+        !/现在|当前|目前|最新|如今|眼下/.test(coordBody178),
+      `词表 ${coordBody178}`,
+    )
+    check(
+      'HZ13 两支打分器同口径：anchorCoord 与 identHardOk 各两处（search + keywordHitScore），少一处就是一半问句不认账',
+      (eng178.match(/const anchorCoord = timeAnchor && ANCHOR_COORD_RE\.test\(String\(query \?\? ""\)\);/g) || []).length === 2 &&
+        (eng178.match(/const identHardOk = !\(anchorCoord && opts\.anchorIdentBand !== true\);/g) || []).length === 2,
+      `anchorCoord ${(eng178.match(/const anchorCoord = timeAnchor/g) || []).length} 处 / identHardOk ${(eng178.match(/const identHardOk = /g) || []).length} 处`,
+    )
+    check(
+      'HZ13 三条通道全关：档位（_subj）、词分（_raw 两份权重）、加法补分（add）都吃同一个 identHardOk',
+      eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0') &&
+        eng178.includes('opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio') &&
+        eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]') &&
+        eng178.includes('const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);') &&
+        eng178.includes('if (idHit && identHardOk) h._ident = true;'),
+      '档位 + _raw 两项 + add + _ident 五处都在',
+    )
+    check(
+      'HZ13 一键回旧口径还在：anchorIdentBand:true 时坐标判定整个不生效（探针的阴性对照靠它）',
+      eng178.includes('opts.anchorIdentBand !== true'),
+      'anchorIdentBand 开关在位',
+    )
+    check(
+      'HZ13 三刀被否决的痕迹不许留在引擎里（因果证据 / 长度封顶 / 新鲜度不看 importance）',
+      !eng178.includes('CAUSE_DOC_RE') &&
+        !eng178.includes('causeEvidence') &&
+        !eng178.includes('LEN_RATIO_CAP') &&
+        !eng178.includes('lenCap'),
+      'CAUSE_*/lenCap 都不在引擎里（只留在文档的否决记录里）',
+    )
+    check(
+      'HZ13 G27 探针在位：坐标句去讲过程那条、指认句才去交付那条，且阴性对照关掉坐标判定',
+      gold178.includes('G27 时间状语里的标识符是坐标') &&
+        gold178.includes("const q1 = '0.2.148 的时候基线收敛了两轮吗'") &&
+        gold178.includes("const q2 = '0.2.148 那一版交付了什么'") &&
+        gold178.includes('anchorIdentBand: true, explain: true'),
+      'G27 三件套（坐标句 / 指认句 / 阴性对照）都在',
+    )
+    check(
+      'HZ13 R15 断言在位：坐标句首位、关掉后回退、加成归零且档位不是 -1、指认位不误伤、判据只认结构词',
+      recall178.includes('R15 坐标句「0.2.148 的时候基线收敛了两轮吗」首位是讲过程那条') &&
+        recall178.includes('R15 阴性对照：关掉坐标判定') &&
+        recall178.includes('R15 坐标位上的标识符一分都不加') &&
+        recall178.includes('R15 指认位一点不许误伤') &&
+        recall178.includes('R15 判据只认「结构词」'),
+      'R15 五条都在',
+    )
+    check(
+      'HZ13 文档在位：INTERNAL 9.185 记根因与三次否决，DESIGN 190 记「坐标还是主语」这条判断',
+      internal178.includes('## 9.185 ') &&
+        internal178.includes('时间状语') &&
+        design178.includes('## 190') &&
+        design178.includes('坐标'),
+      `9.185 在=${internal178.includes('## 9.185 ')} 190 在=${design178.includes('## 190')}`,
+    )
+  }
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10975,8 +11055,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.177（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.177'"),
+    'GV 版本: 代码里是 0.2.178（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.178'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -11106,8 +11186,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.177（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.177'"),
+    'GW 版本: 代码里是 0.2.178（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.178'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11172,8 +11252,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idSrc.includes('(d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d)'),
   )
   check(
-    'VV 源码: 加法补分（单位分数 × ratio × 权重，指认 id 时用 1.5 那一档）——0.2.148 起落在加权之后的 post-pass 里',
-    idSrc.includes('const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);') &&
+    'VV 源码: 加法补分（单位分数 × ratio × 权重，指认 id 时用 1.5 那一档）——0.2.148 起落在加权之后的 post-pass 里；0.2.178 起坐标位上的标识符不给加成',
+    idSrc.includes('const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);') &&
       idSrc.includes('h.score += add;'),
   )
   check(
@@ -11254,8 +11334,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.177（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.177'"),
+    'VV 版本: 代码里是 0.2.178（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.178'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11436,9 +11516,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.177（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.177' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.177'"),
+    'GX19 版本已到 0.2.178（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.178' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.178'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11542,10 +11622,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.177',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.177' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.177'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.177'),
+    'VY15 版本三处一致 0.2.178',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.178' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.178'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.178'),
   )
 }
 
@@ -11593,10 +11673,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.177（三处一致）',
-    pkgWz.version === '0.2.177' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.177'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.177'),
+    'WZ9 版本已到 0.2.178（三处一致）',
+    pkgWz.version === '0.2.178' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.178'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.178'),
   )
 }
 

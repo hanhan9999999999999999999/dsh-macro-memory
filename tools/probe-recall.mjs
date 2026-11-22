@@ -1165,6 +1165,78 @@ check(
   'synBridge:false 与 synW:0 逐位同分',
 )
 
+// ── R15（0.2.178）时间状语里的标识符是坐标，不是主语 ────────────────────────────
+// 「0.2.148 的时候基线收敛了两轮吗」问的是那一刻发生的事，0.2.148 只是坐标；
+// 「0.2.148 那一版交付了什么」里的 0.2.148 才是主语。旧口径里，谁把版本号写进
+// keywords 首位就直接进 bandize 的 -1 特权档、还拿一份加法加成，于是「0.2.148 已交付」
+// 两条问句都稳坐第一——问过程的那条永远被压。这里同时钉两件事：坐标位不给特权，
+// 指认位一点不许误伤（否则改的是「标识符还有没有用」，不是「什么时候它才是主语」）。
+const R15_DOCS = [
+  {
+    id: '0r15a0001',
+    level: 'lesson',
+    content: '发版基线至少要收敛两轮：第一轮把漂移记下来，第二轮确认读数不再动，第三轮才算稳定。',
+    title: '发版基线至少要收敛两轮', keywords: ['发版', '基线', '收敛', '两轮'], importance: 2,
+    status: 'active', created_at: '2026-11-19T00:00:00.000Z', updated_at: '2026-11-19T00:00:00.000Z',
+  },
+  {
+    id: '0r15a0002',
+    level: 'fact',
+    content: '0.2.148 已交付：标识符补分落地，主语位上的版本号加成，24 支自检全绿，镜像已同步，远端索引 pin 到同一个 commit，两份索引字节数不变，探针与文档都补齐了，两道门都过。',
+    title: '0.2.148 已交付：标识符补分落地', keywords: ['0.2.148', '交付'], importance: 2,
+    status: 'active', created_at: '2026-11-14T00:00:00.000Z', updated_at: '2026-11-14T00:00:00.000Z',
+  },
+  {
+    id: '0r15a0003',
+    level: 'rules',
+    content: '版本号不许当主语：写 keywords 时先写这事在讲什么，版本号放后面。',
+    title: '版本号不许当主语', keywords: ['版本号', '惯例'], importance: 2,
+    status: 'active', created_at: '2026-11-16T00:00:00.000Z', updated_at: '2026-11-16T00:00:00.000Z',
+  },
+]
+const Q15A = '0.2.148 的时候基线收敛了两轮吗'
+const Q15B = '0.2.148 那一版交付了什么'
+const r15aOn = V.search(Q15A, R15_DOCS, { k: 10, explain: true })
+const r15aOff = V.search(Q15A, R15_DOCS, { k: 10, anchorIdentBand: true, explain: true })
+const r15bOn = V.search(Q15B, R15_DOCS, { k: 10, keepBand: true })
+const r15bOff = V.search(Q15B, R15_DOCS, { k: 10, anchorIdentBand: true, keepBand: true })
+check(
+  'R15 坐标句「0.2.148 的时候基线收敛了两轮吗」首位是讲过程那条，不是把版本号当主语那条',
+  String(r15aOn[0]?.id) === '0r15a0001',
+  `首位=${String(r15aOn[0]?.id).slice(0, 9)}（关掉坐标判定后 ${String(r15aOff[0]?.id).slice(0, 9)}）`,
+)
+check(
+  'R15 阴性对照：关掉坐标判定，那条写进 keywords 首位的就回第一位——特权档真在起作用，不是碰巧',
+  String(r15aOff[0]?.id) === '0r15a0002',
+  `关掉后首位=${String(r15aOff[0]?.id).slice(0, 9)}`,
+)
+check(
+  'R15 坐标位上的标识符一分都不加：加成归零、档位也不再是 -1（只关一个还会被另一个顶上去）',
+  Number(r15aOn.find((h) => String(h.id) === '0r15a0002')?.explain?.identBonus ?? -1) === 0 &&
+    Number(r15aOn.find((h) => String(h.id) === '0r15a0002')?.explain?.band ?? -1) > -1,
+  `identBonus=${Number(r15aOn.find((h) => String(h.id) === '0r15a0002')?.explain?.identBonus)} band=${Number(r15aOn.find((h) => String(h.id) === '0r15a0002')?.explain?.band)}`,
+)
+check(
+  'R15 指认位一点不许误伤：「0.2.148 那一版交付了什么」开关前后逐位同序，首位还是那条交付记录',
+  String(r15bOn[0]?.id) === '0r15a0002' &&
+    r15bOn.map((h) => String(h.id)).join(',') === r15bOff.map((h) => String(h.id)).join(','),
+  `首位=${String(r15bOn[0]?.id).slice(0, 9)}；开关 ${r15bOn.length} 条同序`,
+)
+{
+  const engSrc15 = readFileSync(new URL('../vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const coordRe15 = /var ANCHOR_COORD_RE = (\/[^\n]*\/);/.exec(engSrc15)
+  const coordBody15 = coordRe15 === null ? '' : coordRe15[1]
+  check(
+    'R15 判据只认「结构词」（的时候/那会儿/当时…），不许掺「现在/当前/最新」这类泛时间词，且两处打分器同口径',
+    coordBody15.includes('的时候') &&
+      coordBody15.includes('当时') &&
+      !/现在|当前|目前|最新/.test(coordBody15) &&
+      (engSrc15.match(/const identHardOk = !\(anchorCoord && opts\.anchorIdentBand !== true\);/g) || []).length === 2 &&
+      (engSrc15.match(/const anchorCoord = timeAnchor && ANCHOR_COORD_RE\.test/g) || []).length === 2,
+    `词表 ${coordBody15}；identHardOk 两处、anchorCoord 两处`,
+  )
+}
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

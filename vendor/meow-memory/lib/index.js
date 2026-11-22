@@ -2046,6 +2046,15 @@ function stripQuestionFrame(text) {
 // 加法还顺带补了 BM25 的一个洞：原样命中但一个词都没接上的条目，先前连候选集都进不去。
 var IDENT_MIN = 4;
 var IDENT_MAX = 6;
+// [macro-fusion 0.2.178] 时间状语里的标识符是「坐标」，不是「主语」。
+// 「0.2.148 的时候基线收敛了两轮吗」——这里 0.2.148 只是把时间限定到那一天，答案可以是
+// 任何讲基线收敛的条目；但 bandize 有一条特权通道：主语位命中标识符直接进第 -1 档。
+// 于是谁正文里提到 0.2.148 谁就进第一档（实测：真正讲「基线至少收敛两轮」的 lesson
+// bm25 22.29 排第二，被 bm25 8.54 / cover 0.13 的一行交付记录压住）。
+// 但「0.2.147 那一版交付了什么」里的标识符不是坐标，是真在指认那一条——所以这条衰减
+// 只对「X 的时候 / 在那天 / 那会儿」这类时间状语结构生效。判据放在结构词上，不放泛词上
+//（跟 0.2.176 的局面词同一条道理）。
+var ANCHOR_COORD_RE = /的时候|那会儿|那阵|那时候|当时|那天|那天的|那个时间点/;
 var IDENT_W = 0.6;
 var IDENT_ID_W = 1.5;
 var IDENT_BAND_W = 0.8;
@@ -2737,6 +2746,9 @@ function search(query, docs, opts = {}) {
   // 沾边的 4 分压过高度相关的 1 分（0.15 级的加成永远翻不过 6 倍以上的 bm25 差）。
   const timeAnchor = timeAnchorOf(query, opts);
   const anchorToks = timeAnchor ? anchorListOf(query) : [];
+  const anchorCoord = timeAnchor && ANCHOR_COORD_RE.test(String(query ?? ""));
+  // 时间状语里的标识符是坐标：不进 bandize 的 -1 特权档（_ident / _subj 两条通道都关）。
+  const identHardOk = !(anchorCoord && opts.anchorIdentBand !== true);
   const anchorSel = timeAnchor ? (di) => {
     const hay = String(docs[di].title ?? "") + " " + String(docs[di].content ?? "") + " " + String(docs[di].project ?? "");
     return anchorToks.some((t) => hay.includes(t));
@@ -2762,10 +2774,10 @@ function search(query, docs, opts = {}) {
     hits.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
       _sr: subjRatio === void 0 ? 0 : subjRatio[di],
-      _subj: subjRatio === void 0 || opts.identSubjBand === false ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
+      _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
       _lv: lvHit && opts.levelIntent !== false ? 1 : 0,
       _tr: tipOn ? assertRatioOf(docs[di].content) : 0,
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0)),
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0)),
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -2799,9 +2811,9 @@ function search(query, docs, opts = {}) {
       delete h._sr;
       if (vb === void 0 || vb === null) continue;
       const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
-      const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
+      const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);
       h.score += add;
-      if (idHit) h._ident = true;
+      if (idHit && identHardOk) h._ident = true;
       if (h.explain !== void 0) h.explain.identBonus = Math.round(add * 1e3) / 1e3;
       // [macro-fusion 0.2.172] 主语位指认：这条记忆的主语就是问句点名的那样东西，
       // 比「正文里顺带提过」更该排前面。
@@ -2889,6 +2901,8 @@ function keywordHitScore(query, docs, opts = {}) {
   if (docs.length === 0) return [];
   const timeAnchor = timeAnchorOf(query, opts);
   const anchorToks = timeAnchor ? anchorListOf(query) : [];
+  const anchorCoord = timeAnchor && ANCHOR_COORD_RE.test(String(query ?? ""));
+  const identHardOk = !(anchorCoord && opts.anchorIdentBand !== true);
   const anchorSel = timeAnchor ? (di) => {
     const hay = String(docs[di].title ?? "") + " " + String(docs[di].content ?? "") + " " + String(docs[di].project ?? "");
     return anchorToks.some((t) => hay.includes(t));
@@ -2970,7 +2984,7 @@ function keywordHitScore(query, docs, opts = {}) {
       if (vb === void 0 || vb === null) continue;
       const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
       h.score += unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
-      if (idHit) h._ident = true;
+      if (idHit && identHardOk) h._ident = true;
     }
   }
   // [macro-fusion 0.2.150] 与 search 同口径：分档排序。
