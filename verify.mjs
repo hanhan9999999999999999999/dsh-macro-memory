@@ -10422,6 +10422,63 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'probe-gold NB 里有 tipAssert: false',
     )
   }
+  // ── HZ10（0.2.175）宽池：40 条样张是小房间，量具要按生产规模建 ──
+  {
+    const gold174 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
+    const internal175 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+    const design175 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    const wide = JSON.parse(readFileSync(join(root, 'tools', 'fixtures', 'gold-wide.json'), 'utf8'))
+    const narrow = JSON.parse(readFileSync(join(root, 'tools', 'fixtures', 'gold-recall.json'), 'utf8'))
+    check(
+      'HZ10 宽池是冻结快照：106 条、五层以上、note 写明来自真库抽样且不随真库漂移',
+      Array.isArray(wide.documents) && wide.documents.length === 106 &&
+        new Set(wide.documents.map((d) => d.level)).size >= 5 &&
+        wide.note.includes('冻结') && wide.note.includes('真库'),
+      `条数=${wide.documents?.length} 层=${new Set((wide.documents || []).map((d) => d.level)).size}`,
+    )
+    check(
+      'HZ10 宽池与样张不重叠：同一个 id 只许出现一次（重复计入会把池子做小）',
+      (() => {
+        const all = narrow.docs.map((d) => String(d.id)).concat(wide.documents.map((d) => String(d.id)))
+        return new Set(all).size === all.length
+      })(),
+      `合计 ${narrow.docs.length + wide.documents.length} 条`,
+    )
+    check(
+      'HZ10 探针真的把宽池拼进同一批问句（不是另立一套语料自说自话）',
+      gold174.includes("join(root, 'tools', 'fixtures', 'gold-wide.json')") &&
+        gold174.includes('const wideDocs = docs.concat(wideFx.documents)') &&
+        gold174.includes('measure(fx.queries, wideDocs)') &&
+        gold174.includes('measure(fx.paraphrase, wideDocs)') &&
+        gold174.includes('measure(fx.anchor, wideDocs)'),
+      `concat 在=${gold174.includes('docs.concat(wideFx.documents)')}`,
+    )
+    check(
+      'HZ10 三档读数各有一条守卫线，换说法/时间锚两档在宽池里明显更难',
+      gold174.includes('G-W1 宽池（146 条）照抄档 hit@1 ≥ 0.93') &&
+        gold174.includes('G-W2 宽池换说法档 hit@1 ≥ 0.71') &&
+        gold174.includes('G-W3 宽池时间锚档 hit@1 ≥ 0.70') &&
+        gold174.includes('wideQ.hit1 >= 0.93') &&
+        gold174.includes('wideP.hit1 >= 0.71') &&
+        gold174.includes('wideA.hit1 >= 0.7'),
+      `W 三条线在=${gold174.includes('G-W1 ')}`,
+    )
+    check(
+      'HZ10 阴性对照：宽池必须比窄池难，否则说明宽池没接进去（池子变大读数一样好）',
+      gold174.includes('G-W4 阴性对照：宽池换说法档必须比窄池难') &&
+        gold174.includes('wideP.hit1 < narrowP.hit1') &&
+        gold174.includes('const narrowP = measure(fx.paraphrase, docs)'),
+      `对照在=${gold174.includes('wideP.hit1 < narrowP.hit1')}`,
+    )
+    check(
+      'HZ10 文档锚：9.182 写下宽池与「量具要按生产规模建」，187 写下同一件事的道理',
+      internal175.includes('## 9.182') &&
+        internal175.includes('量具要按生产规模建') &&
+        design175.includes('## 187') &&
+        design175.includes('小房间'),
+      `9.182 在=${internal175.includes('## 9.182')} 187 在=${design175.includes('## 187')}`,
+    )
+  }
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10757,8 +10814,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.174（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.174'"),
+    'GV 版本: 代码里是 0.2.175（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.175'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10888,8 +10945,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.174（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.174'"),
+    'GW 版本: 代码里是 0.2.175（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.175'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11036,8 +11093,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.174（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.174'"),
+    'VV 版本: 代码里是 0.2.175（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.175'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11215,9 +11272,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.174（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.174' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.174'"),
+    'GX19 版本已到 0.2.175（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.175' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.175'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11321,10 +11378,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.174',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.174' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.174'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.174'),
+    'VY15 版本三处一致 0.2.175',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.175' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.175'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.175'),
   )
 }
 
@@ -11372,10 +11429,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.174（三处一致）',
-    pkgWz.version === '0.2.174' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.174'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.174'),
+    'WZ9 版本已到 0.2.175（三处一致）',
+    pkgWz.version === '0.2.175' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.175'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.175'),
   )
 }
 

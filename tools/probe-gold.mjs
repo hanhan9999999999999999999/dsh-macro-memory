@@ -74,6 +74,21 @@ check('G2 hit@3 ≥ 0.95：排第二和找不到分开记账，前者才是可�
 check('G3 MRR ≥ 0.92：排第二要扣分，别用「都在前三」掩盖退步', base.mrr >= 0.92, `MRR=${base.mrr.toFixed(3)}`)
 
 // G4：聚合可当基线——同样的输入跑两遍必须同数（顺序敏感的实现会被抓出来）
+// ── 宽池档（0.2.175）：40 条样张是一个「小房间」，谁都能一眼认出来；生产的池子是 578 条。
+// 把真库里按层比例抽样的 106 条冻结快照（tools/fixtures/gold-wide.json）拼进来跑同一批问句，
+// 才看得见「换说法」和「时间锚」两档在真实干扰下站不站得住。
+const wideFx = JSON.parse(readFileSync(join(root, 'tools', 'fixtures', 'gold-wide.json'), 'utf8'))
+const wideDocs = docs.concat(wideFx.documents)
+const wideQ = measure(fx.queries, wideDocs)
+const wideP = measure(fx.paraphrase, wideDocs)
+const wideA = measure(fx.anchor, wideDocs)
+const narrowP = measure(fx.paraphrase, docs)
+for (const m of wideQ.miss) console.log(`      宽池未中第 1：rank=${m.rank} ${m.q} → want ${m.want.join('/')}，got ${m.got.join(',')}`)
+check('G-W1 宽池（146 条）照抄档 hit@1 ≥ 0.93：池子放大三倍多，认得出的还得认得出', wideQ.hit1 >= 0.93, `宽池 ${fmt(wideQ)}`)
+check('G-W2 宽池换说法档 hit@1 ≥ 0.71：这一档才是用户真会这么问的样子，不许靠 40 条样张的房间大小拿分', wideP.hit1 >= 0.71, `宽池 ${fmt(wideP)}`)
+check('G-W3 宽池时间锚档 hit@1 ≥ 0.70：问「那一刻」在干扰多的池子里照样要认得出', wideA.hit1 >= 0.7, `宽池 ${fmt(wideA)}`)
+check('G-W4 阴性对照：宽池换说法档必须比窄池难（池子变大读数一样好，说明宽池没真接进去）', wideP.hit1 < narrowP.hit1, `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}`)
+
 const again = measure(fx.queries, docs)
 check('G4 可复现：同一语料同一问句跑两遍，三档逐位相同',
   again.hit1 === base.hit1 && again.hit3 === base.hit3 && again.mrr === base.mrr,
