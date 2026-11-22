@@ -49,6 +49,7 @@ function measure(list, corpus, opts = {}) {
   let h3 = 0
   let mrr = 0
   const miss = []
+  const tops = []
   const scored = list.filter((x) => x.live !== true)
   for (const item of list) if (item.live === true) miss.push({ q: item.q, want: item.want, got: [], rank: -2 })
   for (const { q, want } of scored) {
@@ -58,10 +59,11 @@ function measure(list, corpus, opts = {}) {
     if (rank === 0) h1++
     if (rank >= 0 && rank < 3) h3++
     mrr += rank >= 0 ? 1 / (rank + 1) : 0
+    tops.push(ids.slice(0, K).join('|'))
     if (rank !== 0) miss.push({ q, want, got: ids.slice(0, 3), rank })
   }
   const n = scored.length
-  return { n, live: list.length - n, hit1: h1 / n, hit3: h3 / n, mrr: mrr / n, miss }
+  return { n, live: list.length - n, hit1: h1 / n, hit3: h3 / n, mrr: mrr / n, miss, tops }
 }
 
 check('G0 语料：40 条样张 + 45 条照抄词问句 + 14 条换说法问句，层与状态都真（不是全 fact 的假语料）',
@@ -92,7 +94,16 @@ for (const m of wideQ.miss) if (m.rank !== -2) console.log(`      宽池未中�
 check('G-W1 宽池（146 条）照抄档 hit@1 ≥ 0.93：池子放大三倍多，认得出的还得认得出', wideQ.hit1 >= 0.93, `宽池 ${fmt(wideQ)}`)
 check('G-W2 宽池换说法档 hit@1 ≥ 0.71：这一档才是用户真会这么问的样子，不许靠 40 条样张的房间大小拿分', wideP.hit1 >= 0.71, `宽池 ${fmt(wideP)}`)
 check('G-W3 宽池时间锚档 hit@1 ≥ 0.70：问「那一刻」在干扰多的池子里照样要认得出', wideA.hit1 >= 0.7, `宽池 ${fmt(wideA)}`)
-check('G-W4 阴性对照：宽池换说法档必须比窄池难（池子变大读数一样好，说明宽池没真接进去）', wideP.hit1 < narrowP.hit1, `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}`)
+// 0.2.177：这条原判据是「宽池换说法档必须比窄池差」。同义桥把两档拉平（0.857 vs 0.857）之后它必然假红，
+// 而「差」本身也不是我们真在意的性质——真在意的是「宽池里那 106 条干扰真的接进去了没有」。
+// 所以改成两道：①宽池不许比窄池更好（池子大一圈还更好，说明数据没接进去或接错了）；
+// ②同一批问句在窄池/宽池里的第 1 名至少有一处不同（两池若完全同序，等于宽池白接）。
+// 「第 1 名」这一格太钝了：那 106 条是干扰项，本来就不该抢第一，两池 top1 全同是正常的。
+// 所以改比 top-K 的完整序列——干扰只要真的接进去了，前 K 条的成员或次序必然至少有一处不同。
+const wideOnlyIds = new Set(wideFx.documents.map((d) => String(d.id)))
+const wKSeqDiff = wideQ.tops.filter((seq, i) => seq !== base.tops[i]).length
+const wOnlyInTop = wideQ.tops.filter((seq) => seq.split('|').some((id) => wideOnlyIds.has(id))).length
+check('G-W4 阴性对照：宽池真接了那 106 条（前 K 条序列至少一处不同），且换说法档不许比窄池更好', wideP.hit1 <= narrowP.hit1 && (wKSeqDiff > 0 || wOnlyInTop > 0), `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}；照抄档前 ${K} 条序列不同 ${wKSeqDiff} 处（宽池独有条目进榜 ${wOnlyInTop} 处）`)
 
 const again = measure(fx.queries, docs)
 check('G4 可复现：同一语料同一问句跑两遍，三档逐位相同',

@@ -10464,11 +10464,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `W 三条线在=${gold174.includes('G-W1 ')}`,
     )
     check(
-      'HZ10 阴性对照：宽池必须比窄池难，否则说明宽池没接进去（池子变大读数一样好）',
-      gold174.includes('G-W4 阴性对照：宽池换说法档必须比窄池难') &&
-        gold174.includes('wideP.hit1 < narrowP.hit1') &&
+      // 0.2.177 起这条对照换了判据（理由见 9.184.1）：原来要求「宽池必须更差」，
+      // 同义桥把两档拉平之后它必然假红——它守的其实是「引擎还没变好」，不是「宽池接进去了」。
+      // 现在守的是「前 K 序列至少一处不同」，HZ12 里另有专条钉新判据。
+      'HZ10 阴性对照：宽池真接进去了（前 K 序列有差异），且窄池换说法档仍被单独量着',
+      gold174.includes('G-W4 阴性对照：宽池真接了那 106 条') &&
+        gold174.includes('wKSeqDiff') &&
         gold174.includes('const narrowP = measure(fx.paraphrase, docs)'),
-      `对照在=${gold174.includes('wideP.hit1 < narrowP.hit1')}`,
+      `对照在=${gold174.includes('wKSeqDiff')}`,
     )
     check(
       'HZ10 文档锚：9.182 写下宽池与「量具要按生产规模建」，187 写下同一件事的道理',
@@ -10558,6 +10561,83 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
         internal176.includes('| 照抄 45 | **0.933** | 0.644 |') &&
         design176.includes('否决也是一等结论'),
       `否决表在=${internal176.includes('稠密检索这三档全输，正式否决')}`,
+    )
+  }
+  {
+    const eng177 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const gold177 = readFileSync(new URL('./tools/probe-gold.mjs', import.meta.url), 'utf8')
+    const recall177 = readFileSync(new URL('./tools/probe-recall.mjs', import.meta.url), 'utf8')
+    const internal177 = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+    const design177 = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+    const snap177 = readFileSync(new URL('./tools/fixtures/cost-snap.json', import.meta.url), 'utf8')
+    const Meow177 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const groups177 = Meow177.SYN_GROUPS
+    const flat177 = groups177.flat()
+    const hasPair = (a, b) => groups177.some((g) => g.includes(a) && g.includes(b))
+    check(
+      'HZ12 表扩到 18 组，且扩的是「同一个动作的两种叫法」：发版那一族并进一组，不是又添几个近义词',
+      groups177.length === 18 &&
+        hasPair('推送', '上传') && hasPair('推送', '发布') && hasPair('推送', '提交') &&
+        hasPair('自测', '自检') && hasPair('自测', '体检') &&
+        hasPair('封存', '归档') && hasPair('封存', '冻结') &&
+        hasPair('底线', '门槛') && hasPair('口径', '说法'),
+      `${groups177.length} 组 / ${new Set(flat177).size} 个词`,
+    )
+    check(
+      'HZ12 表形态一条没破：每组至少两个词、每个词恰好两字、无跨组重复、SYN_W 仍在 (0,1)',
+      groups177.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => [...w].length === 2)) &&
+        new Set(flat177).size === flat177.length &&
+        typeof Meow177.SYN_W === 'number' && Meow177.SYN_W > 0 && Meow177.SYN_W < 1,
+      `SYN_W=${Meow177.SYN_W}`,
+    )
+    check(
+      'HZ12 扩词只走原来的那条路：不扩文档、不进覆盖度分母、候选集合并 postings、synBridge 一个旋钮',
+      eng177.includes('function synExpandOf(') &&
+        eng177.includes('const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;') &&
+        eng177.includes("if (opts.synBridge === false) return null") === false,
+      `synExpandOf 在=${eng177.includes('function synExpandOf(')}`,
+    )
+    check(
+      'HZ12 G-W4 的判据换了：不再要求「宽池必须更差」，改守「宽池真的接进去了」（前 K 序列不同）',
+      gold177.includes('wKSeqDiff') &&
+        gold177.includes("seq.split('|').some((id) => wideOnlyIds.has(id))") &&
+        gold177.includes('wideP.hit1 <= narrowP.hit1') &&
+        gold177.includes("tops.push(ids.slice(0, K).join('|'))") &&
+        !gold177.includes('G-W4 阴性对照：宽池换说法档必须比窄池难'),
+      `新判据在=${gold177.includes('wKSeqDiff')}`,
+    )
+    check(
+      'HZ12 R14 六条在：扩词找得回、关桥分数必须掉、自测/自检那一组、没扩的问句同序、表形态、同一个旋钮',
+      recall177.includes('R14 表扩了「上传 / 发布 / 提交」之后') &&
+        recall177.includes('R14 它是扩出来的分，不是本来就有') &&
+        recall177.includes('R14「自测」与正文的「自检」通了') &&
+        recall177.includes('R14 没被扩到的问句一处不动') &&
+        recall177.includes('R14 新版五组都在表里') &&
+        recall177.includes('R14 扩表默认落在同一个旋钮上'),
+      `R14 check 数=${(recall177.match(/R14 /g) || []).length}`,
+    )
+    check(
+      'HZ12 成本快照已换代：40 档第 14 题的第二位是 0mwq606x（扩表把 want 里的另一条抬上来了）',
+      (() => {
+        const d = JSON.parse(snap177)
+        const row = d.m && d.m['40'] && d.m['40'][14]
+        return Array.isArray(row) && String(row[1]).startsWith('0mwq606x')
+      })(),
+      (() => {
+        const d = JSON.parse(snap177)
+        const row = (d.m && d.m['40'] && d.m['40'][14]) || []
+        return `#14 = ${row.map((x) => String(x).split(':')[0]).join(' ')}`
+      })(),
+    )
+    check(
+      'HZ12 文档锚：9.184 写下了「动作表不是同义词表」与 0.714→0.857，189 写下了阴性对照判据会过期',
+      internal177.includes('## 9.184 ') &&
+        internal177.includes('同义词表要是「动作表」') &&
+        internal177.includes('0.714') && internal177.includes('0.857') &&
+        internal177.includes('阴性对照的判据本身会过期') &&
+        design177.includes('## 189') &&
+        design177.includes('词法检索不懂「同一件事」'),
+      `9.184 在=${internal177.includes('## 9.184 ')} 189 在=${design177.includes('## 189')}`,
     )
   }
   check(
@@ -10895,8 +10975,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.176（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.176'"),
+    'GV 版本: 代码里是 0.2.177（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.177'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -11026,8 +11106,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.176（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.176'"),
+    'GW 版本: 代码里是 0.2.177（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.177'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11174,8 +11254,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.176（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.176'"),
+    'VV 版本: 代码里是 0.2.177（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.177'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11356,9 +11436,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.176（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.176' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.176'"),
+    'GX19 版本已到 0.2.177（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.177' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.177'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11462,10 +11542,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.176',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.176' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.176'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.176'),
+    'VY15 版本三处一致 0.2.177',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.177' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.177'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.177'),
   )
 }
 
@@ -11513,10 +11593,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.176（三处一致）',
-    pkgWz.version === '0.2.176' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.176'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.176'),
+    'WZ9 版本已到 0.2.177（三处一致）',
+    pkgWz.version === '0.2.177' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.177'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.177'),
   )
 }
 

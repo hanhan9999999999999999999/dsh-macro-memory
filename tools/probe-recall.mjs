@@ -1073,6 +1073,98 @@ check(
   `statusDigestOf( 出现 ${sdCalls} 次（定义 1 + 调用 1）`,
 )
 
+// ── R14（0.2.177）改的是同义词表本身：表要是只收「同义词」，换个说法的问句永远吃亏 ──────
+// 0.2.176 的宽池数据里，「远端仓库」与正文的「上传 / 发布」不通、「自测」与正文的「自检」不通，
+// 两处都是 cover=0 的硬伤。0.2.177 把表从 15 组扩到 18 组，并让既有组吸收实体词
+//（推送/远端/仓库/上传/发布/提交），但扩表的风险比加旋钮大得多——表是全局的，一个组写歪了
+// 会让整库的问句互相拉分。所以这里同时钉死「扩的词真能找回来」与「没扩的问句一处不动」。
+const R14_DOCS = [
+  {
+    id: '0r14a0001',
+    level: 'fact',
+    content: '插件包要先上传到远端仓库，再改 manifest 里的那一行，本机直接改等于白改。',
+    title: '', keywords: ['发版', '流程'], importance: 3,
+    status: 'active', created_at: '2026-11-22T00:00:00.000Z', updated_at: '2026-11-22T00:00:00.000Z',
+  },
+  {
+    id: '0r14a0002',
+    level: 'fact',
+    content: '自检三问：跑得动吗、答得对吗、省不省 token，三问都过才算这一版整备完。',
+    title: '', keywords: ['验收', '流程'], importance: 3,
+    status: 'active', created_at: '2026-11-22T00:00:00.000Z', updated_at: '2026-11-22T00:00:00.000Z',
+  },
+  {
+    id: '0r14a0003',
+    level: 'fact',
+    content: '提交之前先看一眼工作区，别把临时脚本混进版本库。',
+    title: '', keywords: ['习惯'], importance: 2,
+    status: 'active', created_at: '2026-11-22T00:00:00.000Z', updated_at: '2026-11-22T00:00:00.000Z',
+  },
+  {
+    id: '0r14a0004',
+    level: 'topic',
+    content: '封存是为了让旧读数不再变，代价是那之后的问题都得另外记。',
+    title: '', keywords: ['评测', '历史'], importance: 2,
+    status: 'active', created_at: '2026-11-22T00:00:00.000Z', updated_at: '2026-11-22T00:00:00.000Z',
+  },
+]
+const Q14A = '插件要发布上线之前先做什么'
+const Q14B = '自测要问自己哪几件事'
+const Q14C = '封存是为了什么'
+const r14aOn = V.search(Q14A, R14_DOCS, { k: 10 })
+const r14aOff = V.search(Q14A, R14_DOCS, { k: 10, synBridge: false })
+const r14bOn = V.search(Q14B, R14_DOCS, { k: 10 })
+const r14bOff = V.search(Q14B, R14_DOCS, { k: 10, synBridge: false })
+const r14cOn = V.search(Q14C, R14_DOCS, { k: 10 })
+const r14cOff = V.search(Q14C, R14_DOCS, { k: 10, synBridge: false })
+const scoreOf14 = (list, id) => Number(list.find((h) => String(h.id) === id)?.score ?? 0)
+const s14aOn = scoreOf14(r14aOn, '0r14a0001')
+const s14aOff = scoreOf14(r14aOff, '0r14a0001')
+check(
+  'R14 表扩了「上传 / 发布 / 提交」之后，「发布上线」问得出只写了「上传」的那条',
+  String(r14aOn[0]?.id) === '0r14a0001',
+  `首位=${String(r14aOn[0]?.id).slice(0, 9)}（关桥 ${String(r14aOff[0]?.id).slice(0, 9)}）`,
+)
+check(
+  'R14 它是扩出来的分，不是本来就有：关桥后同一条分数明显更低（对照不是摆设）',
+  s14aOn > s14aOff * 1.05,
+  `开桥 ${s14aOn.toFixed(3)} vs 关桥 ${s14aOff.toFixed(3)}`,
+)
+check(
+  'R14「自测」与正文的「自检」通了：这一组吸收的是同义动作，不是同义词',
+  String(r14bOn[0]?.id) === '0r14a0002' && String(r14bOff[0]?.id) !== '0r14a0002',
+  `开桥首位=${String(r14bOn[0]?.id).slice(0, 9)}（关桥 ${String(r14bOff[0]?.id).slice(0, 9)}）`,
+)
+check(
+  'R14 没被扩到的问句一处不动：关桥与开桥逐位同序（表是全局的，不许借扩词顺手改别的题）',
+  r14cOn.map((h) => String(h.id)).join(',') === r14cOff.map((h) => String(h.id)).join(','),
+  `「封存是为了什么」开/关 ${r14cOn.length} 条同序`,
+)
+const synGroups14 = V.SYN_GROUPS
+const flat14 = synGroups14.flat()
+const needGroups = [
+  ['推送', '上传'],
+  ['自测', '自检'],
+  ['封存', '归档'],
+  ['底线', '门槛'],
+  ['口径', '说法'],
+]
+const groupHas = (a, b) => synGroups14.some((g) => g.includes(a) && g.includes(b))
+check(
+  'R14 新版五组都在表里，且表形态没破（组数 ≥18、每词两字、无跨组重复）',
+  synGroups14.length >= 18 &&
+    needGroups.every(([a, b]) => groupHas(a, b)) &&
+    synGroups14.every((g) => Array.isArray(g) && g.length >= 2 && g.every((w) => [...w].length === 2)) &&
+    new Set(flat14).size === flat14.length,
+  `${synGroups14.length} 组 / ${new Set(flat14).size} 个词，无跨组重复`,
+)
+check(
+  'R14 扩表默认落在同一个旋钮上：synW:0 与 synBridge:false 同分，都不许把扩出来的分算进去',
+  r14aOff.map((h) => String(h.id) + ':' + Number(h.score).toFixed(3)).join('|') ===
+    V.search(Q14A, R14_DOCS, { k: 10, synW: 0 }).map((h) => String(h.id) + ':' + Number(h.score).toFixed(3)).join('|'),
+  'synBridge:false 与 synW:0 逐位同分',
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {
