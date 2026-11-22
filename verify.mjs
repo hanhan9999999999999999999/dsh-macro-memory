@@ -921,8 +921,9 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    // 30 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
-    steps.length === 30 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    // 31 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
+    //      + 0.5.0 的 probe-adapt（换场景适应力量尺）
+    steps.length === 31 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -4256,9 +4257,10 @@ function makeHostCtx() {
     'shape',
   )
   check(
-    'as: 扩出来的词合流在同一个出口：手工表在前、共现表在后，一共最多 6 个',
-    fMeowSrc.includes('function synExpandOf(qTerms, df, n, cooc)') &&
-      fMeowSrc.includes('.slice(0, SYN_MAX_PER_TERM)'),
+    'as: 扩出来的词合流在同一个出口：手工表在前、共现表在后，一共最多 6 个（名额按碎片算）',
+    fMeowSrc.includes('function synExpandOf(qTerms, df, n, cooc, forms)') &&
+      fMeowSrc.includes('.slice(0, SYN_MAX_PER_TERM)') &&
+      fMeowSrc.includes('for (const a of map.get(t) ?? []) push(use, a);'),
     'merge',
   )
   // 纯函数行为：同条一次够、单字不够、词不在 keywords 里学不到
@@ -4274,7 +4276,7 @@ function makeHostCtx() {
   )
   check(
     'as: 开关在索引那一层生效：coocLearn:false 时索引里根本没有共现表（不是有表不用）',
-    fMeowSrc.includes('opts.coocLearn === false ? null : buildCoocSyn(docs, n)'),
+    fMeowSrc.includes('opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts)'),
     'switch',
   )
   check(
@@ -10496,7 +10498,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'HB2 只扩问句: 开关与权重都从 opts 读，默认读常量（一处兜底，不是每处各写一遍）',
-    eng.includes('const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn);') &&
+    eng.includes('const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn, opts.synFormBridge === true ? coocForms : null);') &&
       eng.includes('const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;') &&
       eng.split('opts.synW : SYN_W').length - 1 === 1,
   )

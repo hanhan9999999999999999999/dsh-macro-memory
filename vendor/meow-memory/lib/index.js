@@ -2326,21 +2326,53 @@ function synMapOf() {
 // [macro-fusion 0.4.0 · P5] 两个来源合流：手工表是种子（管「人已经确定的等价说法」），
 // 共现表是自学习（管「新领域、新术语、新缩写——从来没人告诉过我它们是一回事」）。
 // 第四参 cooc 缺省 null 时，行为与 0.3.0 一字不差：老探针和外部脚本调三个参数照样跑。
-function synExpandOf(qTerms, df, n, cooc) {
+function synExpandOf(qTerms, df, n, cooc, forms) {
   const map = synMapOf();
   const cap = Number.isFinite(n) && n > 0 ? Math.max(1, Math.floor(n * SYN_MAX_DF_RATIO)) : Infinity;
   const out = /* @__PURE__ */ new Map();
   const usable = (a, list) => !qTerms.includes(a) && !list.includes(a) && (df.get(a) ?? 0) > 0 && (df.get(a) ?? 0) <= cap;
+  // 名额按**碎片**算（就是打分用的那个坐标系）。试过放宽到两倍、试过按整词算名额，两版在冷域
+  // 十题上都更差（hit@3 0.90 → 0.60）：多出来的名额被同项目层的邻居占走（番茄/整枝/蚜虫），
+  // 它们能命中别的条目，把答文档从第三挤到第四。扩词是桥，桥要窄。
+  // [macro-fusion 0.5.0 · P1] 碎片只在**第二遍（桥那一遍）**投：第一遍必须与 0.4.1 逐位一致，
+  // 连分数都不许漂（probe-cost 的 C5 快照守的就是这条），而把整词切碎会多命中一批碎片、
+  // 把分数抬高（实测 40.096866 → 42.811168，名次不变但数字变了）。碎片是桥自己的词形，
+  // 就该留在桥那一遍；第一遍只按 0.4.1 的老坐标系说话。
+  const fragOk = forms instanceof Map;
+  const push = (use, a) => {
+    if (typeof a !== "string" || a.length === 0) return;
+    if (usable(a, use)) use.push(a);
+    if (!fragOk) return;
+    // 邻居是整词，正文里是碎片：把整词切开的碎片算候选，否则「二甲双胍」永远匹配不上「二甲/甲双/双胍」。
+    for (const f of tokenize(a)) {
+      if (f.length < 2 || f === a || !usable(f, use)) continue;
+      use.push(f);
+    }
+  };
   for (const t of qTerms) {
-    const manual = map.get(t) ?? [];
-    const learned = cooc instanceof Map ? cooc.get(t) ?? [] : [];
     const use = [];
-    for (const a of manual) if (usable(a, use)) use.push(a);
-    for (const a of learned) if (usable(a, use)) use.push(a);
+    for (const a of map.get(t) ?? []) push(use, a);
+    if (cooc instanceof Map) {
+      for (const a of cooc.get(t) ?? []) push(use, a);
+      // 问句里的碎片先落回整词，再查那个整词的邻居：降糖 → 降糖药 → 二甲双胍。
+      if (forms instanceof Map) {
+        for (const w of forms.get(t) ?? []) {
+          if (w === t) continue;
+          for (const a of cooc.get(w) ?? []) push(use, a);
+        }
+      }
+    }
     if (use.length > 0) out.set(t, use.slice(0, SYN_MAX_PER_TERM));
   }
   return out.size > 0 ? out : null;
 }
+// [macro-fusion 0.5.0 · P1] 词形桥的第二遍怎么并回第一遍：
+// FORM_MERGE_W 是第二遍的权重（第一遍恒为 1），FORM_RRF_K 是 RRF 的平滑常数（取 60 是 RRF 惯例）。
+// 实测：整份替换会把第一遍排第一的挤下去（财务「发票丢了还能报销吗」0 → 1）；权重 0.5 的 RRF
+// 只补位不翻盘——第一遍第 1 名仍是第 1 名，第二遍捞回来的条目填进第 2、第 3 位
+// （冷域十题 hit@3 0.40 → 0.80；宽池换说法两档 1.000 / 0.956 与第一遍逐位相同）。
+var FORM_MERGE_W = 0.5;
+var FORM_RRF_K = 60;
 var KW_TF_W = 0.35;
 var FIELD_KW_W_DEF = 0.6;
 function hintWordsOf(hit, query) {
@@ -2631,13 +2663,59 @@ function coocWordsOf(d) {
   return out;
 }
 
+// [macro-fusion 0.5.0 · P1] 词形桥：keywords 里是多字词（二甲双胍 / 降糖药 / 叶子发黄），
+// 而问句与正文都被 tokenize 切成二元组——两套词形不在同一个坐标系里。共现表记得再准，
+// 问句那头用「降糖」也永远查不到「降糖药」这条键：跨领域换说法 hit@1 实测 0/10。
+// 第一版的做法是把 keywords 先切碎再学（表里全是 降糖/糖药 这种碎片），桥是长出来了，
+// 但整词的语义一起丢了：一条记忆的 8–13 个关键词切完变 20 多个 token，同条层每对都同分，
+// 「每词最多带 6 个」一砍就把真正要的映射对砍掉了（实测园艺「不开」只连到「叶子/发黄」，
+// 「氮肥/过量」被排在第七位直接丢掉）。所以改成：**表里存整词**（降糖药 ↔ 二甲双胍），
+// 只在查表那一刻补一层「碎片 → 整词」的桥（见 buildCoocForms）。
+// 纪律不变：只投 keywords，绝不 tokenize 正文——碎片是正文切出来的，keywords 是字与词。
+function coocFormsOf(words) {
+  const out = [];
+  for (const w of words) {
+    for (const u of tokenize(w)) {
+      if (u.length < 2) continue;
+      if (!out.includes(u)) out.push(u);
+    }
+  }
+  return out;
+}
+
+// [macro-fusion 0.5.0 · P1] 碎片 → 整词的桥：共现表里存的是 keywords 的**原词**（降糖药 / 二甲双胍 / 缺氮），
+// 而索引里的文档词、问句词都被 tokenize 切成二元组（降糖/糖药、二甲/甲双/双胍）。两套词形不在一个
+// 坐标系，表再准也接不上：查「降糖/糖药」得到 (无)，共现表里有降糖药带的一串邻居也白搭。
+// 这张表就是坐标系之间的翻译：碎片 → 它属于哪几个整词（整词必须真的是共现表的键，否则查它也没邻居）。
+// 一个碎片最多挂 4 个整词：挂太多说明这碎片本身没信息量（如「我们」「一直」），宁可不桥。
+// 只在 searchAdaptive 那一层启用（第二遍），常规打分路径一律不开——宽池实测（106 条真库快照）
+// 这一层常开会把两题换说法从第 1 挤到第 2，只有「补位」时才值。
+var COOC_FORM_WORDS = 4;
+function buildCoocForms(docs, cooc) {
+  if (!(cooc instanceof Map)) return null;
+  const out = new Map();
+  for (const d of docs) {
+    for (const w of coocWordsOf(d)) {
+      const word = String(w ?? "").trim();
+      if (word.length < 3 || !cooc.has(word)) continue;
+      for (const f of coocFormsOf([word])) {
+        if (f === word) continue;
+        const list = out.get(f);
+        if (!list) out.set(f, [word]);
+        else if (!list.includes(word) && list.length < COOC_FORM_WORDS) list.push(word);
+      }
+    }
+  }
+  return out.size > 0 ? out : null;
+}
+
 function coocShareHan(a, b) {
   if (!/[\u4e00-\u9fff]/.test(a) || !/[\u4e00-\u9fff]/.test(b)) return false;
   for (const ch of a) if (b.includes(ch)) return true;
   return false;
 }
 
-function buildCoocSyn(docs, n) {
+function buildCoocSyn(docs, n, opts) {
   const pairs = new Map();
   // 两级证据分别记账：同条层（强）与项目层（弱）各一张表，最后按「强在前、弱补位」合流。
   // 混在一张表里按比例排序的话，项目层的词会把同条层的桥词挤出前六——实测宽池换说法因此从
@@ -2661,15 +2739,17 @@ function buildCoocSyn(docs, n) {
     }
   };
   const kwDf = new Map();
+  // 表里一律存原词（不切碎）：语义与「每词几个邻居」的名额都靠原词撑住，碎片桥在查表时补（buildCoocForms）。
+  const wordsOf = (d) => coocWordsOf(d);
   for (const d of docs) {
-    const words = coocWordsOf(d);
+    const words = wordsOf(d);
     if (words.length === 0) continue;
     for (const w of words) kwDf.set(w, (kwDf.get(w) ?? 0) + 1);
     pairUp(words, COOC_W_SAME);
   }
   const byProject = new Map();
   for (const d of docs) {
-    const words = coocWordsOf(d);
+    const words = wordsOf(d);
     if (words.length === 0) continue;
     const p = String(d.project ?? "全局");
     if (!byProject.has(p)) byProject.set(p, []);
@@ -2784,12 +2864,14 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ''))))) : null;
   // [macro-fusion 0.4.0 · P5] 共现表跟索引一起建（库一变就重算，不需要额外失效逻辑）。
   // coocLearn:false 一键回到「只有手工表」的旧口径，用来做开/关对照。
-  const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n);
+  const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts);
+  // [macro-fusion 0.5.0 · P1] 碎片 → 整词的桥（opts.coocForms === false 可单独关掉，用来量这一层值多少分）。
+  const coocForms = opts.coocForms === false ? null : buildCoocForms(docs, coocSyn);
   return {
     __n: n,
     __sig: sig ?? indexSignature(docs),
-    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}`,
-    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn
+    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`,
+    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn, coocForms
   };
 }
 
@@ -2801,7 +2883,7 @@ const SEARCH_INDEX_CACHE_MAX = 4;
 const searchIndexCache = new Map();
 
 function indexPathKey(docs, opts) {
-  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}`;
+  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`;
 }
 
 // 调用方也可以直接传 opts.index（自己缓存那张表）；签名或口径对不上就自己重建——
@@ -2810,7 +2892,7 @@ function searchIndexOf(docs, opts) {
   const key = indexPathKey(docs, opts);
   const given = opts.index;
   if (given && given.__n === docs.length && given.__sig === indexSignature(docs) &&
-      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.coocLearn === false ? 0 : 1}`) {
+      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`) {
     return given;
   }
   if (opts.cache === false) return buildSearchIndex(docs, opts, key);
@@ -2859,7 +2941,7 @@ function search(query, docs, opts = {}) {
   if (q.length === 0 && idents.length === 0) return [];
   // [macro-fusion 0.2.153] 切词与建表挪进索引：这部分跟「问什么」无关，只跟「库里有什么」有关。
   const index = searchIndexOf(docs, opts);
-  const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn } = index;
+  const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
   const COORD_W = Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF;
@@ -2890,7 +2972,9 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.4.0 · P5] 第四参是索引随库自建出来的共现表——手工表管「人确定过的说法」，
   // 共现表管「库里自己长出来的说法」。opts.coocLearn === false 时 index.coocSyn 为 null，
   // 这里就干净地退回只有手工表的老行为。
-  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn);
+  // [macro-fusion 0.5.0 · P1] 第五参是「碎片 → 整词」的桥：问句里的碎片先落回整词，再去查共现表。
+  // 少了这一层，表里存的降糖药/二甲双胍与索引里的 降糖/糖药 根本碰不到一起。
+  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn, opts.synFormBridge === true ? coocForms : null);
   const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;
   // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
   const coverLenRelief = Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF;
@@ -3146,6 +3230,83 @@ function search(query, docs, opts = {}) {
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
   if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
   return trimByBand(hits, k, opts);
+}
+// ═══════════════ [macro-fusion 0.5.0 · P1] 换场景检索：词形桥的第二遍 ═══════════════
+// 问题不是「词库太死」，而是**两套词形不在一个坐标系**：共现表学的是 keywords 的原词
+// （降糖药 / 二甲双胍 / 氮肥过量），索引与问句都被 tokenize 切成二元组（降糖/糖药、二甲/甲双/双胍、
+// 氮肥/肥过/过量）。于是问「降糖药第一次吃多少量」时，表里明明有降糖药的邻居，查「降糖」却得到 (无)，
+// 表再准也接不上——这就是「换个场景、换种叫法就查不到」的真正原因，不是词库小。
+// 修法分两层：
+//  ① 索引里多一张 碎片 → 整词 的桥（buildCoocForms），把两套词形接起来；
+//  ② 但这条桥**不进常规打分**：宽池实测（106 条真库快照）常开会把两题换说法从第 1 挤到第 2
+//    （1.000 → 0.857），因为它给两跳来的候选和真词一样的票。
+// 所以桥只在这一层开，而且只「补位」不「翻盘」：第一遍照常听（老行为一字不改），听完再按桥听
+// 第二遍，两遍用 RRF 并（第一遍权重 1、第二遍 FORM_MERGE_W）。第一遍排第一的仍是第一遍的答案，
+// 桥捞回来的条目填进第 2、第 3 位——冷域实测 hit@3 0.40 → 0.80，hit@1 不动（0.10）。
+// 桥接不上（问句里没有一个碎片能落回整词）就原样返回，不花第二遍的钱。
+function searchAdaptive(query, docs, opts = {}) {
+  const first = search(query, docs, opts);
+  if (opts.formRescue === false || opts.synBridge === false || opts.coocForms === false) return first;
+  if (first.length === 0) return first;
+  let idx = null;
+  try {
+    idx = searchIndexOf(docs, opts);
+  } catch {
+    idx = null;
+  }
+  const forms = idx === null ? null : idx.coocForms;
+  if (!(forms instanceof Map)) return first;
+  // 桥得真接得上才值得再听一遍：问句里至少有一个碎片能落回某个整词（而且那个整词在表里）。
+  // 接不上就原样返回——这一步是常数，不会因为多听一遍把内存检索拖慢。
+  let bridged = false;
+  for (const t of q0ToksOf(query)) {
+    if (forms.has(t)) {
+      bridged = true;
+      break;
+    }
+  }
+  if (!bridged) return first;
+  const alt = search(query, docs, { ...opts, synFormBridge: true });
+  if (alt.length === 0) return first;
+  // 融合而不是替换：第一遍的排序是主（权重 1），第二遍按名次补位（权重 FORM_MERGE_W）。
+  // 为什么不用「第二遍更确定就整份替换」：实测替换会把第一遍排第一的挤下去（财务「发票丢了
+  // 还能报销吗」0 → 1），而两份名单里各占第一的条目会打平。RRF 只做「补位」，不做「翻盘」：
+  // 第一遍的第 1 名仍然是第 1 名，除非第二遍把它排到很后面（此时它本来也没听懂）。
+  const k = Number.isFinite(opts.k) && opts.k > 0 ? Math.round(opts.k) : first.length;
+  const score = /* @__PURE__ */ new Map();
+  const keep = /* @__PURE__ */ new Map();
+  const w = Number.isFinite(opts.formMergeW) ? opts.formMergeW : FORM_MERGE_W;
+  const add = (list, weight) => {
+    for (let i = 0; i < list.length; i++) {
+      const h = list[i];
+      const id = String(h.id);
+      const rr = weight / (FORM_RRF_K + i);
+      score.set(id, (score.get(id) ?? 0) + rr);
+      const prev = keep.get(id);
+      if (prev === void 0 || weight >= 1) keep.set(id, h);
+    }
+  };
+  add(first, 1);
+  add(alt, w);
+  const ordered = [...keep.keys()].sort((a, b) => {
+    const d = score.get(b) - score.get(a);
+    if (Math.abs(d) > 1e-12) return d;
+    const ra = Number(keep.get(a)._raw ?? keep.get(a).score) || 0;
+    const rb = Number(keep.get(b)._raw ?? keep.get(b).score) || 0;
+    return rb - ra;
+  });
+  // [macro-fusion 0.5.0 · P1] 「只补位」的硬边界：合并完如果**名次一个字都没变**，就把第一遍原样
+  // 返回，连分数都不动。理由有两层：① 用户看得见的是分数，桥没改变结论时不该让数字漂
+  // （probe-cost 的快照 C5 就是这么守的：只许变快，不许变答案）；② 顺序没变时合并纯属白算。
+  const merged = ordered.slice(0, Number.isFinite(k) && k > 0 ? k : ordered.length).map((id) => keep.get(id));
+  const sameOrder = merged.length === first.length && merged.every((h, i) => String(h.id) === String(first[i].id));
+  if (sameOrder) return first;
+  return merged;
+}
+function q0ToksOf(query) {
+  const out = [];
+  for (const t of tokenize(String(query ?? ""))) if (t.length >= 2) out.push(t);
+  return out;
 }
 function keywordHitScore(query, docs, opts = {}) {
   const k = opts.k ?? 2;
@@ -9042,14 +9203,16 @@ function persistWindowIndex() {
 // 第一次调用顺手把预热排进后台（不 await），等向量攒齐了下一问自然变准；
 // 预热失败也不影响本次结果——这条路上任何一环坏掉，退回去的答案都必须是词法原样。
 let denseWarmPromise = null;
+// [macro-fusion 0.5.0 · P1] 词法这一路换成 searchAdaptive：听不懂时再按「碎片 → 整词」的桥听一遍。
+// 稠密这一路只要接上了就用它的融合结果（FUSION 已经做了词法+稠密的取舍），接不上则整条路走词法。
 async function rankForSearch(query, docs, opts = {}) {
-  if (denseDisabled()) return search(query, docs, opts);
+  if (denseDisabled()) return searchAdaptive(query, docs, opts);
   let fused = null;
   try { fused = await searchHybrid(query, docs, opts); } catch { fused = null; }
   if (denseWarmPromise === null && denseRt.state !== 'off') {
     denseWarmPromise = denseWarm(docs, opts).catch(() => null);
   }
-  return fused ?? search(query, docs, opts);
+  return fused ?? searchAdaptive(query, docs, opts);
 }
 
 // ═══════════════════════ [macro-fusion 0.2.154] 稠密向量：可选的一路 ═══════════════════════
@@ -9740,6 +9903,7 @@ export {
   scanTurn,
   search,
   searchHybrid,
+  searchAdaptive,
   indexSignature,
   searchIndexOf,
   searchIndexCacheInfo,

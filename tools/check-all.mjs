@@ -66,6 +66,7 @@ const STEPS = [
   ['tools/probe-supersede.mjs', '自动取代量尺：桩 flow 数调用——off 不检索 / suggest 一个字不写库 / apply 才标 stale / 五类判据各有阴性对照'],
   ['tools/probe-entity.mjs', '实体层与动态跳数量尺：四类硬事实 / 层不进图 / 软边第二跳按词面收 / 硬边照走 / 缓存往返自愈'],
   ['tools/probe-cooc.mjs', '共现自学习扩词量尺：词源是 keywords 不是切片 / 同条 2 跨文档 1 / 三道门 / 真进召回 / 库越大越准 / 开关与缓存口径位'],
+  ['tools/probe-adapt.mjs', '跨领域适应力量尺：5 个陌生领域 × 12 条，换场景换说法 hit@3 / 阴性与消融 / 两遍只补位不翻盘'],
   ['tools/probe-cost.mjs', '效率量尺：三档语料（40 / 400 / 1200）的 p50/p95、结果快照、缓存只许省时间'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],

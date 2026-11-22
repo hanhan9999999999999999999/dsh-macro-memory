@@ -10,8 +10,9 @@
 
 | 项 | 读数 | 日期 | 版本 / commit | 复核命令 |
 |---|---|---|---|---|
-| 健康基线 | 30 支 suite / **3,511 断言** / failed 0 / 与 baseline 逐支一致（约 220s） | 2026-11-22 21:02 | 0.4.0 · HEAD `2c029b0` + P0/P1/P2/P2.5/P3/P4/P5 未提交改动 | `node tools/check-all.mjs` |
-| 两棵树同步 | **181 个文件字节一致** / drift 0 / extra 0 | 2026-11-22 20:57 | 同上 | `node tools/doctor.mjs`（结果 ALL PASS） |
+| 健康基线 | 31 支 suite / **3,522 断言** / failed 0 / 与 baseline 逐支一致（约 206s） | 2026-11-22 23:00 | 0.5.0 · 本地（未提交） | `node tools/check-all.mjs` |
+| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-22 23:00 | 0.5.0 | `node tools/doctor.mjs`（结果 PASS） |
+| 换场景适应力（新尺子） | 5 个陌生领域（医学/法律/园艺/天文/财务）× 12 条 + 10 条换说法问句：换说法 **hit@3 0.40 → 0.80**、hit@1 0.00 不动、MRR 0.342；两遍合并**第一名改判 0 题**；关共现自学习 hit@3 掉回 0.30；混库 60 条与单域持平；同词 hit@1 100% | 2026-11-22 22:40 | 0.5.0 · meow 补丁 `[macro-fusion 0.5.0 · P1]` | `node tools/probe-adapt.mjs`（A0–A5 九条） |
 | 版本与接口面 | 0.3.0，接口面冻结 | 2026-11-22 | `2c029b0`（`chore(baselines): 0.3.0 · 24 suites / 3323 assertions`） | `git log --oneline -1` |
 | 工具面 | 8 个统一 `memory_*` 工具 + 一段最小注入 | 2026-11-22 | 0.3.0 | `node tools/probe-toolsize.mjs` |
 | 查询分解量尺 | 20 题双实体：切开 20/20、补充 35 条、救回 1 题；hit@3 `0.900→0.900`、命中率 `0.950→1.000`、MRR `0.777→0.784`；延迟 p50 `0.14→0.44ms` | 2026-11-22 16:30 | 0.3.1 · `multiQuery: conservative` | `node tools/probe-mq.mjs` |
@@ -28,6 +29,8 @@
 关于「3,367」的来路：3,341 → **3,367**（+26 = 12 条 `co:` 判据 + 12 条 `tools/probe-consolidate.mjs` + `param-audit` 的 `1.1b` + `probe-graph` 1 条，套件 25→26）。这里也有一个过渡态 **3,365**：`param-audit` 判红后 `process.exit(1)`，把 20.6s 的耗时截成 1.6s 记进基线，转绿之后反报「慢了 13 倍」。**一条支从红转绿，耗时基线要手工回填成绿态读数**——`--update-baselines` 会把失败路径的速度当成正常（`docs/INTERNAL.md` 9.192）。
 
 关于「3,398」的来路：3,367 → **3,398**（+31 = 12 条 `hy:` 判据（verify 的 A58d）+ 18 条 `tools/probe-hygiene.mjs`（H1–H18）+ 1 条 `tools/doctor.mjs`（补上 `probe-hygiene.mjs` 的文档出处后那条 WARN 转 PASS 才计入），套件 26→27）。verify 单支 1,757 → 1,769，其余 26 支 1,610 → 1,629。同一节 `docs/INTERNAL.md` 9.193 记了这段的四个连带坑：`probe-words` 把「体检六类」写死、`PANEL_SUMMARY` 220 字撞 200 字可读性尺、`verify` 的 `steps.length === 26` 与 `check-all` 支数注释、schema 体积 13,366 → 13,372 B。
+
+关于「3,522」的来路：3,511 → **3,522**（+11 = 11 条 `tools/probe-adapt.mjs`（A0 三条 / A1 / A2 两条 / A3 / A4 两条 / A5 两条）+ 0 条 `verify.mjs`（支数断言 30→31 只是数字没加条）+ `tools/doctor.mjs` 绿态回填 ±2，套件 30→31）。**这一版最该记住的一条**：改判据不是改数字，是改因果——`probe-gold` 的 G-W4 从「宽池 ≥ 窄池」改成守绝对量（窄池照抄 0.977 → 1.000 之后，相对判据把「真干扰项压到第 2」判成红），`probe-adapt` 的消融从 hit@1 换到 hit@3（桥是补位性质，命中提升全在 2、3 位）。两处都把「为什么改、改了代价是什么」写进注释与 `docs/INTERNAL.md` 9.198。
 
 关于「3,511」的来路：3,476 → **3,511**（+35 = 14 条 `as:` 判据（verify 的 A58g）+ 18 条 `tools/probe-cooc.mjs`（K1–K6）+ 4 条 `tools/doctor.mjs`（P5 补丁账 + 三条绿态才计入的同步/指纹判据）+ 2 条 `tools/probe-cost.mjs`（C5b/C5c），另有几支因绿态转红态消失的条件断言回填 ±1，套件 29→30）。verify 单支 1,797 → 1,811。**这里有一个必须记住的坑**：`--update-baselines` 在「红着跑」的那一轮会把少掉的断言数记成新基线（drift 态下 `两处比较` / `账本指纹` 后面三条绿态判据不出现 → doctor 记成 159 而实际绿态是 162），所以顺序只能是「先两树同步 → 再跑绿 → 再 update → 再跑一遍确认 `断言数与基线一致`」。连带坑记在 `docs/INTERNAL.md` 9.197：两级证据混一张表把宽池换说法打回 13/14、C5b 快照必须冻结「只差一个变量」的那一态。
 

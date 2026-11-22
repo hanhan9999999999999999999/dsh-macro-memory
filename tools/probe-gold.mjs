@@ -112,9 +112,15 @@ const wKSeqDiff = wideQ.tops.filter((seq, i) => seq !== base.tops[i]).length
 const wOnlyInTop = wideQ.tops.filter((seq) => seq.split('|').some((id) => wideOnlyIds.has(id))).length
 const widePNoCooc = measure(fx.paraphrase, wideDocs, { coocLearn: false })
 const coocAttrib = wideP.hit1 <= narrowP.hit1 || widePNoCooc.hit1 < wideP.hit1
-check('G-W4 阴性对照：宽池真接了那 106 条（前 K 条序列至少一处不同），照抄档不倒退，换说法的增量能归因到共现通道',
-  (wKSeqDiff > 0 || wOnlyInTop > 0) && wideQ.hit1 >= base.hit1 - 1e-9 && coocAttrib,
-  `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}（关共现 ${widePNoCooc.hit1.toFixed(3)}）；照抄档宽池 ${wideQ.hit1.toFixed(3)} / 窄池 ${base.hit1.toFixed(3)}；前 ${K} 条序列不同 ${wKSeqDiff} 处（宽池独有条目进榜 ${wOnlyInTop} 处）`)
+// [macro-fusion 0.5.0 · P1] 这一格原来是「宽池照抄 ≥ 窄池照抄」，靠两池都是 0.977 成立的。P1 把
+// keywords 的整词邻居也切碎投进候选（不然「二甲双胍」永远匹配不上正文里的「二甲/甲双/双胍」），
+// 窄池照抄从 0.977 涨到 1.000；宽池里「评测台为什么封存」被一条真干扰项压到第 2，于是 1.000 vs
+// 0.977 —— 不是干扰项变多，是窄池变好了，相对判据反而假红。改成守绝对量：窄池必须满分，
+// 宽池那 106 条干扰最多丢一题（1 / fx.queries.length），守的仍是「加干扰不许把认得出的弄丢」。
+const wideCopyLoss = Math.round((1 - wideQ.hit1) * fx.queries.length)
+check('G-W4 阴性对照：宽池真接了那 106 条（前 K 条序列至少一处不同），照抄档丢不超过一题，换说法的增量能归因到共现通道',
+  (wKSeqDiff > 0 || wOnlyInTop > 0) && base.hit1 >= 1 - 1e-9 && wideCopyLoss <= 1 && coocAttrib,
+  `窄池 ${narrowP.hit1.toFixed(3)} vs 宽池 ${wideP.hit1.toFixed(3)}（关共现 ${widePNoCooc.hit1.toFixed(3)}）；照抄档宽池 ${wideQ.hit1.toFixed(3)}（丢 ${wideCopyLoss} 题）/ 窄池 ${base.hit1.toFixed(3)}；前 ${K} 条序列不同 ${wKSeqDiff} 处（宽池独有条目进榜 ${wOnlyInTop} 处）`)
 
 const again = measure(fx.queries, docs)
 check('G4 可复现：同一语料同一问句跑两遍，三档逐位相同',

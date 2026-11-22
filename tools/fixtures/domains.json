@@ -1,0 +1,125 @@
+{
+  "note": "跨领域适应力夹具：5 个互不相关的领域（医疗/法律/园艺/天文/财务），每个领域 12 条记忆 + 5 条问句。前 3 条问句用正文里的词（同词召回必须稳），后 2 条换说法（用口语备忘里的词去问正式文档里的事）——这才是「换场景还能不能找到」的量尺。所有领域词汇都与 SYN_GROUPS 手工表无关：手工表里有用的词一个都不许出现在换说法问句里（probe-adapt A0 反向断言），否则量的是老表不是适应力。",
+  "domains": [
+    {
+      "name": "医疗",
+      "docs": [
+        { "id": "md01", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "二甲双胍起始", "content": "二甲双胍起始 500mg 每日一次随餐服，两周后胃肠耐受良好再加到 1000mg 分两次", "keywords": ["二甲双胍", "起始剂量", "随餐", "胃肠耐受"] },
+        { "id": "md02", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "降糖药调整原则", "content": "降糖药加量前先看肾功能与胃肠反应，双胍类一线；一出现明显腹泻就退半步，别硬顶", "keywords": ["降糖药", "肾功能", "双胍类", "腹泻"] },
+        { "id": "md03", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "低血糖处置", "content": "心慌出汗手抖先测血糖，低于 3.9 立刻口服 15g 葡萄糖，一刻钟后复测", "keywords": ["低血糖", "葡萄糖", "复测"] },
+        { "id": "md04", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "基础胰岛素", "content": "基础胰岛素睡前皮下注射，起始按体重每公斤 0.1 到 0.2 单位，每三天按空腹血糖调 2 单位", "keywords": ["胰岛素", "皮下注射", "空腹血糖", "起始量"] },
+        { "id": "md05", "level": "fact", "status": "active", "importance": 2, "project": "医疗", "title": "家庭血压测量", "content": "家用上臂式血压计晨起测两次取平均，连续记一周再看是否需要调药", "keywords": ["血压计", "家庭自测", "平均值"] },
+        { "id": "md06", "level": "fact", "status": "active", "importance": 2, "project": "医疗", "title": "降压药选择", "content": "高血压一线可选长效钙拮抗剂或沙坦类，晨起服，两周复诊", "keywords": ["降压药", "钙拮抗剂", "沙坦"] },
+        { "id": "md07", "level": "fact", "status": "active", "importance": 2, "project": "医疗", "title": "抗生素疗程", "content": "社区获得性肺炎经验用药七天，退热后不立刻停，复查胸片再定", "keywords": ["抗生素", "疗程", "胸片"] },
+        { "id": "md08", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "儿童退热", "content": "儿童退热首选对乙酰氨基酚，按体重每次每公斤 10 到 15 毫克，两次之间至少隔四小时", "keywords": ["退热", "对乙酰氨基酚", "体重"] },
+        { "id": "md09", "level": "fact", "status": "active", "importance": 2, "project": "医疗", "title": "补液", "content": "腹泻脱水用口服补液盐，按丢失量补，尿量恢复是最直观的指标", "keywords": ["补液盐", "脱水", "尿量"] },
+        { "id": "md10", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "慢病随访", "content": "糖尿病每三个月查一次糖化血红蛋白，眼底与尿微量白蛋白每年一次", "keywords": ["糖化血红蛋白", "随访", "眼底"] },
+        { "id": "md11", "level": "fact", "status": "active", "importance": 3, "project": "医疗", "title": "用药相互作用", "content": "华法林与阿司匹林同用出血风险翻倍，加用前先查凝血", "keywords": ["华法林", "阿司匹林", "凝血"] },
+        { "id": "md12", "level": "fact", "status": "active", "importance": 1, "project": "医疗", "title": "口语对照", "content": "口语对照：降糖药＝二甲双胍；拉肚子＝腹泻；退烧＝退热；血压高＝高血压", "keywords": ["降糖药", "二甲双胍", "拉肚子", "腹泻", "退烧", "退热"] }
+      ],
+      "queries": [
+        { "q": "二甲双胍起始剂量随餐", "want": ["md01"], "kind": "same" },
+        { "q": "低血糖口服葡萄糖 15g", "want": ["md03"], "kind": "same" },
+        { "q": "基础胰岛素起始按体重多少单位", "want": ["md04"], "kind": "same" },
+        { "q": "降糖药第一次吃多少量", "want": ["md01"], "kind": "para", "bridge": ["降糖药", "二甲双胍"] },
+        { "q": "拉肚子要不要减药", "want": ["md02"], "kind": "para", "bridge": ["拉肚子", "腹泻"] }
+      ]
+    },
+    {
+      "name": "法律",
+      "docs": [
+        { "id": "lw01", "level": "fact", "status": "active", "importance": 3, "project": "法律", "title": "租赁押金", "content": "租赁押金不得超过两个月租金，退租时出租人应在七日内结清并出具扣款明细", "keywords": ["押金", "退租", "扣款明细"] },
+        { "id": "lw02", "level": "fact", "status": "active", "importance": 3, "project": "法律", "title": "试用期", "content": "劳动合同试用期最长六个月，同一用人单位与同一劳动者只能约定一次试用期", "keywords": ["试用期", "劳动合同", "一次"] },
+        { "id": "lw03", "level": "fact", "status": "active", "importance": 3, "project": "法律", "title": "竞业限制", "content": "竞业限制期限不超过两年，须按月支付补偿，未支付满三个月劳动者可以请求解除", "keywords": ["竞业限制", "补偿", "解除"] },
+        { "id": "lw04", "level": "fact", "status": "active", "importance": 3, "project": "法律", "title": "加班费", "content": "加班费工作日一倍半、休息日两倍、法定节假日三倍，休息日也可以安排调休抵", "keywords": ["加班费", "调休", "节假日"] },
+        { "id": "lw05", "level": "fact", "status": "active", "importance": 2, "project": "法律", "title": "定金", "content": "定金不得超过主合同标的额两成，超过部分不产生定金效力", "keywords": ["定金", "两成", "标的额"] },
+        { "id": "lw06", "level": "fact", "status": "active", "importance": 3, "project": "法律", "title": "民间借贷利率", "content": "民间借贷年利率超过合同成立时一年期贷款市场报价利率四倍的部分不受支持", "keywords": ["民间借贷", "利率", "四倍"] },
+        { "id": "lw07", "level": "fact", "status": "active", "importance": 2, "project": "法律", "title": "劳动仲裁时效", "content": "劳动争议先仲裁后诉讼，仲裁时效一年，从知道权利被侵害之日起算", "keywords": ["仲裁", "时效", "劳动争议"] },
+        { "id": "lw08", "level": "fact", "status": "active", "importance": 2, "project": "法律", "title": "遗嘱形式", "content": "公证遗嘱需两名见证人在场，自书遗嘱须全文亲笔并注明年月日", "keywords": ["遗嘱", "见证人", "自书"] },
+        { "id": "lw09", "level": "fact", "status": "active", "importance": 2, "project": "法律", "title": "事故责任认定", "content": "交通事故责任认定书十日内出具，对认定不服三日内申请复核", "keywords": ["责任认定", "复核"] },
+        { "id": "lw10", "level": "fact", "status": "active", "importance": 2, "project": "法律", "title": "个人信息同意", "content": "处理个人信息须取得单独同意，敏感信息还要告知必要性与影响", "keywords": ["个人信息", "单独同意", "敏感"] },
+        { "id": "lw11", "level": "fact", "status": "active", "importance": 2, "project": "法律", "title": "公司减资", "content": "公司减资须通知债权人，并于三十日内在报纸或企业信用信息公示系统公告", "keywords": ["减资", "债权人", "公告"] },
+        { "id": "lw12", "level": "fact", "status": "active", "importance": 1, "project": "法律", "title": "口语对照", "content": "口语对照：押金不退＝押金返还；被辞退＝违法解除；加班不给钱＝加班费未付", "keywords": ["押金不退", "押金返还", "被辞退", "违法解除", "加班不给钱", "加班费"] }
+      ],
+      "queries": [
+        { "q": "租赁押金最多几个月租金", "want": ["lw01"], "kind": "same" },
+        { "q": "竞业限制最长几年", "want": ["lw03"], "kind": "same" },
+        { "q": "加班费休息日几倍", "want": ["lw04"], "kind": "same" },
+        { "q": "房东押金不退怎么办", "want": ["lw01"], "kind": "para", "bridge": ["押金不退", "押金"] },
+        { "q": "天天加班不给钱怎么办", "want": ["lw04"], "kind": "para", "bridge": ["加班不给钱", "加班费"] }
+      ]
+    },
+    {
+      "name": "园艺",
+      "docs": [
+        { "id": "yy01", "level": "fact", "status": "active", "importance": 2, "project": "园艺", "title": "番茄整枝", "content": "番茄单干整枝只留主蔓，侧芽长到五厘米就掰掉，留一穗果后打顶", "keywords": ["番茄", "整枝", "侧芽"] },
+        { "id": "yy02", "level": "fact", "status": "active", "importance": 3, "project": "园艺", "title": "土壤酸碱", "content": "多数蔬菜适宜 pH 六到七，偏酸撒石灰调碱，偏碱掺硫磺粉或腐殖土", "keywords": ["土壤", "酸碱度", "石灰"] },
+        { "id": "yy03", "level": "fact", "status": "active", "importance": 3, "project": "园艺", "title": "浇水节奏", "content": "见干见湿，手指插土两指深干了再浇透，夏季早晚各一次，冬季控水", "keywords": ["浇水", "见干见湿", "控水"] },
+        { "id": "yy04", "level": "fact", "status": "active", "importance": 3, "project": "园艺", "title": "蚜虫防治", "content": "蚜虫初发时用苦参碱或吡虫啉，少量可放瓢虫，别在正午喷药", "keywords": ["蚜虫", "苦参碱", "瓢虫"] },
+        { "id": "yy05", "level": "fact", "status": "active", "importance": 2, "project": "园艺", "title": "月季冬季修剪", "content": "月季落叶后重剪，留三到五根主枝，剪口在芽上方一厘米斜切", "keywords": ["月季", "冬季修剪", "主枝"] },
+        { "id": "yy06", "level": "fact", "status": "active", "importance": 2, "project": "园艺", "title": "扦插生根", "content": "扦插取半木质化枝条，两节一段，蘸生根粉插蛭石，遮阴保湿两周", "keywords": ["扦插", "生根粉", "蛭石"] },
+        { "id": "yy07", "level": "fact", "status": "active", "importance": 3, "project": "园艺", "title": "施肥配比", "content": "生长期偏氮促叶，开花前转磷钾，氮肥过量只长叶不结果", "keywords": ["施肥", "氮磷钾", "开花", "氮肥过量"] },
+        { "id": "yy08", "level": "fact", "status": "active", "importance": 2, "project": "园艺", "title": "育苗补光", "content": "育苗每天光照十二到十四小时，补光灯距苗二十厘米，夜间不必补", "keywords": ["育苗", "补光", "光照"] },
+        { "id": "yy09", "level": "fact", "status": "active", "importance": 2, "project": "园艺", "title": "盆栽换盆", "content": "换盆选春秋，脱盆后抖掉三分之一旧土，新盆直径大两号即可", "keywords": ["换盆", "旧土", "盆径"] },
+        { "id": "yy10", "level": "fact", "status": "active", "importance": 2, "project": "园艺", "title": "白粉病", "content": "白粉病通风差时爆发，摘病叶，喷小苏打水或戊唑醇，间隔七天", "keywords": ["白粉病", "通风", "戊唑醇"] },
+        { "id": "yy11", "level": "fact", "status": "active", "importance": 1, "project": "园艺", "title": "堆肥", "content": "堆肥碳氮比三十比一，一层干叶一层厨余，每月翻一次，三个月腐熟", "keywords": ["堆肥", "碳氮比", "腐熟"] },
+        { "id": "yy12", "level": "fact", "status": "active", "importance": 1, "project": "园艺", "title": "口语对照", "content": "口语对照：叶子发黄＝缺氮；小虫＝蚜虫；不开花＝氮肥过量；剪枝＝修剪", "keywords": ["叶子发黄", "缺氮", "小虫", "蚜虫", "不开花", "氮肥过量"] }
+      ],
+      "queries": [
+        { "q": "番茄侧芽长到几厘米掰掉", "want": ["yy01"], "kind": "same" },
+        { "q": "土壤偏酸撒什么调碱", "want": ["yy02"], "kind": "same" },
+        { "q": "蚜虫初发用什么药", "want": ["yy04"], "kind": "same" },
+        { "q": "叶子发黄是不是缺肥", "want": ["yy07"], "kind": "para", "bridge": ["叶子发黄", "施肥"] },
+        { "q": "阳台的花一直不开怎么办", "want": ["yy07"], "kind": "para", "bridge": ["不开", "氮肥过量"] }
+      ]
+    },
+    {
+      "name": "天文",
+      "docs": [
+        { "id": "tw01", "level": "fact", "status": "active", "importance": 3, "project": "天文", "title": "对极轴", "content": "赤道仪对极轴先用极轴镜粗对，再用漂移法精调，仰角与方位各调一半", "keywords": ["赤道仪", "极轴镜", "漂移法"] },
+        { "id": "tw02", "level": "fact", "status": "active", "importance": 3, "project": "天文", "title": "导星", "content": "焦距超过四百毫米要导星，导星镜配 ASI120，曝光一秒，校准三步走完再开拍", "keywords": ["导星", "导星镜", "校准"] },
+        { "id": "tw03", "level": "fact", "status": "active", "importance": 3, "project": "天文", "title": "增益与曝光", "content": "冷 CMOS 增益设到 unity，单张曝光看直方图落在三分之一处，过曝就降曝光时间", "keywords": ["增益", "曝光", "直方图"] },
+        { "id": "tw04", "level": "fact", "status": "active", "importance": 3, "project": "天文", "title": "叠加校准帧", "content": "深空叠加要拍暗场、平场、偏置帧，平场用白板或天光，暗场温度要和亮场一致", "keywords": ["叠加", "暗场", "平场", "偏置"] },
+        { "id": "tw05", "level": "fact", "status": "active", "importance": 2, "project": "天文", "title": "月相与窗口", "content": "拍星云避开满月前后五天，月亮高度低于三十度再开工，窄带可以放宽", "keywords": ["月相", "满月", "窄带"] },
+        { "id": "tw06", "level": "fact", "status": "active", "importance": 2, "project": "天文", "title": "行星拍摄", "content": "行星用视频抽帧，帧率一百以上，拍两分钟叠一千帧，木星自转快别超三分钟", "keywords": ["行星", "抽帧", "木星"] },
+        { "id": "tw07", "level": "fact", "status": "active", "importance": 2, "project": "天文", "title": "光害滤镜", "content": "城市里用双窄带滤镜压钠灯与 LED，宽带目标别用，会连信号一起切掉", "keywords": ["光害", "双窄带", "滤镜"] },
+        { "id": "tw08", "level": "fact", "status": "active", "importance": 2, "project": "天文", "title": "口径与分辨率", "content": "分辨率受衍射极限限制，口径一百毫米约一点二角秒，采样每像素一到二角秒", "keywords": ["口径", "衍射极限", "采样"] },
+        { "id": "tw09", "level": "fact", "status": "active", "importance": 2, "project": "天文", "title": "极限星等", "content": "极限星等随口径与天空背景变化，四寸镜在城市约十等，郊区可到十二等", "keywords": ["极限星等", "口径", "天空背景"] },
+        { "id": "tw10", "level": "fact", "status": "active", "importance": 2, "project": "天文", "title": "制冷相机", "content": "制冷温差设到环境温度下二十度，结露就加除露带，别一开始就拉满", "keywords": ["制冷", "温差", "结露"] },
+        { "id": "tw11", "level": "fact", "status": "active", "importance": 1, "project": "天文", "title": "马赛克拼接", "content": "马赛克每格重叠两成，按赤经赤纬偏移，拍完用软件做星点对齐再拼", "keywords": ["马赛克", "重叠", "星点对齐"] },
+        { "id": "tw12", "level": "fact", "status": "active", "importance": 1, "project": "天文", "title": "口语对照", "content": "口语对照：发白＝过曝；小尾巴＝拖线；跟踪跑偏＝极轴误差；月亮太亮＝月光干扰", "keywords": ["发白", "过曝", "小尾巴", "拖线", "跟踪跑偏", "极轴误差"] }
+      ],
+      "queries": [
+        { "q": "赤道仪对极轴漂移法怎么调", "want": ["tw01"], "kind": "same" },
+        { "q": "深空叠加要拍哪些校准帧", "want": ["tw04"], "kind": "same" },
+        { "q": "拍星云要避开满月几天", "want": ["tw05"], "kind": "same" },
+        { "q": "照片一放大就发白", "want": ["tw03"], "kind": "para", "bridge": ["发白", "过曝"] },
+        { "q": "星点老是跑偏怎么回事", "want": ["tw01"], "kind": "para", "bridge": ["跑偏", "极轴"] }
+      ]
+    },
+    {
+      "name": "财务",
+      "docs": [
+        { "id": "cw01", "level": "fact", "status": "active", "importance": 3, "project": "财务", "title": "报销单据", "content": "报销要发票加行程单，电子发票需查验真伪，抬头与税号必须与公司一致", "keywords": ["报销", "发票", "行程单"] },
+        { "id": "cw02", "level": "fact", "status": "active", "importance": 3, "project": "财务", "title": "差旅标准", "content": "一线城市住宿每晚上限六百，其他城市四百，超标部分自理，需事前审批", "keywords": ["差旅", "住宿上限", "审批"] },
+        { "id": "cw03", "level": "fact", "status": "active", "importance": 2, "project": "财务", "title": "专票认证", "content": "增值税专用发票在开具后三百六十天内勾选认证，逾期不得抵扣", "keywords": ["专票", "认证", "抵扣"] },
+        { "id": "cw04", "level": "fact", "status": "active", "importance": 2, "project": "财务", "title": "预算编制", "content": "预算自上而下给盘子、自下而上报细项，两轮对齐后锁版本，年中只调一次", "keywords": ["预算", "编制", "锁版本"] },
+        { "id": "cw05", "level": "fact", "status": "active", "importance": 3, "project": "财务", "title": "现金流账期", "content": "给客户的账期不超过六十天，供应商账期谈到九十天，中间缺口用授信补", "keywords": ["现金流", "账期", "授信"] },
+        { "id": "cw06", "level": "fact", "status": "active", "importance": 3, "project": "财务", "title": "应收账款催收", "content": "应收账款逾期先电话再函件，超九十天转法务，计提坏账按账龄分档", "keywords": ["应收账款", "催收", "坏账", "逾期"] },
+        { "id": "cw07", "level": "fact", "status": "active", "importance": 2, "project": "财务", "title": "固定资产折旧", "content": "固定资产直线法折旧，电子设备三年，办公家具五年，残值率百分之五", "keywords": ["固定资产", "折旧", "残值"] },
+        { "id": "cw08", "level": "fact", "status": "active", "importance": 2, "project": "财务", "title": "费用摊销", "content": "跨期费用按受益期摊销，预付一年保费分十二个月摊，摊销表随凭证附上", "keywords": ["摊销", "预付", "受益期"] },
+        { "id": "cw09", "level": "fact", "status": "active", "importance": 1, "project": "财务", "title": "备用金", "content": "备用金定额两千，月末清零重借，单据不齐不许再借", "keywords": ["备用金", "定额", "单据"] },
+        { "id": "cw10", "level": "fact", "status": "active", "importance": 2, "project": "财务", "title": "成本核算", "content": "小批量生产用分批法归集料工费，月末在制品按约当产量折算", "keywords": ["成本核算", "分批法", "约当产量"] },
+        { "id": "cw11", "level": "fact", "status": "active", "importance": 2, "project": "财务", "title": "审计底稿", "content": "审计底稿按科目分册，抽凭记录写清凭证号与金额，交叉索引到报表项目", "keywords": ["审计", "底稿", "抽凭"] },
+        { "id": "cw12", "level": "fact", "status": "active", "importance": 1, "project": "财务", "title": "口语对照", "content": "口语对照：发票丢了＝发票遗失；钱没到账＝逾期未付；预算超了＝预算超支", "keywords": ["发票丢了", "发票遗失", "钱没到账", "逾期未付", "预算超了", "预算超支"] }
+      ],
+      "queries": [
+        { "q": "差旅一线城市住宿每晚上限多少", "want": ["cw02"], "kind": "same" },
+        { "q": "应收账款逾期多久转法务", "want": ["cw06"], "kind": "same" },
+        { "q": "电子设备折旧几年残值率多少", "want": ["cw07"], "kind": "same" },
+        { "q": "发票丢了还能报销吗", "want": ["cw01"], "kind": "para", "bridge": ["发票丢了", "发票"] },
+        { "q": "客户钱一直没到账怎么催", "want": ["cw06"], "kind": "para", "bridge": ["没到账", "逾期"] }
+      ]
+    }
+  ]
+}
