@@ -101,7 +101,7 @@
                                              "source":  {
                                                             "type":  "git",
                                                             "url":  "https://gh-proxy.com/https:/github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                                            "commit": "6784b2d22f51122ef3e13fcf1686d3b86174e2c9"
+                                                            "commit": "c53b328f2be47b715fbfd6dadb6d2717a3f39006"
                                                         }
                                          },
                                          {
@@ -127,7 +127,7 @@
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://gh-proxy.com/https:/github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit": "6784b2d22f51122ef3e13fcf1686d3b86174e2c9"
+                                       "commit": "c53b328f2be47b715fbfd6dadb6d2717a3f39006"
                                    }
                     }
                 ]
