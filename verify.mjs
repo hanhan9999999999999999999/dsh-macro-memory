@@ -20,6 +20,10 @@ import { join, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { root } from './tools/_root.mjs'
 const noop = () => {}
+// [0.3.0] 版本下限不许把主版本写死：`v[0] === 0 && v[1] === 2 && v[2] >= N` 这种写法
+// 在 0.3.0 会整片假红（47 条），而它想说的只是「不早于 0.2.N」。主版本更高一律算过。
+const verAtLeast = (v, maj, min, pat) =>
+  v[0] > maj || (v[0] === maj && (v[1] > min || (v[1] === min && v[2] >= pat)))
 let failures = 0
 function check(label, ok, extra) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra === undefined ? '' : '  ' + extra}`)
@@ -47,7 +51,7 @@ registerHooks({
 
 const host = await import(pathToFileURL(join(root, 'lib', 'index.js')).href)
 check('host: name', host.name === 'macro-memory', host.name)
-check('host: version 0.2.x', /^0\.2\./.test(String(host.version)), host.version)
+check('host: 版本是三段 semver', /^\d+\.\d+\.\d+$/.test(String(host.version)), host.version)
 check('host: inject = [tools]', JSON.stringify(host.inject) === JSON.stringify(['tools']), JSON.stringify(host.inject))
 check('host: apply is function', typeof host.apply === 'function')
 // [0.2.79] 宿主设置页只认「导出 Config + 路径落在 volatile 节点下」的键：
@@ -1099,7 +1103,7 @@ function makeHostCtx() {
   const st27 = criteria27.selfTestContract()
   check('契约: 每条措辞判据都验证过能被打红（不是恒真）', st27.baseline.length === 0 && st27.survived.length === 0, `样板红 ${st27.baseline.join('/') || '无'} / 打不红 ${st27.survived.join('/') || '无'}`)
   const v27 = JSON.parse(read('package.json')).version.split('.').map(Number)
-  check('契约: 版本不早于 0.2.38', v27[0] === 0 && v27[1] === 2 && v27[2] >= 38, v27.join('.'))
+  check('契约: 版本不早于 0.2.38', verAtLeast(v27, 0, 2, 38), v27.join('.'))
   check(
     '契约: README 与 DESIGN 记了这一轮（判据自己也是两份）',
     readme.includes('0.2.38') && design.includes('0.2.38') && design.includes('判据自己'),
@@ -1290,7 +1294,7 @@ function makeHostCtx() {
 
   // 7) 版本与文档（版本会一直往前走，这里只钉「不早于 0.2.31」，具体值交给当轮那块断言）
   const v29 = pkg29.version.split('.').map(Number)
-  check('前台: 版本不早于 0.2.31', v29[0] === 0 && v29[1] === 2 && v29[2] >= 31, pkg29.version)
+  check('前台: 版本不早于 0.2.31', verAtLeast(v29, 0, 2, 31), pkg29.version)
   check('前台: README 记了 LINK_CALL_MS', readme29.includes('LINK_CALL_MS'))
   check('前台: DESIGN 讲了「前台也要有期限」这件事', design29.includes('0.2.31') && design29.includes('前台'))
 }
@@ -1383,7 +1387,7 @@ function makeHostCtx() {
 
   // 9) 版本与文档（版本会一直往前走：这里只钉「不早于 0.2.32」，具体值交给当轮那块断言）
   const v30 = pkg30.version.split('.').map(Number)
-  check('单批: 版本不早于 0.2.32', v30[0] === 0 && v30[1] === 2 && v30[2] >= 32, pkg30.version)
+  check('单批: 版本不早于 0.2.32', verAtLeast(v30, 0, 2, 32), pkg30.version)
   check('单批: README 记了 LINKS_PER_WRITE / LINK_BATCH_MS 与 0.2.32', readme30.includes('LINKS_PER_WRITE') && readme30.includes('LINK_BATCH_MS') && readme30.includes('0.2.32'))
   check('单批: DESIGN 讲了「一批也要有总账」', design30.includes('0.2.32') && design30.includes('一批也要有总账'), design30.includes('一批也要有总账') ? '有' : '没有')
 }
@@ -1498,7 +1502,7 @@ function makeHostCtx() {
   // 6) 版本与文档
   // 版本会一直往前走：这里只钉「不早于 0.2.33」，具体值交给当轮那块
   const v31 = pkg31.version.split('.').map(Number)
-  check('口径: 版本不早于 0.2.33', v31[0] === 0 && v31[1] === 2 && v31[2] >= 33, pkg31.version)
+  check('口径: 版本不早于 0.2.33', verAtLeast(v31, 0, 2, 33), pkg31.version)
   check(
     '口径: README 记了理由表与 0.2.33',
     readme31.includes('PENDING_REASONS') && readme31.includes('0.2.33'),
@@ -1549,7 +1553,7 @@ function makeHostCtx() {
   const pkg32 = JSON.parse(read32('package.json'))
   // 版本会一直往前走：这里只钉「不早于 0.2.34」，具体值交给当轮那块
   const v32 = pkg32.version.split('.').map(Number)
-  check('注入: 版本不早于 0.2.34', v32[0] === 0 && v32[1] === 2 && v32[2] >= 34, pkg32.version)
+  check('注入: 版本不早于 0.2.34', verAtLeast(v32, 0, 2, 34), pkg32.version)
   check(
     '注入: README 记了 GUIDE_TAIL_MARK 与 0.2.34',
     read32('docs/INTERNAL.md').includes('GUIDE_TAIL_MARK') && read32('docs/INTERNAL.md').includes('0.2.34'),
@@ -1598,7 +1602,7 @@ function makeHostCtx() {
   check('上限: 探针 S3/S5 钉住了这两句', missing33.length === 0, missing33.join(' / ') || '3/3')
 
   const v33 = pkg33.version.split('.').map(Number)
-  check('上限: 版本不早于 0.2.36', v33[0] === 0 && v33[1] === 2 && v33[2] >= 36, pkg33.version)
+  check('上限: 版本不早于 0.2.36', verAtLeast(v33, 0, 2, 36), pkg33.version)
   check(
     '上限: README 与 DESIGN 记了这一轮',
     read33('docs/INTERNAL.md').includes('0.2.36') && read33('DESIGN.md').includes('0.2.36') && read33('DESIGN.md').includes('被什么掐的'),
@@ -1670,7 +1674,7 @@ function makeHostCtx() {
   check('path: 探针 T1–T5 钉住了四种回答与只读语义', missingP34.length === 0, missingP34.join(' / ') || '6/6')
 
   const v34 = pkg34.version.split('.').map(Number)
-  check('path: 版本不早于 0.2.37', v34[0] === 0 && v34[1] === 2 && v34[2] >= 37, pkg34.version)
+  check('path: 版本不早于 0.2.37', verAtLeast(v34, 0, 2, 37), pkg34.version)
   check(
     'path: README 与 DESIGN 记了这一轮',
     read34('docs/INTERNAL.md').includes('0.2.37') && read34('DESIGN.md').includes('0.2.37') && read34('DESIGN.md').includes('还没算'),
@@ -1739,7 +1743,7 @@ function makeHostCtx() {
   check('recall: 探针 U1–U7 钉住了空图的两种说法与只读语义', missingP36.length === 0, missingP36.join(' / ') || `${probes36.length}/${probes36.length}`)
 
   const v36 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('recall: 版本不早于 0.2.39', v36[0] === 0 && v36[1] === 2 && v36[2] >= 39, v36.join('.'))
+  check('recall: 版本不早于 0.2.39', verAtLeast(v36, 0, 2, 39), v36.join('.'))
   check(
     'recall: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.39') && readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('0.2.39') && readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('空命中'),
@@ -1800,7 +1804,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v37 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('体检: 版本不早于 0.2.40', v37[0] === 0 && v37[1] === 2 && v37[2] >= 40, v37.join('.'))
+  check('体检: 版本不早于 0.2.40', verAtLeast(v37, 0, 2, 40), v37.join('.'))
   check(
     '体检: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.40') &&
@@ -1876,7 +1880,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v38 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('概况: 版本不早于 0.2.41', v38[0] === 0 && v38[1] === 2 && v38[2] >= 41, v38.join('.'))
+  check('概况: 版本不早于 0.2.41', verAtLeast(v38, 0, 2, 41), v38.join('.'))
   check(
     '概况: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.41') &&
@@ -1956,7 +1960,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v39 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('inspect: 版本不早于 0.2.42', v39[0] === 0 && v39[1] === 2 && v39[2] >= 42, v39.join('.'))
+  check('inspect: 版本不早于 0.2.42', verAtLeast(v39, 0, 2, 42), v39.join('.'))
   check(
     'inspect: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.42') &&
@@ -2024,7 +2028,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v40 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('sources: 版本不早于 0.2.43', v40[0] === 0 && v40[1] === 2 && v40[2] >= 43, v40.join('.'))
+  check('sources: 版本不早于 0.2.43', verAtLeast(v40, 0, 2, 43), v40.join('.'))
   check(
     'sources: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.43') &&
@@ -2099,7 +2103,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v41 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('bridge: 版本不早于 0.2.44', v41[0] === 0 && v41[1] === 2 && v41[2] >= 44, v41.join('.'))
+  check('bridge: 版本不早于 0.2.44', verAtLeast(v41, 0, 2, 44), v41.join('.'))
   check(
     'bridge: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.44') &&
@@ -2179,7 +2183,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v42 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('path: 版本不早于 0.2.45', v42[0] === 0 && v42[1] === 2 && v42[2] >= 45, v42.join('.'))
+  check('path: 版本不早于 0.2.45', verAtLeast(v42, 0, 2, 45), v42.join('.'))
   check(
     'path: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.45') &&
@@ -2264,7 +2268,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v43 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('similar: 版本不早于 0.2.46', v43[0] === 0 && v43[1] === 2 && v43[2] >= 46, v43.join('.'))
+  check('similar: 版本不早于 0.2.46', verAtLeast(v43, 0, 2, 46), v43.join('.'))
   check(
     'similar: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.46') &&
@@ -2349,7 +2353,7 @@ function makeHostCtx() {
     'ok',
   )
   const v44 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('project: 版本不早于 0.2.47', v44[0] === 0 && v44[1] === 2 && v44[2] >= 47, v44.join('.'))
+  check('project: 版本不早于 0.2.47', verAtLeast(v44, 0, 2, 47), v44.join('.'))
   check(
     'project: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.47') &&
@@ -2450,7 +2454,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v45 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('dream: 版本不早于 0.2.48', v45[0] === 0 && v45[1] === 2 && v45[2] >= 48, v45.join('.'))
+  check('dream: 版本不早于 0.2.48', verAtLeast(v45, 0, 2, 48), v45.join('.'))
   check(
     'dream: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.48') &&
@@ -2557,7 +2561,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v46 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('update: 版本不早于 0.2.49', v46[0] === 0 && v46[1] === 2 && v46[2] >= 49, v46.join('.'))
+  check('update: 版本不早于 0.2.49', verAtLeast(v46, 0, 2, 49), v46.join('.'))
   check(
     'update: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.49') &&
@@ -2669,7 +2673,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v47 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('remember: 版本不早于 0.2.50', v47[0] === 0 && v47[1] === 2 && v47[2] >= 50, v47.join('.'))
+  check('remember: 版本不早于 0.2.50', verAtLeast(v47, 0, 2, 50), v47.join('.'))
   check(
     'remember: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.50') &&
@@ -2783,7 +2787,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v48 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('search: 版本不早于 0.2.51', v48[0] === 0 && v48[1] === 2 && v48[2] >= 51, v48.join('.'))
+  check('search: 版本不早于 0.2.51', verAtLeast(v48, 0, 2, 51), v48.join('.'))
   check(
     'search: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.51') &&
@@ -2897,7 +2901,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v49 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('read: 版本不早于 0.2.52', v49[0] === 0 && v49[1] === 2 && v49[2] >= 52, v49.join('.'))
+  check('read: 版本不早于 0.2.52', verAtLeast(v49, 0, 2, 52), v49.join('.'))
   check(
     'read: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.52') &&
@@ -3013,7 +3017,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v50 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('similar: 版本不早于 0.2.53', v50[0] === 0 && v50[1] === 2 && v50[2] >= 53, v50.join('.'))
+  check('similar: 版本不早于 0.2.53', verAtLeast(v50, 0, 2, 53), v50.join('.'))
   check(
     'similar: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.53') &&
@@ -3157,7 +3161,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v51 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('link: 版本不早于 0.2.54', v51[0] === 0 && v51[1] === 2 && v51[2] >= 54, v51.join('.'))
+  check('link: 版本不早于 0.2.54', verAtLeast(v51, 0, 2, 54), v51.join('.'))
   check(
     'link: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.54') &&
@@ -3262,7 +3266,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v52 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('store: 版本不早于 0.2.55', v52[0] === 0 && v52[1] === 2 && v52[2] >= 55, v52.join('.'))
+  check('store: 版本不早于 0.2.55', verAtLeast(v52, 0, 2, 55), v52.join('.'))
   check(
     'store: README 与 DESIGN 记了这一轮（四种来路）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.55') &&
@@ -3364,7 +3368,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v56 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('search: 版本不早于 0.2.56', v56[0] === 0 && v56[1] === 2 && v56[2] >= 56, v56.join('.'))
+  check('search: 版本不早于 0.2.56', verAtLeast(v56, 0, 2, 56), v56.join('.'))
   check(
     'search: README 与 DESIGN 记了这一轮（参数没生效）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.56') &&
@@ -3469,7 +3473,7 @@ function makeHostCtx() {
     'probe-graph',
   )
   const v57 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('param: 版本不早于 0.2.57', v57[0] === 0 && v57[1] === 2 && v57[2] >= 57, v57.join('.'))
+  check('param: 版本不早于 0.2.57', verAtLeast(v57, 0, 2, 57), v57.join('.'))
   check(
     'param: README 与 DESIGN 记了这一轮（给 0 就照办 0）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.57') &&
@@ -3565,7 +3569,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v58 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('search: 版本不早于 0.2.58', v58[0] === 0 && v58[1] === 2 && v58[2] >= 58, v58.join('.'))
+  check('search: 版本不早于 0.2.58', verAtLeast(v58, 0, 2, 58), v58.join('.'))
   check(
     'search: README 与 DESIGN 记了这一轮（模式名没对上）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.58') &&
@@ -3664,7 +3668,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v59 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('link: 版本不早于 0.2.59', v59[0] === 0 && v59[1] === 2 && v59[2] >= 59, v59.join('.'))
+  check('link: 版本不早于 0.2.59', verAtLeast(v59, 0, 2, 59), v59.join('.'))
   check(
     'link: README 与 DESIGN 记了这一轮（缺参数不许说成「已排队」）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.59') &&
@@ -3730,7 +3734,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v60 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('card: 版本不早于 0.2.60', v60[0] === 0 && v60[1] === 2 && v60[2] >= 60, v60.join('.'))
+  check('card: 版本不早于 0.2.60', verAtLeast(v60, 0, 2, 60), v60.join('.'))
   check(
     'card: README 与 DESIGN 记了这一轮（卡片标题也是口径）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.60') &&
@@ -3820,7 +3824,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v61 = JSON.parse(read61('package.json')).version.split('.').map(Number)
-  check('limit: 版本不早于 0.2.61', v61[0] === 0 && v61[1] === 2 && v61[2] >= 61, v61.join('.'))
+  check('limit: 版本不早于 0.2.61', verAtLeast(v61, 0, 2, 61), v61.join('.'))
   check(
     'limit: README 与 DESIGN 记了这一轮（条数也是条件）',
     read61('docs/INTERNAL.md').includes('0.2.61') && read61('docs/INTERNAL.md').includes('limitOf') && read61('DESIGN.md').includes('0.2.61') && read61('DESIGN.md').includes('slice(-0)'),
@@ -3899,7 +3903,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v62 = JSON.parse(read62('package.json')).version.split('.').map(Number)
-  check('nb: 版本不早于 0.2.62', v62[0] === 0 && v62[1] === 2 && v62[2] >= 62, v62.join('.'))
+  check('nb: 版本不早于 0.2.62', verAtLeast(v62, 0, 2, 62), v62.join('.'))
   check(
     'nb: README 与 DESIGN 记了这一轮（邻居条数也是条件）',
     read62('docs/INTERNAL.md').includes('0.2.62') && read62('docs/INTERNAL.md').includes('countParam') && read62('DESIGN.md').includes('0.2.62') && read62('DESIGN.md').includes('没有邻居'),
@@ -3978,7 +3982,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v63 = JSON.parse(read63('package.json')).version.split('.').map(Number)
-  check('budget: 版本不早于 0.2.63', v63[0] === 0 && v63[1] === 2 && v63[2] >= 63, v63.join('.'))
+  check('budget: 版本不早于 0.2.63', verAtLeast(v63, 0, 2, 63), v63.join('.'))
   check(
     'budget: README 与 DESIGN 记了这一轮（注入上限也是条件）',
     read63('docs/INTERNAL.md').includes('0.2.63') && read63('docs/INTERNAL.md').includes('guideBudget') && read63('DESIGN.md').includes('0.2.63') && read63('DESIGN.md').includes('零字注入'),
@@ -4061,7 +4065,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v64 = JSON.parse(read64('package.json')).version.split('.').map(Number)
-  check('hyg: 版本不早于 0.2.64', v64[0] === 0 && v64[1] === 2 && v64[2] >= 64, v64.join('.'))
+  check('hyg: 版本不早于 0.2.64', verAtLeast(v64, 0, 2, 64), v64.join('.'))
   check(
     'hyg: README 与 DESIGN 记了这一轮（体检的类别也是条件）',
     read64('docs/INTERNAL.md').includes('0.2.64') &&
@@ -4141,7 +4145,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v65 = JSON.parse(read65('package.json')).version.split('.').map(Number)
-  check('lim: 版本不早于 0.2.65', v65[0] === 0 && v65[1] === 2 && v65[2] >= 65, v65.join('.'))
+  check('lim: 版本不早于 0.2.65', verAtLeast(v65, 0, 2, 65), v65.join('.'))
   check(
     'lim: README 与 DESIGN 记了这一轮（尾注不许撒谎）',
     read65('docs/INTERNAL.md').includes('0.2.65') &&
@@ -4221,7 +4225,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v66 = JSON.parse(read66('package.json')).version.split('.').map(Number)
-  check('fb: 版本不早于 0.2.66', v66[0] === 0 && v66[1] === 2 && v66[2] >= 66, v66.join('.'))
+  check('fb: 版本不早于 0.2.66', verAtLeast(v66, 0, 2, 66), v66.join('.'))
   check(
     'fb: README 与 DESIGN 记了这一轮（同一组参数两条路径）',
     read66('docs/INTERNAL.md').includes('0.2.66') &&
@@ -4306,7 +4310,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v67 = JSON.parse(read67('package.json')).version.split('.').map(Number)
-  check('sim: 版本不早于 0.2.67', v67[0] === 0 && v67[1] === 2 && v67[2] >= 67, v67.join('.'))
+  check('sim: 版本不早于 0.2.67', verAtLeast(v67, 0, 2, 67), v67.join('.'))
   check(
     'sim: README 与 DESIGN 记了这一轮（相似模式只认三个参数）',
     read67('docs/INTERNAL.md').includes('0.2.67') &&
@@ -4392,7 +4396,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v68 = JSON.parse(read68('package.json')).version.split('.').map(Number)
-  check('pst: 版本不早于 0.2.68', v68[0] === 0 && v68[1] === 2 && v68[2] >= 68, v68.join('.'))
+  check('pst: 版本不早于 0.2.68', verAtLeast(v68, 0, 2, 68), v68.join('.'))
   check(
     'pst: README 与 DESIGN 记了这一轮（面板不读的参数）',
     read68('docs/INTERNAL.md').includes('0.2.68') &&
@@ -4473,7 +4477,7 @@ function makeHostCtx() {
       'probe-fusion',
     )
     const v69 = JSON.parse(read69('package.json')).version.split('.').map(Number)
-    check('id/ids: 版本不早于 0.2.69', v69[0] === 0 && v69[1] === 2 && v69[2] >= 69, v69.join('.'))
+    check('id/ids: 版本不早于 0.2.69', verAtLeast(v69, 0, 2, 69), v69.join('.'))
     check(
       'id/ids: README 与 DESIGN 记了这一轮',
       read69('docs/INTERNAL.md').includes('0.2.69') &&
@@ -4561,7 +4565,7 @@ function makeHostCtx() {
       'probe-fusion',
     )
     const v70 = JSON.parse(read70('package.json')).version.split('.').map(Number)
-    check('card: 版本不早于 0.2.70', v70[0] === 0 && v70[1] === 2 && v70[2] >= 70, v70.join('.'))
+    check('card: 版本不早于 0.2.70', verAtLeast(v70, 0, 2, 70), v70.join('.'))
     check(
       'card: README 与 DESIGN 记了这一轮',
       read70('docs/INTERNAL.md').includes('0.2.70') &&
@@ -4667,7 +4671,7 @@ function makeHostCtx() {
       'probe-graph',
     )
     const v71 = JSON.parse(read71('package.json')).version.split('.').map(Number)
-    check('hubs: 版本不早于 0.2.71', v71[0] === 0 && v71[1] === 2 && v71[2] >= 71, v71.join('.'))
+    check('hubs: 版本不早于 0.2.71', verAtLeast(v71, 0, 2, 71), v71.join('.'))
     check(
       'hubs: README 与 DESIGN 记了这一轮',
       read71('docs/INTERNAL.md').includes('0.2.71') &&
@@ -4758,7 +4762,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v72 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('miss: 版本不早于 0.2.72', v72[0] === 0 && v72[1] === 2 && v72[2] >= 72, v72.join('.'))
+  check('miss: 版本不早于 0.2.72', verAtLeast(v72, 0, 2, 72), v72.join('.'))
   check(
     'miss: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.72') &&
@@ -4828,7 +4832,7 @@ function makeHostCtx() {
     '判定出口',
   )
   const v73 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('doctor: 版本不早于 0.2.73', v73[0] === 0 && v73[1] === 2 && v73[2] >= 73, v73.join('.'))
+  check('doctor: 版本不早于 0.2.73', verAtLeast(v73, 0, 2, 73), v73.join('.'))
   check(
     'doctor: README 与 DESIGN 记了这一轮（README 还得提到 doctor-verdict.mjs，否则体检嫌它没出处）',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.73') &&
@@ -4919,7 +4923,7 @@ function makeHostCtx() {
     'probe-graph',
   )
   const v74 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('hygiene: 版本不早于 0.2.74', v74[0] === 0 && v74[1] === 2 && v74[2] >= 74, v74.join('.'))
+  check('hygiene: 版本不早于 0.2.74', verAtLeast(v74, 0, 2, 74), v74.join('.'))
   check(
     'hygiene: README 与 DESIGN 记了这一轮',
     readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('0.2.74') &&
@@ -5009,7 +5013,7 @@ function makeHostCtx() {
     'probe-graph',
   )
   const v75 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('hubs: 版本不早于 0.2.75', v75[0] === 0 && v75[1] === 2 && v75[2] >= 75, v75.join('.'))
+  check('hubs: 版本不早于 0.2.75', verAtLeast(v75, 0, 2, 75), v75.join('.'))
   const readme75 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
   const design75 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
   check(
@@ -5104,7 +5108,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v76 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('cost: 版本不早于 0.2.76', v76[0] === 0 && v76[1] === 2 && v76[2] >= 76, v76.join('.'))
+  check('cost: 版本不早于 0.2.76', verAtLeast(v76, 0, 2, 76), v76.join('.'))
   const readme76 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
   const design76 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
   check(
@@ -5190,7 +5194,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v77 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('read: 版本不早于 0.2.77', v77[0] === 0 && v77[1] === 2 && v77[2] >= 77, v77.join('.'))
+  check('read: 版本不早于 0.2.77', verAtLeast(v77, 0, 2, 77), v77.join('.'))
   const readme77 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
   const design77 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
   check(
@@ -5298,7 +5302,7 @@ function makeHostCtx() {
     'probe-fusion',
   )
   const v78 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version.split('.').map(Number)
-  check('link: 版本不早于 0.2.78', v78[0] === 0 && v78[1] === 2 && v78[2] >= 78, v78.join('.'))
+  check('link: 版本不早于 0.2.78', verAtLeast(v78, 0, 2, 78), v78.join('.'))
   const readme78 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
   const design78 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
   check(
@@ -8681,7 +8685,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'DT: 版本与文档一起走（9.130 / 136）',
     (() => {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-      return pkg.version.split('.').map((x) => Number(x))[2] >= 126
+      return verAtLeast(pkg.version.split('.').map((x) => Number(x)), 0, 2, 126)
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.130 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 136 '),
@@ -8759,7 +8763,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'DW 命中行: 版本与文档一起走（9.132 / 138）',
     (() => {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-      return pkg.version.split('.').map((x) => Number(x))[2] >= 128
+      return verAtLeast(pkg.version.split('.').map((x) => Number(x)), 0, 2, 128)
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.132 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 138 '),
@@ -8867,7 +8871,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'EA 邻居深度: 版本与文档一起走（9.138 / 144）',
     (() => {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-      return pkg.version.split('.').map((x) => Number(x))[2] >= 132
+      return verAtLeast(pkg.version.split('.').map((x) => Number(x)), 0, 2, 132)
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.138 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 144 '),
@@ -8880,7 +8884,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'DY 时间轴: 版本与文档一起走（9.133 / 139）',
     (() => {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-      return pkg.version.split('.').map((x) => Number(x))[2] >= 129
+      return verAtLeast(pkg.version.split('.').map((x) => Number(x)), 0, 2, 129)
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.133 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 139 '),
@@ -8920,7 +8924,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'DZ 回答准则: 版本与文档一起走（9.134 / 140）',
     (() => {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-      return pkg.version.split('.').map((x) => Number(x))[2] >= 130
+      return verAtLeast(pkg.version.split('.').map((x) => Number(x)), 0, 2, 130)
     })() &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.134 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 140 '),
@@ -8963,7 +8967,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'EA 会话主题: 版本与文档一起走（9.137 / 143）',
-    pkg.version.split('.').map((x) => Number(x))[2] >= 131 &&
+    verAtLeast(pkg.version.split('.').map((x) => Number(x)), 0, 2, 131) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.137 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 143 '),
   )
@@ -9032,7 +9036,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg133 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'EY 检索精度: 版本与文档一起走（9.139 / 145）',
-    pkg133.version.split('.').map((x) => Number(x))[2] >= 133 &&
+    verAtLeast(pkg133.version.split('.').map((x) => Number(x)), 0, 2, 133) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.139 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 145 '),
   )
@@ -9128,7 +9132,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg134 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'EZ 版本与文档一起走（9.140 / 146）',
-    pkg134.version.split('.').map((x) => Number(x))[2] >= 134 &&
+    verAtLeast(pkg134.version.split('.').map((x) => Number(x)), 0, 2, 134) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.140 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 146 '),
   )
@@ -9210,7 +9214,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg135 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'FA 版本与文档一起走（9.141 / 147）',
-    pkg135.version.split('.').map((x) => Number(x))[2] >= 135 &&
+    verAtLeast(pkg135.version.split('.').map((x) => Number(x)), 0, 2, 135) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.141 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 147 '),
   )
@@ -9284,7 +9288,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg136 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'FB 版本与文档一起走（9.142 / 148）',
-    pkg136.version.split('.').map((x) => Number(x))[2] >= 136 &&
+    verAtLeast(pkg136.version.split('.').map((x) => Number(x)), 0, 2, 136) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.142 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 148 '),
   )
@@ -9340,7 +9344,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg137 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'FC 版本与文档一起走（9.143 / 149）',
-    pkg137.version.split('.').map((x) => Number(x))[2] >= 137 &&
+    verAtLeast(pkg137.version.split('.').map((x) => Number(x)), 0, 2, 137) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.143 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 149 '),
   )
@@ -9416,7 +9420,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg138 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'FD 版本与文档一起走（9.144 / 150）',
-    pkg138.version.split('.').map((x) => Number(x))[2] >= 138 &&
+    verAtLeast(pkg138.version.split('.').map((x) => Number(x)), 0, 2, 138) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.144 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 150 '),
   )
@@ -10892,6 +10896,75 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `9.187 在=${internal180.includes('## 9.187 ')} 192 在=${design180.includes('## 192')}`,
     )
   }
+  // ── HZ16（0.3.0）版本下限的断言不许把主版本写死
+  // 0.2.180 → 0.3.0 这一跳，verify 一口气红了 61 条，全是同一类写法：
+  //   /^0\.2\./                                    （host，一条）
+  //   v[0] === 0 && v[1] === 2 && v[2] >= N          （47 条）
+  //   pkg.version.split('.').map(...)[2] >= N        （13 条，只看第三段）
+  // 它们想说的都只是「不早于 0.2.N」，却把「主版本是 0、次版本是 2」写进了断言。
+  // 判据要守语义（不早于），不守字面（是 0.2）：这一点写在这里，下次跳大版本不必再改 61 处。
+  {
+    const selfSrc = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8')
+    const pkg030 = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+    const readme030 = readFileSync(new URL('./README.md', import.meta.url), 'utf8')
+    const internal030 = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+    const design030 = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+    const countOf030 = (hay, needle) => hay.split(needle).length - 1
+    check(
+      'HZ16 版本下限比大小只有一个入口：verAtLeast(v, maj, min, pat)，主版本更高一律算过',
+      countOf030(selfSrc, 'const verAtLeast = (v, maj, min, pat) =>\n') === 1 &&
+        countOf030(selfSrc, 'v[0] > maj || (v[0] === maj' + ' &&') === 1 &&
+        countOf030(selfSrc, 'verAtLeast(') >= 60,
+      `引用 ${countOf030(selfSrc, 'verAtLeast(') - 1} 处（定义行自己也带这个名字）`,
+    )
+    // 三类会被大版本跳跃打死的旧形态，一处都不许留（注释行不算：那里正是要讲清旧形态长什么样）
+    const codeOnly030 = selfSrc.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    const hardCodedMajor = (codeOnly030.match(/\w+\[0\] === 0 && \w+\[1\] === 2 && \w+\[2\] >=/g) ?? []).length
+    check(
+      'HZ16 旧形态零残留：「主版本写死」的三类写法（双等号 / 只看第三段 / 0.2.x 正则）一处都没有',
+      hardCodedMajor === 0 &&
+        !selfSrc.includes("pkg.version.split('.').map((x) => Number(x))" + "[2] >=") &&
+        !selfSrc.includes('/^0\\.2\\./.test(String(host.version))') &&
+        selfSrc.includes("'host: 版本是三段 semver'"),
+      `双等号 ${hardCodedMajor} 处 / 只看第三段 ${countOf030(selfSrc, "].map((x) => Number(x))" + "[2] >=")} 处`,
+    )
+    // 断言自己也要有一条阳性对照：把 helper 对一个「大版本更高」的版本喂进去必须为真，
+    // 否则「61 条都过了」可能只是因为它被写成了恒真。
+    check(
+      'HZ16 阳性对照: 0.3.0 满足「不早于 0.2.38」、0.2.37 不满足（helper 不是恒真）',
+      verAtLeast([0, 3, 0], 0, 2, 38) === true && verAtLeast([0, 2, 37], 0, 2, 38) === false,
+    )
+    check(
+      'HZ16 发布面三字段指向 GitHub 仓库（npm 与目录站都读它们）',
+      String(pkg030.repository?.url ?? '') === 'git+https://github.com/hanhan9999999999999999999/dsh-macro-memory.git' &&
+        String(pkg030.homepage ?? '').startsWith('https://github.com/hanhan9999999999999999999/dsh-macro-memory#') &&
+        String(pkg030.bugs?.url ?? '').endsWith('/issues'),
+      pkg030.repository?.url ?? '(缺 repository)',
+    )
+    check(
+      'HZ16 npm 包只发运行面：files 白名单四项，verify.mjs 与 tools/ 不进包',
+      JSON.stringify(pkg030.files) === JSON.stringify(['lib', 'vendor', 'cordis.patch.yml', 'README.md']) &&
+        !pkg030.files.some((f) => f === 'tools' || f === 'verify.mjs') &&
+        pkg030.dsh?.bundle?.patch === './cordis.patch.yml' &&
+        pkg030.dsh?.client?.platform === 'web',
+      JSON.stringify(pkg030.files),
+    )
+    check(
+      'HZ16 README 有 0.3.0 里程碑段与 0.3.0 的逐版条目（版本号跳了，说明也要跟着跳）',
+      readme030.includes('**0.3.0 里程碑**') &&
+        readme030.includes('- **0.3.0：把「能自证」收成可发布的东西**（0.3.0）') &&
+        readme030.includes('24 支自检 / 3,316 条可执行断言'),
+      `里程碑=${readme030.includes('**0.3.0 里程碑**')} 条目=${readme030.includes('收成可发布的东西')}`,
+    )
+    check(
+      'HZ16 文档在位：INTERNAL 9.188 记「版本下限不许写死主版本」，DESIGN 193 记「0.3 的承诺只加不删」',
+      internal030.includes('## 9.188 ') &&
+        internal030.includes('verAtLeast') &&
+        design030.includes('## 193. ') &&
+        design030.includes('只加不删'),
+      `9.188 在=${internal030.includes('## 9.188 ')} 193 在=${design030.includes('## 193. ')}`,
+    )
+  }
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -11004,7 +11077,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const pkg139 = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   check(
     'FE 版本与文档一起走（9.145 / 151）',
-    pkg139.version.split('.').map((x) => Number(x))[2] >= 139 &&
+    verAtLeast(pkg139.version.split('.').map((x) => Number(x)), 0, 2, 139) &&
       readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8').includes('## 9.145 ') &&
       readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 151 '),
   )
@@ -11227,8 +11300,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.180（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.180'"),
+    'GV 版本: 代码里是 0.3.0（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.3.0'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -11358,8 +11431,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.180（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.180'"),
+    'GW 版本: 代码里是 0.3.0（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.3.0'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11506,8 +11579,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.180（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.180'"),
+    'VV 版本: 代码里是 0.3.0（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.3.0'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11688,9 +11761,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.180（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.180' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.180'"),
+    'GX19 版本已到 0.3.0（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.3.0' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.3.0'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11794,10 +11867,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.180',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.180' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.180'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.180'),
+    'VY15 版本三处一致 0.3.0',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.3.0' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.3.0'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.3.0'),
   )
 }
 
@@ -11845,10 +11918,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.180（三处一致）',
-    pkgWz.version === '0.2.180' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.180'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.180'),
+    'WZ9 版本已到 0.3.0（三处一致）',
+    pkgWz.version === '0.3.0' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.3.0'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.3.0'),
   )
 }
 
