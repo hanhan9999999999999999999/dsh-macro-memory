@@ -195,7 +195,7 @@ MEOW_VEC_CACHE=<记忆家目录>/dense-cache.json
 
 | 项 | 融合前 | 现在 | 说明 |
 | --- | --- | --- | --- |
-| 工具 schema | 56,759 B（17 个） | **13,372 B（8 个）** | `tools/probe-host.mjs` 实测 D2 判据 |
+| 工具 schema | 56,759 B（17 个） | **13,567 B（8 个）** | `tools/probe-host.mjs` 实测 D2/D3 判据（D3 会拿这张表的数字和实测对账） |
 | 常驻注入 | 4,085 字符 | **1,235 字符** | 同一支探针 E2 判据，上限 1,400 |
 | 旧工具名残留在注入里 | 有（`nebula_recall` 等） | **0** | E4 判据 |
 | 别名工具 | — | 默认关闭 | 打开后 19 个工具，供老会话/老脚本过渡 |
@@ -493,12 +493,26 @@ docs/                 INTERNAL.md 逐轮开发日志、images/ 配图
 
 **Macro Memory** (DSH plugin, MIT) folds several memory plugins into one surface: **8 tools + a single 1,235-character standing injection**, while the storage engine stays meow-memory's seven-layer SQLite and the graph becomes a rebuildable index.
 
-- Tool schemas: 17 tools / 56,759 B → **8 tools / 13,372 B** (−76.4%).
-- Standing prompt: 4,085 chars → **1,235 chars** (−69.8%).
-- Per-turn fixed cost: ~14–16K → **~2.2K tokens**.
+Headline numbers (v0.4.0, all reproducible offline):
+
+- Tool schemas: 17 tools / 56,759 B → **8 tools / 13,567 B** (−76.1%).
+- Standing prompt: 4,085 chars → **1,235 chars** (−69.8%); per-turn fixed cost ~14–16K → **~2.2K tokens**.
+- Retrieval latency on a 1,200-memory store: **p50 2.9ms** (vs 107.2ms with three plugins stacked).
 - Nothing was dropped: every original tool is reachable through the unified surface (audited by `tools/coverage-audit.mjs` and `tools/param-audit.mjs`).
 - Writes land in the main store first; graph links that cannot be written are **queued, not lost** (500 entries, 7-day TTL, auto-flushed).
-- 21 self-check scripts / 2,198 assertions / `node tools/check-all.mjs`.
+- **30 self-check suites / 3,511 executable assertions / ~220s**, and the assertion count itself is pinned per suite — deleting an assertion turns the run red.
+- Self-built gold set (146 memories, no LLM): verbatim **1.000**, paraphrase **1.000** (0.929 with co-occurrence expansion off), time-anchored 0.889.
+- Real local library (635 memories, 40 questions): hit@1 **0.925**, hit@5 **1.000**, MRR **0.963**.
+- LoCoMo 1,536 questions (no LLM): hit@20 **0.7546** (old pipeline 0.651), MRR **0.4953** (old 0.3768), 17.77 average retrieved memories (old 19.99).
+
+Why it beats stacking another memory plugin:
+
+1. **It cuts the cost you re-pay every turn** — tool schemas and the standing injection are request prefix, so a byte saved is a byte saved on every single turn.
+2. **Every feature has an off switch with a proven on/off gap** — query decomposition, consolidation, auto-supersede, entity layer, co-occurrence expansion, synonym bridge (`multiQuery`, `consolidate`, `autoSupersede`, `entity`, `coocLearn`, `synBridge`); default is the most conservative setting.
+3. **One criterion, one implementation, and every criterion is proven able to fail** — no criterion is written twice with different strictness, and each one ships a fixture that must turn exactly that one red.
+4. **Nothing new is allowed to lie** — write-side inflation checks (`selfecho`, `unused`, `inflate`) and supersede/carry-forward notes, so a stale conclusion never silently outranks the current one.
+
+Honest limits: the gold set is self-built, not a public leaderboard; real-library numbers move as the library grows and are not comparable across time; no end-to-end LLM-judge run has been repeated since 0.4.0, so we claim no end-to-end gain.
 
 Bundled third-party code is MIT: `meow-memory` © 2026 Phant0Meow ([source](https://github.com/Phant0Meow/dsh-meow-memory)), `dsh-memory-nebula` © 2026 the authors. See `THIRD-PARTY-NOTICES.md` for the exact list of modifications.
 
