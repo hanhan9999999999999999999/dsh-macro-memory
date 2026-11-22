@@ -2059,6 +2059,24 @@ var IDENT_SUBJ_W = 0;
 // 只乘 _raw（分档读的那个数），默认权重 0——先量，量出来有用再给值。
 var LEVEL_INTENT_W = 0.3;
 var LEVEL_INTENT_RATIO = 0.5;
+// [macro-fusion 0.2.174] 求值型问句要一条断言，不要一段背景：「publishTimestamp 该写什么值」
+// 的正解是「必须是过去的秒级时间戳」，压在它上面的那条讲的是「有两套时间戳、别只改一处」——
+// 词分都够，差的是「答的是不是问的那个」。断言词是「结论」的形状（必须/一律/只认/至少/只有），
+// 背景叙述里没有它。只在问句是求值型（该写/该填/几个/几轮/多少）时开，且只抬不在榜首的条目：
+// 榜首本来就是它要说的话，再抬一次只会把别处的正解压得更深。
+var TIP_ASSERT_W = 1.2;
+var TIP_RE = /该写|该填|写什么值|要改几个|改几个|要改几条|改几条|几轮|要跑几|几条要改|哪个值/;
+var ASSERT_RE = /必须是|一律|只认|只有|至少|一定|不许|绝不|禁止|都要|全都|统一|固定为|只能是|必须|务必/g;
+function tipAssertOn(text) {
+  return TIP_RE.test(String(text ?? ""));
+}
+function assertRatioOf(text) {
+  // [0.2.174] 只看开头：断言是「结论」的形状，结论在首句；背景叙述的断言词散在后半段，
+  // 拿全文计数会把「有两套时间戳、别只改一处」这种铺垫也算成答案。
+  const head = String(text ?? "").slice(0, 60);
+  const n = (head.match(ASSERT_RE) || []).length;
+  return Math.min(1, n / 2);
+}
 var LEVEL_INTENT_RULES = /要不要|该不该|能不能|可不可以|需不需要|是否要|允不允许|准不准|该由|应该由|由什么触发|规定/;
 var LEVEL_INTENT_FACT = /改了什么|改了哪些|做了什么|做了哪些|加了什么|加了哪些|交付态|什么版本|哪个版本|几条|多少条|几点/;
 var LEVEL_INTENT_TOPIC = /来龙去脉|为什么|缘由|经过|怎么来的/;
@@ -2666,6 +2684,7 @@ function search(query, docs, opts = {}) {
   const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;
   const levelIntentW = Number.isFinite(opts.levelIntentW) ? opts.levelIntentW : LEVEL_INTENT_W;
   const lvRatio = Number.isFinite(opts.levelIntentRatio) ? opts.levelIntentRatio : LEVEL_INTENT_RATIO;
+  const tipAssertW = Number.isFinite(opts.tipAssertW) ? opts.tipAssertW : TIP_ASSERT_W;
   const baseRaw = raw.slice();
   const maxRaw = Math.max(...raw);
   const hits = [];
@@ -2686,6 +2705,7 @@ function search(query, docs, opts = {}) {
     return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
   };
   const lvIntent = intentLevelsOf(query);
+  const tipOn = tipAssertOn(query) && opts.tipAssert !== false;
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
     const lvHit = lvIntent !== null && lvIntent.has(String(docs[di].level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
@@ -2702,7 +2722,8 @@ function search(query, docs, opts = {}) {
       _sr: subjRatio === void 0 ? 0 : subjRatio[di],
       _subj: subjRatio === void 0 || opts.identSubjBand === false ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
       _lv: lvHit && opts.levelIntent !== false ? 1 : 0,
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0)),
+      _tr: tipOn ? assertRatioOf(docs[di].content) : 0,
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0)),
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -2763,6 +2784,17 @@ function search(query, docs, opts = {}) {
       if (h.explain !== void 0) h.explain.levelIntent = true;
     }
     delete h._lv;
+  }
+  // [macro-fusion 0.2.174] 断言密度也分两处：_raw 那侧决定「够不够进这一档」，
+  // score 这侧决定「进了这一档排多前」——只做前者，同档里它一动也动不了。
+  for (const h of hits) {
+    const tr = Number(h._tr) || 0;
+    delete h._tr;
+    if (tr <= 0 || !tipOn || opts.tipAssert === false) continue;
+    if (tipAssertW > 0) {
+      h.score *= 1 + tipAssertW * tr;
+      if (h.explain !== void 0) h.explain.tipAssert = true;
+    }
   }
   bandize(hits, '_raw');
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。

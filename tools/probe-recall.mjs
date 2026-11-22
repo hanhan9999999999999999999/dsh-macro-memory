@@ -887,6 +887,104 @@ check(
   `规则那条 levelIntent=${r11hit?.explain?.levelIntent} 别条留空=${r11others.every((h) => h.explain === void 0 || h.explain.levelIntent === void 0)}`,
 )
 
+
+// ── R12（0.2.174）求值型问句：要的是那条断言，不是那段背景 ────────────────────
+// 「publishTimestamp 该写什么值」的正解是「必须是过去的秒级时间戳」；压在上面的那条讲
+// 「有两套时间戳、别只改一处」——词分都够，差的是「答的是不是问的那个」。断言词是结论
+// 的形状（必须/一律/只认/至少/只有），铺垫里没有；且只看开头六十个字，写在第五段的
+// 断言不是这条的结论。
+const R12_DOCS = [
+  {
+    id: '0r12a0001',
+    level: 'fact',
+    content: 'publishTimestamp 必须是过去的秒级时间戳，写成毫秒会被市场拒收。',
+    title: '',
+    keywords: ['publishTimestamp', '时间戳'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1763e9,
+    last_accessed_at: 1763e9,
+  },
+  {
+    id: '0r12a0002',
+    level: 'fact',
+    content: 'publishTimestamp 有两套：市场索引里的那套和条目里的那套，改的时候别只改一处，两处 publishTimestamp 口径要对齐。',
+    title: '',
+    keywords: ['publishTimestamp', '市场索引'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1763e9,
+    last_accessed_at: 1763e9,
+  },
+  {
+    id: '0r12a0003',
+    level: 'fact',
+    content: '市场索引的版本号跟着 feat 提交走，不是跟着 chore。',
+    title: '',
+    keywords: ['市场索引', '版本号'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1763e9,
+    last_accessed_at: 1763e9,
+  },
+  {
+    id: '0r12a0004',
+    level: 'fact',
+    content:
+      '这次发版先改引擎再改镜像，镜像要跑 robocopy 全覆盖，语料和基线需要重新生一遍，顺序反了就得重跑；publishTimestamp 必须是过去的秒级时间戳。',
+    title: '',
+    keywords: ['发版', 'publishTimestamp'],
+    importance: 2,
+    status: 'active',
+    updated_at: 1763e9,
+    last_accessed_at: 1763e9,
+  },
+]
+const Q12 = 'publishTimestamp 该写什么值'
+const pos12 = (hits, id) => hits.findIndex((h) => String(h.id).startsWith(id))
+const r12on = V.search(Q12, R12_DOCS, { k: 10 })
+const r12off = V.search(Q12, R12_DOCS, { k: 10, tipAssert: false })
+check(
+  'R12 问「该写什么值」时，开头就是断言的那条进第一（要的是结论，不是背景）',
+  pos12(r12on, '0r12a0001') === 0,
+  `断言条第 ${pos12(r12on, '0r12a0001') + 1} 名，背景条第 ${pos12(r12on, '0r12a0002') + 1} 名`,
+)
+check(
+  'R12 关得掉：tipAssert:false 时断言条不再第一（阴性对照，说明是这把刀在起作用）',
+  pos12(r12off, '0r12a0001') > 0,
+  `关掉后断言条第 ${pos12(r12off, '0r12a0001') + 1} 名`,
+)
+const r12plainA = V.search('publishTimestamp 那两套时间戳是怎么来的', R12_DOCS, { k: 10 })
+const r12plainB = V.search('publishTimestamp 那两套时间戳是怎么来的', R12_DOCS, { k: 10, tipAssert: false })
+check(
+  'R12 问句不是求值型时，开关前后逐位同序（来龙去脉不替人挑结论）',
+  r12plainA.map((h) => h.id).join(',') === r12plainB.map((h) => h.id).join(','),
+  `同序=${r12plainA.map((h) => String(h.id).slice(0, 9)).join(',')}`,
+)
+const s12of = (hits, id) => Number(hits.find((h) => String(h.id).startsWith(id))?.score ?? 0)
+check(
+  'R12 只看开头六十个字：断言写在后面那条一点不加（写在第五段的断言不是这条的结论）',
+  Math.abs(s12of(r12on, '0r12a0004') - s12of(r12off, '0r12a0004')) < 1e-9 &&
+    s12of(r12on, '0r12a0001') > s12of(r12off, '0r12a0001'),
+  `后段断言条 ${s12of(r12on, '0r12a0004').toFixed(3)}→${s12of(r12off, '0r12a0004').toFixed(3)}；开头断言条 ${s12of(r12on, '0r12a0001').toFixed(3)}→${s12of(r12off, '0r12a0001').toFixed(3)}`,
+)
+const afCalls = (SRC.match(/assertRatioOf\(/g) || []).length
+check(
+  'R12 只在正文这一侧算断言密度：问句那条只判「是不是在求值」，密度分两处落地（进档 + 档内）',
+  afCalls === 3 && SRC.includes('const tipOn = tipAssertOn(query) && opts.tipAssert !== false;'),
+  `assertRatioOf( 出现 ${afCalls} 次（定义 1 + 分档 1 + 打分 1）`,
+)
+const s12on = Number(r12on.find((h) => String(h.id).startsWith('0r12a0001'))?.score ?? 0)
+const s12zero = Number(
+  V.search(Q12, R12_DOCS, { k: 10, tipAssertW: 0 }).find((h) => String(h.id).startsWith('0r12a0001'))?.score ?? 0,
+)
+const s12off = Number(r12off.find((h) => String(h.id).startsWith('0r12a0001'))?.score ?? 0)
+check(
+  'R12 权重是旋钮：tipAssertW:0 与关掉同分，默认比关掉高（加成真的落在那条分数上）',
+  Math.abs(s12zero - s12off) < 1e-9 && s12on > s12off,
+  `默认 ${s12on.toFixed(3)} / 权重0 ${s12zero.toFixed(3)} / 关了 ${s12off.toFixed(3)}`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

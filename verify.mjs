@@ -10346,10 +10346,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ8 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
-      eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0))') &&
+      eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)') &&
         eng.includes('h.score *= 1 + levelIntentW;') &&
         eng.includes('if (h._lv !== 1) {'),
-      `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0))')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
+      `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
     )
     check(
       'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑）',
@@ -10367,6 +10367,59 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
         design173.includes('## 185') &&
         design173.includes('问句的语法形状是意图'),
       `R11 在=${recall173.includes('R11 ')} 9.180 在=${internal173.includes('## 9.180')} 185 在=${design173.includes('## 185')}`,
+    )
+  }
+  // ── HZ9（0.2.174）求值型问句：要的是那条断言，不是那段背景 ──
+  {
+    const recall174 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+    const internal174 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+    const design174 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    check(
+      'HZ9 断言密度的权重与求值型问句的形状词都在',
+      eng.includes('var TIP_ASSERT_W = 1.2;') &&
+        eng.includes('var TIP_RE = /该写|该填|写什么值|要改几个|改几个|要改几条|改几条|几轮|要跑几|几条要改|哪个值/;'),
+      `权重=${eng.includes('var TIP_ASSERT_W = 1.2;')} 形状=${eng.includes('var TIP_RE = /')}`,
+    )
+    check(
+      'HZ9 断言词是结论的形状，而且是看得见的一串',
+      eng.includes('var ASSERT_RE = /必须是|一律|只认|只有|至少|一定|不许|绝不|禁止|都要|全都|统一|固定为|只能是|必须|务必/g;'),
+      `ASSERT_RE 在=${eng.includes('var ASSERT_RE = /必须是|')}`,
+    )
+    check(
+      'HZ9 只看开头：断言是结论的位置，不是全文到处都算',
+      eng.includes('function assertRatioOf(text) {') &&
+        eng.includes('const head = String(text ?? "").slice(0, 60);') &&
+        eng.includes('return Math.min(1, n / 2);'),
+      `开头截断在=${eng.includes('slice(0, 60)')}`,
+    )
+    check(
+      'HZ9 求值判据只在问句这一侧：正文只被数断言词，问句才判「是不是在求值」',
+      eng.includes('const tipOn = tipAssertOn(query) && opts.tipAssert !== false;') &&
+        (eng.match(/assertRatioOf\(/g) || []).length === 3,
+      `tipOn 在=${eng.includes('const tipOn = tipAssertOn(query)')} 调用点=${(eng.match(/assertRatioOf\(/g) || []).length}`,
+    )
+    check(
+      'HZ9 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
+      eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0') &&
+        eng.includes('h.score *= 1 + tipAssertW * tr;') &&
+        eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw');"),
+      `_raw 项在=${eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0')} 乘法在 bandize 前=${eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw');")}`,
+    )
+    check(
+      'HZ9 行为探针与文档都在',
+      recall174.includes('R12 问「该写什么值」时，开头就是断言的那条进第一') &&
+        recall174.includes('R12 关得掉：tipAssert:false 时断言条不再第一') &&
+        recall174.includes('R12 只看开头六十个字') &&
+        internal174.includes('## 9.181') &&
+        internal174.includes('要的是那条断言，不是那段背景') &&
+        design174.includes('## 186') &&
+        design174.includes('结论有形状'),
+      `R12 在=${recall174.includes('R12 ')} 9.181 在=${internal174.includes('## 9.181')} 186 在=${design174.includes('## 186')}`,
+    )
+    check(
+      'HZ9 阴性对照把当轮的刀一起关掉：G20 的关键词扫描里 tipAssert 必须是关着的',
+      readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8').includes('identSubjW: 0, tipAssert: false'),
+      'probe-gold NB 里有 tipAssert: false',
     )
   }
   check(
@@ -10704,8 +10757,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.173（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.173'"),
+    'GV 版本: 代码里是 0.2.174（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.174'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10835,8 +10888,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.173（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.173'"),
+    'GW 版本: 代码里是 0.2.174（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.174'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10983,8 +11036,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.173（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.173'"),
+    'VV 版本: 代码里是 0.2.174（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.174'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11162,9 +11215,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.173（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.173' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.173'"),
+    'GX19 版本已到 0.2.174（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.174' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.174'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11268,10 +11321,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.173',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.173' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.173'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.173'),
+    'VY15 版本三处一致 0.2.174',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.174' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.174'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.174'),
   )
 }
 
@@ -11319,10 +11372,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.173（三处一致）',
-    pkgWz.version === '0.2.173' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.173'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.173'),
+    'WZ9 版本已到 0.2.174（三处一致）',
+    pkgWz.version === '0.2.174' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.174'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.174'),
   )
 }
 

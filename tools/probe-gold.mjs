@@ -525,7 +525,8 @@ if (denseUsable) {
   // 阴性对照就失效了——那不是关键词权重变好了，是另一把刀在替它干活。两把刀分开测。
   // [0.2.172] 阴性对照要把当轮所有「替词分干活」的刀一起关掉：只关 identBand 不关主语位免档，
   // 旧口径那边也会被新刀抬起来，阴性对照就假红（0.2.171 记过同一条教训）。
-  const NB = { identBand: false, identSubjBand: false, identSubjW: 0 }
+  // [0.2.174] 断言密度同一笔：问句是求值型时它替词分补了分，不关掉，关键词抬到 1/1.2 照抄池也不掉。
+  const NB = { identBand: false, identSubjBand: false, identSubjW: 0, tipAssert: false }
   const md = (list, o) => measure(list, docs, { ...NB, ...(o ?? {}) })
   const base = md(fx.queries)
   const pBase = md(fx.paraphrase)
