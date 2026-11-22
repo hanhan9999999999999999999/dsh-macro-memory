@@ -1237,6 +1237,90 @@ check(
   )
 }
 
+// ── R16（0.2.179）缘由问句的回答仓是叙述层，不是规矩层 ─────────────────────────
+// 三个旋钮必须能分别关：causeAware 关整条（也关免折新鲜度）、causeRuleFold:1 只关折价。
+// 分开的意义：折价与免折是两笔账，谁改了谁要单独认。
+{
+  const R16_DOCS = [
+    {
+      id: '0r16a0001', level: 'project', title: '评测线锁在封存档',
+      content: '评测线 2026-11-21 起锁在封存档：不再跑 locomo，不再发 LLM 请求，锁起来是因为一晚几十个批次要烧掉上百块，旧读数也就跟着定住了。',
+      keywords: ['评测线', '封存', '缘由', '读数'], importance: 2, status: 'active',
+      project: 'r16', created_at: '2026-11-18T10:00:00.000Z',
+      updated_at: '2026-11-18T10:00:00.000Z', last_accessed_at: '2026-11-18T10:00:00.000Z',
+    },
+    {
+      id: '0r16a0002', level: 'rules', title: '评测不许无预算跑',
+      content: '评测不许无预算跑：为什么盯得这么紧？一晚几十个批次就是上百块，钱是主人的。任何实验先报次数与估算成本，设 OMNI_MAX_CALLS 上限，并发不超过三路。',
+      keywords: ['评测', '花费', '上限', '成本'], importance: 4, status: 'active',
+      project: 'r16', created_at: '2026-11-18T10:00:00.000Z',
+      updated_at: '2026-11-18T10:00:00.000Z', last_accessed_at: '2026-11-18T10:00:00.000Z',
+    },
+    {
+      id: '0r16a0003', level: 'fact', title: '评测跑过哪些批次',
+      content: '评测跑过的批次：locomo 一档、omni39 到 omni43 五个批次，读数都进了基线表。',
+      keywords: ['批次', 'locomo'], importance: 2, status: 'active',
+      project: 'r16', created_at: '2026-11-18T10:00:00.000Z',
+      updated_at: '2026-11-18T10:00:00.000Z', last_accessed_at: '2026-11-18T10:00:00.000Z',
+    },
+  ]
+  const Q16A = '评测线为什么锁在封存档'
+  const Q16B = '评测线还能用吗'
+  const Q16C = '评测的花费上限怎么设'
+  const sc16 = (arr, id) => {
+    const hit = arr.find((h) => String(h.id) === id)
+    return hit ? Number(hit.score) : 0
+  }
+  const aOn = V.search(Q16A, R16_DOCS, { k: 10, explain: true })
+  const aOff = V.search(Q16A, R16_DOCS, { k: 10, explain: true, causeAware: false })
+  const aFold1 = V.search(Q16A, R16_DOCS, { k: 10, causeRuleFold: 1 })
+  const bOn = V.search(Q16B, R16_DOCS, { k: 10 })
+  const bOff = V.search(Q16B, R16_DOCS, { k: 10, causeAware: false })
+  const cOn = V.search(Q16C, R16_DOCS, { k: 10 })
+  const cOff = V.search(Q16C, R16_DOCS, { k: 10, causeAware: false })
+
+  check(
+    'R16 缘由问句「评测线为什么锁在封存档」首位是讲缘由那条，不是那条 imp=4 的规矩',
+    String(aOn[0]?.id) === '0r16a0001',
+    `首位=${String(aOn[0]?.id).slice(0, 9)}`,
+  )
+  const foldA = sc16(aOff, '0r16a0002') > 0 ? sc16(aOn, '0r16a0002') / sc16(aOff, '0r16a0002') : NaN
+  check(
+    'R16 规矩条在缘由问句里被折到 0.6 倍（比值与词分无关，只有折价能改它）',
+    Math.abs(foldA - 0.6) < 0.01,
+    `开关比=${Number(foldA).toFixed(3)}（关掉 ${sc16(aOff, '0r16a0002').toFixed(3)} → 开着 ${sc16(aOn, '0r16a0002').toFixed(3)}）`,
+  )
+  const foldB = sc16(bOff, '0r16a0002') > 0 ? sc16(bOn, '0r16a0002') / sc16(bOff, '0r16a0002') : NaN
+  check(
+    'R16 现状问句（一个「为什么」都不含）吃同一条：折价照样 0.6 倍',
+    Math.abs(foldB - 0.6) < 0.01,
+    `折价比=${Number(foldB).toFixed(3)}（关掉 ${sc16(bOff, '0r16a0002').toFixed(3)} → 开着 ${sc16(bOn, '0r16a0002').toFixed(3)}）`,
+  )
+  // 两笔账分开认：causeAware:false 整条关（连免折新鲜度一起关），causeRuleFold:1 只关折价。
+  // 免折新鲜度那笔账在 G28 里量（那边 want 的 raw 不是最高、真落进了折扣区间）；
+  // 这里量的是「旋钮真的分开」——只关折价时讲缘由那条分毫不差，规矩条回升到 1/0.6 倍。
+  check(
+    'R16 两个旋钮能分别关：causeRuleFold:1 只收回折价，讲缘由那条分毫不差、规矩条回升到 1.67 倍',
+    Math.abs(sc16(aFold1, '0r16a0001') - sc16(aOn, '0r16a0001')) < 1e-9 &&
+      sc16(aFold1, '0r16a0002') / sc16(aOn, '0r16a0002') > 1.6 &&
+      sc16(aFold1, '0r16a0002') / sc16(aOn, '0r16a0002') < 1.7,
+    `讲缘由那条 开=${sc16(aOn, '0r16a0001').toFixed(3)} 只关折价=${sc16(aFold1, '0r16a0001').toFixed(3)}；规矩回升 ${(
+      sc16(aFold1, '0r16a0002') / sc16(aOn, '0r16a0002')
+    ).toFixed(2)} 倍`,
+  )
+  check(
+    'R16 一刀不切：普通问句「上限怎么设」开关前后逐位同分，规矩那句照常第一',
+    String(cOn[0]?.id) === '0r16a0002' &&
+      cOn
+        .map((h) => String(h.id) + ':' + Number(h.score).toFixed(6))
+        .join('|') ===
+        cOff
+          .map((h) => String(h.id) + ':' + Number(h.score).toFixed(6))
+          .join('|'),
+    `首位=${String(cOn[0]?.id).slice(0, 9)}；开关 ${cOn.length} 条逐位同分`,
+  )
+}
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

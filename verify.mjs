@@ -5778,9 +5778,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const recallSrc = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
 
   check(
-    '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25）',
+    '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25；0.2.179 起缘由问句再乘一层规矩折价）',
     meowSrc.includes('const impW = 1 + (impOf(docs[di]) - 1) * 0.25;') &&
-      meowSrc.includes('score: raw[di] * w * impW * stW,'),
+      meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),'),
   )
   check(
     '召回: explain 把 importanceWeight 也露出来（三个因子缺一个就没法解释排序）',
@@ -9542,7 +9542,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'GZ 同口径: 两个打分器（search / keywordHitScore）都认锚，且旧写法一处不剩',
     eng.split('const anchored = anchorSel === null ? false : anchorSel(di);').length - 1 === 2 &&
-      eng.split('!anchored && now !== null').length - 1 === 2 &&
+      // 0.2.179 起这两支有意不同口径：search 的缘由问句免折新鲜度（!causeQ），
+      // 主动注入那支照旧折——注入多提一句常常是好事，抹平反而坏事（见 HZ14）。
+      eng.split('if (!anchored && !causeQ && now !== null').length - 1 === 1 &&
+      eng.split('if (!anchored && now !== null').length - 1 === 1 &&
       eng.split('const stW = anchored ? 1 : statusWeight').length - 1 === 2 &&
       eng.includes('!timeAnchor && now !== null') === false &&
       eng.includes('const stW = timeAnchor ? 1') === false,
@@ -10720,6 +10723,102 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `9.185 在=${internal178.includes('## 9.185 ')} 190 在=${design178.includes('## 190')}`,
     )
   }
+  // ── HZ14（0.2.179）缘由问句去叙述层找答案，规矩条只在问「为什么」时折价 ─────────
+  // 真库里「评测台为什么封存」被一条 imp=4 的 rules 压住：那条讲的是「以后该怎么做」，
+  // 一个字都没答「为什么」，只因为同一个实体（评测台）而词面全中。这一版：缘由/现状问句把
+  // 规矩层折到 0.6 倍，且不折新鲜度。另外这一版顺手把「长度惩罚按覆盖度打折」（relief）留下——
+  // 它扫参时读数一动不动，撤掉却掉一条（1.000 → 0.977），所以判据要正着盯它在位。
+  {
+    const eng179 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const gold179 = readFileSync(new URL('./tools/probe-gold.mjs', import.meta.url), 'utf8')
+    const recall179 = readFileSync(new URL('./tools/probe-recall.mjs', import.meta.url), 'utf8')
+    const internal179 = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+    const design179 = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+    const countOf = (hay, needle) => hay.split(needle).length - 1
+    const valOf = (src, name) => {
+      const m = new RegExp('var ' + name + ' = ([0-9.]+);').exec(src)
+      return m === null ? NaN : Number(m[1])
+    }
+    check(
+      'HZ14 两个常量各一处且都在 (0,1)：覆盖度打折不超一半，规矩折价也不超一半',
+      countOf(eng179, 'var COVER_LEN_RELIEF = ') === 1 &&
+        countOf(eng179, 'var CAUSE_RULE_FOLD = ') === 1 &&
+        valOf(eng179, 'COVER_LEN_RELIEF') > 0 && valOf(eng179, 'COVER_LEN_RELIEF') < 1 &&
+        valOf(eng179, 'CAUSE_RULE_FOLD') > 0 && valOf(eng179, 'CAUSE_RULE_FOLD') < 1,
+      `relief=${valOf(eng179, 'COVER_LEN_RELIEF')} fold=${valOf(eng179, 'CAUSE_RULE_FOLD')}`,
+    )
+    check(
+      'HZ14 长度惩罚按覆盖度打折：bEff 一处、两处长度归一化都吃它、没有「直接拿 b 去归一」的残留',
+      countOf(eng179, 'const bEff = b * (1 - coverLenRelief * cvr);') === 1 &&
+        countOf(eng179, '(1 - bEff + bEff * len / dl)') === 2 &&
+        countOf(eng179, '(1 - b + b * len / dl)') === 0 &&
+        eng179.includes('Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF'),
+      `bEff ${countOf(eng179, '(1 - bEff + bEff * len / dl)')} 处`,
+    )
+    check(
+      'HZ14 覆盖度三步（归一 → 取幂 → 协调）各一处：G22 的判据就按这三步盯，拆开才能分别红',
+      countOf(eng179, 'coverOf[di] = Math.min(1, cover / qIdfSum);') === 1 &&
+        countOf(eng179, 'cvr = Math.pow(coverOf[di], COORD_POW);') === 1 &&
+        countOf(eng179, 'if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;') === 1,
+      '三步都在，各一处',
+    )
+    check(
+      'HZ14 缘由判定的入场券：缘由意图（topic）与现状问句（situation）二者取一，causeAware:false 一键回旧口径',
+      countOf(eng179, 'const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;') === 1 &&
+        countOf(eng179, 'const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? ""));') === 1,
+      'causeQ 一处、situationQ 一处',
+    )
+    check(
+      'HZ14 两笔账分开落：新鲜度吃 !causeQ、打分吃 causeRuleFold，explain 里也看得见（否则单题排查看不出这一笔）',
+      countOf(eng179, 'if (!anchored && !causeQ && now !== null && docs[di].importance < 3') === 1 &&
+        countOf(eng179, '(causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1)') === 2 &&
+        eng179.includes('Number.isFinite(opts.causeRuleFold) ? Math.min(1, Math.max(0, opts.causeRuleFold)) : CAUSE_RULE_FOLD'),
+      `打分 + explain 共 ${countOf(eng179, '(causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1)')} 处`,
+    )
+    const kwStart = eng179.indexOf('function keywordHitScore(')
+    const kwEnd = kwStart === -1 ? -1 : eng179.indexOf('\nfunction ', kwStart + 10)
+    const kwBody = kwStart === -1 ? '' : eng179.slice(kwStart, kwEnd === -1 ? undefined : kwEnd)
+    check(
+      'HZ14 主动注入有意不吃这一刀：keywordHitScore 里没有 causeQ——检索答错是噪声，注入多提一句常常是好事',
+      kwStart !== -1 && kwBody.length > 500 && !kwBody.includes('causeQ') && !kwBody.includes('causeRuleFold'),
+      `keywordHitScore 正文 ${kwBody.length} 字符里 causeQ 出现 ${kwBody.split('causeQ').length - 1} 次`,
+    )
+    check(
+      'HZ14 situation 词表在、且 intentLevelsOf 真的用它收 rules（这一刀单靠 ×1.3 抵不过 4 倍差，但它是 causeQ 的入场券）',
+      eng179.includes('var LEVEL_INTENT_SITUATION = ') &&
+        eng179.includes('if (LEVEL_INTENT_RULES.test(q) && situation === false) out.add("rules");') &&
+        countOf(eng179, 'const situation = LEVEL_INTENT_SITUATION.test(q);') === 1,
+      '词表 + 收 rules 都在',
+    )
+    check(
+      'HZ14 G28 探针在位：三个问句（缘由 / 现状 / 普通）、开关比值判据、一刀不切的阴性对照',
+      gold179.includes('G28 缘由问句去叙述层找答案') &&
+        gold179.includes("const q1 = '评测台为什么封存'") &&
+        gold179.includes("const q2 = '评测台还能跑吗'") &&
+        gold179.includes("const q3 = '评测台的花费上限怎么设'") &&
+        gold179.includes('Math.abs(fold1 - 0.6) < 0.01') &&
+        gold179.includes("Math.abs(sc(on3f, '0s28a0002') - sc(off3f, '0s28a0002')) > 1e-9"),
+      'G28 四件套（三问句 / 比值 / 一刀不切）都在',
+    )
+    check(
+      'HZ14 R16 断言在位：缘由句首位、开关比 0.6、现状句同效、两个旋钮能分别关、普通句逐位同分',
+      recall179.includes('R16 缘由问句「评测线为什么锁在封存档」首位是讲缘由那条') &&
+        recall179.includes('R16 规矩条在缘由问句里被折到 0.6 倍') &&
+        recall179.includes('R16 现状问句（一个「为什么」都不含）吃同一条') &&
+        recall179.includes('R16 两个旋钮能分别关') &&
+        recall179.includes('R16 一刀不切'),
+      'R16 五条都在',
+    )
+    check(
+      'HZ14 文档在位：INTERNAL 9.186 记三次否决与「撤机制要看撤后读数」，DESIGN 191 记「层级也是回答仓」',
+      internal179.includes('## 9.186 ') &&
+        internal179.includes('缘由问句去叙述层找答案') &&
+        internal179.includes('撤掉它') &&
+        design179.includes('## 191') &&
+        design179.includes('回答仓'),
+      `9.186 在=${internal179.includes('## 9.186 ')} 191 在=${design179.includes('## 191')}`,
+    )
+  }
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10844,7 +10943,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const meowMod = await import('./vendor/meow-memory/lib/index.js')
   check('FW 纯函数：三档权重（active 1 / stale 0.6 / archived 0.35 / 缺省 1）', meowMod.statusWeight('active') === 1 && meowMod.statusWeight('stale') === 0.6 && meowMod.statusWeight('archived') === 0.35 && meowMod.statusWeight(void 0) === 1)
-  check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW,') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
+  check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
   check('FW 源码: docs 把 status 带进打分器（不带就等于没降权）', meowSrc.includes('status: r.status') && /const stW = (anchored \? 1 : )?statusWeight\(docs\[di\]\.status\)/.test(meowSrc))
   check('FW 源码: explain 里有 statusWeight 分项', meowSrc.includes('statusWeight: Math.round(stW * 1e3) / 1e3'))
   const docsFw = [
@@ -11055,8 +11154,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.178（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.178'"),
+    'GV 版本: 代码里是 0.2.179（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.179'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -11186,8 +11285,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.178（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.178'"),
+    'GW 版本: 代码里是 0.2.179（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.179'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11334,8 +11433,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.178（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.178'"),
+    'VV 版本: 代码里是 0.2.179（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.179'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11516,9 +11615,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.178（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.178' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.178'"),
+    'GX19 版本已到 0.2.179（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.179' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.179'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11622,10 +11721,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.178',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.178' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.178'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.178'),
+    'VY15 版本三处一致 0.2.179',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.179' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.179'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.179'),
   )
 }
 
@@ -11673,10 +11772,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.178（三处一致）',
-    pkgWz.version === '0.2.178' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.178'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.178'),
+    'WZ9 版本已到 0.2.179（三处一致）',
+    pkgWz.version === '0.2.179' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.179'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.179'),
   )
 }
 

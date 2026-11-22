@@ -775,9 +775,12 @@ if (denseUsable) {
   const knobOk =
     eng.includes('Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF') &&
     eng.includes('Number.isFinite(opts.coordPow) && opts.coordPow > 0 ? opts.coordPow : COORD_POW_DEF') &&
-    eng.split('const cvr = Math.pow(Math.min(1, cover / qIdfSum), COORD_POW);').length - 1 === 1 &&
+    // 0.2.179 起覆盖度先落成 coverOf[di] 再取幂：长度惩罚要按 cover 打折，必须先有这一步。
+    // 判据钉三步而不是一整行——顺序是「归一 → 取幂 → 协调」，拆开才能分别红。
+    eng.split('coverOf[di] = Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
+    eng.split('cvr = Math.pow(coverOf[di], COORD_POW);').length - 1 === 1 &&
     eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1
-  if (!knobOk) wrong.push('覆盖度没真正进打分路径（幂次或协调因子写偏了）')
+  if (!knobOk) wrong.push('覆盖度没真正进打分路径（归一 / 取幂 / 协调三笔里有一笔写偏了）')
   // ③ 行为：覆盖度真的能把分差拉开（受控语料：等长、同 importance、只有覆盖度不同）
   const pad = 'zeta zeta zeta zeta zeta'
   const mk = (id, content) => ({ id, level: 'fact', content, title: '', keywords: [], importance: 1, status: 'active' })
@@ -1165,6 +1168,96 @@ if (denseUsable) {
     wrong.length === 0,
     wrong.length === 0
       ? `坐标句 首位=${t1}（关掉后 ${t1o}）；指认句 首位=${on2[0]}（开关前后逐位相同）`
+      : wrong.join(' / '),
+  )
+}
+
+// ── G28（0.2.179）缘由问句的回答仓是叙述层，不是规矩层 ─────────────────────────────
+// 「评测台为什么封存」要的是那条讲封存缘由的记录；「评测台禁止无预算花 key」讲的是
+// 「以后该怎么做」，它是规则不是答案，可它 importance 更高、词也全中，旧口径下稳压 want。
+// 0.2.179 起：缘由/现状问句（「为什么」「还能跑吗」）不折新鲜度，且 rules 层按 CAUSE_RULE_FOLD 打折。
+{
+  const T = (id, level, title, content, kw) => ({
+    id, level, title, content, keywords: kw, importance: 2, status: 'active',
+    project: 'g28', created_at: '2026-11-18T09:00:00.000Z',
+    updated_at: '2026-11-18T09:00:00.000Z', last_accessed_at: '2026-11-18T09:00:00.000Z',
+  })
+  // 两条正文长度刻意接近：量的是层级仓，不是词法长度归一化。
+  const docs28 = [
+    T('0s28a0001', 'project', '评测台已经封存',
+      'OmniMemEval 是主人用来给宏记忆按官方口径拿排名的评测台，2026-11-21 起已经封存：不再跑 locomo，不再发 LLM 请求花 key，一晚 omni39 到 omni43 就烧掉约一百块，封存是为了让旧读数不再变。',
+      ['评测台', '封存', '缘由', '读数']),
+    { ...T('0s28a0002', 'rules', '评测台禁止无预算花 key',
+      '评测台禁止无预算花主人的 key：为什么卡得这么死？一晚跑几个批次就上百块，钱是主人的。任何发 LLM 请求的实验必须先报次数与估算成本，必须设 OMNI_MAX_CALLS 上限，并发不超过三路，默认 OMNI_ALLOW_SPEND 未设即 exit(2)。',
+      ['评测台', '花费', '上限', '成本']), importance: 4 },
+    T('0s28a0003', 'fact', '评测台跑过哪些榜单',
+      '评测台跑过的榜单：locomo 一档、omni39 到 omni43 五个批次，读数都进了基线表。',
+      ['榜单', 'locomo', '批次']),
+  ]
+  const q1 = '评测台为什么封存'
+  const q2 = '评测台还能跑吗'
+  const q3 = '评测台的花费上限怎么设'
+  const ids = (q, opts) => V.search(q, docs28, { k: 3, ...opts }).map((h) => String(h.id))
+  const on1 = ids(q1, {})
+  const off1 = ids(q1, { causeAware: false })
+  const on2 = ids(q2, {})
+  const on3 = ids(q3, {})
+
+  const eng = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const wrong = []
+  const got = (q, opts) => V.search(q, docs28, { k: 3, ...opts })
+  const sc = (arr, id) => {
+    const hit = arr.find((h) => String(h.id) === id)
+    return hit ? hit.score : 0
+  }
+  const on1f = got(q1, {})
+  const off1f = got(q1, { causeAware: false })
+  const on2f = got(q2, {})
+  const off2f = got(q2, { causeAware: false })
+  const on3f = got(q3, {})
+  const off3f = got(q3, { causeAware: false })
+  const dump = (label, arr) => console.log(label, JSON.stringify(arr.map((h) => [String(h.id), Math.round(h.score * 1e3) / 1e3])))
+  if (process.env.G28_DEBUG) {
+    dump('on1 ', on1f); dump('off1', off1f)
+    dump('on2 ', on2f); dump('off2', off2f)
+    dump('on3 ', on3f); dump('off3', off3f)
+  }
+
+  // ① 名次：缘由句回讲缘由的那条
+  if (on1[0] !== '0s28a0001') wrong.push(`缘由问句首位是 ${on1[0]}，不是讲封存缘由的那条`)
+  // ② 折价：规矩条的开关比值必须精确等于 CAUSE_RULE_FOLD。
+  //    这里量的是比值不是绝对分——比值与词分、长度、importance 全无关，只有折价能改它。
+  //    受控语料若让规矩条词分本来就更强，「关掉后首位换人」才成立；本组刻意让 want 词分稳赢，
+  //    所以阴性对照换成这条比值，比「首位换人」更贴机制、也更不容易假绿。
+  const foldOf = (on, off) => (sc(off, '0s28a0002') > 0 ? sc(on, '0s28a0002') / sc(off, '0s28a0002') : NaN)
+  const fold1 = foldOf(on1f, off1f)
+  if (!(Math.abs(fold1 - 0.6) < 0.01)) wrong.push(`缘由句里规矩条的开关比是 ${fold1}，不是 0.6——折价没落到打分路径`)
+  // ③ 现状句（一个「为什么」都不含）吃同一条判定：折价同样生效，且 want 不再被折新鲜度
+  const fold2 = foldOf(on2f, off2f)
+  if (!(Math.abs(fold2 - 0.6) < 0.01)) wrong.push(`现状句里规矩条的开关比是 ${fold2}，不是 0.6——situation 没接进 causeQ`)
+  if (!(sc(on2f, '0s28a0001') > sc(off2f, '0s28a0001') * 1.2)) {
+    wrong.push(`现状句里讲缘由那条没被免折新鲜度（开 ${sc(on2f, '0s28a0001')} vs 关 ${sc(off2f, '0s28a0001')}）`)
+  }
+  // ④ 一刀不切：普通问句开关前后分毫不差，规矩照常第一
+  if (on3[0] !== '0s28a0002') wrong.push(`普通问句首位是 ${on3[0]}，规矩那条该照常赢——折价不许一刀切`)
+  if (Math.abs(sc(on3f, '0s28a0002') - sc(off3f, '0s28a0002')) > 1e-9) {
+    wrong.push(`普通问句里规矩条被折了（开 ${sc(on3f, '0s28a0002')} vs 关 ${sc(off3f, '0s28a0002')}）——折价越界`)
+  }
+
+  // 源码判据：常量一处、开关一处、两支落点（新鲜度 + 打分）都在
+  const srcOk =
+    eng.split('var CAUSE_RULE_FOLD = 0.6;').length - 1 === 1 &&
+    eng.split('const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;').length - 1 === 1 &&
+    eng.split('LEVEL_INTENT_SITUATION.test(String(query ?? ""))').length - 1 >= 1 &&
+    eng.includes('if (!anchored && !causeQ && now !== null && docs[di].importance < 3') &&
+    eng.includes('(causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1)')
+  if (!srcOk) wrong.push('缘由判定的三笔（常量 / 开关 / 两个落点）没落全')
+
+  check(
+    'G28 缘由问句去叙述层找答案：问「为什么封存」回讲缘由那条；规矩条只在缘由/现状问句里折到 0.6 倍，问「上限怎么设」分毫不折',
+    wrong.length === 0,
+    wrong.length === 0
+      ? `缘由句 首位=${on1[0]} 折价比=${fold1.toFixed(3)}；现状句 折价比=${fold2.toFixed(3)} 免折比=${(sc(on2f, '0s28a0001') / sc(off2f, '0s28a0001')).toFixed(2)}；普通句 首位=${on3[0]} 折价比=1.000`
       : wrong.join(' / '),
   )
 }

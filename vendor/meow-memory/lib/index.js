@@ -2128,13 +2128,21 @@ var LEVEL_INTENT_RULES = /要不要|该不该|能不能|可不可以|需不需�
 var LEVEL_INTENT_FACT = /改了什么|改了哪些|做了什么|做了哪些|加了什么|加了哪些|交付态|什么版本|哪个版本|几条|多少条|几点/;
 var LEVEL_INTENT_TOPIC = /来龙去脉|为什么|缘由|经过|怎么来的/;
 var LEVEL_INTENT_LESSON = /怎么跑|怎么写|怎么做|怎么办|怎么能|如何|技巧|办法|踩过|经验/;
+// [macro-fusion 0.2.179] 「还在不在用」不是「该不该」：问句带存在性/残存性状语时，答案是现状仓
+// （project）里的那条记录，不是规矩仓里那条「禁止无预算花 key」——问「评测台还能跑吗」，
+// 正解是「2026-11-21 已封存，烧了 ¥100」，压住它的却是同库那条 imp=4 的规矩（词面全是 key/评测台/预算）。
+// 判据只放「存在性」措辞（还能用/还能跑/还用不用/封存/下线/停用/退役/现状/到哪一版），
+// 不放「要不要/该不该」——那类问的是决策，答案本来就该在规矩里。
+var LEVEL_INTENT_SITUATION = /还能用|还能跑|还能不能|还用不用|还在不在|有没有在用|还在用|已停|封存|下线|停用|退役|现状|到哪一版|推进到|进展到/;
 function intentLevelsOf(text) {
   const q = String(text ?? "");
   const out = new Set();
-  if (LEVEL_INTENT_RULES.test(q)) out.add("rules");
+  const situation = LEVEL_INTENT_SITUATION.test(q);
+  if (LEVEL_INTENT_RULES.test(q) && situation === false) out.add("rules");
   if (LEVEL_INTENT_FACT.test(q)) out.add("fact");
   if (LEVEL_INTENT_TOPIC.test(q)) out.add("topic");
   if (LEVEL_INTENT_LESSON.test(q)) out.add("lesson");
+  if (situation) out.add("project");
   return out.size === 0 ? null : out;
 }
 // [macro-fusion 0.2.171] 历史补录上限：点了名的标识符只活在过期条目里时，最多翻几条出来。
@@ -2197,6 +2205,20 @@ var COORD_W_DEF = 0.45;
 // 幂次默认 1（线性）。0.2.163 曾按「缺口越大越该疼」给它 1.2，但那是踩在坏读数上做的决定：
 // 干净语料上 1.2 会让真库换说法池少进一条 top5。除非将来有干净读数支撑，别再往上抬。
 var COORD_POW_DEF = 1;
+// [macro-fusion 0.2.179] 覆盖满的条目不该被长度稀释。BM25 的长度归一化假设是「长文里出现一个词
+// 不稀奇」，可当一条记忆把问句的每个实词都盖住了（cover = 1.0），它不是在泛泛地谈这个话题，
+// 它就是这个问题的那条记录；此时还能赢的短条目，赢在「短」，不在「答得全」。实测「评测台为什么封存」：
+// 正解 611 字、cover 1.00、bm25 10.757；压制它的规则 102 字、cover 0.638、bm25 18.451——
+// 词项覆盖满的那条反而被长度罚掉 71%。这里按 cover 线性打折长度惩罚（b 有效值 = b×(1-relief×cover)），
+// cover 满 → 惩罚减半，cover 低 → 几乎不动。不改 k1、不改 idf、不改 n 与 df。
+var COVER_LEN_RELIEF = 0.5;
+// [macro-fusion 0.2.179] 缘由问句的回答仓是叙述层，不是规矩层。
+// 问「评测台为什么封存」，答案是「2026-11-21 已封存、一晚烧了 ¥100」这条 project 记录；
+// 压住它的是一条 imp=4 的 rules（「评测台禁止无预算花 key」）——它讲的是「该怎么做」，
+// 一个字都没答「为什么」。词面高度重合是因为同一个实体，不是同一个问题。
+// 两件事一起做：①缘由问句下规矩层折价 CAUSE_RULE_FOLD；②缘由问句不折新鲜度（问的是当初
+// 为什么那样，旧是自然的，与 0.2.159 时间锚同源）。`causeAware:false` 一键回旧口径。
+var CAUSE_RULE_FOLD = 0.6;
 // [macro-fusion 0.2.161] 关键词字段被低估：真库 569 条 title 全空，keywords 是唯一的结构化桥，
 // 而它只按 0.25 倍词频、+0.35 加成参与打分。抬到 0.35 / 0.6——读数与 tf 0.5/0.6 完全相同，
 // 但 0.5 会把「只在 keywords 里提到的条目」压过「正文命中的条目」，破坏 0.2.152 立下的「标签不是正文」。
@@ -2652,11 +2674,21 @@ function search(query, docs, opts = {}) {
   const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df);
   const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;
   // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
+  const coverLenRelief = Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF;
   // 倒排缺席（opts.inverted===false）或问句里有标识符（要逐条比原文）时退回全库扫描。
   const scanDoc = (di) => {
     let s = 0;
     const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
     const dl = opts.lengthOnBody === false ? avgdl : avgBody;
+    // [macro-fusion 0.2.179] 覆盖度先算一步：它决定长度惩罚该不该打折（见 COVER_LEN_RELIEF）。
+    let cvr = 0;
+    if (qIdfSum > 0) {
+      let cover = 0;
+      for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);
+      coverOf[di] = Math.min(1, cover / qIdfSum);
+      cvr = Math.pow(coverOf[di], COORD_POW);
+    }
+    const bEff = b * (1 - coverLenRelief * cvr);
     for (const term of qLoop) {
       const f = tf[di].get(term);
       if (!f) continue;
@@ -2664,11 +2696,11 @@ function search(query, docs, opts = {}) {
       let fw = 1;
       if (titleSets !== null && titleSets[di].has(term)) fw += FIELD_TITLE_W;
       if (kwSets !== null && kwSets[di].has(term)) fw += FIELD_KW_W;
-      s += idf * fw * (f * (k1 + 1) / (f + k1 * (1 - b + b * len / dl)));
+      s += idf * fw * (f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl)));
     }
     // 同义词只走一条窄通道：每个原始词最多取「最好的那个同义词」的一份分，不叠乘、不进覆盖度。
     if (synOf !== null) {
-      const sat = (f) => f * (k1 + 1) / (f + k1 * (1 - b + b * len / dl));
+      const sat = (f) => f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl));
       for (const alts of synOf.values()) {
         let best = 0;
         for (const a of alts) {
@@ -2680,13 +2712,7 @@ function search(query, docs, opts = {}) {
         s += synW * best;
       }
     }
-    if (qIdfSum > 0) {
-      let cover = 0;
-      for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);
-      coverOf[di] = Math.min(1, cover / qIdfSum);
-      const cvr = Math.pow(Math.min(1, cover / qIdfSum), COORD_POW);
-      if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
-    }
+    if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
     if (entSets) {
       let hit = 0;
       for (const t of entToks) if (entSets[di].has(t)) hit++;
@@ -2758,6 +2784,11 @@ function search(query, docs, opts = {}) {
     return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
   };
   const lvIntent = intentLevelsOf(query);
+  // [macro-fusion 0.2.179] 「X 还能跑吗」和「X 为什么封存」问的是同一件事：X 现在还在不在。
+  // 两句的答案都在现状仓，都不该让「该怎么做」那条规矩顶上来。
+  const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? ""));
+  const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;
+  const causeRuleFold = Number.isFinite(opts.causeRuleFold) ? Math.min(1, Math.max(0, opts.causeRuleFold)) : CAUSE_RULE_FOLD;
   const tipOn = tipAssertOn(query) && opts.tipAssert !== false;
   const statusDig = statusDigestOf(docs, query, verbHay !== null, opts);
   for (let di = 0; di < docs.length; di++) {
@@ -2765,8 +2796,9 @@ function search(query, docs, opts = {}) {
     const lvHit = lvIntent !== null && lvIntent.has(String(docs[di].level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
+    // [macro-fusion 0.2.179] 缘由问句不折：问的是当初为什么那样，旧是自然的（与时间锚同源）。
     const anchored = anchorSel === null ? false : anchorSel(di);
-    if (!anchored && now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+    if (!anchored && !causeQ && now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
       w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
     }
     const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
@@ -2794,8 +2826,8 @@ function search(query, docs, opts = {}) {
       ...docs[di].project === void 0 ? {} : { project: docs[di].project },
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
-      score: raw[di] * w * impW * stW,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * 1e3) / 1e3 } } : {}
+      score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1) * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
