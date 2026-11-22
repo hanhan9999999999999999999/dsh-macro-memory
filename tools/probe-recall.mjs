@@ -835,6 +835,58 @@ check(
   `subjBonus 出口在=${SRC.includes('h.explain.subjBonus')} 默认不留空=${r10on.every((h) => h.explain === void 0 || h.explain.subjBonus === void 0)}`,
 )
 
+// ── R11 层级意图（0.2.173）：问句问的是「准则/做法/事实/来龙去脉」，就把对应那一层往前放 ──
+// 真库里 #21「反思应该由什么触发」正解在 rules 层 19.18 分，压它的是 lesson 层 19.86 分——
+// 差八毛钱也翻不过去，因为分档看的是纯词分。这类错配不是「词没匹配上」，是「问的是规矩、
+// 答的是经验」。这里钉的是：问句带明确意图词时，对应层级的条目在 _raw 上抬一档；但只抬
+// 「本来就近」的（_raw 不低于最高分的 LEVEL_INTENT_RATIO），分差太远的不许凭空造相关性。
+const R11_DOCS = [
+  { id: '0r11a0001', level: 'rules', title: '', content: '要不要重启 DSH、要不要清缓存这类事该由用户拍板：改动做完把选择权交回去，不自己顺手重启。', keywords: ['重启', '拍板', '准则'], importance: 3, project: 'r11-层级', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+  { id: '0r11a0002', level: 'lesson', title: '', content: '重启这件事以前是自己顺手做的，后来发现会打断别人的会话，就改成先问一句、等用户自己重启。重启要等，重启别自己来。', keywords: ['重启', '打断', '教训'], importance: 2, project: 'r11-层级', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+  { id: '0r11a0003', level: 'fact', title: '', content: '运行中的 DSH 进程仍在用旧引擎，重启之后才会加载新版本。', keywords: ['重启', '引擎'], importance: 2, project: 'r11-层级', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+  { id: '0r11a0004', level: 'rules', title: '', content: '数据库迁移要挑低峰期做，先备份再动手，别在白天业务高峰碰它。', keywords: ['数据库', '迁移', '备份'], importance: 1, project: 'r11-层级', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+]
+const Q11 = '重启这件事该由谁来定'
+const pos11 = (hits, id) => hits.findIndex((h) => String(h.id).startsWith(id))
+const r11on = V.search(Q11, R11_DOCS, { k: 10, explain: true })
+const r11off = V.search(Q11, R11_DOCS, { k: 10, explain: true, levelIntent: false })
+check(
+  'R11 问「该由谁来定」时规则那一层进第一档（问的是准则，答的就得是准则）',
+  pos11(r11on, '0r11a0001') === 0,
+  `规则那条第 ${pos11(r11on, '0r11a0001') + 1} 名，做法那条第 ${pos11(r11on, '0r11a0002') + 1} 名`,
+)
+check(
+  'R11 关得掉：levelIntent:false 时规则那条不再第一（阴性对照，说明是这把刀在起作用）',
+  pos11(r11off, '0r11a0001') > 0,
+  `关掉后规则第 ${pos11(r11off, '0r11a0001') + 1} 名`,
+)
+check(
+  'R11 比率门：分差太远的那条不会被层级意图抬上来（只帮「本来就近」的，不凭空造相关性）',
+  (pos11(r11on, '0r11a0004') === -1 || pos11(r11on, '0r11a0004') > 1) && pos11(r11on, '0r11a0004') === pos11(r11off, '0r11a0004'),
+  `不相关规则条 开=${pos11(r11on, '0r11a0004') + 1} 关=${pos11(r11off, '0r11a0004') + 1}`,
+)
+const r11plainOn = V.search('星图建图的延迟', R11_DOCS, { k: 10 })
+const r11plainOff = V.search('星图建图的延迟', R11_DOCS, { k: 10, levelIntent: false })
+check(
+  'R11 问句里没有意图词时，开关前后逐位同序（不认识的问句就当没这把刀）',
+  r11plainOn.map((h) => h.id).join(',') === r11plainOff.map((h) => h.id).join(','),
+  `同序=${r11plainOn.map((h) => String(h.id).slice(0, 9)).join(',')}`,
+)
+const lvCalls = (SRC.match(/intentLevelsOf\(/g) || []).length
+check(
+  'R11 只在问句这一侧判意图：库里的条目层是老实话，只有问句需要猜',
+  lvCalls === 2 && SRC.includes('const lvIntent = intentLevelsOf(query);'),
+  `intentLevelsOf( 出现 ${lvCalls} 次（定义 1 + 调用 1）`,
+)
+const r11hit = r11on.find((h) => String(h.id).startsWith('0r11a0001'))
+const r11others = r11on.filter((h) => !String(h.id).startsWith('0r11a0001'))
+check(
+  'R11 抬过谁要说出来：explain.levelIntent 只在真抬了的时候出现',
+  r11hit?.explain?.levelIntent === true &&
+    r11others.every((h) => h.explain === void 0 || h.explain.levelIntent === void 0),
+  `规则那条 levelIntent=${r11hit?.explain?.levelIntent} 别条留空=${r11others.every((h) => h.explain === void 0 || h.explain.levelIntent === void 0)}`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {

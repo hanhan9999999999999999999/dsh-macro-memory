@@ -406,7 +406,9 @@ if (denseUsable) {
 // 只免两样折扣（新鲜度、状态），词分与覆盖度一个都不许动——动了就不是锚点，是改判。
 {
   const anchorM = measure(fx.anchor, docs)
-  const offAll = measure(fx.queries, docs, { timeAnchor: false })
+  // [0.2.173] 阴性对照要把当轮所有「替词分干活」的刀一起关掉：层级意图会替「改了什么」这类
+  // 问句把 fact 层的正解顶上去，只关时间锚的话对照就废了（关了也一样在榜首）。
+  const offAll = measure(fx.queries, docs, { timeAnchor: false, levelIntent: false })
   const sigOf = (q, opts) =>
     V.search(q, docs, { k: docs.length, ...opts }).map((h) => `${h.id}:${Number(h.score).toFixed(6)}`).join('|')
   const plainQs = [...fx.queries, ...fx.paraphrase].map((x) => x.q).filter((q) => !V.timeAnchorOf(q))
@@ -414,7 +416,7 @@ if (denseUsable) {
 
   const aq = '0.2.146 加了什么'
   const on = V.search(aq, docs, { k: docs.length, explain: true })
-  const off = V.search(aq, docs, { k: docs.length, explain: true, timeAnchor: false })
+  const off = V.search(aq, docs, { k: docs.length, explain: true, timeAnchor: false, levelIntent: false })
   const onById = new Map(on.map((h) => [String(h.id), h]))
   const bm25Same = off.every((h) => onById.get(String(h.id)) !== undefined && onById.get(String(h.id)).explain.bm25 === h.explain.bm25)
   const exempted = on.filter((h) => h.explain.anchorHit === true)

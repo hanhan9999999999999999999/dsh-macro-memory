@@ -2052,6 +2052,26 @@ var IDENT_BAND_W = 0.8;
 // [macro-fusion 0.2.172] 库里所有条目 title 都是空串（宏记忆写入时不落标题），所以「标题指认」这一刀没有着力点；
 // 真正有指认力的是「这条记忆的主语就是它」——正文以问句点名的标识符开头。
 var IDENT_SUBJ_W = 0;
+
+// [macro-fusion 0.2.173] 问句的语法形态在说「我要哪一类东西」：问「要不要 / 该不该」是在问准则，
+// 问「改了什么 / 交付态」是在问事实，问「怎么跑」是在问经验。层级（rules/fact/lesson/topic）本来
+// 就是宏记忆自己分的类；问句意图和层级对不上时，让对得上的那条在竞争里往前挪一点。
+// 只乘 _raw（分档读的那个数），默认权重 0——先量，量出来有用再给值。
+var LEVEL_INTENT_W = 0.3;
+var LEVEL_INTENT_RATIO = 0.5;
+var LEVEL_INTENT_RULES = /要不要|该不该|能不能|可不可以|需不需要|是否要|允不允许|准不准|该由|应该由|由什么触发|规定/;
+var LEVEL_INTENT_FACT = /改了什么|改了哪些|做了什么|做了哪些|加了什么|加了哪些|交付态|什么版本|哪个版本|几条|多少条|几点/;
+var LEVEL_INTENT_TOPIC = /来龙去脉|为什么|缘由|经过|怎么来的/;
+var LEVEL_INTENT_LESSON = /怎么跑|怎么写|怎么做|怎么办|怎么能|如何|技巧|办法|踩过|经验/;
+function intentLevelsOf(text) {
+  const q = String(text ?? "");
+  const out = new Set();
+  if (LEVEL_INTENT_RULES.test(q)) out.add("rules");
+  if (LEVEL_INTENT_FACT.test(q)) out.add("fact");
+  if (LEVEL_INTENT_TOPIC.test(q)) out.add("topic");
+  if (LEVEL_INTENT_LESSON.test(q)) out.add("lesson");
+  return out.size === 0 ? null : out;
+}
 // [macro-fusion 0.2.171] 历史补录上限：点了名的标识符只活在过期条目里时，最多翻几条出来。
 var HIST_LIFT_MAX = 3;
 var IDENT_BASE_CREDIT = 0.7;
@@ -2644,6 +2664,8 @@ function search(query, docs, opts = {}) {
   // 不该被别人的重要性稀释：先算完整分数，再按榜首的一个单位补上去（单位跟着榜走，不跟着词分走）。
   const identBandW = Number.isFinite(opts.identBandW) ? opts.identBandW : IDENT_BAND_W;
   const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;
+  const levelIntentW = Number.isFinite(opts.levelIntentW) ? opts.levelIntentW : LEVEL_INTENT_W;
+  const lvRatio = Number.isFinite(opts.levelIntentRatio) ? opts.levelIntentRatio : LEVEL_INTENT_RATIO;
   const baseRaw = raw.slice();
   const maxRaw = Math.max(...raw);
   const hits = [];
@@ -2663,8 +2685,10 @@ function search(query, docs, opts = {}) {
     const v = Math.round(Number(d?.importance));
     return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
   };
+  const lvIntent = intentLevelsOf(query);
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
+    const lvHit = lvIntent !== null && lvIntent.has(String(docs[di].level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
     const anchored = anchorSel === null ? false : anchorSel(di);
@@ -2677,7 +2701,8 @@ function search(query, docs, opts = {}) {
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
       _sr: subjRatio === void 0 ? 0 : subjRatio[di],
       _subj: subjRatio === void 0 || opts.identSubjBand === false ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di])),
+      _lv: lvHit && opts.levelIntent !== false ? 1 : 0,
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0)),
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -2725,6 +2750,20 @@ function search(query, docs, opts = {}) {
     }
   }
   // [macro-fusion 0.2.150] 分档排序：权重只能改判同档内的顺序，跨档不许越级。
+  // [macro-fusion 0.2.173] 层级意图是软偏好，分两处落地：_raw 那一侧（hits.push 时算好）
+  // 决定「够不够格进这一档」，score 这一侧决定「进了这一档排多前」。只做前者会像这版
+  // 第一次那样——条目进了第一档却还是第二名，因为档内仍按没抬过的 score 排。
+  for (const h of hits) {
+    if (h._lv !== 1) {
+      delete h._lv;
+      continue;
+    }
+    if (levelIntentW > 0 && opts.levelIntent !== false) {
+      h.score *= 1 + levelIntentW;
+      if (h.explain !== void 0) h.explain.levelIntent = true;
+    }
+    delete h._lv;
+  }
   bandize(hits, '_raw');
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
   if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);

@@ -10225,7 +10225,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     check(
       'HZ6 标识符补分能跨档：分档读的是 _raw，补分只进 score 就永远翻不过去',
       eng.includes('var IDENT_BAND_W = 0.8;') &&
-        eng.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di])),'),
+        eng.includes('_raw: raw[di] * (1 +') &&
+        eng.includes('identBandW * rawVerbatim[di].ratio') &&
+        eng.includes('identSubjW * subjRatio[di]') &&
+        eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0'),
       'IDENT_BAND_W 与 _raw 加成都可查',
     )
     const recall171 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
@@ -10310,6 +10313,62 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
   }
 
+  // ── HZ8（0.2.173）层级意图：问的是规矩就别拿经验来答 ──
+  {
+    const recall173 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+    const internal173 = readFileSync(join(root, 'docs', 'INTERNAL.md'), 'utf8')
+    const design173 = readFileSync(join(root, 'DESIGN.md'), 'utf8')
+    check(
+      'HZ8 层级意图的权重与比率门都在',
+      eng.includes('var LEVEL_INTENT_W = 0.3;') && eng.includes('var LEVEL_INTENT_RATIO = 0.5;'),
+      `权重=${eng.includes('var LEVEL_INTENT_W = 0.3;')} 比率门=${eng.includes('var LEVEL_INTENT_RATIO = 0.5;')}`,
+    )
+    check(
+      'HZ8 四层意图各有形状词：准则/事实/来龙去脉/做法',
+      eng.includes('var LEVEL_INTENT_RULES = /要不要|该不该|') &&
+        eng.includes('var LEVEL_INTENT_FACT = /改了什么|改了哪些|') &&
+        eng.includes('var LEVEL_INTENT_TOPIC = /来龙去脉|为什么|') &&
+        eng.includes('var LEVEL_INTENT_LESSON = /怎么跑|怎么写|'),
+      `四表在=${['RULES', 'FACT', 'TOPIC', 'LESSON'].every((k) => eng.includes('var LEVEL_INTENT_' + k + ' = /'))}`,
+    )
+    check(
+      'HZ8 意图只从问句里判：库里的条目层是老实话，不需要猜',
+      eng.includes('function intentLevelsOf(text) {') &&
+        eng.includes('const lvIntent = intentLevelsOf(query);') &&
+        (eng.match(/intentLevelsOf\(/g) || []).length === 2,
+      `调用 ${(eng.match(/intentLevelsOf\(/g) || []).length} 次（定义 1 + 调用 1）`,
+    )
+    check(
+      'HZ8 比率门：只帮「本来就近」的条目，不凭空造相关性',
+      eng.includes('&& raw[di] >= (lvRatio ?? 0.5) * maxRaw;') &&
+        eng.includes('const lvRatio = Number.isFinite(opts.levelIntentRatio) ? opts.levelIntentRatio : LEVEL_INTENT_RATIO;'),
+      `比率门在=${eng.includes('raw[di] >= (lvRatio ?? 0.5) * maxRaw')}`,
+    )
+    check(
+      'HZ8 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
+      eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0))') &&
+        eng.includes('h.score *= 1 + levelIntentW;') &&
+        eng.includes('if (h._lv !== 1) {'),
+      `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0))')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
+    )
+    check(
+      'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑）',
+      eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');") &&
+        eng.indexOf('if (h._lv !== 1) {') < eng.lastIndexOf('if (verbHay !== null) {'),
+      `乘法在 bandize 前=${eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');")}`,
+    )
+    check(
+      'HZ8 行为探针与文档都在',
+      recall173.includes('R11 问「该由谁来定」时规则那一层进第一档') &&
+        recall173.includes('R11 比率门：分差太远的那条不会被层级意图抬上来') &&
+        recall173.includes('R11 只在问句这一侧判意图') &&
+        internal173.includes('## 9.180') &&
+        internal173.includes('问的是规矩，就别拿经验来答') &&
+        design173.includes('## 185') &&
+        design173.includes('问句的语法形状是意图'),
+      `R11 在=${recall173.includes('R11 ')} 9.180 在=${internal173.includes('## 9.180')} 185 在=${design173.includes('## 185')}`,
+    )
+  }
   check(
     'HC 取数口径: 库里的行只有一条出口——list() 必须过 fromRow，keywords 在那里才被 JSON.parse 成数组',
     eng.includes('return rows.map((r) => this.fromRow(level, r));') &&
@@ -10645,8 +10704,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.172（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.172'"),
+    'GV 版本: 代码里是 0.2.173（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.173'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10776,8 +10835,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.172（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.172'"),
+    'GW 版本: 代码里是 0.2.173（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.173'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10924,8 +10983,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.172（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.172'"),
+    'VV 版本: 代码里是 0.2.173（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.173'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11103,9 +11162,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.172（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.172' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.172'"),
+    'GX19 版本已到 0.2.173（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.173' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.173'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11139,9 +11198,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     (MY.match(/Math\.max\(RECENCY_FLOOR, recencyWeight\(/g) || []).length === 2,
   )
   check(
-    'VY6 两支打分器都挂词分给分档用（_raw 两处；0.2.172 起 search 那处还要乘上标识符加成）',
+    'VY6 两支打分器都挂词分给分档用（_raw 两处；search 那处还要乘上标识符、主语位、层级意图三把刀）',
     (MY.match(/_raw: raw\[di\]/g) || []).length === 2 &&
-      MY.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di])),'),
+      MY.includes('_raw: raw[di] * (1 +') &&
+      MY.includes('identBandW * rawVerbatim[di].ratio') &&
+      MY.includes('identSubjW * subjRatio[di]') &&
+      MY.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0'),
   )
   check(
     'VY7 两支打分器都走 bandize，且临时字段有死期',
@@ -11206,10 +11268,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.172',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.172' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.172'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.172'),
+    'VY15 版本三处一致 0.2.173',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.173' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.173'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.173'),
   )
 }
 
@@ -11257,10 +11319,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.172（三处一致）',
-    pkgWz.version === '0.2.172' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.172'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.172'),
+    'WZ9 版本已到 0.2.173（三处一致）',
+    pkgWz.version === '0.2.173' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.173'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.173'),
   )
 }
 
