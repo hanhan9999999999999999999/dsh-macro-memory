@@ -599,7 +599,11 @@ if (denseUsable) {
     })
   const rDefault = ranksOf(fx.queries, {})
   const rOld = ranksOf(fx.queries, { kwTfW: 0.25, fieldKwW: 0.35 })
-  const drift = rDefault.reduce((n, r, i) => n + (r === rOld[i] ? 0 : 1), 0)
+  // [0.2.180] 漂移只许落在「缘由/现状问句」上：0.2.180 起这些问句里规矩条的档位会被折价压低，
+  // 与 keywords 口径在临界处叠加，名次本来就会动。其余问句必须逐条同名次——那才是「这一格不越界」。
+  const causeQ = (q) =>
+    /为什么|缘由|来龙去脉|经过|怎么来的|还能用|还能跑|还能不能|还用不用|还在不在|已停|封存|下线|停用|退役|现状/.test(q)
+  const drift = rDefault.reduce((n, r, i) => n + (causeQ(fx.queries[i].q) ? 0 : (r === rOld[i] ? 0 : 1)), 0)
 
   // ⑤ 导出的常量就是默认值：显式传回它们必须与 {} 逐条同分
   const exportedOk = sig(fx.anchor, { kwTfW: V.KW_TF_W, fieldKwW: V.FIELD_KW_W_DEF }) === sig(fx.anchor, {})
@@ -814,9 +818,11 @@ if (denseUsable) {
   const oldP = measure(fx.paraphrase, docs, { coordW: 0.35, coordPow: 1 })
   const oldA = measure(fx.anchor, docs, { coordW: 0.35, coordPow: 1 })
   const same = (a, b) => a.toFixed(3) === b.toFixed(3)
-  if (!(same(oldQ.hit1, curQ.hit1) && same(oldQ.hit3, curQ.hit3) && same(oldQ.mrr, curQ.mrr))) wrong.push('照抄池与 0.35 口径不同值')
-  if (!(same(oldP.hit1, curP.hit1) && same(oldP.hit3, curP.hit3) && same(oldP.mrr, curP.mrr))) wrong.push('换说法池与 0.35 口径不同值')
-  if (!(same(oldA.hit1, curA.hit1) && same(oldA.mrr, curA.mrr))) wrong.push('锚点池与 0.35 口径不同值')
+  // [0.2.180] 从「逐位相同」改成「不许更好」：默认口径已经满分（照抄 1.000/1.000）之后，
+  // 「逐位相同」等于要求另一口径一条都不许掉，守的不再是「旋钮无害」而是「旋钮无效」。
+  if (!(oldQ.hit1 <= curQ.hit1 && oldQ.hit3 <= curQ.hit3 && oldQ.mrr <= curQ.mrr + 1e-9)) wrong.push('照抄池被 0.35 口径比下去')
+  if (!(oldP.hit1 <= curP.hit1 && oldP.hit3 <= curP.hit3 && oldP.mrr <= curP.mrr + 1e-9)) wrong.push('换说法池被 0.35 口径比下去')
+  if (!(oldA.hit1 <= curA.hit1 && oldA.mrr <= curA.mrr + 1e-9)) wrong.push('锚点池被 0.35 口径比下去')
   // ⑦ 覆盖度本身不被协调因子改动：cover 说的还是「占了几成词」，不跟着权重走
   const coversAt = (opts) => {
     const m = new Map()
@@ -1234,7 +1240,9 @@ if (denseUsable) {
   if (!(Math.abs(fold1 - 0.6) < 0.01)) wrong.push(`缘由句里规矩条的开关比是 ${fold1}，不是 0.6——折价没落到打分路径`)
   // ③ 现状句（一个「为什么」都不含）吃同一条判定：折价同样生效，且 want 不再被折新鲜度
   const fold2 = foldOf(on2f, off2f)
-  if (!(Math.abs(fold2 - 0.6) < 0.01)) wrong.push(`现状句里规矩条的开关比是 ${fold2}，不是 0.6——situation 没接进 causeQ`)
+  // [0.2.180] 现状句比缘由句折得更狠：问「这台机器还能不能用」，规矩条答的是「该怎么做」，
+  // 连问题的形状都不是。两档各量各的比值，谁的折价跑偏都能单独指出来。
+  if (!(Math.abs(fold2 - 0.3) < 0.01)) wrong.push(`现状句里规矩条的开关比是 ${fold2}，不是 0.3——SITUATION_RULE_FOLD 没接进 causeQ`)
   if (!(sc(on2f, '0s28a0001') > sc(off2f, '0s28a0001') * 1.2)) {
     wrong.push(`现状句里讲缘由那条没被免折新鲜度（开 ${sc(on2f, '0s28a0001')} vs 关 ${sc(off2f, '0s28a0001')}）`)
   }
@@ -1247,14 +1255,19 @@ if (denseUsable) {
   // 源码判据：常量一处、开关一处、两支落点（新鲜度 + 打分）都在
   const srcOk =
     eng.split('var CAUSE_RULE_FOLD = 0.6;').length - 1 === 1 &&
+    eng.split('var SITUATION_RULE_FOLD = 0.3;').length - 1 === 1 &&
     eng.split('const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;').length - 1 === 1 &&
-    eng.split('LEVEL_INTENT_SITUATION.test(String(query ?? ""))').length - 1 >= 1 &&
-    eng.includes('if (!anchored && !causeQ && now !== null && docs[di].importance < 3') &&
-    eng.includes('(causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1)')
-  if (!srcOk) wrong.push('缘由判定的三笔（常量 / 开关 / 两个落点）没落全')
+    // [0.2.180] 折价必须走同一个 helper：三处引用（分档的 _raw 一处 + 打分两处）少一处，
+    // 折价就会在「跨档」那一半失效——这正是 0.2.179 只折 score 时踩的坑。
+    eng.split('const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;').length - 1 === 1 &&
+    eng.split('ruleFoldOf(di)').length - 1 === 3 &&
+    // 带缘由词的现状词句归缘由：「评测台为什么封存」里的「封存」是状态词，但问的是当初。
+    eng.includes('const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? "")) && LEVEL_INTENT_TOPIC.test(String(query ?? "")) === false;') &&
+    eng.includes('if (!anchored && !causeQ && now !== null && docs[di].importance < 3')
+  if (!srcOk) wrong.push('缘由判定的四笔（两个常量 / 开关 / 三处同一 helper / 缘由词优先）没落全')
 
   check(
-    'G28 缘由问句去叙述层找答案：问「为什么封存」回讲缘由那条；规矩条只在缘由/现状问句里折到 0.6 倍，问「上限怎么设」分毫不折',
+    'G28 缘由问句去叙述层找答案：问「为什么封存」回讲缘由那条；规矩条在缘由句折到 0.6、在现状句折到 0.3，问「上限怎么设」分毫不折',
     wrong.length === 0,
     wrong.length === 0
       ? `缘由句 首位=${on1[0]} 折价比=${fold1.toFixed(3)}；现状句 折价比=${fold2.toFixed(3)} 免折比=${(sc(on2f, '0s28a0001') / sc(off2f, '0s28a0001')).toFixed(2)}；普通句 首位=${on3[0]} 折价比=1.000`

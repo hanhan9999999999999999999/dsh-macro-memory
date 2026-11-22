@@ -1291,10 +1291,22 @@ check(
     `开关比=${Number(foldA).toFixed(3)}（关掉 ${sc16(aOff, '0r16a0002').toFixed(3)} → 开着 ${sc16(aOn, '0r16a0002').toFixed(3)}）`,
   )
   const foldB = sc16(bOff, '0r16a0002') > 0 ? sc16(bOn, '0r16a0002') / sc16(bOff, '0r16a0002') : NaN
+  // [0.2.180] 现状句比缘由句折得更狠（0.3 不是 0.6）：问「这台机器还能不能用」时，
+  // 规矩条答的是「该怎么做」，连问题的形状都不是，压得比「为什么」那一档还低。
   check(
-    'R16 现状问句（一个「为什么」都不含）吃同一条：折价照样 0.6 倍',
-    Math.abs(foldB - 0.6) < 0.01,
+    'R16 现状问句（一个「为什么」都不含）折得更狠：0.3 倍，不是缘由句的 0.6',
+    Math.abs(foldB - 0.3) < 0.01,
     `折价比=${Number(foldB).toFixed(3)}（关掉 ${sc16(bOff, '0r16a0002').toFixed(3)} → 开着 ${sc16(bOn, '0r16a0002').toFixed(3)}）`,
+  )
+  // 两档折价必须各管各的：situationRuleFold:1 能把现状句抬回不折价（与 causeAware:false 同值），
+  // causeRuleFold:1 对现状句一点作用都没有——否则两个旋钮其实是一个，第二次调参就会互相干扰。
+  const bSit1 = V.search(Q16B, R16_DOCS, { k: 10, situationRuleFold: 1 })
+  const bCause1 = V.search(Q16B, R16_DOCS, { k: 10, causeRuleFold: 1 })
+  check(
+    'R16 两档折价各管各的：situationRuleFold:1 把现状句抬回原值，causeRuleFold:1 对它一点不动',
+    Math.abs(sc16(bSit1, '0r16a0002') - sc16(bOff, '0r16a0002')) < 1e-9 &&
+      Math.abs(sc16(bCause1, '0r16a0002') - sc16(bOn, '0r16a0002')) < 1e-9,
+    `situationRuleFold:1 → ${sc16(bSit1, '0r16a0002').toFixed(3)}（不折价 ${sc16(bOff, '0r16a0002').toFixed(3)}）；causeRuleFold:1 → ${sc16(bCause1, '0r16a0002').toFixed(3)}（开着 ${sc16(bOn, '0r16a0002').toFixed(3)}）`,
   )
   // 两笔账分开认：causeAware:false 整条关（连免折新鲜度一起关），causeRuleFold:1 只关折价。
   // 免折新鲜度那笔账在 G28 里量（那边 want 的 raw 不是最高、真落进了折扣区间）；

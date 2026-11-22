@@ -5778,9 +5778,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const recallSrc = readFileSync(join(root, 'tools/probe-recall.mjs'), 'utf8')
 
   check(
-    '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25；0.2.179 起缘由问句再乘一层规矩折价）',
+    '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25；0.2.179 起缘由问句再乘一层规矩折价，0.2.180 起分档与排序吃同一个乘子）',
     meowSrc.includes('const impW = 1 + (impOf(docs[di]) - 1) * 0.25;') &&
-      meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),'),
+      // [0.2.180] 折价改走 ruleFoldOf(di)：分档用的 _raw 与排序用的 score 吃同一个乘子。
+      // 只折 score 的话，规矩条仍在最高档里当第一名（bandize 按 _raw 分档、档位优先于分数），折到 0.1 也翻不过去。
+      meowSrc.includes('score: raw[di] * w * impW * stW * ruleFoldOf(di),'),
   )
   check(
     '召回: explain 把 importanceWeight 也露出来（三个因子缺一个就没法解释排序）',
@@ -10765,15 +10767,18 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     check(
       'HZ14 缘由判定的入场券：缘由意图（topic）与现状问句（situation）二者取一，causeAware:false 一键回旧口径',
       countOf(eng179, 'const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;') === 1 &&
-        countOf(eng179, 'const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? ""));') === 1,
+        // [0.2.180] 「为什么封存」里的「封存」是状态词，但问的是当初：带缘由词的一律归缘由问句。
+        countOf(eng179, 'const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? "")) && LEVEL_INTENT_TOPIC.test(String(query ?? "")) === false;') === 1,
       'causeQ 一处、situationQ 一处',
     )
     check(
-      'HZ14 两笔账分开落：新鲜度吃 !causeQ、打分吃 causeRuleFold，explain 里也看得见（否则单题排查看不出这一笔）',
+      'HZ14 两笔账分开落：新鲜度吃 !causeQ、折价走 ruleFoldOf 一个 helper（分档 + 打分 + explain 三处），explain 里也看得见（否则单题排查看不出这一笔）',
       countOf(eng179, 'if (!anchored && !causeQ && now !== null && docs[di].importance < 3') === 1 &&
-        countOf(eng179, '(causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1)') === 2 &&
-        eng179.includes('Number.isFinite(opts.causeRuleFold) ? Math.min(1, Math.max(0, opts.causeRuleFold)) : CAUSE_RULE_FOLD'),
-      `打分 + explain 共 ${countOf(eng179, '(causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1)')} 处`,
+        countOf(eng179, 'const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;') === 1 &&
+        countOf(eng179, 'ruleFoldOf(di)') === 3 &&
+        eng179.includes('Number.isFinite(opts.causeRuleFold) ? Math.min(1, Math.max(0, opts.causeRuleFold)) : CAUSE_RULE_FOLD') &&
+        eng179.includes('Number.isFinite(opts.situationRuleFold) ? Math.min(1, Math.max(0, opts.situationRuleFold)) : SITUATION_RULE_FOLD'),
+      `ruleFoldOf 三处引用（_raw + 打分 + explain）共 ${countOf(eng179, 'ruleFoldOf(di)')} 处`,
     )
     const kwStart = eng179.indexOf('function keywordHitScore(')
     const kwEnd = kwStart === -1 ? -1 : eng179.indexOf('\nfunction ', kwStart + 10)
@@ -10787,7 +10792,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ14 situation 词表在、且 intentLevelsOf 真的用它收 rules（这一刀单靠 ×1.3 抵不过 4 倍差，但它是 causeQ 的入场券）',
       eng179.includes('var LEVEL_INTENT_SITUATION = ') &&
         eng179.includes('if (LEVEL_INTENT_RULES.test(q) && situation === false) out.add("rules");') &&
-        countOf(eng179, 'const situation = LEVEL_INTENT_SITUATION.test(q);') === 1,
+        countOf(eng179, 'const situation = LEVEL_INTENT_SITUATION.test(q) && LEVEL_INTENT_TOPIC.test(q) === false;') === 1,
       '词表 + 收 rules 都在',
     )
     check(
@@ -10801,13 +10806,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'G28 四件套（三问句 / 比值 / 一刀不切）都在',
     )
     check(
-      'HZ14 R16 断言在位：缘由句首位、开关比 0.6、现状句同效、两个旋钮能分别关、普通句逐位同分',
+      'HZ14 R16 断言在位：缘由句首位、开关比 0.6、现状句折得更狠、两档各管各的、两个旋钮能分别关、普通句逐位同分',
       recall179.includes('R16 缘由问句「评测线为什么锁在封存档」首位是讲缘由那条') &&
         recall179.includes('R16 规矩条在缘由问句里被折到 0.6 倍') &&
-        recall179.includes('R16 现状问句（一个「为什么」都不含）吃同一条') &&
+        recall179.includes('R16 现状问句（一个「为什么」都不含）折得更狠') &&
+        recall179.includes('R16 两档折价各管各的') &&
         recall179.includes('R16 两个旋钮能分别关') &&
         recall179.includes('R16 一刀不切'),
-      'R16 五条都在',
+      'R16 六条都在',
     )
     check(
       'HZ14 文档在位：INTERNAL 9.186 记三次否决与「撤机制要看撤后读数」，DESIGN 191 记「层级也是回答仓」',
@@ -10817,6 +10823,73 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
         design179.includes('## 191') &&
         design179.includes('回答仓'),
       `9.186 在=${internal179.includes('## 9.186 ')} 191 在=${design179.includes('## 191')}`,
+    )
+  }
+  // ── HZ15（0.2.180）折价必须同时落在分档与排序上，两档折价各管各的
+  // 0.2.179 只折 score 不折 _raw，档位没动，规矩条照样在最高档当第一名——折到 0.1 也翻不过去。
+  // 这一版把折价做成 ruleFoldOf 一个 helper，_raw（分档用）与 score（排序用）吃同一个乘子。
+  {
+    const eng180 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const gold180 = readFileSync(new URL('./tools/probe-gold.mjs', import.meta.url), 'utf8')
+    const recall180 = readFileSync(new URL('./tools/probe-recall.mjs', import.meta.url), 'utf8')
+    const internal180 = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+    const design180 = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+    // countOf 在 HZ14 的块里定义，块外的 HZ15 得自己来一份（同一作用域才看得见）。
+    const countOf = (hay, needle) => hay.split(needle).length - 1
+    check(
+      'HZ15 两档折价常量各一处、都在 (0,1)：缘由句 0.6、现状句 0.3（现状压得更低，因为问的形状都不对）',
+      countOf(eng180, 'var CAUSE_RULE_FOLD = 0.6;') === 1 &&
+        countOf(eng180, 'var SITUATION_RULE_FOLD = 0.3;') === 1 &&
+        eng180.includes('Number.isFinite(opts.situationRuleFold) ? Math.min(1, Math.max(0, opts.situationRuleFold)) : SITUATION_RULE_FOLD'),
+      '两个常量各一处',
+    )
+    // bandize() 的排序：先比档位、再比分数。档位是从 _raw 算出来的，
+    // 所以要动名次就必须动 _raw——这是 0.2.179 折价失效的确切位置。
+    const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ')) ?? ''
+    check(
+      'HZ15 折价落在 _raw 上：分档按 _raw 走、档位优先于分数，只折 score 等于没折',
+      eng180.includes('hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score))') &&
+        rawLine.includes('* ruleFoldOf(di)'),
+      rawLine.length > 0 ? `_raw 行 ${rawLine.trim().length} 字符，折价乘在末尾` : '_raw 行没找到',
+    )
+    check(
+      'HZ15 折价走同一个 helper：定义一处、引用三处（_raw / 打分 / explain），口径不可能分叉',
+      countOf(eng180, 'const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;') === 1 &&
+        countOf(eng180, 'ruleFoldOf(di)') === 3,
+      `ruleFoldOf(di) 引用 ${countOf(eng180, 'ruleFoldOf(di)')} 处（_raw / 打分 / explain）`,
+    )
+    check(
+      'HZ15 同义词表：讲「开个小门」的词归例外组、不归噪声组（同一个词放两组会把两题一起搅坏）',
+      eng180.includes('["筛掉", "过滤", "剔除", "噪声", "噪音", "口子", "让步"],') &&
+        eng180.includes('["例外", "豁免", "特例", "放行", "破例", "小门"],') &&
+        !eng180.includes('"噪音", "口子", "让步", "小门"'),
+      '例外组六个词、噪声组七个词，互不重叠',
+    )
+    check(
+      'HZ15 试过又退掉的那一刀不留痕：缘由问句里 project 与 topic 不是同一仓（会把「问版本号」的题带坏）',
+      !eng180.includes('else if (LEVEL_INTENT_TOPIC.test(q)) out.add("project");'),
+    )
+    check(
+      'HZ15 G28 两档比值都在：缘由句 0.6、现状句 0.3，源码判据认 ruleFoldOf 四笔',
+      gold180.includes('Math.abs(fold1 - 0.6) < 0.01') &&
+        gold180.includes('Math.abs(fold2 - 0.3) < 0.01') &&
+        gold180.includes('缘由判定的四笔（两个常量 / 开关 / 三处同一 helper / 缘由词优先）没落全'),
+      'G28 两档比值 + 四笔判据都在',
+    )
+    check(
+      'HZ15 R16 两条新断言在位：现状句折到 0.3、situationRuleFold 与 causeRuleFold 各管各的',
+      recall180.includes('R16 现状问句（一个「为什么」都不含）折得更狠：0.3 倍') &&
+        recall180.includes('R16 两档折价各管各的') &&
+        recall180.includes('causeRuleFold: 1 })'),
+      'R16 覆盖两档折价的独立性',
+    )
+    check(
+      'HZ15 文档在位：INTERNAL 9.187 记「折价只折分数等于没折」的档位根因，DESIGN 192 记档位与分数两套秩序',
+      internal180.includes('## 9.187 ') &&
+        internal180.includes('档位优先于分数') &&
+        design180.includes('## 192') &&
+        design180.includes('ruleFoldOf'),
+      `9.187 在=${internal180.includes('## 9.187 ')} 192 在=${design180.includes('## 192')}`,
     )
   }
   check(
@@ -10943,7 +11016,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const meowMod = await import('./vendor/meow-memory/lib/index.js')
   check('FW 纯函数：三档权重（active 1 / stale 0.6 / archived 0.35 / 缺省 1）', meowMod.statusWeight('active') === 1 && meowMod.statusWeight('stale') === 0.6 && meowMod.statusWeight('archived') === 0.35 && meowMod.statusWeight(void 0) === 1)
-  check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
+  check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW * ruleFoldOf(di)') || meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
   check('FW 源码: docs 把 status 带进打分器（不带就等于没降权）', meowSrc.includes('status: r.status') && /const stW = (anchored \? 1 : )?statusWeight\(docs\[di\]\.status\)/.test(meowSrc))
   check('FW 源码: explain 里有 statusWeight 分项', meowSrc.includes('statusWeight: Math.round(stW * 1e3) / 1e3'))
   const docsFw = [
@@ -11154,8 +11227,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.179（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.179'"),
+    'GV 版本: 代码里是 0.2.180（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.180'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -11285,8 +11358,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.179（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.179'"),
+    'GW 版本: 代码里是 0.2.180（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.180'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11433,8 +11506,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.179（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.179'"),
+    'VV 版本: 代码里是 0.2.180（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.180'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11615,9 +11688,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.179（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.179' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.179'"),
+    'GX19 版本已到 0.2.180（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.180' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.180'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11721,10 +11794,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.179',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.179' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.179'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.179'),
+    'VY15 版本三处一致 0.2.180',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.180' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.180'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.180'),
   )
 }
 
@@ -11772,10 +11845,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.179（三处一致）',
-    pkgWz.version === '0.2.179' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.179'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.179'),
+    'WZ9 版本已到 0.2.180（三处一致）',
+    pkgWz.version === '0.2.180' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.180'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.180'),
   )
 }
 

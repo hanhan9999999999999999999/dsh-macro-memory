@@ -1,7 +1,7 @@
 {
   "note": "断言数与耗时基线：counts=每支自检脚本的 PASS 条数，ms=上次实测耗时，budgetMs=超时就杀的上限（约 4×ms，最低 30s），实际耗时超过 ms 的 1.5 倍只提醒不判红。故意增减断言、或确认某支本来就该这么慢之后，跑 node tools/check-all.mjs --update-baselines 重记。",
   "generatedBy": "tools/check-all.mjs --update-baselines",
-  "version": "0.2.179",
+  "version": "0.2.180",
   "counts": {
     "verify.mjs": 1721,
     "tools/probe-fusion.mjs": 785,

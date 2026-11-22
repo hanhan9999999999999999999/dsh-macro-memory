@@ -2137,7 +2137,9 @@ var LEVEL_INTENT_SITUATION = /还能用|还能跑|还能不能|还用不用|还�
 function intentLevelsOf(text) {
   const q = String(text ?? "");
   const out = new Set();
-  const situation = LEVEL_INTENT_SITUATION.test(q);
+  // [macro-fusion 0.2.180] 「为什么封存」问的是当初，不是当下：带缘由词的一律归缘由问句。
+  // [macro-fusion 0.2.180] 缘由词优先：「评测台为什么封存」里的「封存」是状态词，但问的是当初。
+  const situation = LEVEL_INTENT_SITUATION.test(q) && LEVEL_INTENT_TOPIC.test(q) === false;
   if (LEVEL_INTENT_RULES.test(q) && situation === false) out.add("rules");
   if (LEVEL_INTENT_FACT.test(q)) out.add("fact");
   if (LEVEL_INTENT_TOPIC.test(q)) out.add("topic");
@@ -2219,6 +2221,8 @@ var COVER_LEN_RELIEF = 0.5;
 // 两件事一起做：①缘由问句下规矩层折价 CAUSE_RULE_FOLD；②缘由问句不折新鲜度（问的是当初
 // 为什么那样，旧是自然的，与 0.2.159 时间锚同源）。`causeAware:false` 一键回旧口径。
 var CAUSE_RULE_FOLD = 0.6;
+// [macro-fusion 0.2.180] 「这台机器还能不能用」问的是存在性，规矩条答的是「该怎么做」，折得比缘由问句更狠。
+var SITUATION_RULE_FOLD = 0.3;
 // [macro-fusion 0.2.161] 关键词字段被低估：真库 569 条 title 全空，keywords 是唯一的结构化桥，
 // 而它只按 0.25 倍词频、+0.35 加成参与打分。抬到 0.35 / 0.6——读数与 tf 0.5/0.6 完全相同，
 // 但 0.5 会把「只在 keywords 里提到的条目」压过「正文命中的条目」，破坏 0.2.152 立下的「标签不是正文」。
@@ -2232,15 +2236,18 @@ var CAUSE_RULE_FOLD = 0.6;
 //   ③ 覆盖度分母一个字节不动：扩词只加分，不进 qIdfSum，否则「问句更难满足」，会把真相关的条目一起裁掉。
 //   ④ 倒排候选集必须把同义词的 postings 并进来，否则被剪掉的条目连分数都算不到。
 //   ⑤ `synBridge:false` 一键回到旧口径。
+// [macro-fusion 0.2.180] 「开个小门」是讲例外，不是讲筛掉。同一个词放进两组会把两道题一起搅坏：
+// 它原来在噪声组里，问「要不要给接班的那条开个小门」被拽向「筛掉/噪声」那些条目；
+// 挪进例外组（例外/豁免/放行/破例）之后，这一题直接翻成第一。两组不许有交集。
 var SYN_GROUPS = [
   ["反省", "反思", "回味"],
   ["自测", "测试", "校验", "断言", "自检", "体检", "验证", "测到"],
   ["推送", "远端", "仓库", "上传", "发布", "提交"],
   ["拆开", "拆分", "重构", "改造"],
   ["接班", "取代", "接任", "移交"],
-  ["筛掉", "过滤", "剔除", "噪声", "噪音", "小门", "口子", "让步"],
+  ["筛掉", "过滤", "剔除", "噪声", "噪音", "口子", "让步"],
   ["评测", "榜单", "基准", "跑分"],
-  ["例外", "豁免", "特例", "放行"],
+  ["例外", "豁免", "特例", "放行", "破例", "小门"],
   ["验收", "确认", "核对"],
   ["毛病", "缺陷", "问题", "踩坑"],
   ["省钱", "成本", "预算", "花钱"],
@@ -2786,9 +2793,12 @@ function search(query, docs, opts = {}) {
   const lvIntent = intentLevelsOf(query);
   // [macro-fusion 0.2.179] 「X 还能跑吗」和「X 为什么封存」问的是同一件事：X 现在还在不在。
   // 两句的答案都在现状仓，都不该让「该怎么做」那条规矩顶上来。
-  const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? ""));
+  // [macro-fusion 0.2.180] 与 intentLevelsOf 同一把尺子：带缘由词的归缘由，不归现状。
+  const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? "")) && LEVEL_INTENT_TOPIC.test(String(query ?? "")) === false;
   const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;
   const causeRuleFold = Number.isFinite(opts.causeRuleFold) ? Math.min(1, Math.max(0, opts.causeRuleFold)) : CAUSE_RULE_FOLD;
+  const situationRuleFold = Number.isFinite(opts.situationRuleFold) ? Math.min(1, Math.max(0, opts.situationRuleFold)) : SITUATION_RULE_FOLD;
+  const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;
   const tipOn = tipAssertOn(query) && opts.tipAssert !== false;
   const statusDig = statusDigestOf(docs, query, verbHay !== null, opts);
   for (let di = 0; di < docs.length; di++) {
@@ -2809,7 +2819,7 @@ function search(query, docs, opts = {}) {
       _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
       _lv: lvHit && opts.levelIntent !== false ? 1 : 0,
       _tr: tipOn ? assertRatioOf(docs[di].content) : 0,
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0)),
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0)) * ruleFoldOf(di),
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -2826,8 +2836,8 @@ function search(query, docs, opts = {}) {
       ...docs[di].project === void 0 ? {} : { project: docs[di].project },
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
-      score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1) * 1e3) / 1e3 } } : {}
+      score: raw[di] * w * impW * stW * ruleFoldOf(di),
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * ruleFoldOf(di) * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
