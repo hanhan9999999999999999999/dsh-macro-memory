@@ -521,7 +521,9 @@ if (denseUsable) {
   // [macro-fusion 0.2.171] 这一条量的是「关键词权重该值多少」，所以标识符跨档那刀（identBand）
   // 必须关掉：它一开，带版本号的锚点池靠标识符就能进前列，旧口径（低 kw 权重）看起来「没变差」，
   // 阴性对照就失效了——那不是关键词权重变好了，是另一把刀在替它干活。两把刀分开测。
-  const NB = { identBand: false }
+  // [0.2.172] 阴性对照要把当轮所有「替词分干活」的刀一起关掉：只关 identBand 不关主语位免档，
+  // 旧口径那边也会被新刀抬起来，阴性对照就假红（0.2.171 记过同一条教训）。
+  const NB = { identBand: false, identSubjBand: false, identSubjW: 0 }
   const md = (list, o) => measure(list, docs, { ...NB, ...(o ?? {}) })
   const base = md(fx.queries)
   const pBase = md(fx.paraphrase)

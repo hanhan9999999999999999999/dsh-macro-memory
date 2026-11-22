@@ -2049,6 +2049,9 @@ var IDENT_MAX = 6;
 var IDENT_W = 0.6;
 var IDENT_ID_W = 1.5;
 var IDENT_BAND_W = 0.8;
+// [macro-fusion 0.2.172] 库里所有条目 title 都是空串（宏记忆写入时不落标题），所以「标题指认」这一刀没有着力点；
+// 真正有指认力的是「这条记忆的主语就是它」——正文以问句点名的标识符开头。
+var IDENT_SUBJ_W = 0;
 // [macro-fusion 0.2.171] 历史补录上限：点了名的标识符只活在过期条目里时，最多翻几条出来。
 var HIST_LIFT_MAX = 3;
 var IDENT_BASE_CREDIT = 0.7;
@@ -2294,7 +2297,7 @@ function bandize(hits, rawKey) {
   let anchorRaw = 0;
   for (const h of byRaw) {
     // [macro-fusion 0.2.150] 指认（问的正是这条 id）是最强证据形态，词分为 0 也不许被扫到最后一档。
-    if (h._ident === true) {
+    if (h._ident === true || h._subj === 1) {
       bandOf.set(h, -1);
       continue;
     }
@@ -2361,7 +2364,8 @@ function verbatimInputs(query, docs, opts, textOf) {
   return {
     idents,
     verbHay: idents.length === 0 ? null : docs.map((d) => textOf(d).toLowerCase()),
-    rawVerbatim: docs.map(() => null)
+    rawVerbatim: docs.map(() => null),
+    subjRatio: docs.map(() => 0)
   };
 }
 // [macro-fusion 0.2.153] 检索的固定开销：以前每问一次就把整库重新切一遍词、重建 tf/df——
@@ -2525,7 +2529,7 @@ function search(query, docs, opts = {}) {
     : queryEntities(query).map((e) => tokenize(e)).filter((t) => t.length === 1).map((t) => t[0]);
   const n = docs.length;
   // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 verbHay 为 null，后面整段跳过）
-  const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
+  const { idents, verbHay, rawVerbatim, subjRatio } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
   if (q.length === 0 && idents.length === 0) return [];
   // [macro-fusion 0.2.153] 切词与建表挪进索引：这部分跟「问什么」无关，只跟「库里有什么」有关。
   const index = searchIndexOf(docs, opts);
@@ -2602,7 +2606,13 @@ function search(query, docs, opts = {}) {
     }
     if (verbHay !== null) {
       const vb = verbatimOf(idents, verbHay[di]);
-      if (vb.matched.length > 0) rawVerbatim[di] = vb;
+      if (vb.matched.length > 0) {
+        rawVerbatim[di] = vb;
+        const lead = String(docs[di].content ?? "").trimStart().toLowerCase();
+        let sn = 0;
+        for (const t of idents) if (lead.startsWith(t)) sn += 1;
+        subjRatio[di] = idents.length === 0 ? 0 : Math.min(1, sn / idents.length);
+      }
     }
     return s;
   
@@ -2633,6 +2643,7 @@ function search(query, docs, opts = {}) {
   // 压下去（实测问 0mwq5zzv：措辞那条 17.96，被指认那条只有 16.16）。指认是同义反复的最高形态，
   // 不该被别人的重要性稀释：先算完整分数，再按榜首的一个单位补上去（单位跟着榜走，不跟着词分走）。
   const identBandW = Number.isFinite(opts.identBandW) ? opts.identBandW : IDENT_BAND_W;
+  const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;
   const baseRaw = raw.slice();
   const maxRaw = Math.max(...raw);
   const hits = [];
@@ -2664,7 +2675,9 @@ function search(query, docs, opts = {}) {
     const stW = anchored ? 1 : statusWeight(docs[di].status);
     hits.push({
       _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio)),
+      _sr: subjRatio === void 0 ? 0 : subjRatio[di],
+      _subj: subjRatio === void 0 || opts.identSubjBand === false ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di])),
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -2694,12 +2707,21 @@ function search(query, docs, opts = {}) {
     for (const h of hits) {
       const vb = h._vb;
       delete h._vb;
+      const srHit = Number(h._sr) || 0;
+      delete h._sr;
       if (vb === void 0 || vb === null) continue;
       const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
       const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W);
       h.score += add;
       if (idHit) h._ident = true;
       if (h.explain !== void 0) h.explain.identBonus = Math.round(add * 1e3) / 1e3;
+      // [macro-fusion 0.2.172] 主语位指认：这条记忆的主语就是问句点名的那样东西，
+      // 比「正文里顺带提过」更该排前面。
+      if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) {
+        const addS = unitScore * srHit * identSubjW;
+        h.score += addS;
+        if (h.explain !== void 0) h.explain.subjBonus = Math.round(addS * 1e3) / 1e3;
+      }
     }
   }
   // [macro-fusion 0.2.150] 分档排序：权重只能改判同档内的顺序，跨档不许越级。

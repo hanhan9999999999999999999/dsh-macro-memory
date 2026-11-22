@@ -10225,7 +10225,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     check(
       'HZ6 标识符补分能跨档：分档读的是 _raw，补分只进 score 就永远翻不过去',
       eng.includes('var IDENT_BAND_W = 0.8;') &&
-        eng.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio)),'),
+        eng.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di])),'),
       'IDENT_BAND_W 与 _raw 加成都可查',
     )
     const recall171 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
@@ -10248,6 +10248,65 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
         readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 183') &&
         readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('过期不是删掉'),
       '9.178 / 183 两处锚',
+    )
+  }
+
+  // ── HZ7（0.2.172）主语位：问句点名的那个东西，正文第一个词就是它 ─────────────
+  {
+    check(
+      'HZ7 主语位在：正文以问句点名的标识符开头，就算这条记忆的主语是它',
+      eng.includes('var IDENT_SUBJ_W = 0;') &&
+        eng.includes('const lead = String(docs[di].content ?? "").trimStart().toLowerCase();') &&
+        eng.includes('subjRatio[di] = idents.length === 0 ? 0 : Math.min(1, sn / idents.length);'),
+      `IDENT_SUBJ_W=${eng.includes('var IDENT_SUBJ_W = 0;')} lead 判据=${eng.includes('trimStart().toLowerCase()')}`,
+    )
+    check(
+      'HZ7 免档不是加权：主语位进 bandize 的第一档（_subj === 1），不和权重讨价还价',
+      eng.includes('if (h._ident === true || h._subj === 1) {') &&
+        (eng.match(/_subj === 1/g) || []).length === 1,
+      `免档判据在=${eng.includes('h._ident === true || h._subj === 1')}`,
+    )
+    check(
+      'HZ7 开关给得出：identSubjBand 关免档、identSubj 关加权、identSubjW 手动给权重（默认 0）',
+      eng.includes('const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;') &&
+        eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,') &&
+        eng.includes('if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) {'),
+      '三个出口都在',
+    )
+    check(
+      'HZ7 没发生的事不许在 explain 里留个 0：subjBonus 只在真加了权重时出现',
+      eng.includes('if (h.explain !== void 0) h.explain.subjBonus = Math.round(addS * 1e3) / 1e3;') &&
+        eng.includes('identSubjW > 0 && opts.identSubj !== false'),
+      'subjBonus 出口带条件',
+    )
+    const recall172 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
+    check(
+      'HZ7 行为探针在：R10 六条（免档 / 关得掉 / 只对点了名 / 只认开头 / 免档不免排序 / explain 不空留）',
+      [
+        'R10 主语位免档',
+        'R10 关得掉',
+        'R10 只对「点了名」的问句放宽',
+        'R10 只在正文开头算主语',
+        'R10 免档不是免排序',
+        'R10 explain 里看得见这一刀',
+      ].every((t) => recall172.includes(t)),
+      '6 个 R10 标题',
+    )
+    check(
+      'HZ7 探针测的是这一层：R10 走引擎 API（V.search），不走工具层（那里读不到 band）',
+      recall172.includes('const r10on = V.search(Q10, R10_DOCS, { k: 10, explain: true })') &&
+        recall172.includes('const r10off = V.search(Q10, R10_DOCS, { k: 10, explain: true, identSubjBand: false })') &&
+        !recall172.includes('const c10 = '),
+      `V.search 直连=${recall172.includes('const r10on = V.search(Q10, R10_DOCS, { k: 10, explain: true })')}`,
+    )
+    check(
+      'HZ7 文档锚：9.179 写下「主语位」与「七档读数一模一样」，184 写下「能靠档说清的事」',
+      readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('## 9.179') &&
+        readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('主语位') &&
+        readFileSync(join(root, 'docs/INTERNAL.md'), 'utf8').includes('七档') &&
+        readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('## 184') &&
+        readFileSync(join(root, 'DESIGN.md'), 'utf8').includes('能靠档说清的事'),
+      '9.179 / 184 两处锚',
     )
   }
 
@@ -10586,8 +10645,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       gvDesign.includes('## 157 ') && gvDesign.includes('记忆在场才是本事'),
   )
   check(
-    'GV 版本: 代码里是 0.2.171（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idxSrc.includes("export const version = '0.2.171'"),
+    'GV 版本: 代码里是 0.2.172（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idxSrc.includes("export const version = '0.2.172'"),
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
@@ -10717,8 +10776,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const gwIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'GW 版本: 代码里是 0.2.171（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    gwIdx.includes("export const version = '0.2.171'"),
+    'GW 版本: 代码里是 0.2.172（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    gwIdx.includes("export const version = '0.2.172'"),
   )
   const gwInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const gwDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -10865,8 +10924,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const idIdx = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   check(
-    'VV 版本: 代码里是 0.2.171（与 package.json / README 同号由基线与 doctor 各自守一条）',
-    idIdx.includes("export const version = '0.2.171'"),
+    'VV 版本: 代码里是 0.2.172（与 package.json / README 同号由基线与 doctor 各自守一条）',
+    idIdx.includes("export const version = '0.2.172'"),
   )
   const idInt = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const idDes = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11044,9 +11103,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   // 版本与文档锚
   check(
-    'GX19 版本已到 0.2.171（两处一致）',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.171' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.171'"),
+    'GX19 版本已到 0.2.172（两处一致）',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.172' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.172'"),
   )
   const idG = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
   const deG = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
@@ -11080,9 +11139,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     (MY.match(/Math\.max\(RECENCY_FLOOR, recencyWeight\(/g) || []).length === 2,
   )
   check(
-    'VY6 两支打分器都挂词分给分档用（_raw 两处；0.2.171 起 search 那处还要乘上标识符加成）',
+    'VY6 两支打分器都挂词分给分档用（_raw 两处；0.2.172 起 search 那处还要乘上标识符加成）',
     (MY.match(/_raw: raw\[di\]/g) || []).length === 2 &&
-      MY.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio)),'),
+      MY.includes('_raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false ? 0 : identSubjW * subjRatio[di])),'),
   )
   check(
     'VY7 两支打分器都走 bandize，且临时字段有死期',
@@ -11090,8 +11149,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       (MY.match(/delete h\._ident;/g) || []).length === 2,
   )
   check(
-    'VY8 指认命中排最前（band -1），词分为 0 也不许被扫到最后一档',
-    MY.includes("if (h._ident === true) {") && MY.includes('bandOf.set(h, -1);'),
+    'VY8 指认命中与主语位都排最前（band -1），词分为 0 也不许被扫到最后一档',
+    MY.includes("if (h._ident === true || h._subj === 1) {") && MY.includes('bandOf.set(h, -1);'),
   )
   check('VY9 档号写进 explain（档位对调用方可见）', MY.includes('h.explain.band = b;'))
 
@@ -11147,10 +11206,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     idY.includes('## 9.156 ') && deY.includes('## 162 ') && deY.includes('档'),
   )
   check(
-    'VY15 版本三处一致 0.2.171',
-    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.171' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.171'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.171'),
+    'VY15 版本三处一致 0.2.172',
+    JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === '0.2.172' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.172'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.172'),
   )
 }
 
@@ -11198,10 +11257,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   const pkgWz = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   check(
-    'WZ9 版本已到 0.2.171（三处一致）',
-    pkgWz.version === '0.2.171' &&
-      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.171'") &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.171'),
+    'WZ9 版本已到 0.2.172（三处一致）',
+    pkgWz.version === '0.2.172' &&
+      readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes("export const version = '0.2.172'") &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('0.2.172'),
   )
 }
 

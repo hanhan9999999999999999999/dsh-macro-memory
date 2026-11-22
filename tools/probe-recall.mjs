@@ -784,6 +784,57 @@ check(
   `listSearchable 定义在=${SRC.includes('listSearchable(level)')} 出口在=${SRC.includes('parsed.include_stale === false')}`,
 )
 
+// ── R10 主语位指认（0.2.172）：问句点名的东西就是它的主语，别让它排在「顺带提过」后面 ──
+// 真库里问「0.2.148 改了什么」，正解（正文以版本号开头）排在一条教训后面——那条教训只在句中
+// 提了这个版本号，可它更短、词更密，词分高出十三分；而分档那条规矩（0.2.150）说「跨档不许越级」，
+// 词分怎么加都翻不过去。这里钉的是：正文以问句点名的标识符**开头**的条目直接免档进第一档，
+// 只在句中提到的不算，没点名的问句一点不动，开关给得出。
+const R10_DOCS = [
+  { id: '0r10a0001', level: 'fact', title: '', content: '0.2.148 交付态：这一版把标识符补分挪到加权之后，并修了分档。', keywords: ["0.2.148", "交付态"], importance: 3, project: 'r10-主语', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+  { id: '0r10a0002', level: 'lesson', title: '', content: '标识符补分 0.2.148 就加进 score 了，分档读的却是纯词分，所以只改补分权重翻不过档。0.2.148 改了补分，改了权重，改了分档口径；0.2.148 这一版改了补分之后分数还是上不去，改了分档才越得过去，改了补分权重也没用。', keywords: ['分档', '补分', '0.2.148'], importance: 3, project: 'r10-主语', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+  { id: '0r10a0003', level: 'lesson', title: '', content: '数据库迁移要挑低峰期做，先备份再动。数据库迁移要挑低峰期做，先备份再动。', keywords: ["数据库", "迁移"], importance: 3, project: 'r10-主语', status: 'active', created_at: 1795310000000, updated_at: 1795310000000, last_accessed_at: 1795310000000 },
+]
+const Q10 = '0.2.148 改了哪些东西'
+const pos10 = (hits, id) => hits.findIndex((h) => String(h.id).startsWith(id))
+const r10on = V.search(Q10, R10_DOCS, { k: 10, explain: true })
+const r10off = V.search(Q10, R10_DOCS, { k: 10, explain: true, identSubjBand: false })
+check(
+  'R10 主语位免档：正文以问句点名的标识符开头的条目，排在只在句中提过它的短条目前面',
+  pos10(r10on, '0r10a0001') === 0 && pos10(r10on, '0r10a0002') > 0,
+  `主语位第 ${pos10(r10on, '0r10a0001') + 1} 名，句中提名第 ${pos10(r10on, '0r10a0002') + 1} 名`,
+)
+check(
+  'R10 关得掉：identSubjBand:false 时主语位那条退回第二（阴性对照，说明是这把刀在起作用）',
+  pos10(r10off, '0r10a0001') > 0,
+  `关掉后主语位第 ${pos10(r10off, '0r10a0001') + 1} 名`,
+)
+const r10noId = V.search('最后改了哪些东西', R10_DOCS, { k: 10 })
+const r10noIdOff = V.search('最后改了哪些东西', R10_DOCS, { k: 10, identSubjBand: false })
+check(
+  'R10 只对「点了名」的问句放宽：问句里没有标识符时，开关前后名次逐位相同',
+  r10noId.map((h) => h.id).join(',') === r10noIdOff.map((h) => h.id).join(','),
+  `开关前后同序=${r10noId.map((h) => String(h.id).slice(0, 9)).join(',')}`,
+)
+check(
+  'R10 只在正文开头算主语：句中提到的版本号不许靠这一刀上位（开了不比关着更靠前）',
+  pos10(r10on, '0r10a0002') >= pos10(r10off, '0r10a0002'),
+  `句中提名那条 开=${pos10(r10on, '0r10a0002') + 1} 关=${pos10(r10off, '0r10a0002') + 1}（开时不得更靠前）`,
+)
+check(
+  'R10 免档不是免排序：同在第一档里仍按词分排，且这条规矩只写在 bandize 一处',
+  SRC.includes('if (h._ident === true || h._subj === 1) {') &&
+    (SRC.match(/_subj === 1/g) || []).length === 1 &&
+    SRC.includes('var IDENT_SUBJ_W = 0;'),
+  `免档判据在=${SRC.includes('h._ident === true || h._subj === 1')} 主语权重默认 0=${SRC.includes('var IDENT_SUBJ_W = 0;')}`,
+)
+check(
+  'R10 explain 里看得见这一刀：subjBonus 只在给了权重时出现，默认 0 时不留空字段',
+  SRC.includes('if (h.explain !== void 0) h.explain.subjBonus = Math.round(addS * 1e3) / 1e3;') &&
+    SRC.includes('if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) {') &&
+    r10on.every((h) => h.explain === void 0 || h.explain.subjBonus === void 0),
+  `subjBonus 出口在=${SRC.includes('h.explain.subjBonus')} 默认不留空=${r10on.every((h) => h.explain === void 0 || h.explain.subjBonus === void 0)}`,
+)
+
 // 收尾：临时库在 Windows 上可能还被 sqlite 句柄占着（EPERM），清不掉不算失败——
 // 反正落在临时目录里，系统自己会回收；这里只保证不开着的句柄变成假红。
 for (const dir of [home, stubDir]) {
