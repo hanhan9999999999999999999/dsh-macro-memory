@@ -48,4 +48,10 @@ export const MANUAL_TOOLS = [
     smoke: false,
     why: '会写 vendor/VENDOR.json，只在 vendor 里两个引擎变动时手动跑（跑完 doctor 才认指纹）',
   },
+  {
+    file: 'tools/sync-trees.mjs',
+    smoke: true,
+    args: [],
+    why: '把本仓同步到阅读树与装机树；默认只体检不写盘（--apply 才 robocopy /E，从不删除），所以随时可跑',
+  },
 ]

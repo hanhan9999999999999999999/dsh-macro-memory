@@ -24,8 +24,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 
-const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
+// 路径里可能有空格（例如 `D:\document\DSH Memory Macro-Regulation System`），
+// `new URL(...).pathname` 会把空格编码成 %20，拼出来的目标文件永远「不存在」。
+// 用 fileURLToPath 做解码，这一支在带空格的目录下才跑得起来。
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const TARGET = path.join(ROOT, 'vendor', 'meow-memory', 'lib', 'client.js')
 const APPLY = process.argv.includes('--apply')

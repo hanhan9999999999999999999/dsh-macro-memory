@@ -71,6 +71,7 @@
 ```bash
 node tools/check-all.mjs     # 32 支自检 / 3,536 条断言，约 220 秒
 node tools/doctor.mjs        # 两棵树字节一致、账本指纹、加载面、备份
+node tools/sync-trees.mjs    # 三棵树差多少（默认只体检；--apply 才复制，从不删除）
 node tools/probe-gold.mjs    # gold 三档 + 开关对照
 node tools/probe-idf.mjs     # 库变大后的 idf：小池不动 / 默认=关 / λ=0 逐位相同
 node tools/probe-adapt.mjs   # 换场景：5 个陌生领域 × 换说法，两遍只补位不翻盘
