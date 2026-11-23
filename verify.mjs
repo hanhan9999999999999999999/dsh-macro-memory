@@ -11043,8 +11043,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     check(
       'HZ7 免档不是加权：主语位进 bandize 的第一档（_subj === 1），不和权重讨价还价',
       eng.includes('if (h._ident === true || h._subj === 1) {') &&
-        (eng.match(/_subj === 1/g) || []).length === 1,
-      `免档判据在=${eng.includes('h._ident === true || h._subj === 1')}`,
+        // 0.6.13 起定档有两条路（阈值链 / 退回路全排序），两边都得不问权重直接落 -1 档
+        (eng.match(/_subj === 1/g) || []).length >= 2,
+      `免档判据在=${eng.includes('h._ident === true || h._subj === 1')} / 出现 ${(eng.match(/_subj === 1/g) || []).length} 次`,
     )
     check(
       'HZ7 开关给得出：identSubjBand 关免档、identSubj 关加权、identSubjW 手动给权重（默认 0），0.2.178 又多一个出口——时间状语里的标识符不进特权档',
@@ -13186,6 +13187,72 @@ dt063: {
   const vS3 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS3 = vS3.length === 3 ? vS3[0] * 10000 + vS3[1] * 100 + vS3[2] : 0
   check('OR072 版本号不低于 0.6.12（后续补丁不必回头改这一条）', vNumS3 >= 612, vS3.join('.'))
+}
+
+// 0.6.13：定档不再靠全量排序——阈值链 + 二分（负数 / 脏值退回老路）
+{
+  const oSrc2 = readFileSync(new URL('./tools/probe-order.mjs', import.meta.url), 'utf8')
+  const oLabels2 = ['O9 ', 'O10 ']
+  const oMissing2 = oLabels2.filter((t) => !oSrc2.includes(`'${t}`) && !oSrc2.includes(`\`${t}`))
+  check(
+    'OR073 定序探针补上 O9–O10（负数 raw 走退回路 / NaN·undefined·null·Infinity 同样退回老路），都与「全量排序」参考实现逐位一致',
+    oMissing2.length === 0,
+    oMissing2.length ? `缺 ${oMissing2.join(' ')}` : 'O9–O10 都在',
+  )
+  const engSrc4 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const thrOk = engSrc4.includes('function setBandsByThreshold(hits, rawKey)') &&
+    engSrc4.includes('const vals = new Float64Array(plain);') &&
+    engSrc4.includes('vals.sort();') &&
+    engSrc4.includes('h._bandTmp = m - 1 - lo;')
+  const fallOk = engSrc4.includes('function setBandsBySort(hits, rawKey)') &&
+    engSrc4.includes('if (!setBandsByThreshold(hits, rawKey)) setBandsBySort(hits, rawKey);')
+  check(
+    'OR073 引擎里定档走「Float64Array + 原生 sort + 阈值链 + 二分」，且负数/脏值退回 setBandsBySort（口径不变）',
+    thrOk && fallOk,
+    `阈值链 ${thrOk ? 'ok' : 'miss'} / 退回路 ${fallOk ? 'ok' : 'miss'}`,
+  )
+  const O2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  let fallbackOk = false
+  let fbDetail = 'bandize 未导出'
+  if (typeof O2.bandize === 'function') {
+    // 进程内对拍：负数 / NaN 两组，与「按 raw 降序逐条开档」的朴素实现在前 k 上一致。
+    const naive = (hits, k) => {
+      const arr = hits.map((h) => ({ ...h }))
+      const byRaw = arr.slice().sort((a, b) => b._raw - a._raw)
+      let band = -1
+      let anchor = 0
+      for (const h of byRaw) {
+        if (h._ident === true || h._subj === 1) continue
+        const r = h._raw
+        if (band < 0 || r < 0.85 * anchor) { band += 1; anchor = r }
+        h._bandN = band
+      }
+      return arr.filter((h) => h._bandN !== undefined).sort((a, b) => (a._bandN - b._bandN) || (b.score - a.score)).slice(0, k).map((h) => `${h.id}:${h._bandN}`)
+    }
+    const cases = [
+      [{ id: 'a', score: 5, _raw: -1, updated_at: 1 }, { id: 'b', score: 4, _raw: -4, updated_at: 2 }, { id: 'c', score: 3, _raw: -2, updated_at: 3 }, { id: 'd', score: 2, _raw: 0, updated_at: 4 }],
+      [{ id: 'e', score: 5, _raw: NaN, updated_at: 1 }, { id: 'f', score: 4, _raw: 3, updated_at: 2 }, { id: 'g', score: 3, _raw: undefined, updated_at: 3 }, { id: 'h', score: 2, _raw: 2, updated_at: 4 }],
+    ]
+    fallbackOk = cases.every((cs) => {
+      const want = naive(cs, 4).join(',')
+      const got = O2.bandize(cs.map((h) => ({ ...h })), '_raw', 4).map((h) => `${h.id}:${h._band}`).join(',')
+      fbDetail = `参考 ${want} / 实得 ${got}`
+      return want === got
+    })
+  }
+  // NaN 那一组的并列键在 v8 里不稳定，只要求「脏值不抛错、条数对、非脏条目档号一致」——
+  // 这里退一步判：条数与不抛错，并逐位比对第一组（纯负数，语义确定）。
+  check('OR073 进程内可见：负数 raw 与 NaN raw 下 bandize 不抛错且与朴素实现逐位一致', fallbackOk, fbDetail)
+  check(
+    'OR073 文档在位：INTERNAL 9.212 写了「定档不靠排序」，README 写了「定档不再靠全量排序」，DESIGN 有 ## 208.，PLAN §11 有 0.6.13 行',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.212 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('定档不再靠全量排序') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 208. ') &&
+      /0\.6\.13/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS4 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS4 = vS4.length === 3 ? vS4[0] * 10000 + vS4[1] * 100 + vS4[2] : 0
+  check('OR073 版本号不低于 0.6.13（后续补丁不必回头改这一条）', vNumS4 >= 613, vS4.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

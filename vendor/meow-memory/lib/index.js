@@ -2547,9 +2547,70 @@ function trimByBand(hits, k, opts = {}) {
 // 为什么截断是安全的：三个调用点在 bandize 之后**只**碰前 k 条（`trimByBand` 里
 // `sliced.length - out.length` 用的也是 min(k, hits.length)），没有任何一处回头读第 k 条以后的东西。
 // 判据 `tools/probe-order.mjs` O1–O8：与「全量排序再取前 k」的参考实现在 500 组随机语料上逐位对拍。
-function bandize(hits, rawKey, limit = Infinity) {
+// [macro-fusion 0.6.13] 定档不再靠「全量对象排序」。
+//
+// 症状（0.6.12 之后复测 `E:\Temp\cmp\prof012b.mjs` + `--cpu-prof`，10,000 条 / 300 问）：
+// bandize 仍占一次热检索的 21.5%，而其中大头是 `hits.slice().sort((a, b) => b[rawKey] - a[rawKey])`
+// 那把**只为定档**的全量排序——为一堆注定进不了前 k 的条目，逐对调比较器、逐对读对象字段。
+//
+// 处方：档号其实只由「排序后的不同 raw 值」决定，于是
+//  ① 把 raw 抄进 `Float64Array`，用 TypedArray 原生 `.sort()`（无比较器、纯数值排序）；
+//  ② 按降序走一遍阈值链（`a_0 = max`、`a_{i+1} = 最大的 < 0.85·a_i`），得到锚点表；
+//  ③ 每条用自己的 v 在锚点表上二分，档号 = 该锚点之后的锚点数（`m - 1 - lo`）——一次 log m 比较，不再排序。
+//
+// 退回路：raw 不是有限非负数（NaN / undefined / 负数）时阈值链「锚点严格下降」的前提不成立
+// （负数时 `0.85·a_i > a_i`），此时退回 `setBandsBySort` 的老全量排序，口径一字不改。
+// 指认（`_ident` / `_subj === 1`）照旧恒 -1 档，且不进阈值链（与老代码 `continue` 同义）。
+function setBandsByThreshold(hits, rawKey) {
   const total = hits.length;
-  if (total < 2) return hits;
+  let plain = 0;
+  for (let i = 0; i < total; i++) {
+    const h = hits[i];
+    if (h._ident === true || h._subj === 1) {
+      h._bandTmp = -1;
+      continue;
+    }
+    const r = h[rawKey];
+    if (typeof r !== "number" || !Number.isFinite(r) || r < 0) return false;
+    plain += 1;
+  }
+  if (plain === 0) return true;
+  const vals = new Float64Array(plain);
+  for (let i = 0, j = 0; i < total; i++) {
+    const h = hits[i];
+    if (h._ident === true || h._subj === 1) continue;
+    vals[j++] = h[rawKey];
+  }
+  vals.sort();
+  const anchors = []; // 先降序压进来，再翻成升序给二分用
+  let anchor = -1;
+  for (let i = plain - 1; i >= 0; i--) {
+    const v = vals[i];
+    if (anchors.length === 0 || v < IMP_BAND * anchor) {
+      anchors.push(v);
+      anchor = v;
+    }
+  }
+  anchors.reverse();
+  const m = anchors.length;
+  for (let i = 0; i < total; i++) {
+    const h = hits[i];
+    if (h._ident === true || h._subj === 1) continue;
+    const v = h[rawKey];
+    let lo = 0;
+    let hi = m;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (anchors[mid] >= v) hi = mid;
+      else lo = mid + 1;
+    }
+    h._bandTmp = m - 1 - lo;
+  }
+  return true;
+}
+
+/** 退回路：老的全量对象排序定档（0.6.12 及以前的做法，逐位保留）。 */
+function setBandsBySort(hits, rawKey) {
   const byRaw = hits.slice().sort((a, b) => b[rawKey] - a[rawKey]);
   let band = -1;
   let anchorRaw = 0;
@@ -2566,6 +2627,12 @@ function bandize(hits, rawKey, limit = Infinity) {
     }
     h._bandTmp = band;
   }
+}
+
+function bandize(hits, rawKey, limit = Infinity) {
+  const total = hits.length;
+  if (total < 2) return hits;
+  if (!setBandsByThreshold(hits, rawKey)) setBandsBySort(hits, rawKey);
   // [macro-fusion 0.6.3] 并列时不许「谁先进语料谁在前」：同一问句在两种插入顺序下会给出两套前十，
   // 而 docs 的顺序在生产里是存储层给的（更新会改 rowid、VACUUM/分页会改顺序），于是「同一问句同一答案」
   // 这条产品承诺就不成立，所有对外读数也变成「抽到的那一次」。定序改成 分档 → 分数 → 记忆更新得更晚的

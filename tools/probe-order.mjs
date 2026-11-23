@@ -238,5 +238,51 @@ const sameList = (a, b) => a.length === b.length && a.every((x, i) =>
   ok('O8 能红证明：丢掉档位筛选的坏实现必被抓出', caught);
 }
 
+// ── O9：负数 raw 退回老路，与参考逐位一致 ────────────────────────────────
+// 阈值链要求「锚点严格下降」，负数下 0.85·a > a，前提不成立——引擎必须自动退回全量排序那一支，
+// 而且结果得和参考实现（老代码原样）一字不差，否则就是「优化顺手改了口径」。
+{
+  const r = rnd(0x0616);
+  let good = true;
+  const detail = [];
+  for (let t = 0; t < 60; t += 1) {
+    const n = 2 + Math.floor(r() * 18);
+    const hits = makeHits(r, n).map((h) => {
+      const v = Math.round((r() * 12 - 6) * 100) / 100; // -6..6，含 0 与重复
+      return { ...h, _raw: v };
+    });
+    const k = [1, 3, 20][t % 3];
+    const ref = refPrefix(hits, '_raw', k);
+    const got = bandize(hits.map((h) => ({ ...h })), '_raw', k).map((h) => ({ id: h.id, score: h.score, band: h._band }));
+    if (!sameList(ref, got)) {
+      good = false;
+      if (detail.length === 0) detail.push(`t=${t} n=${n} k=${k}`);
+    }
+  }
+  ok('O9 负数 raw 走退回路，与参考逐位一致', good, good ? '60 组（-6..6，含 0 与重复）' : '首例 ' + detail[0]);
+}
+
+// ── O10：NaN / undefined raw 也退回老路 ───────────────────────────────────
+{
+  const r = rnd(0x0617);
+  let good = true;
+  const detail = [];
+  const dirty = [NaN, undefined, null, Number.POSITIVE_INFINITY];
+  for (let t = 0; t < 40; t += 1) {
+    const n = 2 + Math.floor(r() * 14);
+    const hits = makeHits(r, n).map((h, i) => {
+      if (i % 5 === 0) return { ...h, _raw: dirty[(i / 5 + t) % dirty.length] };
+      return h;
+    });
+    const ref = refPrefix(hits, '_raw', 5);
+    const got = bandize(hits.map((h) => ({ ...h })), '_raw', 5).map((h) => ({ id: h.id, score: h.score, band: h._band }));
+    if (!sameList(ref, got)) {
+      good = false;
+      if (detail.length === 0) detail.push(`t=${t} n=${n}`);
+    }
+  }
+  ok('O10 NaN / undefined / null / Infinity raw 同样退回老路，与参考一致', good, good ? '40 组（每 5 条插一个脏值）' : '首例 ' + detail[0]);
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`);
 if (fail > 0) process.exitCode = 1;
