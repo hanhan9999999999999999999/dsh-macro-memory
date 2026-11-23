@@ -125,11 +125,11 @@ const FIRST_RUN_BUDGET_MS = 180_000
 const SLOW_FACTOR = 1.5
 /** 不到 1s 的脚本不参与漂移判定：0.1s→0.2s 也是 2 倍，纯噪声。 */
 const SLOW_FLOOR_MS = 1_000
-const budgetFor = (file) => {
-  const saved = baselines.budgetMs?.[file]
+const budgetFor = (base, file) => {
+  const saved = base.budgetMs?.[file]
   // 写得更小也按 30s 跑：预算的意义是「别卡死」，不是「卡得越紧越好」
   if (Number.isInteger(saved) && saved > 0) return Math.max(saved, MIN_BUDGET_MS)
-  const last = baselines.ms?.[file]
+  const last = base.ms?.[file]
   if (Number.isInteger(last) && last > 0) return Math.max(MIN_BUDGET_MS, Math.ceil((last * BUDGET_FACTOR) / 1000) * 1000)
   return FIRST_RUN_BUDGET_MS
 }
@@ -145,13 +145,13 @@ const home = mkdtempSync(join(tmpdir(), 'macro-check-all-'))
  * 谁再偷用 cwd，这一支立刻红。
  */
 const neutralCwd = mkdtempSync(join(tmpdir(), 'macro-neutral-cwd-'))
-const results = []
 const t0 = Date.now()
 
-for (const [file, what] of steps) {
+/** 跑一支：预算、超时、断言条数、耗时都按传入的基线算（收敛轮会传刚写盘的新基线）。 */
+const measure = (file, what, bl) => {
   const outFile = join(home, `${file.replace(/[\\/]/g, '_')}.log`)
   const fd = openSync(outFile, 'w')
-  const budget = budgetFor(file)
+  const budget = budgetFor(bl, file)
   const started = Date.now()
   const run = spawnSync(process.execPath, [join(root, file)], {
     cwd: neutralCwd,
@@ -170,13 +170,21 @@ for (const [file, what] of steps) {
   const timedOut = run.error?.code === 'ETIMEDOUT' || (run.signal !== null && run.signal !== undefined)
   const failed = run.status !== 0 && !timedOut
   const pass = countPass(output)
-  const base = baselines.counts?.[file]
-  const lastMs = baselines.ms?.[file]
+  const base = bl.counts?.[file]
+  const lastMs = bl.ms?.[file]
   // 被杀掉的那次耗时不参与漂移判定：它只是「至少这么久」，不是真实用时
   const slow =
     !timedOut && Number.isInteger(lastMs) && lastMs > 0 && ms >= SLOW_FLOOR_MS && ms > lastMs * SLOW_FACTOR
-  results.push({ file, what, ok: !failed && !timedOut, code: run.status, ms, pass, base, budget, timedOut, lastMs, slow, output })
+  return { file, what, ok: !failed && !timedOut, code: run.status, ms, pass, base, budget, timedOut, lastMs, slow, output }
+}
 
+/**
+ * 打一支的结果行（超时、变慢、失败尾巴都在这里）。
+ * 抽成函数是因为收敛轮要把刚重跑的那几支再打一遍——同一份格式，两处不许各写一套。
+ */
+const showStep = (r) => {
+  const { file, what, ms, pass, base, budget, timedOut, lastMs, slow, output } = r
+  const failed = !r.ok && !timedOut
   const mark = timedOut ? '⏱' : failed ? '✗' : '✓'
   const secs = (ms / 1000).toFixed(1)
   // 断言数变化用单独符号，避免和「这支跑挂了」混成一种红
@@ -188,7 +196,7 @@ for (const [file, what] of steps) {
   if (timedOut)
     say(
       `    ⏱ 超过 ${Math.round(budget / 1000)}s 预算，已杀掉${
-        Number.isInteger(baselines.ms?.[file]) ? `（上次实测 ${(baselines.ms[file] / 1000).toFixed(1)}s）` : '（没有上次实测，用的是首次预算）'
+        Number.isInteger(lastMs) ? `（上次实测 ${(lastMs / 1000).toFixed(1)}s）` : '（没有上次实测，用的是首次预算）'
       }`,
     )
   if (slow)
@@ -202,19 +210,36 @@ for (const [file, what] of steps) {
   }
 }
 
-const bad = results.filter((r) => !r.ok)
-const regressed = results.filter((r) => r.base !== undefined && r.pass < r.base)
-const grown = results.filter((r) => r.base !== undefined && r.pass > r.base)
+const results = []
+for (const [file, what] of steps) {
+  const r = measure(file, what, baselines)
+  results.push(r)
+  showStep(r)
+}
+
+let bad = results.filter((r) => !r.ok)
+let regressed = results.filter((r) => r.base !== undefined && r.pass < r.base)
+let grown = results.filter((r) => r.base !== undefined && r.pass > r.base)
 const unreported = results.filter((r) => r.base === undefined && r.pass > 0)
 const timedOutSteps = results.filter((r) => r.timedOut)
 const slowSteps = results.filter((r) => r.slow)
 
-if (updateBaselines) {
-  // --only 时保留没跑到的那几支：半次运行不该把基线写残
-  const counts = { ...(baselines.counts ?? {}) }
-  const ms = { ...(baselines.ms ?? {}) }
-  const budgetMs = { ...(baselines.budgetMs ?? {}) }
-  for (const r of results) {
+const versionBefore = baselines.version
+
+/** 记账：把这一轮（或收敛轮里重跑的那几支）的断言数与耗时写进基线。--only 时保留没跑到的那几支。 */
+const record = (rs) => {
+  const onDisk = existsSync(BASELINES) ? JSON.parse(readFileSync(BASELINES, 'utf8')) : {}
+  const counts = { ...(onDisk.counts ?? {}) }
+  const ms = { ...(onDisk.ms ?? {}) }
+  const budgetMs = { ...(onDisk.budgetMs ?? {}) }
+  const skipped = []
+  for (const r of rs) {
+    // 红的那一支不记账：它 FAIL 那一路会少走一段，条数比它正常时少，
+    // 记进去等于把「坏状态」当新尺子（doctor 因为三棵树不同步而 FAIL 时正是这样少 1 条）。
+    if (!r.ok) {
+      skipped.push(r.file)
+      continue
+    }
     counts[r.file] = r.pass
     // 超时那次不记耗时：被杀掉的进程跑的时间只是「至少这么久」，拿来算预算会越滚越大
     if (!r.timedOut) {
@@ -238,13 +263,64 @@ if (updateBaselines) {
     ) + '\n',
     'utf8',
   )
-  say(`基线已更新：${Object.keys(counts).length} 支（断言数 + 耗时预算）→ tools/baselines.json（macro-memory ${version}）`)
+  return { counts, ms, budgetMs, skipped }
+}
+
+/** 这一轮「数出来与手里那份基线不同」的那几支：最可能自己被基线影响（版本对不上时少走一段）。 */
+const unstable = () => results.filter((r) => r.ok && r.base !== undefined && r.pass !== r.base)
+
+if (updateBaselines) {
+  const written = record(results)
+  say(`基线已更新：${Object.keys(written.counts).length} 支（断言数 + 耗时预算）→ tools/baselines.json（macro-memory ${version}）`)
+  if (written.skipped.length > 0)
+    say(`  跳过 ${written.skipped.length} 支（这一趟是红的，条数不可信，保留旧账）：${written.skipped.join('，')}`)
   // 慢的时候记账等于把尺子改短：先把话说明白，别让它顺手发生
   if (slowSteps.length > 0)
     say(
       `  ⚠ 你正在把 ${slowSteps.length} 支「变慢了」的耗时记成新基线：${slowSteps.map((r) => r.file).join('，')}——确认是环境噪声，不是退化。`,
     )
+
+  /*
+   * 收敛轮（0.6.1 补，同一件事踩过两次：0.6.0 与 0.6.1 各多花了三趟 210s 才稳）。
+   *
+   * 病根：有几条断言是**基线自己先对上才会出现**的——`verify.mjs` 与 `tools/doctor.mjs` 里的
+   * 「基线版本与 package.json 一致」。版本号刚升时它是 FAIL，FAIL 那一路少走一段，于是这轮数出来
+   * 比绿态少 1 条；把它记进基线后版本对上了、那条断言回来了，又变成多 1。人不重跑就只看到
+   * 「断言数回退 3 支」，误以为代码坏了——这正是「记账记在红态」的老坑。
+   *
+   * 现在：凡本次「数与基线不一致」的那几支，记完账**就地用新基线重跑**（不重跑全套），
+   * 每轮记账，最多 3 轮；还晃就如实说，不假装稳定。
+   */
+  let rounds = 0
+  for (;;) {
+    const shakey = unstable()
+    if (shakey.length === 0 || rounds >= 3) break
+    rounds += 1
+    say(`  收敛第 ${rounds} 轮：${shakey.map((r) => r.file).join('，')} 的数与基线不同，按新基线重跑这几支（有些断言要基线先对上才出现）`)
+    const onDisk = existsSync(BASELINES) ? JSON.parse(readFileSync(BASELINES, 'utf8')) : {}
+    const fresh = []
+    for (const r of shakey) {
+      const again = measure(r.file, r.what, onDisk)
+      showStep(again)
+      fresh.push(again)
+      const i = results.findIndex((x) => x.file === again.file)
+      if (i >= 0) results[i] = again
+    }
+    record(fresh)
+  }
+  const left = unstable()
+  if (rounds > 0)
+    say(
+      left.length === 0
+        ? `  已收敛（${rounds} 轮重跑）：基线与本轮实测逐支一致`
+        : `  ⚠ 重跑了 ${rounds} 轮仍有 ${left.length} 支在晃（${left.map((r) => r.file).join('，')}）——先查这几支为什么时多时少`,
+    )
 }
+
+// 收敛轮会换掉个别条目，报表与判决都按最终结果重算一遍（用收敛前的数去下结论是另一种假绿）
+bad = results.filter((r) => !r.ok)
+regressed = results.filter((r) => r.base !== undefined && r.pass < r.base)
+grown = results.filter((r) => r.base !== undefined && r.pass > r.base)
 
 try {
   rmSync(home, { recursive: true, force: true, maxRetries: 5 })

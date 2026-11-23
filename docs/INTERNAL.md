@@ -11283,7 +11283,56 @@ meow 从 0.2.x 起就有 `conflictCandidates`：写入时把同层近邻捞出�
 
 **三棵树一条命令（0.6.0 收尾后补，`tools/sync-trees.mjs`）。** 本仓有三份活拷贝：工作树 `D:\dsh-home\vendor\dsh-macro-memory`（改代码、跑闸门、提交）、阅读树 `D:\document\DSH Memory Macro-Regulation System`（人读）、装机树 `%DSH_HOME%\profiles\desktop\node_modules\dsh-macro-memory`（**DSH 真正加载的那份**，doctor 的「两处比较」与 `probe-load` 都看它）。少同步一棵的后果这一轮反复出现：`FAIL 两处不一致 1 个漂移 tools/baselines.json`、`FAIL DSH 加载的那份与本仓同版：装的是 0.5.0，本仓是 0.6.0`。这一支默认**只体检**（比大小与 mtime，报「同名同大小 / 内容不同 / 对方缺 / 对方多」四档），`--apply` 才 `robocopy /E`；**没有 `/MIR`、没有 `/PURGE`，一个字节都不删**——批量删除必须先问主人。`node_modules` 与 `.git` 各树各自独立，跳过；`.analysis` / `.dsh-meow` 是运行时数据目录，只跳过统计、不同步。同步完不自动跑 `make-vendor-manifest` 与 `doctor`：前者会改 `vendor/VENDOR.json`、后者要判红，留给调用者按提示的顺序做。它登记在 `tools/manual-tools.mjs` 的账本里（`smoke: true`，只读可随时跑），**不进 check-all**——报表型脚本没有可断言判决，进去只会稀释判据。
 
-**顺手核了一遍的事（0.6.0 收尾）。** `check-all` 支数 31 → **32**（挂进 `probe-idf`），断言 3,523 → **3,536**（0.6.1 再加 D12 → **3,537**）；`verify.mjs` 的「check-all 每支从 `_root.mjs` 取根」支数跟着改成 32；`docs/PLAN-0.6.md` 的「未决四问」在落地时逐条答了（簇实测 8 条、第二处 idf 不改、桥那遍只吃全局、闸门 300 收尾后补扫 200/300/400/500 确认不敏感）。另一条环境坑：document 树的 `node_modules/@deepseek-ai/dsh-llm` 是从 app 目录**拷**出来的实体目录，它自己静态 import 的 `dsh-typert-protocol` 等五个包在那棵树里没有 → 十四支探针 `ERR_MODULE_NOT_FOUND`、断言全 0（看着像代码全坏了）。同源的 `dsh-llm` 在 `D:\dsh-home\vendor\dsh-macro-memory\node_modules\` 下是 **junction**，解析走真实路径所以没事。修法是**加法**：给缺的五个包建 junction 指回 `D:\DSH\DSH NEXT\resources\app\node_modules\@deepseek-ai\`，一个现有目录都不删。教训：**一支探针 0 断言 = 进程没起来，不是语义变了**；先看断言行有没有输出，再决定要不要动代码。
+**顺手核了一遍的事（0.6.0 收尾）。** `check-all` 支数 31 → **32**（挂进 `probe-idf`），断言 3,523 → **3,536**（0.6.1 再加 D12 → **3,537**，收敛轮三条哨兵 → **3,540**）；`verify.mjs` 的「check-all 每支从 `_root.mjs` 取根」支数跟着改成 32；`docs/PLAN-0.6.md` 的「未决四问」在落地时逐条答了（簇实测 8 条、第二处 idf 不改、桥那遍只吃全局、闸门 300 收尾后补扫 200/300/400/500 确认不敏感）。另一条环境坑：document 树的 `node_modules/@deepseek-ai/dsh-llm` 是从 app 目录**拷**出来的实体目录，它自己静态 import 的 `dsh-typert-protocol` 等五个包在那棵树里没有 → 十四支探针 `ERR_MODULE_NOT_FOUND`、断言全 0（看着像代码全坏了）。同源的 `dsh-llm` 在 `D:\dsh-home\vendor\dsh-macro-memory\node_modules\` 下是 **junction**，解析走真实路径所以没事。修法是**加法**：给缺的五个包建 junction 指回 `D:\DSH\DSH NEXT\resources\app\node_modules\@deepseek-ai\`，一个现有目录都不删。教训：**一支探针 0 断言 = 进程没起来，不是语义变了**；先看断言行有没有输出，再决定要不要动代码。
 
-**另有一条：mirror 树（`D:\document\DSH Memory Macro-Regulation System`）天生有两支红，别当成代码坏了。** ①`tools/probe-tools.mjs` 的冒烟支跑 `tools/patch-meow-settings-ns.mjs` 会 `exit=2 目标不存在`——那个脚本拿 `import.meta.url` 拼路径却没解码，路径里的空格变成 `%20` 就找不着 `vendor/meow-memory/lib/client.js`，而源树路径 `D:\dsh-home\...` 没有空格（**0.6.1 已修**：改用 `fileURLToPath`，mirror 树上这支现在 3/3 退出码 0）；②`tools/check-market.mjs` 报 `commit 在本仓里真实存在` 红——mirror 树是另一份 git 历史，索引里钉的 `fb1f504` 只在源树里。所以**闸门要在源树 `D:\dsh-home\vendor\dsh-macro-memory` 跑**（`node tools/doctor.mjs` + `node tools/check-all.mjs`，32/32、3,537 条），mirror 树只作阅读副本；`doctor` 的「两处一致」比的也不是 mirror 树，而是 DSH 真正加载的 `D:\dsh-home\profiles\desktop\node_modules\dsh-macro-memory`，升级后必须把它一起 robocopy 过去，否则一直报漂移、`probe-load` 一直喊「装的是旧版」。
+**另有一条：mirror 树（`D:\document\DSH Memory Macro-Regulation System`）天生有两支红，别当成代码坏了。** ①`tools/probe-tools.mjs` 的冒烟支跑 `tools/patch-meow-settings-ns.mjs` 会 `exit=2 目标不存在`——那个脚本拿 `import.meta.url` 拼路径却没解码，路径里的空格变成 `%20` 就找不着 `vendor/meow-memory/lib/client.js`，而源树路径 `D:\dsh-home\...` 没有空格（**0.6.1 已修**：改用 `fileURLToPath`，mirror 树上这支现在 3/3 退出码 0）；②`tools/check-market.mjs` 报 `commit 在本仓里真实存在` 红——mirror 树是另一份 git 历史，索引里钉的 `fb1f504` 只在源树里。所以**闸门要在源树 `D:\dsh-home\vendor\dsh-macro-memory` 跑**（`node tools/doctor.mjs` + `node tools/check-all.mjs`，32/32、3,540 条），mirror 树只作阅读副本；`doctor` 的「两处一致」比的也不是 mirror 树，而是 DSH 真正加载的 `D:\dsh-home\profiles\desktop\node_modules\dsh-macro-memory`，升级后必须把它一起 robocopy 过去，否则一直报漂移、`probe-load` 一直喊「装的是旧版」。
 
+## 9.200 记账那一趟自己会抖：写一次基线，就地重跑一次就够了（0.6.1）
+
+升版本时我连着两次被同一件事绊住：`node tools/check-all.mjs --update-baselines` 报**「断言数回退 3 支」**并 exit 1，可代码一行没退化。
+先看数：`verify.mjs` 1811→1810、`tools/check-market.mjs` 48→47、`tools/doctor.mjs` 162→161，各少 1 条；同时 `tools/probe-idf.mjs` 13→14（这条是预期，D12 新加了一条）。
+
+### 9.200.1 病根：有些断言要基线先说对，才肯出现
+
+`verify.mjs` 与 `tools/doctor.mjs` 里各有一条「**基线版本与 package.json 一致**」。版本号刚升的那一趟，基线里还是旧号：
+
+- 这条断言是 FAIL；FAIL 那一路少走一段（不打印那条 `PASS`，也不进后面的分支），于是这轮数出来的条数**比绿态少 1**；
+- `--update-baselines` 照着这轮的数写盘 → 基线里的 `version` 变成新号；
+- 下一趟那条断言回来说 PASS，条数**又变回 1 条**，基线立刻显得「少了」。
+
+所以这不是脚本坏了，是**记账本身改变了下一轮的输入**。我踩了两次（0.6.0 与 0.6.1），每次都要人手跑三趟 210 秒才稳，第三趟才写出 `32 支，合计 3537 条`。
+
+### 9.200.2 处方：记完就地重跑「数与基线不同」的那几支
+
+`tools/check-all.mjs` 的 `--update-baselines` 分支现在长这样：
+
+1. `record(results)` 先把这一轮的断言数与耗时写进 `tools/baselines.json`（重读盘上旧档再叠加，`--only` 只改跑到的那支，不会把别的写残）；
+2. 找出 `r.pass !== r.base` 的那几支（本次「数与手里基线不同」的），**用刚写下的新基线单独重跑它们**，`showStep` 照常打印，结果替换进 `results`，再 `record(fresh)`；
+3. 最多 3 轮，收敛就打印 `已收敛（N 轮重跑）：基线与本轮实测逐支一致`；收不了就打印 `⚠ 重跑了 N 轮仍有 M 支在晃`，并点名那几支。
+
+`measure(file, what, bl)` 现在把基线作为参数收进来（原先直接闭包读全局 `baselines`），`budgetFor(base, file)` 同理——重跑时必须拿**新**基线算预算与基准，否则重跑没有意义。
+
+实测（故意把基线里 `tools/probe-idf.mjs` 改成 13 再记账）：
+
+```
+✓ tools/probe-idf.mjs              0.3s/ 30s   14 条 ↑
+基线已更新：32 支（断言数 + 耗时预算）→ tools/baselines.json（macro-memory 0.6.1）
+  收敛第 1 轮：tools/probe-idf.mjs 的数与基线不同，按新基线重跑这几支（有些断言要基线先对上才出现）
+✓ tools/probe-idf.mjs              0.3s/ 30s   14 条
+  已收敛（1 轮重跑）：基线与本轮实测逐支一致
+
+汇总：1/1 通过（macro-memory 0.6.1，用时 0.7s）
+```
+
+exit=0，且 `tools/baselines.json` 的 `counts` 回到 14（只有那一行的 `ms` 跟着实测动了一下）。
+
+### 9.200.3 顺手记下的两条- **`--update-baselines` 失败也会写盘**。第一趟报「回退 3 支」并 exit 1 时，文件**已经**被改过了（写过再判），`git status` 能看到 `M tools/baselines.json`；要撤就 `git checkout -- tools/baselines.json`。所以「它 exit 1 了所以没记账」是错的直觉。
+- **读 `doctor` 的漂移清单别被下一行骗**。`FAIL  两处不一致  1 个漂移 / 0 个多余` 后面紧跟的一长串 `vendor/meow-memory/lib/index.js …` 是**下一条 PASS「补丁在位…」的 extra**（补丁描述全文），不是本条信息。要看真身：`node tools/doctor.mjs | Select-String 'drift:'`（`tools/doctor.mjs:121` 打印的就是漂移名单）。那次真身是 `drift: tools/baselines.json（内容不同）`，因为它刚被红态那一趟改过、装机树还是旧的。
+
+### 9.200.4 补一条：红的那一支不记账
+
+收敛轮上线后第一次真跑就露了另一半：那一趟 `tools/doctor.mjs` 是**红**的（`FAIL 两处不一致 1 个漂移`，因为 `tools/baselines.json` 刚被写、三棵树还没同步），它报 **161 条**，而绿态是 162——FAIL 那一路少走一段，少掉的正是「两处字节一致」那条 `PASS`。旧代码照样把这个 161 记进基线，于是同步完树、doctor 变绿，又变成「断言数增加 1 支」。
+
+所以 `record()` 现在只记**绿**的那几支，红的跳过并打印一句 `跳过 N 支（这一趟是红的，条数不可信，保留旧账）`；收敛轮的 `unstable()` 也只看 `r.ok` 的——红的那支本来就没记账，拿它去重跑只会白跑。同理，跑 `--update-baselines` 之前最好先 `node tools/sync-trees.mjs --apply`，让 doctor 有机会绿。
+
+账随之从 3,537 变成 **3,540**：`verify.mjs` 1811 → **1814**，多出来的三条就是给这套机制配的哨兵——「记完会收敛」（`/const unstable = \(\) => results\.filter/` + `rounds >= 3` + `已收敛（${rounds} 轮重跑）`）、「收敛不了就说在晃」（`支在晃` + `按新基线重跑这几支`）、「红的那一支不记账」（`if (!r.ok) { skipped.push(r.file)` + `条数不可信，保留旧账`）。少一样就立刻红，跟 D12 是同一种「判据不许只写在文档里」。

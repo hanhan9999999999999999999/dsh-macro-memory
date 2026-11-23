@@ -572,11 +572,23 @@ function makeHostCtx() {
   const checkAll = readFileSync(join(root, 'tools', 'check-all.mjs'), 'utf8')
   const doctorSrc = readFileSync(join(root, 'tools', 'doctor.mjs'), 'utf8')
   check('基线: check-all 会数断言条数', /const countPass = \(text\) =>/.test(checkAll) && checkAll.includes('/^PASS/gm'))
-  check('基线: 读 tools/baselines.json', checkAll.includes("'baselines.json'") && checkAll.includes('baselines.counts'))
+  check('基线: 读 tools/baselines.json', checkAll.includes("'baselines.json'") && checkAll.includes('const base = bl.counts?.[file]'))
   check('基线: 掉了判红（regressed 参与退出码）', /r\.pass < r\.base/.test(checkAll) && /process\.exit\(verdict \? 0 : 1\)/.test(checkAll))
   check('基线: 多了只提醒不判红', /r\.pass > r\.base/.test(checkAll) && checkAll.includes('确认后 --update-baselines'))
   check('基线: --update-baselines 写盘', checkAll.includes("flag('update-baselines')") && checkAll.includes('writeFileSync(') && checkAll.includes('BASELINES'))
-  check('基线: --only 时合并旧账不写残', checkAll.includes('...(baselines.counts ?? {})'))
+  check('基线: --only 时合并旧账不写残', checkAll.includes('...(onDisk.counts ?? {})'))
+  check(
+    '基线: --update-baselines 记完会收敛（数与基线不同就地重跑，最多 3 轮）',
+    /const unstable = \(\) => results\.filter/.test(checkAll) && /rounds >= 3/.test(checkAll) && checkAll.includes('已收敛（${rounds} 轮重跑）'),
+  )
+  check(
+    '基线: 收敛不了就说在晃，不假装稳',
+    checkAll.includes('支在晃') && checkAll.includes('按新基线重跑这几支'),
+  )
+  check(
+    '基线: 红的那一支不记账（FAIL 那一路少走一段，条数不可信）',
+    /if \(!r\.ok\) \{\s*\n\s*skipped\.push\(r\.file\)/.test(checkAll) && checkAll.includes('条数不可信，保留旧账'),
+  )
 
   const basePath = join(root, 'tools', 'baselines.json')
   check('基线: tools/baselines.json 在', existsSync(basePath))
@@ -628,7 +640,7 @@ function makeHostCtx() {
 {
   const checkAll = readFileSync(join(root, 'tools', 'check-all.mjs'), 'utf8')
   check('漂移: 阈值与噪声下限都有名字', /const SLOW_FACTOR = 1\.5/.test(checkAll) && /const SLOW_FLOOR_MS = 1_000/.test(checkAll))
-  check('漂移: 拿基线 ms 比', checkAll.includes('const lastMs = baselines.ms?.[file]') && checkAll.includes('ms > lastMs * SLOW_FACTOR'))
+  check('漂移: 拿基线 ms 比', checkAll.includes('const lastMs = bl.ms?.[file]') && checkAll.includes('ms > lastMs * SLOW_FACTOR'))
   check(
     '漂移: 太快的与超时的都不参与',
     checkAll.includes('ms >= SLOW_FLOOR_MS') && checkAll.includes('!timedOut && Number.isInteger(lastMs)'),
