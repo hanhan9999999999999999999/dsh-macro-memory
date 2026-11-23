@@ -36,8 +36,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
-// 0.6.14 起 = 42（加 probe-hotpath）。
-const SUITE_FLOOR = 42
+// 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）。
+const SUITE_FLOOR = 43
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -929,10 +929,11 @@ function makeHostCtx() {
   check('根: 没有脚本用 import.meta.dirname 自己往上一层摸', viaMeta.length === 0, viaMeta.join(', '))
 
   // 3) 被 check-all 点名的那几支，凡是要读本仓文件的，一律从 _root.mjs 取。
-  //    四支例外有明确理由，写在表里而不是「漏了」：
+  //    五支例外有明确理由，写在表里而不是「漏了」：
   //    probe-inject 只经相对 import 读 vendor；check-yaml 只读 DSH 安装与 profile；
   //    probe-order（0.6.12）只经相对 import 取 bandize，不读仓内任何文件；
   //    probe-hotpath（0.6.14）只经相对 import / `new URL(..., import.meta.url)` 取引擎，不拼仓内路径。
+  //    probe-cover（0.6.15）同样只经相对 import 与 import.meta.url 取引擎。
   //    支数是知识：28 = 原 24 支 + 0.3.1 的 probe-mq（查询分解量尺）+ 0.4.0 的 probe-consolidate
   //    （写入端巩固量尺）、probe-hygiene（写入端通胀量尺）与 probe-supersede（自动取代量尺）。少一支说明有人从套件里
   //    摘了东西，多一支说明新加的判据没在基线里记账——两种都要在这里显形。
@@ -942,6 +943,7 @@ function makeHostCtx() {
     'tools/check-yaml.mjs': '只读 DSH 安装与 profile，不读本仓',
     'tools/probe-order.mjs': '只经相对 import 取 bandize（0.6.12），不读仓内任何文件',
     'tools/probe-hotpath.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.14），不拼仓内路径',
+    'tools/probe-cover.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.15），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -6550,11 +6552,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check(
     '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25；0.2.179 起缘由问句再乘一层规矩折价，0.2.180 起分档与排序吃同一个乘子）',
-    meowSrc.includes('const impW = 1 + (impOf(docs[di]) - 1) * 0.25;') &&
+    meowSrc.includes('const impW = 1 + (impOf(dOf) - 1) * 0.25;') &&
       // [0.2.180] 折价改走 ruleFoldOf(di)：分档用的 _raw 与排序用的 score 吃同一个乘子。
       // 只折 score 的话，规矩条仍在最高档里当第一名（bandize 按 _raw 分档、档位优先于分数），折到 0.1 也翻不过去。
       // [0.6.14] 这个乘子每条只算一次落进 `foldOf`（原来 _raw/score/explain 各调一遍 ruleFoldOf(di)），
       // 口径仍是同一个 helper：钉「先算一次、两处都吃它」，而不是钉它被调了几遍。
+      // [0.6.15] 同一段的 `docs[di]` 先落进 `dOf`（这一条下面要读十来次），断言跟着改成读 `dOf`，口径没动。
       meowSrc.includes('const foldOf = ruleFoldOf(di);') &&
       meowSrc.includes('score: raw[di] * w * impW * stW * foldOf,'),
   )
@@ -9129,10 +9132,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     '检索自答: 元数据透传是「有才带」（老调用方没这些字段时不许硬塞 undefined）',
-    meowSrc121.includes('...docs[di].keywords === void 0 ? {} : { keywords: docs[di].keywords },') &&
-      meowSrc121.includes('...docs[di].project === void 0 ? {} : { project: docs[di].project },') &&
-      meowSrc121.includes('...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },') &&
-      meowSrc121.includes('...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },'),
+    // [0.6.15] 这一条下面要读十来次同一条记录的字段，引擎先把 `docs[di]` 落进 `dOf`：
+    // 断言跟着读 `dOf.X`，守的仍是「没这个字段就别硬塞 undefined」。
+    meowSrc121.includes('...dOf.keywords === void 0 ? {} : { keywords: dOf.keywords },') &&
+      meowSrc121.includes('...dOf.project === void 0 ? {} : { project: dOf.project },') &&
+      meowSrc121.includes('...dOf.created_at === void 0 ? {} : { created_at: dOf.created_at },') &&
+      meowSrc121.includes('...dOf.source_session === void 0 ? {} : { source_session: dOf.source_session },'),
   )
   check(
     '检索自答: render 把已经截好的正文印出来（不再只印「关于：关键词」）',
@@ -10331,7 +10336,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1 &&
       !/COORD_W[^\n]*anchored/.test(eng) &&
       eng.split('const coverage = len > 0 ? overlap / len : 0;').length - 1 === 1 &&
-      eng.split('w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));').length - 1 === 2 &&
+      // [0.6.15] 两支打分器的 w 同形（都带 RECENCY_FLOOR 下限）。0.6.15 起 search 那支先落 `dOf`，
+      // 两条的字面量不再逐字相同 → 改钉共有的那半句，两处都得在。
+      eng.split('w = Math.max(RECENCY_FLOOR, recencyWeight(now - (').length - 1 === 2 &&
       eng.split('anchorHit').length - 1 === 1,
   )
   check(
@@ -11009,8 +11016,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ6 标识符补分能跨档：分档读的是 _raw，补分只进 score 就永远翻不过去',
       eng.includes('var IDENT_BAND_W = 0.8;') &&
         eng.includes('_raw: raw[di] * (1 +') &&
-        eng.includes('identBandW * rawVerbatim[di].ratio') &&
-        eng.includes('identSubjW * subjRatio[di]') &&
+        // [0.6.15] 标识符比例与主语位比例每条只取一次（`vbOf` / `srOf`），断言跟着读这两个变量。
+        eng.includes('identBandW * vbOf.ratio') &&
+        eng.includes('identSubjW * srOf') &&
         eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0'),
       'IDENT_BAND_W 与 _raw 加成都可查',
     )
@@ -11058,7 +11066,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       eng.includes('const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;') &&
         // [0.2.178] 免档条件多了一个 `|| !identHardOk`：时间状语里的标识符是坐标，不是主语，
         // 它不该走 bandize 的 -1 特权档。断言的形态跟着改，但守的东西没变。
-        eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,') &&
+        eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,') &&
         eng.includes('const identHardOk = !(anchorCoord && opts.anchorIdentBand !== true);') &&
         eng.includes('if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) {'),
       '四个出口都在',
@@ -11461,9 +11469,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ13 三条通道全关：档位（_subj）、词分（_raw 两份权重）、加法补分（add）都吃同一个 identHardOk',
-      eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0') &&
-        eng178.includes('opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio') &&
-        eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]') &&
+      eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0') &&
+        eng178.includes('opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio') &&
+        eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf') &&
         eng178.includes('const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);') &&
         eng178.includes('if (idHit && identHardOk) h._ident = true;'),
       '档位 + _raw 两项 + add + _ident 五处都在',
@@ -11555,7 +11563,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ14 两笔账分开落：新鲜度吃 !causeQ、折价走 ruleFoldOf 一个 helper（分档 + 打分 + explain 三处），explain 里也看得见（否则单题排查看不出这一笔）',
-      countOf(eng179, 'if (!anchored && !causeQ && now !== null && docs[di].importance < 3') === 1 &&
+      countOf(eng179, 'if (!anchored && !causeQ && now !== null && dOf.importance < 3') === 1 &&
         countOf(eng179, 'const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;') === 1 &&
         // [0.6.14] helper 每条只调一次（`const foldOf = ruleFoldOf(di);`），三个消费点都吃这个变量：
         // 分档（_raw）× 打分（score）× explain。口径仍是一处定义，只是不再重算三遍。
@@ -12304,7 +12312,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VV 源码: 认得谁要说出来（explain.verbatim + identBonus 同报，且 bm25 回到纯词分）',
-    idSrc.includes('verbatim: rawVerbatim[di].matched.slice()') &&
+    idSrc.includes('verbatim: vbOf.matched.slice()') &&
       idSrc.includes('h.explain.identBonus = Math.round(add * 1e3) / 1e3;') &&
       idSrc.includes('bm25: Math.round(baseRaw[di] * 1e3) / 1e3'),
   )
@@ -12600,8 +12608,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'VY6 两支打分器都挂词分给分档用（_raw 两处；search 那处还要乘上标识符、主语位、层级意图三把刀）',
     (MY.match(/_raw: raw\[di\]/g) || []).length === 2 &&
       MY.includes('_raw: raw[di] * (1 +') &&
-      MY.includes('identBandW * rawVerbatim[di].ratio') &&
-      MY.includes('identSubjW * subjRatio[di]') &&
+      // [0.6.15] 三把刀的比例先进 `vbOf` / `srOf`，_raw 那行读变量。
+      MY.includes('identBandW * vbOf.ratio') &&
+      MY.includes('identSubjW * srOf') &&
       MY.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0'),
   )
   check(
@@ -13108,7 +13117,7 @@ dt063: {
   const vMissing = vLabels.filter((t) => !vvSrc.includes(`'${t}`) && !vvSrc.includes(`\`${t}`))
   const wiredV = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-verbatim.mjs'")
   check(
-    'VV071 原样匹配探针钉住 V1–V9（与现拼逐位相同 / 只拼一次 / 改正文·project·keywords 都要跟着变 / 与老口径等价 / 10,000 条份额 ≤25% / 无标识符不建 / 只按条数缓存必红）并挂进 check-all',
+    'VV071 原样匹配探针钉住 V1–V9（与现拼逐位相同 / 只拼一次 / 改正文·project·keywords 都要跟着变 / 与老口径等价 / 10,000 条固定开销 ≤6ms（份额只作旁证，0.6.15 起分母掉了约六成） / 无标识符不建 / 只按条数缓存必红）并挂进 check-all',
     vMissing.length === 0 && wiredV,
     `${vMissing.length ? `缺 ${vMissing.join(' ')}` : 'V1–V9 都在'} / check-all ${wiredV ? 'ok' : 'miss'}`,
   )
@@ -13338,6 +13347,73 @@ dt063: {
   const vS5 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS5 = vS5.length === 3 ? vS5[0] * 10000 + vS5[1] * 100 + vS5[2] : 0
   check('OR074 版本号不低于 0.6.14（后续补丁不必回头改这一条）', vNumS5 >= 614, vS5.join('.'))
+}
+
+// 0.6.15：覆盖度不许「每条 × 每个问句词」重算——顺着倒排把账加一遍
+{
+  const cSrc = readFileSync(new URL('./tools/probe-cover.mjs', import.meta.url), 'utf8')
+  const cLabels = ['C0 ', 'C1 ', 'C2 ', 'C3 ', 'C4 ', 'C5 ']
+  const cMissing = cLabels.filter((t) => !cSrc.includes(`'${t}`))
+  const cWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-cover.mjs'")
+  const cExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-cover.mjs'")
+  check(
+    'OR075 覆盖度探针 C0–C5 在位（两条路 / 对拍逐位 / 语义没变 / 换尺子重记账 / 空手不留 NaN / 大库仍一致），check-all 挂线且列进取根例外',
+    cMissing.length === 0 && cWired && cExcused,
+    cMissing.length ? `缺 ${cMissing.join(' ')}` : `挂线 ${cWired ? 'ok' : 'miss'} / 例外 ${cExcused ? 'ok' : 'miss'}`,
+  )
+  const engSrc6 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const accOk =
+    engSrc6.includes('const coverAcc = postings === null ? null : new Float64Array(docs.length);') &&
+    engSrc6.includes('const buildCoverAcc = () => {') &&
+    engSrc6.includes('coverAcc[p[pi]] += w;') &&
+    engSrc6.includes('coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);') &&
+    engSrc6.includes('const idf = qLoopIdf[qi];')
+  // 退回路口径不许被顺手删掉：倒排缺席（opts.inverted === false）时仍逐条查表。
+  const fbOk = engSrc6.includes("for (let qi = 0; qi < qKept.length; qi++) if (tfi.has(qKept[qi])) cover += qKeptIdf[qi];")
+  check(
+    'OR075 引擎里覆盖度顺倒排记账（coverAcc 一趟加好），倒排缺席时退回逐条查表，打分的 idf 也不再每格重算',
+    accOk && fbOk,
+    `倒排账 ${accOk ? 'ok' : 'miss'} / 退回路 ${fbOk ? 'ok' : 'miss'}`,
+  )
+  const adStart6 = engSrc6.indexOf('if (opts.adaptiveIdf === true) {')
+  const adEnd6 = adStart6 < 0 ? -1 : engSrc6.indexOf('adapt = { lam, cluster: cl.n };', adStart6)
+  const ad6 = adStart6 >= 0 && adEnd6 > adStart6 ? engSrc6.slice(adStart6, adEnd6) : ''
+  const iCache6 = ad6.indexOf('idfCache = new Map();')
+  const iQ6 = ad6.indexOf('refreshQidf();')
+  const iAcc6 = ad6.indexOf('buildCoverAcc();')
+  const iFill6 = ad6.indexOf('raw.fill(0);')
+  check(
+    'OR075 自适应换尺子那趟先把账重记：清 idf 缓存 → 重记问句 idf → 重记覆盖度账 → raw.fill(0) 重扫（顺序不许颠倒）',
+    ad6.length > 0 && iCache6 >= 0 && iQ6 > iCache6 && iAcc6 > iQ6 && iFill6 > iAcc6,
+    ad6.length === 0 ? '自适应块没找到' : `清缓存 ${iCache6} → 问句 idf ${iQ6} → 覆盖账 ${iAcc6} → 重扫 ${iFill6}`,
+  )
+  const C2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  let coverOk = false
+  let coverDetail = 'search 未导出'
+  if (typeof C2.search === 'function') {
+    const docs = [
+      { id: '0mcov111', content: 'astra', importance: 2 },
+      { id: '0mcov222', content: 'astra bravo', importance: 2 },
+      { id: '0mcov333', content: 'astra bravo cygnus dorado', importance: 2 },
+    ].map((d) => ({ ...d, level: 'fact', title: 't', updated_at: '2026-01-01T00:00:00Z', keywords: [], project: 'p' }))
+    const q = 'astra bravo cygnus dorado'
+    const on = JSON.stringify(C2.search(q, docs, { k: 5, explain: true, now: 1795470000000 }))
+    const off = JSON.stringify(C2.search(q, docs, { k: 5, explain: true, now: 1795470000000, inverted: false }))
+    const full = C2.search(q, docs, { k: 5, explain: true, now: 1795470000000 }).find((h) => h.id === '0mcov333')
+    coverOk = on === off && full !== undefined && full.explain.cover === 1
+    coverDetail = `两路一致 ${on === off} / 全命中 cover ${full === undefined ? '-' : full.explain.cover}`
+  }
+  check('OR075 进程内：倒排账与逐条查表两条路逐位相同，全命中的那条 cover 仍为 1', coverOk, coverDetail)
+  check(
+    'OR075 文档在位：INTERNAL 9.214 写了「覆盖度顺着倒排记一遍账」，README 写了「覆盖度不再逐条重算」，DESIGN 有 ## 210.，PLAN 有 0.6.15',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.214 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('覆盖度不再逐条重算') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 210. ') &&
+      /0\.6\.15/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS6 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS6 = vS6.length === 3 ? vS6[0] * 10000 + vS6[1] * 100 + vS6[2] : 0
+  check('OR075 版本号不低于 0.6.15（后续补丁不必回头改这一条）', vNumS6 >= 615, vS6.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

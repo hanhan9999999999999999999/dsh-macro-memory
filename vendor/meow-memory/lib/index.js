@@ -3502,6 +3502,29 @@ function search(query, docs, opts = {}) {
     qLoop = q.filter((t) => rescued.includes(t));
   }
   let qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfAt(t), 0) || 1;
+  // [macro-fusion 0.6.15] 覆盖度与打分不再「每条 × 每个问句词」去 Map 里问一遍、也不每格再算一次 idf。
+  // 两个问句数组一趟开头各记一次 idf（同一趟里 idf 只由词的 df 决定，是常量），覆盖度改成顺着倒排
+  // 往回加：工作量从「候选数 × 问句词数」降到「这些词的出现次数之和」，加法的顺序仍是 qKept 原序，
+  // 每条的浮点和逐位不变。倒排缺席（opts.inverted===false）时退回原来的逐条查表。
+  let qKeptIdf = new Float64Array(qKept.length);
+  let qLoopIdf = new Float64Array(qLoop.length);
+  const refreshQidf = () => {
+    for (let qi = 0; qi < qKept.length; qi++) qKeptIdf[qi] = idfAt(qKept[qi]);
+    for (let qi = 0; qi < qLoop.length; qi++) qLoopIdf[qi] = idfAt(qLoop[qi]);
+  };
+  refreshQidf();
+  const coverAcc = postings === null ? null : new Float64Array(docs.length);
+  const buildCoverAcc = () => {
+    if (coverAcc === null) return;
+    coverAcc.fill(0);
+    for (let qi = 0; qi < qKept.length; qi++) {
+      const p = postings.get(qKept[qi]);
+      if (p === void 0) continue;
+      const w = qKeptIdf[qi];
+      for (let pi = 0; pi < p.length; pi++) coverAcc[p[pi]] += w;
+    }
+  };
+  buildCoverAcc();
   // 同义扩词只扩问句：表里没有的词、库里 df=0 的词都不进（扩了也没人能命中，白算一遍）。
   // [macro-fusion 0.4.0 · P5] 第四参是索引随库自建出来的共现表——手工表管「人确定过的说法」，
   // 共现表管「库里自己长出来的说法」。opts.coocLearn === false 时 index.coocSyn 为 null，
@@ -3525,16 +3548,22 @@ function search(query, docs, opts = {}) {
     // [macro-fusion 0.2.179] 覆盖度先算一步：它决定长度惩罚该不该打折（见 COVER_LEN_RELIEF）。
     let cvr = 0;
     if (qIdfSum > 0) {
-      let cover = 0;
-      for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
-      coverOf[di] = Math.min(1, cover / qIdfSum);
+      // [macro-fusion 0.6.15] 覆盖度走倒排账（coverAcc 已按 qKept 原序加好），没有倒排时退回逐条查表。
+      if (coverAcc !== null) {
+        coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);
+      } else {
+        let cover = 0;
+        for (let qi = 0; qi < qKept.length; qi++) if (tfi.has(qKept[qi])) cover += qKeptIdf[qi];
+        coverOf[di] = Math.min(1, cover / qIdfSum);
+      }
       cvr = Math.pow(coverOf[di], COORD_POW);
     }
     const bEff = b * (1 - coverLenRelief * cvr);
-    for (const term of qLoop) {
+    for (let qi = 0; qi < qLoop.length; qi++) {
+      const term = qLoop[qi];
       const f = tfi.get(term);
       if (!f) continue;
-      const idf = idfAt(term);
+      const idf = qLoopIdf[qi];
       let fw = 1;
       if (titleSet !== null && titleSet.has(term)) fw += FIELD_TITLE_W;
       if (kwSet !== null && kwSet.has(term)) fw += FIELD_KW_W;
@@ -3631,6 +3660,9 @@ function search(query, docs, opts = {}) {
               return (1 - lam) * g + lam * Math.log(1 + (1 - pr) / pr);
             };
             qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfAt(t), 0) || 1;
+            // [macro-fusion 0.6.15] 换完尺子，问句词的 idf 与覆盖度账都要按新尺子重记一遍。
+            refreshQidf();
+            buildCoverAcc();
             raw.fill(0);
             coverOf.fill(0);
             if (candSet === null) {
@@ -3704,19 +3736,21 @@ function search(query, docs, opts = {}) {
   const statusDig = statusDigestOf(docs, query, verbOn, opts);
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
-    const lvHit = lvIntent !== null && lvIntent.has(String(docs[di].level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
+    // [macro-fusion 0.6.15] 这一条下面要读十来次同一条记录的字段：`docs[di]` 取一次，别每次重算下标。
+    const dOf = docs[di];
+    const lvHit = lvIntent !== null && lvIntent.has(String(dOf.level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
     // [macro-fusion 0.2.179] 缘由问句不折：问的是当初为什么那样，旧是自然的（与时间锚同源）。
     const anchored = anchorSel === null ? false : anchorSel(di);
-    if (!anchored && !causeQ && now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
-      w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
+    if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+      w = Math.max(RECENCY_FLOOR, recencyWeight(now - (dOf.last_accessed_at ?? dOf.updated_at)));
     }
-    const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
-    const stW = anchored ? 1 : statusWeight(docs[di].status);
+    const impW = 1 + (impOf(dOf) - 1) * 0.25;
+    const stW = anchored ? 1 : statusWeight(dOf.status);
     // [macro-fusion 0.6.14] 这三样每条只算一次：`assertRatioOf` 原来在 `_tr` 与 `_raw` 里各算一遍，
     // `ruleFoldOf(di)` 原来在 `_raw`/`score`/`explain` 里各算一遍。算一次再引用，值逐位不变。
-    const trOf = tipOn ? assertRatioOf(docs[di].content) : 0;
+    const trOf = tipOn ? assertRatioOf(dOf.content) : 0;
     const foldOf = ruleFoldOf(di);
     const vbOf = rawVerbatim[di] === null ? void 0 : rawVerbatim[di];
     const srOf = subjRatio === void 0 ? 0 : subjRatio[di];
@@ -3725,30 +3759,30 @@ function search(query, docs, opts = {}) {
     lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0);
     trTmp.push(trOf);
     hits.push({
-      _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
+      _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,
+      _raw: raw[di] * (1 + (vbOf === void 0 || opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
-      id: docs[di].id,
-      level: docs[di].level,
-      title: docs[di].title,
-      content: docs[di].content,
-      importance: docs[di].importance,
-      updated_at: docs[di].updated_at,
+      id: dOf.id,
+      level: dOf.level,
+      title: dOf.title,
+      content: dOf.content,
+      importance: dOf.importance,
+      updated_at: dOf.updated_at,
       // [macro-fusion 0.2.120] 命中对象以前只回 id/level/title/content/importance/updated_at/score，
       // keywords / project / created_at 被静默吞掉。后果不是「少个字段」：调用方拿不到这条记忆
       // 属于哪一天、哪个项目，只能自己按 id 回查一遍（OmniMemEval 的日期丢失就是这样，
       // temporal 类准确率因此卡在 0.2181，回查修好后到 0.7227）。这里原样透传，不改排序、不改分数。
-      ...docs[di].keywords === void 0 ? {} : { keywords: docs[di].keywords },
-      ...docs[di].project === void 0 ? {} : { project: docs[di].project },
-      ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
+      ...dOf.keywords === void 0 ? {} : { keywords: dOf.keywords },
+      ...dOf.project === void 0 ? {} : { project: dOf.project },
+      ...dOf.created_at === void 0 ? {} : { created_at: dOf.created_at },
       // [macro-fusion 0.6.0 · P4] status 以前不透传：回执里分不出这条是 active / stale / archived，
       // 调用方得为了一个字符串再 memory_read 一次（多一次往返，也容易干脆不查）。
       // 与上面 0.2.120 那批字段同规矩：原样透传，不参与打分、不改排序。
-      ...docs[di].status === void 0 ? {} : { status: docs[di].status },
-      ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
+      ...dOf.status === void 0 ? {} : { status: dOf.status },
+      ...dOf.source_session === void 0 ? {} : { source_session: dOf.source_session },
       score: raw[di] * w * impW * stW * foldOf,
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(adapt === null ? {} : { adaptiveIdf: { lam: Math.round(adapt.lam * 1e3) / 1e3, cluster: adapt.cluster } }), ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * foldOf * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: dOf.importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(adapt === null ? {} : { adaptiveIdf: { lam: Math.round(adapt.lam * 1e3) / 1e3, cluster: adapt.cluster } }), ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(vbOf === void 0 ? {} : { verbatim: vbOf.matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * foldOf * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条

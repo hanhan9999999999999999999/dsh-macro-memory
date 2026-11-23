@@ -1285,7 +1285,7 @@ if (denseUsable) {
     (eng.match(/\* foldOf[ ,*]/g) || []).length >= 2 &&
     // 带缘由词的现状词句归缘由：「评测台为什么封存」里的「封存」是状态词，但问的是当初。
     eng.includes('const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? "")) && LEVEL_INTENT_TOPIC.test(String(query ?? "")) === false;') &&
-    eng.includes('if (!anchored && !causeQ && now !== null && docs[di].importance < 3')
+    eng.includes('if (!anchored && !causeQ && now !== null && dOf.importance < 3')
   if (!srcOk) wrong.push('缘由判定的四笔（两个常量 / 开关 / 同一条 helper 算一次乘两处 / 缘由词优先）没落全')
 
   check(

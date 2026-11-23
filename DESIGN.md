@@ -7442,3 +7442,25 @@ title / content / keywords 里数命中次数，分数仍然交回四把钥匙�
 顺带收掉两笔每问一次的固定开销：`raw.slice()` 只在 `explain === true` 时留（关掉时没人看），`Math.max(...raw)` 换成循环（10k 参数展开会真的把实参表铺开）。
 
 读数（10,000 条 / 300 问）：`search` **16.329 → 11.567 ms（−29.2%；相对 0.6.12 的 27.377ms 是 −57.7%）**、`searchAdaptive` **18.812 → 13.520 ms（−28.1%）**、热路 `delete` 零处；索引热命中 0.679 ms/问、冷建 275 ms。答案一位没动：真库 52 问与 LoCoMo（1,531 问）全项逐位不变。判据 `probe-hotpath` H1–H6 与 `verify.mjs` OR074，账见 INTERNAL 9.213。
+
+## 210. 覆盖度不再逐条重算（0.6.15）
+
+0.6.14 收掉那 1.14s 的 `delete` 之后，`--cpu-prof` 第三次点名（总采样 4,143.7ms）：`search` 自证 40.6%、`scanDoc` 18.8%（1,003.6 → 777.5ms）。按行摊开，`scanDoc` 里最贵的一行是覆盖度那句：
+
+```js
+for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
+```
+
+单行 **573.9ms / 300 问**（1.9ms 一问）。它算的是一件很朴素的账——「这条命中了几成问句词（按 idf 加权）」——但算法是**二维**的：对每条候选人（最多 10,000 条），把问句词表（最多几十个）从头问一遍 `Map.has`。而倒排 `postings` 里本来就记着「每个词出现在哪些条里」，同一笔账**顺着倒排往回加一遍**就够：工作量从「候选数 × 问句词数」降到「这些词的出现次数之和」。
+
+处方三条，口径一字不改：
+
+1. **问句词表的 idf 每趟记一次**。`qKeptIdf` / `qLoopIdf` 两个 `Float64Array` + `refreshQidf()` 一趟填好；打分循环里 `const idf = qLoopIdf[qi]`，不再每词一次 `idfAt`（0.6.14 只是把这笔账从「每条 × 每词」降到「每词」，这里再降到「每问」）。
+2. **覆盖度顺倒排记账**。`coverAcc` 按 `docs.length` 开一张零表，`buildCoverAcc()` 按 qKept **原序**把 `qKeptIdf[qi]` 加到 `postings.get(term)` 的每一条上；`scanDoc` 里只剩 `coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum)`。加法的**顺序仍是 qKept 原序**，所以每条的浮点和逐位不变——这是这一刀能过对拍的前提。
+3. **倒排缺席时退回原路**。`opts.inverted === false`（探针与阴性对照用）或问句带标识符时 `postings === null`，`coverAcc` 直接是 `null`，`scanDoc` 走逐条查表的老路（`buildCoverAcc` 头一行 `if (coverAcc === null) return;`）。退回路一个字没动。
+
+顺带把 `const dOf = docs[di];` 提到候选循环头：这一条下面要读十来次同一条记录的字段（`level` / `importance` / `status` / `content` / 两个时间戳 / 回执透传的七个字段），原先每次都在重算下标。
+
+**换尺子那趟必须重记两笔账**：自适应 idf 换的是「词的重要度尺子」，`qKeptIdf` / `qLoopIdf` 与 `coverAcc` 都得跟着换，否则第二遍扫描会拿旧尺子的数——顺序钉死为「清 idf 缓存 → `refreshQidf()` → `buildCoverAcc()` → `raw.fill(0)` 重扫」（探针 C3 直接对源码顺序断言，因为这一支在小夹具上物理上触发不了：`idfClusterOf` 要 top-8 里有区分词、`adaptiveLamOf` 要榜首分差落在 0.05–0.15，同分小语料恒 `lam = 0`）。
+
+读数（10,000 条 / 300 问，五次取中位）：`search` **11.567 → 10.673 ms（−7.8%；相对 0.6.12 的 27.377ms 累计 −61.0%）**、`searchAdaptive` **13.520 → 12.522 ms（−7.4%）**、覆盖度那一行 **573.9 → 14.9 ms**、`scanDoc` 自证 **23.8% → 18.8%**；索引热命中 0.698 ms/问、冷建 271 ms。答案一位没动：真库 52 问与 LoCoMo（1,531 问）全项逐位不变。判据 `probe-cover` C0–C5 与 `verify.mjs` OR075，账见 INTERNAL 9.214。

@@ -12054,3 +12054,81 @@ cpu-prof 复测（总采样 5,692.7 ms）：`setBandsByThreshold` 7.0% + `bandiz
 ### 9.213.6 账
 
 支数 41 → **42**（新增 `tools/probe-hotpath.mjs`）；断言 3,704 → **3,715**（`probe-hotpath` +6、`OR074` +5）。
+
+## 9.214 覆盖度顺着倒排记一遍账（0.6.15）
+
+### 9.214.1 症状：一行 573.9ms 在替每条候选人重问一遍问句词表
+
+0.6.14 之后复测（10,000 条 / 300 问，单次 11.57ms），函数视图（`E:\Temp\cmp\prof15\s15.cpuprofile`，总采样 4,143.7ms）是 `search` 自证 **40.6%**（1,681.5ms）、`scanDoc` **18.8%**（777.5ms，0.6.14 是 23.8% / 1,003.6ms）、`sigDocOf` 7.3%、`setBandsByThreshold` 5.9%、GC 3.7%、`(anon)`@3607 3.6%、`buildSearchIndex` 2.4%、`sessionTopicTerms` 1.8%。函数视图里 `scanDoc` 仍在「正常干活」的样子，行视图（`node E:\Temp\cmp\prof-lines.mjs E:\Temp\cmp\prof15\s15.cpuprofile scanDoc 8`）才点出名来：
+
+```
+535.3 ms  scanDoc :3564   （打分循环的 tfi.get(term) 那一圈）
+ 45.7 ms  scanDoc :3559
+ 44.6 ms  scanDoc :3569
+ 40.4 ms  scanDoc :3568
+ 30.8 ms  scanDoc :3570
+ 14.9 ms  scanDoc :3553   （覆盖度，0.6.15 改完之后）
+```
+
+改之前最热的一行不是 `:3564`，是覆盖度那句（旧文件 `:3529`，**573.9ms / 300 问 ≈ 1.9ms 一问**）：
+
+```js
+for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
+```
+
+它算的是一件朴素的事——「这条命中了几成问句词（idf 加权）」——但算法是**二维**的：对每条候选人（最多 10,000 条）把问句词表（几十个词）从头问一遍 `Map.has`。10,000 × 几十 = 每问几十万次哈希查找，只为得出 10,000 个数。
+
+### 9.214.2 发现路径
+
+0.6.14 记忆化的 `idfAt` 已经把「每条 × 每词」的 `Math.log` 降成「每词」，所以这一行的耗时里 `Math.log` 已经不是主体，**主体是 `Map` 查找与循环开销**。既然词只由词自己决定「在哪些条里出现」，而 `postings`（`buildSearchIndex`，`vendor/meow-memory/lib/index.js:3166-3191`，由 `docToks` + `kwToks` 建）本来就记着这件事，那这笔账该反过来记：**不为每条候选人问词在不在，而为每个词把它那点 idf 加到它出现过的每一条上**。
+
+一条要留意的事实：`postings` 的键集与 `tf[di]` 严格一致（同一份 `docToks` + `kwToks` 建出来的），所以顺倒排累加得出的覆盖度与逐条查表**语义等价**；`opts.inverted === false` 时 `postings === null`，那条路上没有倒排可用，必须保留逐条查表的退回路。
+
+### 9.214.3 处方：倒排记账 + 问句 idf 每趟一次 + 循环头取一次记录
+
+1. **问句词表的 idf 每趟记一次**：`qKeptIdf` / `qLoopIdf` 两个 `Float64Array` + `refreshQidf()` 一趟填好；打分循环里 `const idf = qLoopIdf[qi]`（0.6.14 把 `Math.log` 从「每条 × 每词」降到「每词」，这里再降到「每问」）。
+2. **覆盖度顺倒排记账**：`coverAcc` 按 `docs.length` 开零表，`buildCoverAcc()` 按 qKept **原序**把 `qKeptIdf[qi]` 加到 `postings.get(term)` 的每一条上；`scanDoc` 覆盖度只剩 `coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum)`。退回路（`postings === null`）原样保留：`buildCoverAcc` 头一行 `if (coverAcc === null) return;`，`scanDoc` 里 `else` 分支逐条 `tfi.has`。
+3. **循环头取一次记录**：`const dOf = docs[di];`——这一条下面要读十来次同一条记录的字段（`level` / `importance` / `status` / `content` / `last_accessed_at ?? updated_at` / 回执透传的七个字段 / `explain.importance`），原先每次重算下标；`_subj` 用 `srOf`、`_raw` 与 `explain.verbatim` 用 `vbOf`（`rawVerbatim[di] === null` 等价 `vbOf === void 0`，短路语义不变）。
+4. **换尺子那趟先重记两笔账**：自适应 idf 换的是重要度尺子，`qKeptIdf` / `qLoopIdf` / `coverAcc` 都得换。顺序钉死为「`idfCache = new Map();` → `refreshQidf();` → `buildCoverAcc();` → `raw.fill(0)` 重扫」。
+
+**为什么口径一位不变**：覆盖度的加法顺序仍是 qKept 原序（`for (let qi…)` 外层、`for (let pi…)` 内层），同一份加数、同一个顺序、同一批 `+=` → 浮点和逐位相同；`qLoopIdf` 只是把 `idfAt(qLoop[qi])` 提前算好，值同；`dOf` 是同一个对象的引用。所以 `final.mjs` / LoCoMo 全项逐位不变（见 9.214.4）。
+
+**换尺子为什么只能钉源码顺序**：这一支在小夹具上物理触发不了——`idfScaleGate` 默认 300、`order.length >= 2`、`idfClusterOf` 要在 top-8（`IDF_CLUSTER_TOP_M_DEF = 8`）里找到 `ratio >= 1.5 && dfG >= 2` 的区分词、`adaptiveLamOf` 还要榜首分差落在 0.05–0.15。小库里 `df == n` 的词 idf 为 0，候选撑不到 8 条；同构高分条又让 `lam` 恒 0（`index.js:3294-3315`）。三轮夹具实验全失败，最后改成 **C3 直接对源码顺序断言**（`iCache6 < iQ6 < iAcc6 < iFill6` 递增），并加「开两次逐位相同」与「两路一致」作旁证。`MEOW_IDF_DEBUG=1` 只在 `cl !== null` 时打印，不能当观测口。
+
+### 9.214.4 读数
+
+| 路径 | 0.6.14 | 0.6.15 | 变化 |
+| --- | --- | --- | --- |
+| `search` | 11.567 ms | **10.673 ms** | **−7.8%** |
+| `searchAdaptive`（产品走的这条） | 13.520 ms | **12.522 ms** | **−7.4%** |
+| `scanDoc` 自证 | 1,003.6 ms | 777.5 ms | **−22.5%**（占比 23.8% → 18.8%） |
+| 覆盖度那一行 | 573.9 ms | **14.9 ms** | **−97.4%** |
+| `searchIndexOf` 热命中 | 0.679 ms | 0.698 ms | 噪声内持平 |
+| 冷建索引 | 275 ms | 271 ms | 噪声内持平 |
+
+五次取中位（10.438 / 10.496 / 11.166 / 10.711 / 10.673；自适应 12.44 / 12.522 / 12.715）。相对 0.6.12 的 27.377ms，`search` 累计 **−61.0%**。质量逐位不变：真库 52 问三档 0.921 / 0.417 / 0.500、平均取回 6.342 / 6.917 / 5、两条 #2→#1；LoCoMo（1,531 问）0.3932 / 0.6192 / 0.6924 / 0.7511、MRR 0.4958、recall@20 0.6322、空回 0；返回条数合计 1,500。
+
+**试过又退掉的一刀**（记在这里免得下次再撞）：把 hit 字面量六个「有才带」的条件展开（`...dOf.keywords === void 0 ? {} : { keywords: dOf.keywords },` 一类）换成恒在字段（`keywords: dOf.keywords,`），**变慢**——10.44 → 12.48ms、自适应 12.68 → 14.57ms。原因是每条形体会多带 12+ 个 `undefined` 字段，`hits.push` 的字面量开销反而变大。已逐字改回条件展开，备份 `E:\Temp\cmp\idx-exp.js`。
+
+### 9.214.5 判据 C0–C5 与 OR075
+
+新探针 `tools/probe-cover.mjs` **6 条**（进程内，手搭小库）：
+
+- **C0** 两条路都在：`const buildCoverAcc = () => {` / `coverAcc[p[pi]] += w;` / 退回路那句 `for (let qi = 0; qi < qKept.length; qi++) if (tfi.has(qKept[qi])) cover += qKeptIdf[qi];` / `coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);`。
+- **C1** 倒排开着与关着（`inverted: false`）**逐位相同**（实测 `cover 1 / 0.656 / 0.425 / 0.312 / 0.081`）——两条独立实现互相验。
+- **C2** 语义没变：全命中 = 1、命中多的严格大于命中少的、都在 [0,1]、不相关的条不进回执。
+- **C3** 换尺子顺序：自适应块内 `idfCache = new Map();` → `refreshQidf();` → `buildCoverAcc();` → `raw.fill(0);`，且开两次逐位相同、两路一致。
+- **C4** 空手问句两条路都是 0 条且不含 `NaN`（0/0 漏出来就是 `NaN`）。
+- **C5** 300 条 × 30 问（LCG `seed = 20261124`，20 词表，`i % 7 === 0` 的条插 `nothinghere`）两路逐位相同，不一致 0。
+
+`verify.mjs` 新增 **OR075** 六条：C0–C5 标签在位 + `check-all` 挂线 + 取根例外表第五条 / 引擎里倒排账三件（`buildCoverAcc` / `coverAcc[p[pi]] += w;` / `coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);`）+ 退回路 + `const idf = qLoopIdf[qi];` / 换尺子顺序递增 / 进程内两路逐位相同且全命中 `explain.cover === 1` / 文档四处 / 版本地板 ≥ 0.6.15。跟改的老判据（改建不删，共 9 处）：`impOf(dOf)`、四个 `...dOf.X === void 0`、GZ 的 recency 那半句改钉共有前缀（`w = Math.max(RECENCY_FLOOR, recencyWeight(now - (` 出现 2 次）、HZ6 / HZ7 / HZ13 的 `subjRatio[di]`→`srOf` 与 `rawVerbatim[di].ratio`→`vbOf.ratio`、HZ14 的 `dOf.importance`、VV 的 `verbatim: vbOf.matched.slice()`、VY6 同 HZ6。**三处刻意没动**：`ruleFoldOf` 定义（`index.js:3734`）仍读 `docs[di].level`、`lead`（`index.js:3596`）仍读 `docs[di].content`、`keywordHitScore` 那支（`index.js:4011-4023`、`4027`-`4030`）仍用 `docs[di]`——它们不在这一版的切面上，钉子照旧。
+
+### 9.214.6 账
+
+支数 42 → **43**（新增 `tools/probe-cover.mjs`）；断言 3,715 → **3,727**（`probe-cover` +6、`OR075` +6）。
+
+### 9.214.7 下一版候选（已定位，未做）
+
+- `scanDoc :3564` 那一圈 **535.3ms**：打分循环仍按「候选 × 问句词」做 `tfi.get(term)`。可改成**顺倒排打分**——按 qLoop 原序把 `bm25` 那点贡献加到 `raw[di]` 上，每条候选的加法顺序与现在一致，浮点和仍逐位相同。前提是 `postings` 要带 tf 值（现在只存下标）。
+- `hits.push` 的对象字面量与 `explain` 展开（`index.js:3766-3771`、`:3784`、`:3770`，各 145–198ms，合计约 0.7s/300 问）：条件展开已经是最优形状（恒在字段试过，更慢），下一步只能减字段或把 explain 分两段拼。
+- `setBandsByThreshold`（244.3ms / 5.9%）与 `sigDocOf`（300.6ms / 7.3%）仍未动过。

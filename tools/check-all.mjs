@@ -79,6 +79,7 @@ const STEPS = [
   ['tools/probe-verbatim.mjs', '原样匹配账：库没变时不许重拼 haystack（懒建+随索引缓存、改正文/project/keywords 都要跟着变、与现拼口径逐位等价、无标识符问句一条不建、只按条数缓存必红）'],
   ['tools/probe-order.mjs', '定序账：只排前 k 不许改任何一名的顺序（与全量排序逐位对拍、截断长度、档位同步、k<=0 退回全序、并列按 id 自然序、指认档恒 -1、换序不变、丢档位筛选必红）'],
   ['tools/probe-hotpath.mjs', '热路账：回执对象不许先挂后摘（不再用 delete、平行数组不跨查询残留、原样补分/层级意图/断言密度只落在该落的那条上、自适应换尺子要清缓存）'],
+  ['tools/probe-cover.mjs', '覆盖度账：顺倒排往回加，不再每条×每个问句词重算（两条路对拍逐位相同、覆盖度语义没变、空手问句不留 NaN、换尺子那趟先重记账）'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
