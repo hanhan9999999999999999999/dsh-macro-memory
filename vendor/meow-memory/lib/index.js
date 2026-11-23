@@ -3442,9 +3442,32 @@ function search(query, docs, opts = {}) {
   // 但 entToks 是问句决定的，只能每条两个词的量，留在 search 里。
   const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;
   const ENT_W = 0.8;
-  const idfGlobal = (t) => Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+  // [macro-fusion 0.6.14] 一次 `df.get` 只管一个词（原来同一行里取两遍）。
+  const idfGlobal = (t) => {
+    const d0 = df.get(t) ?? 0;
+    return Math.log(1 + (n - d0 + 0.5) / (d0 + 0.5));
+  };
   // [macro-fusion 0.6.0 · P1] 第一遍用全库 idf；自适应开且 λ>0 时会被换成双尺度版，然后整个候选集重扫一遍。
   let idfOf = idfGlobal;
+  // [macro-fusion 0.6.14] idf 只跟「这一趟用哪把尺子 + 词」有关，跟是哪条文档无关——可一问记一次。
+  //
+  // 症状（cpu-prof，10,000 条 / 300 问，MODE=search，总采样 5,671.8ms）：`scanDoc` 自证 17.8%，
+  // `search` 自证 45.8%——两块里都有同一件事：每条候选对每个问句词重算一次 `Math.log`。
+  // 覆盖度那圈 `for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);`、
+  // 打分那圈 `const idf = idfOf(term);`、同义词那圈 `idfOf(a) * sat(f)`，全是「每条文档 × 每个词」。
+  // 一个 5 词问句撞上 2,000 条候选 = 一万次 `Math.log`，而真正不同的词只有 5 个。
+  //
+  // 处方：加一层按词记忆化。值逐位相同（同一个 `Math.log` 的同一个入参，拿到的就是同一个双精度数），
+  // 所以这不是「近似」，是纯省算。唯一要守的纪律：`idfOf` 被换掉时必须清缓存——自适应第二遍
+  // （下面 `idfOf = (t) => …双尺度…`）换了尺子，老值一个都不许留。见 `idfCache = new Map();`。
+  let idfCache = new Map();
+  const idfAt = (t) => {
+    const v = idfCache.get(t);
+    if (v !== void 0) return v;
+    const w = idfOf(t);
+    idfCache.set(t, w);
+    return w;
+  };
   const qTerms = [...new Set(q)];
   // [macro-fusion 0.2.146] 噪声地板：剔掉的词既不进 BM25，也不进覆盖度分母——
   // 只剔分子不剔分母等于「问句更难满足」，会把真正相关的条目一起裁掉。
@@ -3478,7 +3501,7 @@ function search(query, docs, opts = {}) {
     qKept = rescued;
     qLoop = q.filter((t) => rescued.includes(t));
   }
-  let qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+  let qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfAt(t), 0) || 1;
   // 同义扩词只扩问句：表里没有的词、库里 df=0 的词都不进（扩了也没人能命中，白算一遍）。
   // [macro-fusion 0.4.0 · P5] 第四参是索引随库自建出来的共现表——手工表管「人确定过的说法」，
   // 共现表管「库里自己长出来的说法」。opts.coocLearn === false 时 index.coocSyn 为 null，
@@ -3492,24 +3515,29 @@ function search(query, docs, opts = {}) {
   // 倒排缺席（opts.inverted===false）或问句里有标识符（要逐条比原文）时退回全库扫描。
   const scanDoc = (di) => {
     let s = 0;
+    // [macro-fusion 0.6.14] 每条的这几样在下面每一圈里都被重新取一遍：`tf[di]` 是数组索引 +
+    // Map 载荷，`titleSets[di]`/`kwSets[di]` 同理。提到函数开头取一次——值逐位不变，只是少几万次属性访问。
+    const tfi = tf[di];
+    const titleSet = titleSets === null ? null : titleSets[di];
+    const kwSet = kwSets === null ? null : kwSets[di];
     const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
     const dl = opts.lengthOnBody === false ? avgdl : avgBody;
     // [macro-fusion 0.2.179] 覆盖度先算一步：它决定长度惩罚该不该打折（见 COVER_LEN_RELIEF）。
     let cvr = 0;
     if (qIdfSum > 0) {
       let cover = 0;
-      for (const term of qKept) if (tf[di].has(term)) cover += idfOf(term);
+      for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
       coverOf[di] = Math.min(1, cover / qIdfSum);
       cvr = Math.pow(coverOf[di], COORD_POW);
     }
     const bEff = b * (1 - coverLenRelief * cvr);
     for (const term of qLoop) {
-      const f = tf[di].get(term);
+      const f = tfi.get(term);
       if (!f) continue;
-      const idf = idfOf(term);
+      const idf = idfAt(term);
       let fw = 1;
-      if (titleSets !== null && titleSets[di].has(term)) fw += FIELD_TITLE_W;
-      if (kwSets !== null && kwSets[di].has(term)) fw += FIELD_KW_W;
+      if (titleSet !== null && titleSet.has(term)) fw += FIELD_TITLE_W;
+      if (kwSet !== null && kwSet.has(term)) fw += FIELD_KW_W;
       s += idf * fw * (f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl)));
     }
     // 同义词只走一条窄通道：每个原始词最多取「最好的那个同义词」的一份分，不叠乘、不进覆盖度。
@@ -3518,9 +3546,9 @@ function search(query, docs, opts = {}) {
       for (const alts of synOf.values()) {
         let best = 0;
         for (const a of alts) {
-          const f = tf[di].get(a);
+          const f = tfi.get(a);
           if (!f) continue;
-          const v = idfOf(a) * sat(f);
+          const v = idfAt(a) * sat(f);
           if (v > best) best = v;
         }
         s += synW * best;
@@ -3591,6 +3619,8 @@ function search(query, docs, opts = {}) {
           }
           if (lam > 0) {
             const alpha = Number.isFinite(opts.idfAlpha) && opts.idfAlpha >= 0 ? opts.idfAlpha : IDF_ALPHA_DEF;
+            // [macro-fusion 0.6.14] 换尺子先清账：上一趟记的是全库 idf，这一趟是双尺度 idf，值不同。
+            idfCache = new Map();
             idfOf = (t) => {
               const g = idfGlobal(t);
               const pG = (df.get(t) ?? 0) / n;
@@ -3600,7 +3630,7 @@ function search(query, docs, opts = {}) {
               if (!(pr > 1e-9)) return g;
               return (1 - lam) * g + lam * Math.log(1 + (1 - pr) / pr);
             };
-            qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+            qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfAt(t), 0) || 1;
             raw.fill(0);
             coverOf.fill(0);
             if (candSet === null) {
@@ -3623,9 +3653,25 @@ function search(query, docs, opts = {}) {
   const levelIntentW = Number.isFinite(opts.levelIntentW) ? opts.levelIntentW : LEVEL_INTENT_W;
   const lvRatio = Number.isFinite(opts.levelIntentRatio) ? opts.levelIntentRatio : LEVEL_INTENT_RATIO;
   const tipAssertW = Number.isFinite(opts.tipAssertW) ? opts.tipAssertW : TIP_ASSERT_W;
-  const baseRaw = raw.slice();
-  const maxRaw = Math.max(...raw);
+  // [macro-fusion 0.6.14] `explain` 关着的时候这份副本没人读——不问就别抄（10,000 条 × 每问一次）。
+  const baseRaw = opts.explain === true ? raw.slice() : null;
+  // [macro-fusion 0.6.14] `Math.max(...raw)` 把一万个数摊成实参再收回来，一圈循环就够（值逐位相同）。
+  let maxRaw = 0;
+  for (let di = 0; di < raw.length; di++) {
+    const v = raw[di];
+    if (!(v <= maxRaw)) maxRaw = v;
+  }
   const hits = [];
+  // [macro-fusion 0.6.14] 四个「先用后摘」的临时值以前挂在 hit 对象上，靠 `delete h._lv;` 收场。
+  // `delete` 会把对象打进字典模式（V8 从此按哈希表存取），后面 bandize 每次读 `_raw` 都在付这笔账——
+  // 行级读数（cpu-prof positionTicks，10,000 条 / 300 问，5,492ms 总采样）：`delete h._lv;` 一行
+  // **791.5ms**，`delete h._vb;` + `delete h._sr;` 另 353ms，`delete h._tr;` 一起算进去接近两成。
+  // 处方：这四样本来就不该出现在回执里，改成同下标平行数组（push 与 hits 同序，读它们的三个循环
+  // 全在 bandize 之前跑，下标一直对得上），hit 对象上只留 `_raw` / `_subj` 这些真要参与定档的。
+  const vbTmp = [];
+  const srTmp = [];
+  const lvTmp = [];
+  const trTmp = [];
   // [macro-fusion 0.2.85] importance 以前只用来「豁免时间衰减」，从不进分数：一条 importance=4 的
   // 铁律和一条 importance=1 的随手记，只要 BM25 差一点点，顺序就由措辞决定而不是重要度决定
   // （实测：铁律 bm25=0.957 排在随手记 bm25=1.033 后面）。同一个引擎里 keywordHitScore 早就
@@ -3668,13 +3714,19 @@ function search(query, docs, opts = {}) {
     }
     const impW = 1 + (impOf(docs[di]) - 1) * 0.25;
     const stW = anchored ? 1 : statusWeight(docs[di].status);
+    // [macro-fusion 0.6.14] 这三样每条只算一次：`assertRatioOf` 原来在 `_tr` 与 `_raw` 里各算一遍，
+    // `ruleFoldOf(di)` 原来在 `_raw`/`score`/`explain` 里各算一遍。算一次再引用，值逐位不变。
+    const trOf = tipOn ? assertRatioOf(docs[di].content) : 0;
+    const foldOf = ruleFoldOf(di);
+    const vbOf = rawVerbatim[di] === null ? void 0 : rawVerbatim[di];
+    const srOf = subjRatio === void 0 ? 0 : subjRatio[di];
+    vbTmp.push(vbOf);
+    srTmp.push(srOf);
+    lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0);
+    trTmp.push(trOf);
     hits.push({
-      _vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di],
-      _sr: subjRatio === void 0 ? 0 : subjRatio[di],
       _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : subjRatio[di] >= 0.5 ? 1 : 0,
-      _lv: lvHit && opts.levelIntent !== false ? 1 : 0,
-      _tr: tipOn ? assertRatioOf(docs[di].content) : 0,
-      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0)) * ruleFoldOf(di),
+      _raw: raw[di] * (1 + (rawVerbatim[di] === null || opts.identBand === false || !identHardOk ? 0 : identBandW * rawVerbatim[di].ratio) + (rawVerbatim[di] === null || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * subjRatio[di]) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: docs[di].id,
@@ -3695,8 +3747,8 @@ function search(query, docs, opts = {}) {
       // 与上面 0.2.120 那批字段同规矩：原样透传，不参与打分、不改排序。
       ...docs[di].status === void 0 ? {} : { status: docs[di].status },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
-      score: raw[di] * w * impW * stW * ruleFoldOf(di),
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(adapt === null ? {} : { adaptiveIdf: { lam: Math.round(adapt.lam * 1e3) / 1e3, cluster: adapt.cluster } }), ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * ruleFoldOf(di) * 1e3) / 1e3 } } : {}
+      score: raw[di] * w * impW * stW * foldOf,
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(adapt === null ? {} : { adaptiveIdf: { lam: Math.round(adapt.lam * 1e3) / 1e3, cluster: adapt.cluster } }), ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * foldOf * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -3705,11 +3757,10 @@ function search(query, docs, opts = {}) {
     let topScore = 0;
     for (const h of hits) if (h.score > topScore) topScore = h.score;
     const unitScore = topScore > 0 ? topScore : 1;
-    for (const h of hits) {
-      const vb = h._vb;
-      delete h._vb;
-      const srHit = Number(h._sr) || 0;
-      delete h._sr;
+    for (let hi = 0; hi < hits.length; hi++) {
+      const h = hits[hi];
+      const vb = vbTmp[hi];
+      const srHit = Number(srTmp[hi]) || 0;
       if (vb === void 0 || vb === null) continue;
       const idHit = vb.matched.some((t) => String(h.id ?? "").toLowerCase().startsWith(t.replace(/\(局部\)$/, "")));
       const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);
@@ -3729,24 +3780,21 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.2.173] 层级意图是软偏好，分两处落地：_raw 那一侧（hits.push 时算好）
   // 决定「够不够格进这一档」，score 这一侧决定「进了这一档排多前」。只做前者会像这版
   // 第一次那样——条目进了第一档却还是第二名，因为档内仍按没抬过的 score 排。
-  for (const h of hits) {
-    if (h._lv !== 1) {
-      delete h._lv;
-      continue;
-    }
+  for (let hi = 0; hi < hits.length; hi++) {
+    if (lvTmp[hi] !== 1) continue;
+    const h = hits[hi];
     if (levelIntentW > 0 && opts.levelIntent !== false) {
       h.score *= 1 + levelIntentW;
       if (h.explain !== void 0) h.explain.levelIntent = true;
     }
-    delete h._lv;
   }
   // [macro-fusion 0.2.174] 断言密度也分两处：_raw 那侧决定「够不够进这一档」，
   // score 这侧决定「进了这一档排多前」——只做前者，同档里它一动也动不了。
-  for (const h of hits) {
-    const tr = Number(h._tr) || 0;
-    delete h._tr;
+  for (let hi = 0; hi < hits.length; hi++) {
+    const tr = Number(trTmp[hi]) || 0;
     if (tr <= 0 || !tipOn || opts.tipAssert === false) continue;
     if (tipAssertW > 0) {
+      const h = hits[hi];
       h.score *= 1 + tipAssertW * tr;
       if (h.explain !== void 0) h.explain.tipAssert = true;
     }

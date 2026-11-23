@@ -972,9 +972,9 @@ check(
 )
 const afCalls = (SRC.match(/assertRatioOf\(/g) || []).length
 check(
-  'R12 只在正文这一侧算断言密度：问句那条只判「是不是在求值」，密度分两处落地（进档 + 档内）',
-  afCalls === 3 && SRC.includes('const tipOn = tipAssertOn(query) && opts.tipAssert !== false;'),
-  `assertRatioOf( 出现 ${afCalls} 次（定义 1 + 分档 1 + 打分 1）`,
+  'R12 只在正文这一侧算断言密度：问句那条只判「是不是在求值」，密度只算一次、进档与档内共用同一笔',
+  afCalls === 2 && SRC.includes('const tipOn = tipAssertOn(query) && opts.tipAssert !== false;'),
+  `assertRatioOf( 出现 ${afCalls} 次（定义 1 + 每条算一次）`,
 )
 const s12on = Number(r12on.find((h) => String(h.id).startsWith('0r12a0001'))?.score ?? 0)
 const s12zero = Number(

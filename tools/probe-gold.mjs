@@ -1277,14 +1277,16 @@ if (denseUsable) {
     eng.split('var CAUSE_RULE_FOLD = 0.6;').length - 1 === 1 &&
     eng.split('var SITUATION_RULE_FOLD = 0.3;').length - 1 === 1 &&
     eng.split('const causeQ = (situationQ || (lvIntent !== null && lvIntent.has("topic"))) && opts.causeAware !== false;').length - 1 === 1 &&
-    // [0.2.180] 折价必须走同一个 helper：三处引用（分档的 _raw 一处 + 打分两处）少一处，
-    // 折价就会在「跨档」那一半失效——这正是 0.2.179 只折 score 时踩的坑。
+    // [0.2.180] 折价必须走同一个 helper：0.6.14 起它每条只算一次（`const foldOf = ruleFoldOf(di);`），
+    // 然后被两处乘上去——「进档的 _raw」与「回执分」各一处；折价要是只在其中一处生效，就会在
+    // 「跨档」那一半失灵，这正是 0.2.179 只折 score 时踩的坑。
     eng.split('const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;').length - 1 === 1 &&
-    eng.split('ruleFoldOf(di)').length - 1 === 3 &&
+    eng.split('const foldOf = ruleFoldOf(di);').length - 1 === 1 &&
+    (eng.match(/\* foldOf[ ,*]/g) || []).length >= 2 &&
     // 带缘由词的现状词句归缘由：「评测台为什么封存」里的「封存」是状态词，但问的是当初。
     eng.includes('const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? "")) && LEVEL_INTENT_TOPIC.test(String(query ?? "")) === false;') &&
     eng.includes('if (!anchored && !causeQ && now !== null && docs[di].importance < 3')
-  if (!srcOk) wrong.push('缘由判定的四笔（两个常量 / 开关 / 三处同一 helper / 缘由词优先）没落全')
+  if (!srcOk) wrong.push('缘由判定的四笔（两个常量 / 开关 / 同一条 helper 算一次乘两处 / 缘由词优先）没落全')
 
   check(
     'G28 缘由问句去叙述层找答案：问「为什么封存」回讲缘由那条；规矩条在缘由句折到 0.6、在现状句折到 0.3，问「上限怎么设」分毫不折',

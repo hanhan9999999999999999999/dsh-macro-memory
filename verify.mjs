@@ -35,8 +35,9 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 写成 `>=` 之后，减一支（删套件 / 忘了注册）立刻红，加一支不必动这里。
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
-// 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）。
-const SUITE_FLOOR = 41
+// 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
+// 0.6.14 起 = 42（加 probe-hotpath）。
+const SUITE_FLOOR = 42
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -928,9 +929,10 @@ function makeHostCtx() {
   check('根: 没有脚本用 import.meta.dirname 自己往上一层摸', viaMeta.length === 0, viaMeta.join(', '))
 
   // 3) 被 check-all 点名的那几支，凡是要读本仓文件的，一律从 _root.mjs 取。
-  //    三支例外有明确理由，写在表里而不是「漏了」：
+  //    四支例外有明确理由，写在表里而不是「漏了」：
   //    probe-inject 只经相对 import 读 vendor；check-yaml 只读 DSH 安装与 profile；
-  //    probe-order（0.6.12）只经相对 import 取 bandize，不读仓内任何文件。
+  //    probe-order（0.6.12）只经相对 import 取 bandize，不读仓内任何文件；
+  //    probe-hotpath（0.6.14）只经相对 import / `new URL(..., import.meta.url)` 取引擎，不拼仓内路径。
   //    支数是知识：28 = 原 24 支 + 0.3.1 的 probe-mq（查询分解量尺）+ 0.4.0 的 probe-consolidate
   //    （写入端巩固量尺）、probe-hygiene（写入端通胀量尺）与 probe-supersede（自动取代量尺）。少一支说明有人从套件里
   //    摘了东西，多一支说明新加的判据没在基线里记账——两种都要在这里显形。
@@ -939,6 +941,7 @@ function makeHostCtx() {
     'tools/probe-inject.mjs': '只经相对 import 读 vendor，不拼仓内路径',
     'tools/check-yaml.mjs': '只读 DSH 安装与 profile，不读本仓',
     'tools/probe-order.mjs': '只经相对 import 取 bandize（0.6.12），不读仓内任何文件',
+    'tools/probe-hotpath.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.14），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -6550,7 +6553,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     meowSrc.includes('const impW = 1 + (impOf(docs[di]) - 1) * 0.25;') &&
       // [0.2.180] 折价改走 ruleFoldOf(di)：分档用的 _raw 与排序用的 score 吃同一个乘子。
       // 只折 score 的话，规矩条仍在最高档里当第一名（bandize 按 _raw 分档、档位优先于分数），折到 0.1 也翻不过去。
-      meowSrc.includes('score: raw[di] * w * impW * stW * ruleFoldOf(di),'),
+      // [0.6.14] 这个乘子每条只算一次落进 `foldOf`（原来 _raw/score/explain 各调一遍 ruleFoldOf(di)），
+      // 口径仍是同一个 helper：钉「先算一次、两处都吃它」，而不是钉它被调了几遍。
+      meowSrc.includes('const foldOf = ruleFoldOf(di);') &&
+      meowSrc.includes('score: raw[di] * w * impW * stW * foldOf,'),
   )
   check(
     '召回: explain 把 importanceWeight 也露出来（三个因子缺一个就没法解释排序）',
@@ -11127,15 +11133,17 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ8 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
+      // [0.6.14] 那个「这条够不够格」的临时标记不再挂 hit 上（`delete h._lv` 会把对象打进字典模式），
+      // 改成同下标平行数组 `lvTmp`——分工不变，只是不在回执对象上过一手。
       eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)') &&
         eng.includes('h.score *= 1 + levelIntentW;') &&
-        eng.includes('if (h._lv !== 1) {'),
+        eng.includes('if (lvTmp[hi] !== 1) continue;'),
       `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
     )
     check(
       'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑；0.6.11 起分支标记是 hayOf !== null）',
       eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw', k);") &&
-        eng.indexOf('if (h._lv !== 1) {') < eng.lastIndexOf('if (hayOf !== null) {'),
+        eng.indexOf('if (lvTmp[hi] !== 1) continue;') < eng.lastIndexOf('if (hayOf !== null) {'),
       `乘法在 bandize 前=${eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw', k);")} 分支标记=${eng.lastIndexOf('if (hayOf !== null) {')}`,
     )
     check(
@@ -11175,16 +11183,17 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ9 求值判据只在问句这一侧：正文只被数断言词，问句才判「是不是在求值」',
+      // [0.6.14] 正文那一处原来在 `_tr` 与 `_raw` 里各数一遍，现在每条只数一次（`trOf`）→ 调用点从 3 变 2。
       eng.includes('const tipOn = tipAssertOn(query) && opts.tipAssert !== false;') &&
-        (eng.match(/assertRatioOf\(/g) || []).length === 3,
+        (eng.match(/assertRatioOf\(/g) || []).length === 2,
       `tipOn 在=${eng.includes('const tipOn = tipAssertOn(query)')} 调用点=${(eng.match(/assertRatioOf\(/g) || []).length}`,
     )
     check(
       'HZ9 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
-      eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0') &&
+      eng.includes('tipOn ? tipAssertW * trOf : 0') &&
         eng.includes('h.score *= 1 + tipAssertW * tr;') &&
         eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw', k);"),
-      `_raw 项在=${eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0')} 乘法在 bandize 前=${eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw', k);")}`,
+      `_raw 项在=${eng.includes('tipOn ? tipAssertW * trOf : 0')} 乘法在 bandize 前=${eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw', k);")}`,
     )
     check(
       'HZ9 行为探针与文档都在',
@@ -11548,10 +11557,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ14 两笔账分开落：新鲜度吃 !causeQ、折价走 ruleFoldOf 一个 helper（分档 + 打分 + explain 三处），explain 里也看得见（否则单题排查看不出这一笔）',
       countOf(eng179, 'if (!anchored && !causeQ && now !== null && docs[di].importance < 3') === 1 &&
         countOf(eng179, 'const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;') === 1 &&
-        countOf(eng179, 'ruleFoldOf(di)') === 3 &&
+        // [0.6.14] helper 每条只调一次（`const foldOf = ruleFoldOf(di);`），三个消费点都吃这个变量：
+        // 分档（_raw）× 打分（score）× explain。口径仍是一处定义，只是不再重算三遍。
+        countOf(eng179, 'const foldOf = ruleFoldOf(di);') === 1 &&
+        countOf(eng179, '* foldOf,') >= 2 &&
+        eng179.includes('raw[di] * w * impW * stW * foldOf * 1e3') &&
         eng179.includes('Number.isFinite(opts.causeRuleFold) ? Math.min(1, Math.max(0, opts.causeRuleFold)) : CAUSE_RULE_FOLD') &&
         eng179.includes('Number.isFinite(opts.situationRuleFold) ? Math.min(1, Math.max(0, opts.situationRuleFold)) : SITUATION_RULE_FOLD'),
-      `ruleFoldOf 三处引用（_raw + 打分 + explain）共 ${countOf(eng179, 'ruleFoldOf(di)')} 处`,
+      `ruleFoldOf(di) 定义 1 + 调用 ${countOf(eng179, 'const foldOf = ruleFoldOf(di);')} 处 · foldOf 消费 ${countOf(eng179, '* foldOf,')} 处`,
     )
     const kwStart = eng179.indexOf('function keywordHitScore(')
     const kwEnd = kwStart === -1 ? -1 : eng179.indexOf('\nfunction ', kwStart + 10)
@@ -11619,20 +11632,24 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     // bandize() 的排序：先比档位、再比分数。档位是从 _raw 算出来的，
     // 所以要动名次就必须动 _raw——这是 0.2.179 折价失效的确切位置。
     // 0.6.4 起 `literalFallback` 里也有 `_raw: tf2`，所以这里按「折价那一行」定位，不是按第一处 `_raw: `。
-    const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ') && l.includes('ruleFoldOf(di)')) ?? ''
+    const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ') && (l.includes('ruleFoldOf(di)') || l.includes('* foldOf'))) ?? ''
     check(
       'HZ15 折价落在 _raw 上：分档按 _raw 走、档位优先于分数，只折 score 等于没折',
       // 0.6.12 起定序比较器抽成 orderOf（档位 → 分数 → 更新得更晚的在前 → id 自然序），
       // 有界堆与全序两路共用它；折价仍必须折在 _raw 上，否则分档看不见它。
+      // 0.6.14 起 helper 每条只算一次落进 `foldOf`，所以 _raw 那一行乘的是变量（值不变）。
       eng180.includes('const orderOf = (a, b) => (a._bandTmp - b._bandTmp) || (b.score - a.score)') &&
-        rawLine.includes('* ruleFoldOf(di)'),
+        (rawLine.includes('* ruleFoldOf(di)') || rawLine.includes('* foldOf')) &&
+        rawLine.includes('const foldOf = ruleFoldOf(di);') === false,
       rawLine.length > 0 ? `_raw 行 ${rawLine.trim().length} 字符，折价乘在末尾` : '_raw 行没找到',
     )
     check(
       'HZ15 折价走同一个 helper：定义一处、引用三处（_raw / 打分 / explain），口径不可能分叉',
       countOf(eng180, 'const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;') === 1 &&
-        countOf(eng180, 'ruleFoldOf(di)') === 3,
-      `ruleFoldOf(di) 引用 ${countOf(eng180, 'ruleFoldOf(di)')} 处（_raw / 打分 / explain）`,
+        // [0.6.14] 三条消费路径仍吃同一个乘子，只是乘子先落进 `foldOf`（每条算一次，不重算三遍）。
+        countOf(eng180, 'const foldOf = ruleFoldOf(di);') === 1 &&
+        countOf(eng180, '* foldOf,') + countOf(eng180, '* foldOf *') >= 2,
+      `ruleFoldOf(di) 调用 ${countOf(eng180, 'ruleFoldOf(di)')} 处（定义 + 一次求值）· foldOf 消费 ${countOf(eng180, '* foldOf,') + countOf(eng180, '* foldOf *')} 处`,
     )
     check(
       'HZ15 同义词表：讲「开个小门」的词归例外组、不归噪声组（同一个词放两组会把两题一起搅坏）',
@@ -11649,7 +11666,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ15 G28 两档比值都在：缘由句 0.6、现状句 0.3，源码判据认 ruleFoldOf 四笔',
       gold180.includes('Math.abs(fold1 - 0.6) < 0.01') &&
         gold180.includes('Math.abs(fold2 - 0.3) < 0.01') &&
-        gold180.includes('缘由判定的四笔（两个常量 / 开关 / 三处同一 helper / 缘由词优先）没落全'),
+        // 0.6.14 起折价「每条算一次、乘两处」，文案随之改口径（改建不删）。
+        gold180.includes('缘由判定的四笔（两个常量 / 开关 / 同一条 helper 算一次乘两处 / 缘由词优先）没落全'),
       'G28 两档比值 + 四笔判据都在',
     )
     check(
@@ -11863,7 +11881,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const meowSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const meowMod = await import('./vendor/meow-memory/lib/index.js')
   check('FW 纯函数：三档权重（active 1 / stale 0.6 / archived 0.35 / 缺省 1）', meowMod.statusWeight('active') === 1 && meowMod.statusWeight('stale') === 0.6 && meowMod.statusWeight('archived') === 0.35 && meowMod.statusWeight(void 0) === 1)
-  check('FW 源码: 两个打分器都乘同一个权重', meowSrc.includes('score: raw[di] * w * impW * stW * ruleFoldOf(di)') || meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
+  // [0.6.14] 主打分器里的乘子改成 `foldOf`（每条算一次），keywordHitScore 那一路仍是内联写法：两处必须同权重。
+  check('FW 源码: 两个打分器都乘同一个权重', (meowSrc.includes('score: raw[di] * w * impW * stW * foldOf') || meowSrc.includes('score: raw[di] * w * impW * stW * ruleFoldOf(di)')) || meowSrc.includes('score: raw[di] * w * impW * stW * (causeQ && String(docs[di].level ?? "") === "rules" ? causeRuleFold : 1),') && meowSrc.includes('raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)'))
   check('FW 源码: docs 把 status 带进打分器（不带就等于没降权）', meowSrc.includes('status: r.status') && /const stW = (anchored \? 1 : )?statusWeight\(docs\[di\]\.status\)/.test(meowSrc))
   check('FW 源码: explain 里有 statusWeight 分项', meowSrc.includes('statusWeight: Math.round(stW * 1e3) / 1e3'))
   const docsFw = [
@@ -12372,13 +12391,19 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const MW = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const MWmod = { search: (await import('./vendor/meow-memory/lib/index.js')).search }
   // 源码顺序：补分块必须在 push 循环之后（而不是写进 raw）
-  const iPush = MW.indexOf('_vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di]')
+  // [0.6.14] 原样证据不再挂在 hit 上（`delete h._vb` 会把对象打进字典模式），改走同下标平行数组；
+  // 「push 之后」这个位置关系仍然成立，只是锚点从对象字面量换成 `vbTmp.push(vbOf);`。
+  const iPush = MW.indexOf('vbTmp.push(vbOf);')
   const iUnit = MW.indexOf('const unitScore = topScore > 0 ? topScore : 1;')
   const iSort = MW.indexOf("bandize(hits, '_raw', k)")
   check('VW1 补分块在 push 之后', iPush > 0 && iUnit > iPush, `${iPush}/${iUnit}`)
   check('VW2 补分块在 sort 之前（排位之前就定死）', iUnit > 0 && iSort > iUnit, `${iUnit}/${iSort}`)
   check('VW3 单位取榜首实际分数', MW.includes('const unitScore = topScore > 0 ? topScore : 1;'))
-  check('VW4 临时字段有死期：补完就 delete', MW.includes('delete h._vb;'))
+  // [0.6.14] 「search 这条主路」不再靠 delete 收场：临时值走同下标平行数组，hit 对象上不落痕迹。
+  const iTmp = MW.indexOf('const vbTmp = [];')
+  const iTmpEnd = MW.indexOf("bandize(hits, '_raw', k)")
+  const searchHot = iTmp > 0 && iTmpEnd > iTmp ? MW.slice(iTmp, iTmpEnd) : ''
+  check('VW4 临时字段有死期：主路不再用 delete 摘（平行数组 → 对象不进字典模式）', iTmp > 0 && !searchHot.includes('delete h._vb;') && !searchHot.includes('delete h._sr;') && !searchHot.includes('delete h._lv;') && !searchHot.includes('delete h._tr;'))
   check(
     'VW5 两支打分器都走 post-pass（search 与 keywordHitScore 各一处 unitScore）',
     (MW.match(/const unitScore = topScore > 0 \? topScore : 1;/g) || []).length === 2,
@@ -13253,6 +13278,66 @@ dt063: {
   const vS4 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS4 = vS4.length === 3 ? vS4[0] * 10000 + vS4[1] * 100 + vS4[2] : 0
   check('OR073 版本号不低于 0.6.13（后续补丁不必回头改这一条）', vNumS4 >= 613, vS4.join('.'))
+}
+
+// 0.6.14：热路不许先挂后摘——临时值进平行数组，回执对象字段集合不变
+{
+  const hSrc = readFileSync(new URL('./tools/probe-hotpath.mjs', import.meta.url), 'utf8')
+  const hLabels = ['H1 ', 'H2 ', 'H3 ', 'H4 ', 'H5 ', 'H6 ']
+  const hMissing = hLabels.filter((t) => !hSrc.includes(`'${t}`) && !hSrc.includes(`\`${t}`))
+  const wired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-hotpath.mjs'")
+  const excused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-hotpath.mjs'")
+  check(
+    'OR074 热路探针 H1–H6 在位（无 delete / 两遍逐位 / 补分·层级·断言密度各只落该落的那条 / 换尺子清缓存），check-all 挂线且列进取根例外',
+    hMissing.length === 0 && wired && excused,
+    hMissing.length ? `缺 ${hMissing.join(' ')}` : `挂线 ${wired ? 'ok' : 'miss'} / 例外 ${excused ? 'ok' : 'miss'}`,
+  )
+  const engSrc5 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  // 只切主路（`const vbTmp = [];` → `bandize(hits, '_raw', k)`）：`keywordHitScore` 那条路另有自己的
+  // `_vb` 生命周期，不在这一版的处理范围里，但它也不许被误判成「主路还在 delete」。
+  const hotStart5 = engSrc5.indexOf('const vbTmp = [];')
+  const hotEnd5 = engSrc5.indexOf("bandize(hits, '_raw', k)")
+  const hot5 = hotStart5 > 0 && hotEnd5 > hotStart5 ? engSrc5.slice(hotStart5, hotEnd5) : ''
+  const tmpOk = hot5.length > 0 &&
+    ['const srTmp = [];', 'const lvTmp = [];', 'const trTmp = [];'].every((t) => hot5.includes(t)) &&
+    ['_vb', '_sr', '_lv', '_tr'].every((k) => !hot5.includes(`delete h.${k};`))
+  const idfOk = engSrc5.includes('const idfAt = (t) =>') && engSrc5.includes('idfCache = new Map();')
+  check(
+    'OR074 引擎主路里四个临时值进平行数组（不再 delete 摘字段），idf 每趟记一次并在换尺子时清账',
+    tmpOk && idfOk,
+    `平行数组 ${tmpOk ? 'ok' : 'miss'} / idf 记忆化 ${idfOk ? 'ok' : 'miss'}`,
+  )
+  const H2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  let cleanOk = false
+  let cleanDetail = 'search 未导出'
+  if (typeof H2.search === 'function') {
+    const docs = ['0mhot111', '0mhot222', '0mhot333'].map((id, i) => ({
+      id,
+      level: 'fact',
+      title: 't',
+      content: `alpha beta delta ${i}`,
+      importance: 2,
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: ['alpha'],
+      project: 'p',
+    }))
+    const r = H2.search('alpha beta', docs, { k: 5, explain: true, now: 1795470000000 })
+    const leaks = r.filter((h) => ['_vb', '_sr', '_lv', '_tr', '_bandTmp'].some((k) => k in h))
+    cleanOk = r.length === 3 && leaks.length === 0 && r.every((h) =>
+      typeof h.explain === 'object' && '_subj' in h && 'cover' in h && 'score' in h && !('_raw' in h) && !('_band' in h))
+    cleanDetail = `${r.length} 条 / 泄漏 ${leaks.length}`
+  }
+  check('OR074 进程内可见：search 回执不含临时字段（`_vb/_sr/_lv/_tr/_bandTmp` 与用过的 `_raw`/`_band` 都不许留着），`_subj`/`cover`/`score`/explain 照旧在', cleanOk, cleanDetail)
+  check(
+    'OR074 文档在位：INTERNAL 9.213 写了「热路不许先挂后摘」，README 写了「热路上不留痕」，DESIGN 有 ## 209.，PLAN 有 0.6.14',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.213 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('热路上不留痕') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 209. ') &&
+      /0\.6\.14/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS5 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS5 = vS5.length === 3 ? vS5[0] * 10000 + vS5[1] * 100 + vS5[2] : 0
+  check('OR074 版本号不低于 0.6.14（后续补丁不必回头改这一条）', vNumS5 >= 614, vS5.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
