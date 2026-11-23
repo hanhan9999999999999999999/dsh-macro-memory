@@ -30,6 +30,12 @@ const verAtLeast = (v, maj, min, pat) =>
 // 以后只改 package.json + lib/index.js + README，判据一处都不用动。
 const PKG_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
 const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
+// [0.6.8] 支数地板：只许加、不许减（PLAN §12 #6）。
+// 支数每一版都在动，写成 `===` 就是「每加一支红一次、还得手工改两处文档」；
+// 写成 `>=` 之后，减一支（删套件 / 忘了注册）立刻红，加一支不必动这里。
+// 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
+// 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）。
+const SUITE_FLOOR = 37
 let failures = 0
 function check(label, ok, extra) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra === undefined ? '' : '  ' + extra}`)
@@ -933,14 +939,12 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    // 34 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
-    //      + 0.5.0 的 probe-adapt（换场景适应力量尺）+ 0.6.0 的 probe-idf（规模自适应 idf 的开关账）
-    //      + 0.6.2 的 probe-empty（空回账：不许把「有」说成「没有」）
-    //      + 0.6.3 的 probe-determinism（定序账：同一问句同一答案）
-    //      + 0.6.4 的 probe-literal（单字问句账：切不出词 ≠ 库里没有）
-    //      + 0.6.6 的 probe-dirty（脏记忆账：缺 keywords 的条目不许把整次检索打成异常）
-    steps.length === 36 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
-    notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
+    // 0.6.8 起这条不再钉精确支数：支数每一版都在动，写成等值等于「每加一支就红一次」，
+    // 而红一次就要人手工改两处文档——那不是判据，是维护债（PLAN §12 #6）。
+    // 现在守的是地板：只许加、不许减；地板抬一格是「这一版起承诺有这么多支」的动作，
+    // 与「今天恰好几支」分开记。实际支数由 check-all 的汇总与基线对账负责。
+    steps.length >= SUITE_FLOOR && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    notImported.length ? notImported.join(', ') : `${steps.length} 支（地板 ${SUITE_FLOOR}）/ ${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
   const faked = Object.keys(NO_ROOT).filter((f) => /join\(root,/.test(srcOf(f.split('/').pop())))
@@ -12943,6 +12947,46 @@ dt063: {
   const v = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNum = v.length === 3 ? v[0] * 10000 + v[1] * 100 + v[2] : 0
   check('DT067 版本号不低于 0.6.7（后续补丁不必回头改这一条）', vNum >= 607, v.join('.'))
+}
+
+// 0.6.8：会随时间前进的量只许写成单调式（判据自己的寿命）
+{
+  const self = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8')
+  const floorDecl = /const SUITE_FLOOR = \d+/.test(self)
+  const floorUsed = self.includes('steps.length >= SUITE_FLOOR')
+  const eqGone = !/steps\.length === \d+/.test(self.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n'))
+  check(
+    'MT068 支数断言是地板式：`SUITE_FLOOR` 声明 + `steps.length >= SUITE_FLOOR`，旧的等值写法清零',
+    floorDecl && floorUsed && eqGone,
+    `声明 ${floorDecl ? 'ok' : 'miss'} / 用 ${floorUsed ? 'ok' : 'miss'} / 旧等值 ${eqGone ? '清零' : '还在'}`,
+  )
+  const mtProbe = readFileSync(new URL('./tools/probe-monotone.mjs', import.meta.url), 'utf8')
+  const mLabels = ['M1 ', 'M2 ', 'M3 ', 'M4 ', 'M4b ', 'M5 ', 'M6 ', 'M7 ', 'M8 ']
+  const mMissing = mLabels.filter((t) => !mtProbe.includes(`'${t}`))
+  const wired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-monotone.mjs'")
+  check(
+    'MT068 探针钉住 M1–M8（地板 / 静态扫描 / 扫描器能红 / 两处文档对账 / 阶梯单调 / 旧账冻结 / 耗时预算 / 扫描面完整）并挂进 check-all',
+    mMissing.length === 0 && wired,
+    `${mMissing.length ? `缺 ${mMissing.join(' ')}` : 'M1–M8 都在'} / check-all ${wired ? 'ok' : 'miss'}`,
+  )
+  check(
+    'MT068 文档在位：INTERNAL 9.207 写了判据自己的寿命，README 写了「会随时间前进的量」，DESIGN 有 ## 203.',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.207 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('会随时间前进的量') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 203. '),
+  )
+  const baseMt = JSON.parse(readFileSync(new URL('./tools/baselines.json', import.meta.url), 'utf8'))
+  const totalMt = Object.values(baseMt.counts).reduce((a, n) => a + n, 0)
+  const claimsMt = readFileSync(new URL('./docs/EVAL-CLAIMS.md', import.meta.url), 'utf8')
+  const claimNum = Number(((claimsMt.match(/\*\*([\d,]+) 断言\*\*/) ?? [])[1] ?? '').replace(/,/g, ''))
+  check(
+    'MT068 文档「现在」的断言总数与基线合计一致（数字由事实现取，不靠手抄）',
+    totalMt > 0 && claimNum === totalMt,
+    `文档 ${claimNum || '?'} / 基线 ${totalMt}`,
+  )
+  const v = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNum = v.length === 3 ? v[0] * 10000 + v[1] * 100 + v[2] : 0
+  check('MT068 版本号不低于 0.6.8（后续补丁不必回头改这一条）', vNum >= 608, v.join('.'))
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
