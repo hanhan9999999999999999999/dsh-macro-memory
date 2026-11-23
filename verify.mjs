@@ -35,7 +35,7 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 写成 `>=` 之后，减一支（删套件 / 忘了注册）立刻红，加一支不必动这里。
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）。
-const SUITE_FLOOR = 37
+const SUITE_FLOOR = 38
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -12985,6 +12985,37 @@ dt063: {
   const v = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNum = v.length === 3 ? v[0] * 10000 + v[1] * 100 + v[2] : 0
   check('MT068 版本号不低于 0.6.8（后续补丁不必回头改这一条）', vNum >= 608, v.join('.'))
+}
+
+// 0.6.9：量尺自己也得先量（PLAN §12 #2「评测做硬」）
+{
+  const rigorSrc = readFileSync(new URL('./tools/probe-rigor.mjs', import.meta.url), 'utf8')
+  const rLabels = ['R1 ', 'R2 ', 'R2b ', 'R3 ', 'R4 ', 'R5 ', 'R6 ']
+  const rMissing = rLabels.filter((t) => !rigorSrc.includes(`'${t}`) && !rigorSrc.includes(`\`${t}`))
+  const wiredR = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-rigor.mjs'")
+  check(
+    'RT069 量尺探针钉住 R1–R6（3 次 std=0 / 语料互换 / 打乱 / 问句互换 / 独立 scorer / 位置偏置能红）并挂进 check-all',
+    rMissing.length === 0 && wiredR,
+    `${rMissing.length ? `缺 ${rMissing.join(' ')}` : 'R1–R6 都在'} / check-all ${wiredR ? 'ok' : 'miss'}`,
+  )
+  check(
+    'RT069 量的是既有的真库样张（gold-recall.json 的 45+14+10 问），不新造语料也不碰真库',
+    rigorSrc.includes("'gold-recall.json'") && rigorSrc.includes('V.search(item.q, docList, { k: 10 })') && ["'queries'", "'paraphrase'", "'anchor'"].every((g) => rigorSrc.includes(g)),
+  )
+  check(
+    'RT069 能红证明在位：进程内注入「同分按语料序」的偏置，A/B 互换后第一名命中数必须不同',
+    rigorSrc.includes('biasedTop1') && rigorSrc.includes('biasNormal !== biasReversed'),
+  )
+  check(
+    'RT069 文档在位：INTERNAL 9.208 写了量尺的三次与互换，README 写了「量尺自己也得先量」，DESIGN 有 ## 204.，PLAN §12 #2 标了已做',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.208 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('量尺自己也得先量') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 204. ') &&
+      readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('已做（0.6.9'),
+  )
+  const vR = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumR = vR.length === 3 ? vR[0] * 10000 + vR[1] * 100 + vR[2] : 0
+  check('RT069 版本号不低于 0.6.9（后续补丁不必回头改这一条）', vNumR >= 609, vR.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
