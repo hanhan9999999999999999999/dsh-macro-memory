@@ -10,8 +10,9 @@
 
 | 项 | 读数 | 日期 | 版本 / commit | 复核命令 |
 |---|---|---|---|---|
-| 健康基线 | 31 支 suite / **3,522 断言** / failed 0 / 与 baseline 逐支一致（约 206s） | 2026-11-22 23:00 | 0.5.0 · 本地（未提交） | `node tools/check-all.mjs` |
-| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-22 23:00 | 0.5.0 | `node tools/doctor.mjs`（结果 PASS） |
+| 健康基线 | 32 支 suite / **3,536 断言** / failed 0 / 与 baseline 逐支一致（约 220s） | 2026-11-23 22:20 | 0.6.0 · 本地（未提交） | `node tools/check-all.mjs` |
+| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-23 22:20 | 0.6.0 | `node tools/doctor.mjs`（结果 PASS） |
+| 库变大后的照抄召回（新尺子） | 同一批 52 问、真库快照 660 条 active：照抄 **hit@1 0.895 → 0.921**、MRR 0.934 → 0.947；换说法 **0.333 → 0.417**、MRR 0.528 → 0.569；时间锚 0.500 不动；**救回 2 / 误伤 0 / 移位 0**（逐题只有两条 #2→#1）。关掉即回 0.5.0 逐位相同（52/52）。同尺横比 v0.3.0 / v0.4.0 / v0.5.0 三档逐位相同、只有本节双升 | 2026-11-23 22:00 | 0.6.0 · meow 补丁（局部 idf，`adaptiveIdf` 产品路径默认开） | `node tools/probe-idf.mjs`（D1–D11 十三条；读数见 `docs/PLAN-0.6.md` §1） |
 | 换场景适应力（新尺子） | 5 个陌生领域（医学/法律/园艺/天文/财务）× 12 条 + 10 条换说法问句：换说法 **hit@3 0.40 → 0.80**、hit@1 0.00 不动、MRR 0.342；两遍合并**第一名改判 0 题**；关共现自学习 hit@3 掉回 0.30；混库 60 条与单域持平；同词 hit@1 100% | 2026-11-22 22:40 | 0.5.0 · meow 补丁 `[macro-fusion 0.5.0 · P1]` | `node tools/probe-adapt.mjs`（A0–A5 九条） |
 | 版本与接口面 | 0.3.0，接口面冻结 | 2026-11-22 | `2c029b0`（`chore(baselines): 0.3.0 · 24 suites / 3323 assertions`） | `git log --oneline -1` |
 | 工具面 | 8 个统一 `memory_*` 工具 + 一段最小注入 | 2026-11-22 | 0.3.0 | `node tools/probe-toolsize.mjs` |
@@ -30,7 +31,9 @@
 
 关于「3,398」的来路：3,367 → **3,398**（+31 = 12 条 `hy:` 判据（verify 的 A58d）+ 18 条 `tools/probe-hygiene.mjs`（H1–H18）+ 1 条 `tools/doctor.mjs`（补上 `probe-hygiene.mjs` 的文档出处后那条 WARN 转 PASS 才计入），套件 26→27）。verify 单支 1,757 → 1,769，其余 26 支 1,610 → 1,629。同一节 `docs/INTERNAL.md` 9.193 记了这段的四个连带坑：`probe-words` 把「体检六类」写死、`PANEL_SUMMARY` 220 字撞 200 字可读性尺、`verify` 的 `steps.length === 26` 与 `check-all` 支数注释、schema 体积 13,366 → 13,372 B。
 
-关于「3,522」的来路：3,511 → **3,522**（+11 = 11 条 `tools/probe-adapt.mjs`（A0 三条 / A1 / A2 两条 / A3 / A4 两条 / A5 两条）+ 0 条 `verify.mjs`（支数断言 30→31 只是数字没加条）+ `tools/doctor.mjs` 绿态回填 ±2，套件 30→31）。**这一版最该记住的一条**：改判据不是改数字，是改因果——`probe-gold` 的 G-W4 从「宽池 ≥ 窄池」改成守绝对量（窄池照抄 0.977 → 1.000 之后，相对判据把「真干扰项压到第 2」判成红），`probe-adapt` 的消融从 hit@1 换到 hit@3（桥是补位性质，命中提升全在 2、3 位）。两处都把「为什么改、改了代价是什么」写进注释与 `docs/INTERNAL.md` 9.198。
+关于「3,523」的来路：3,511 → **3,523**（+12 = 12 条 `tools/probe-adapt.mjs`（A0 三条 / A1 / A2 两条 / A3 / A4 两条 / A5 两条 / A6 一条）+ 0 条 `verify.mjs`（支数断言 30→31 只是数字没加条）+ `tools/doctor.mjs` 绿态回填 ±2，套件 30→31）。A6 是 11-23 复跑 LoCoMo 之后补的：它不量收益，只钉边界——纯拉丁语料上 `coocForms` 恒空、两遍与一遍逐位相同，谁将来想让英文也吃到桥，先让这条红再改判据与文档。**这一版最该记住的一条**：改判据不是改数字，是改因果——`probe-gold` 的 G-W4 从「宽池 ≥ 窄池」改成守绝对量（窄池照抄 0.977 → 1.000 之后，相对判据把「真干扰项压到第 2」判成红），`probe-adapt` 的消融从 hit@1 换到 hit@3（桥是补位性质，命中提升全在 2、3 位）。两处都把「为什么改、改了代价是什么」写进注释与 `docs/INTERNAL.md` 9.198。
+
+关于「3,536」的来路：3,523 → **3,536**（+13 = 13 条 `tools/probe-idf.mjs`（D1 默认=关 / D2 小池不动 / D3 λ 上限 0 / D4 闸门不是摆设 / D5 全泛词退全库 / D6 结构不变量 / D7 窗口各归各簇 / D8 α 真的接上 / D8b cap 真的接上 / D9 p95 增量 / D10 返回字段不变 / D10b 回执带 `status` / D11 候选不凭空造）+ 0 条 `verify.mjs`（支数断言 31→32 只是数字没加条），套件 31→32）。**这一版最该记住的一条**：`probe-idf` 不测准确率——准确率要 ≥300 条真实语料才有意义，硬造「刚好翻转」的合成样张只能得到假绿（试过两条思路都自相矛盾：正解不进 top-8 就永远修不回来；「簇内普及但全库稀有」在数学上要求 p 同时高和低）。它只钉两件事：**这机制不许动小库与默认路径**（D1/D2/D3 逐位相同）、**旋钮真的接在判分上**（D4/D6/D8/D8b 能红）。准确率读数落在 `docs/PLAN-0.6.md` §1 与本节「库变大后的照抄召回」行，两边数字必须同源。
 
 关于「3,511」的来路：3,476 → **3,511**（+35 = 14 条 `as:` 判据（verify 的 A58g）+ 18 条 `tools/probe-cooc.mjs`（K1–K6）+ 4 条 `tools/doctor.mjs`（P5 补丁账 + 三条绿态才计入的同步/指纹判据）+ 2 条 `tools/probe-cost.mjs`（C5b/C5c），另有几支因绿态转红态消失的条件断言回填 ±1，套件 29→30）。verify 单支 1,797 → 1,811。**这里有一个必须记住的坑**：`--update-baselines` 在「红着跑」的那一轮会把少掉的断言数记成新基线（drift 态下 `两处比较` / `账本指纹` 后面三条绿态判据不出现 → doctor 记成 159 而实际绿态是 162），所以顺序只能是「先两树同步 → 再跑绿 → 再 update → 再跑一遍确认 `断言数与基线一致`」。连带坑记在 `docs/INTERNAL.md` 9.197：两级证据混一张表把宽池换说法打回 13/14、C5b 快照必须冻结「只差一个变量」的那一态。
 
@@ -63,6 +66,14 @@
 对照 `E:\Temp\omni-eval\report_retrieval.json`（2026-11-20，同机同数据集，被测代码是 0.2.x，`avg_retrieved` 19.99）：hit@5 `0.5013 → 0.6159`、hit@10 `0.582 → 0.6953`、hit@20 `0.651 → 0.7546`、recall@20 `0.5835 → 0.6822`、MRR `0.3768 → 0.4953`、nDCG@10 `0.3933 → 0.5029`；分类 hit@20：multi-hop `0.5319 → 0.7447`、temporal `0.7103 → 0.7882`、open-domain `0.4022 → 0.4783`、single-hop `0.6956 → 0.7753`。**本次给出的条目更少（17.77 < 19.99）却命中更高**，差值方向可信。
 
 限制（引用时必须带）：这是同机两次不同代码的读数对照，不是受控 A/B（中间隔了上百个版本改动）；自写 scorer、单次运行无 std、非官方脚本、非公开榜单；gold 命中 ≠ 回答正确；端到端 LLM-judge 自 2026-11-20 起未重测（B 节）。
+
+### A2.1 0.5.0 复跑（2026-11-23，`omni5`）：与 0.4.0 **逐位相同**
+
+- 跑法同上，`--version omni5`（ingestion 6m41s / search 12s）；sidecar 的检索入口改调 `Meow.searchAdaptive`（与产品 `rankForSearch` 同一条路），`bandKeep:false`、`k=docs.length` 口径不变。结果 `results/locomo/macromem-omni5`，报告 `E:\Temp\omni-eval\report_omni5_retrieval.{json,md}`。
+- 读数：hit@5 `0.6159` / hit@10 `0.6953` / hit@20 `0.7546` / recall@20 `0.6822` / MRR `0.4953` / nDCG@10 `0.5029` / avg_retrieved `17.77` / avg_context_chars `5,947.2`，分类四项 hit@20 亦逐一相同。
+- **为什么相同（三组证据，不是没跑到新代码）**：①`stores\*_omni5` 20 个库全新建、search 分片 04:17:28–04:17:40 现生成；②`E:\Temp\omni-eval\diag_omni5_diff.mjs` 在 user 0/1/2（419/369/663 条）385 条问句上，`search` 与 `searchAdaptive` 的 top-5 / top-20 改动数 **均为 0**；③`diag_omni5_scores.mjs` 直接喂 `synFormBridge:true`（绕过「桥接得上才跑」门），前 5 名分数逐位相同——第二遍没有新增候选。
+- **机制原因**：`tokenize()`（`vendor/meow-memory/lib/index.js:1647`）对 CJK 段切二元组、对拉丁段只投整词小写；`buildCoocForms()`（`index.js:2694`）建表时 `if (f === word) continue;`（`index.js:2702`）丢掉「碎片==整词」项。纯英文库里 `coocForms` 恒为空 Map，词形桥无坐标可翻译，`searchAdaptive` 走 `sameOrder` 短路返回第一遍原对象。
+- 结论（写清楚，别含糊）：**0.5.0 的「换场景适应力」是 CJK 词形桥，对英文 LoCoMo gold 集结构上不生效**；它在中文陌生领域上的收益由 `tools/probe-adapt.mjs` 度量（换说法 hit@3 40% → 80%，第一名改判 0 题）。这条边界必须与读数同时引用，否则等于把「没变」说成「没进步」。
 
 ---
 
@@ -132,9 +143,9 @@ git log --oneline -1              # 与表 A 的 commit 对齐
 # 本地检索 gold 口径（不花 key，见 A2；约 8 分钟）
 cd E:\Temp\omni\OmniMemEval-main
 $env:OMNIMEMEVAL_ENV_FILE='.env.macromem'
-python scripts\locomo\locomo_ingestion.py --lib macromem --version omni4 --workers 2 --clear
-python scripts\locomo\locomo_search.py   --lib macromem --version omni4 --workers 2 --top-k 20
-python E:\Temp\omni-eval\score_locomo.py --data data\locomo\locomo10.json --results results\locomo\macromem-omni4
+python scripts\locomo\locomo_ingestion.py --lib macromem --version omni5 --workers 2 --clear
+python scripts\locomo\locomo_search.py   --lib macromem --version omni5 --workers 2 --top-k 20
+python E:\Temp\omni-eval\score_locomo.py --data data\locomo\locomo10.json --results results\locomo\macromem-omni5
 ```
 
 ```powershell

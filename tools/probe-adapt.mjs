@@ -203,6 +203,31 @@ console.log(`MEASURE 冷域换说法基线：hit@1 ${pct(paraH1)} · hit@3 ${pct
     `${pct(mixed.hit3)} → ${pct(mixedOff.hit3)}`)
 }
 
+// ── A6 边界：拉丁语料上这座桥不生效（有意为之，别当成 bug 去「修」） ──────────────
+// 0.5.0 复跑 LoCoMo（英文）时读数与 0.4.0 逐位相同，第一反应是「桥没接上」。根因在词形：
+// tokenize() 对拉丁段只投整词小写，buildCoocForms() 又丢掉「碎片==整词」，于是纯英文库的
+// coocForms 恒为空 Map，searchAdaptive 走 sameOrder 短路返回第一遍。这条判据把边界钉住：
+// 拉丁语料上两遍必须与一遍逐位相同；将来若让英文也吃到桥，先让这条红，再改判据与文档。
+{
+  const lat = [
+    { id: 'l1', content: 'Before every release the pipeline rebuilds the container image and reruns the smoke tests.' },
+    { id: 'l2', content: 'The billing worker retries failed charges three times before parking them in a dead queue.' },
+    { id: 'l3', content: 'Search latency grew after the index doubled, so we sharded it by project name.' },
+    { id: 'l4', content: 'Nightly backups are copied to cold storage and verified by checksum every Sunday.' },
+  ].map((x) => ({ ...x, level: 'fact', status: 'active', importance: 2, project: 'latin', title: '', keywords: [] }))
+  const qs = [
+    'container image rebuild before release',
+    'failed charges retried dead queue',
+    'index sharded by project name',
+    'cold storage checksum verification',
+  ]
+  const ids = (fn, q) => fn(q, lat, { k: lat.length }).map((h) => String(h.id)).join(',')
+  const one = qs.map((q) => ids(V.search, q))
+  const two = qs.map((q) => ids(V.searchAdaptive, q))
+  const diff = one.filter((x, i) => x !== two[i]).length
+  ok('A6 边界（有意为之）：拉丁语料上词形桥不生效，两遍与一遍逐位相同', diff === 0, `${qs.length} 问，改动 ${diff} 处`)
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES: ' + fail}  passed ${pass} / failed ${fail}`)
 if (fail > 0) {
   console.log(bad.map((b) => '  - ' + b).join('\n'))

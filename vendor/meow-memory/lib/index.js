@@ -2923,6 +2923,95 @@ function clearSearchIndexCache() {
   return n;
 }
 
+// ═══════════ [macro-fusion 0.6.0 · P1] 规模自适应 idf：库变大时，idf 在自己的簇里再算一遍 ═══════════
+// 问题不是「排序算法不准」，而是**同一个词的稀有度会随库变大而失真**：40 条样张里「剂量」只在 1 条出现，
+// 它几乎就是答案的指纹；578 条真库里「剂量」出现在 30 条、「医生」80 条——idf 一起掉下去，而十条各命中
+// 五个常见词的干扰项分数累加起来就翻过了正解。实测这一层稀释值 −8.8pt（同批问句：冻结样张 hit@1 0.977 →
+// 真库全量 0.889），掉的全是「邻居变多」，不是词听不懂。
+// 修法不是「先筛掉不相关的东西」（分区会漏：正解落在区外就永远找不到），而是**让大家都参赛、但按谁的主场
+// 算分**：第一遍照常用全库 idf 排，排完看前 M 名里哪些词「在候选里扎堆、在全库并不常见」——这些词才是
+// 这一问的区分词；用区分词自长出一个簇（不引入 project / 标签 / 手工词表），再在簇里算一遍 idf，按 λ 混回去。
+// 三条命门都是实测出来的，别省：
+//   ① 簇内 df 必须往全库频率上做 Dirichlet 收缩（α≈20）。5 条小簇里「人人都有」的词 df=5/5 → idf≈0.087，
+//      不收缩直接让照抄 hit@1 从 0.895 掉到 0.684（λ=1）、0.868（λ=0.5）——比不修还差。
+//   ② 簇下限 8 条（不足按第一遍名次补），否则 df 统计只在 0/1 之间跳。
+//   ③ λ 除了看榜首 margin，还必须有规模闸门 N≥300：只看 margin 时宽池 146 条换说法 hit@1 1.000→0.857
+//      （2 题改判）——margin 小不等于被稀释，也可能只是两条本来就很像。
+// 开关：opts.adaptiveIdf === true 才生效（默认关，关掉与改动前逐位相同）；产品入口 rankForSearch 打开它。
+// 参数是量出来的、不是拍出来的（0.6.0 收口，660 条真库 / 照抄 38 + 换说法 12 + 锚 2）：
+//   topM=8、cover=0（簇恒为 8 条）、α=100（强收缩）、λ 上限 0.3（只做保守微调）。
+//   窗口 64 + cover 0.6 是「按设计意图」的写法，实测净负（照抄 0.868、换说法 0.250、误伤 2）：
+//   候选窗口越大，区分词统计越接近全库比例，泛词与指纹词分不开，重扫反而把正解挤下去。
+//   窗口 8 + α100 + cap0.3 是唯一同时满足「照抄 0.921 / 换说法 0.417 / hit@3 不动 / 误伤 0」的一档，
+//   且 cap 0.25–0.40、α 50–100 连成平台（不是尖峰）——读数见 docs/PLAN-0.6.md §1。
+const IDF_CLUSTER_TOP_M_DEF = 8;
+const IDF_CLUSTER_MIN_DEF = 8;
+const IDF_CLUSTER_COVER_DEF = 0;
+const IDF_ALPHA_DEF = 100;
+const IDF_SCALE_GATE_DEF = 300;
+const IDF_MARGIN_HI_DEF = 0.15;
+const IDF_MARGIN_LO_DEF = 0.05;
+const IDF_LAM_CAP_DEF = 0.3;
+// 榜首领先多少算「已经分得很开」（margin 大 → λ=0，不加局部 idf；margin 小 → λ=1，完全按簇算）
+function adaptiveLamOf(top1, top2, opts) {
+  const a = Number(top1) || 0;
+  const b2 = Number(top2) || 0;
+  const m = a > 0 ? (a - b2) / a : 0;
+  const hi = Number.isFinite(opts.idfMarginHi) ? opts.idfMarginHi : IDF_MARGIN_HI_DEF;
+  const lo = Number.isFinite(opts.idfMarginLo) ? opts.idfMarginLo : IDF_MARGIN_LO_DEF;
+  const span = hi - lo;
+  const cap = Number.isFinite(opts.idfLamCap) ? Math.min(1, Math.max(0, opts.idfLamCap)) : IDF_LAM_CAP_DEF;
+  if (!(span > 0)) return Math.min(cap, m > hi ? 0 : 1);
+  return Math.min(cap, Math.min(1, Math.max(0, (hi - m) / span)));
+}
+// 用「区分词」自长簇：输入第一遍的名次（raw 分降序的 di 列表）、逐条 tf、全库 df、n
+function idfClusterOf(qToks, tf, df, n, order, raw, opts) {
+  const M = Number.isFinite(opts.idfClusterTopM) && opts.idfClusterTopM > 0 ? Math.round(opts.idfClusterTopM) : IDF_CLUSTER_TOP_M_DEF;
+  const minN = Number.isFinite(opts.idfClusterMin) && opts.idfClusterMin > 0 ? Math.round(opts.idfClusterMin) : IDF_CLUSTER_MIN_DEF;
+  const cover = Number.isFinite(opts.idfClusterCover) ? Math.min(1, Math.max(0, opts.idfClusterCover)) : IDF_CLUSTER_COVER_DEF;
+  const top = order.slice(0, M);
+  if (top.length < minN) return null;
+  // 区分词：在这批候选里出现的比例，明显高于它在全库的比例。比值≈1 是「到处都是」的泛词，
+  // 比值远大于 1 才是「这一问的指纹」。dfG<2 的词没有统计意义，不当区分词。
+  const w = new Map();
+  for (const t of qToks) {
+    const dfG = df.get(t) ?? 0;
+    let dfT = 0;
+    for (const di of top) if (tf[di].has(t)) dfT++;
+    const rTop = dfT / top.length;
+    const rG = n > 0 ? dfG / n : 0;
+    const ratio = rG > 0 ? rTop / rG : rTop > 0 ? 3 : 0.5;
+    w.set(t, ratio >= 1.5 && dfG >= 2 ? (ratio - 1) * Math.log(1 + dfG) : 0);
+  }
+  let anyDistinct = false;
+  for (const v of w.values()) if (v > 0) anyDistinct = true;
+  if (!anyDistinct) return null; // 一个区分词都没有：这一问对局部 idf 没有发言权，退全库
+  const scored = [];
+  for (const di of top) {
+    let v = 0;
+    for (const [t, ww] of w) if (ww > 0 && tf[di].has(t)) v += ww;
+    if (v > 0) scored.push({ di, v });
+  }
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.v - a.v);
+  const total = scored.reduce((s, x) => s + x.v, 0);
+  const pick = [];
+  let acc = 0;
+  for (const x of scored) {
+    pick.push(x.di);
+    acc += x.v;
+    if (pick.length >= minN && (total <= 0 || acc / total >= cover)) break;
+    if (pick.length >= M) break;
+  }
+  for (const di of top) {
+    if (pick.length >= minN) break;
+    if (!pick.includes(di)) pick.push(di);
+  }
+  if (pick.length < minN) return null;
+  const dfL = new Map();
+  for (const di of pick) for (const t of tf[di].keys()) dfL.set(t, (dfL.get(t) ?? 0) + 1);
+  return { df: dfL, n: pick.length, terms: [...w].filter(([, v]) => v > 0).map(([t]) => t) };
+}
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
@@ -2952,7 +3041,9 @@ function search(query, docs, opts = {}) {
   // 但 entToks 是问句决定的，只能每条两个词的量，留在 search 里。
   const entSets = entToks.length > 0 ? docToks.map((toks) => new Set(toks)) : null;
   const ENT_W = 0.8;
-  const idfOf = (t) => Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+  const idfGlobal = (t) => Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5));
+  // [macro-fusion 0.6.0 · P1] 第一遍用全库 idf；自适应开且 λ>0 时会被换成双尺度版，然后整个候选集重扫一遍。
+  let idfOf = idfGlobal;
   const qTerms = [...new Set(q)];
   // [macro-fusion 0.2.146] 噪声地板：剔掉的词既不进 BM25，也不进覆盖度分母——
   // 只剔分子不剔分母等于「问句更难满足」，会把真正相关的条目一起裁掉。
@@ -2967,7 +3058,7 @@ function search(query, docs, opts = {}) {
     qKept = qTerms;
     qLoop = q;
   }
-  const qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+  let qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
   // 同义扩词只扩问句：表里没有的词、库里 df=0 的词都不进（扩了也没人能命中，白算一遍）。
   // [macro-fusion 0.4.0 · P5] 第四参是索引随库自建出来的共现表——手工表管「人确定过的说法」，
   // 共现表管「库里自己长出来的说法」。opts.coocLearn === false 时 index.coocSyn 为 null，
@@ -3055,6 +3146,51 @@ function search(query, docs, opts = {}) {
   } else {
     for (const di of candSet) raw[di] = scanDoc(di);
   }
+  // [macro-fusion 0.6.0 · P1] 规模自适应 idf 的第二遍：先用全库 idf 排一遍（上面那次），
+  // 再按「这一问自己的簇」重算 idf 重扫。小库（N<闸门）和关掉的路径连排序都不做，逐位保持原样。
+  let adapt = null;
+  if (opts.adaptiveIdf === true) {
+    const gate = Number.isFinite(opts.idfScaleGate) && opts.idfScaleGate >= 0 ? opts.idfScaleGate : IDF_SCALE_GATE_DEF;
+    if (n >= gate) {
+      const order = [];
+      for (let di = 0; di < docs.length; di++) if (raw[di] > 0) order.push(di);
+      if (order.length >= 2) {
+        order.sort((x, y) => raw[y] - raw[x] || x - y);
+        const cl = idfClusterOf(qKept, tf, df, n, order, raw, opts);
+        if (cl !== null) {
+          const lam = adaptiveLamOf(raw[order[0]], raw[order[1]], opts);
+          if (typeof process !== 'undefined' && process.env?.MEOW_IDF_DEBUG === '1') {
+            try {
+              console.error('[idf-debug] ' + JSON.stringify({ q: String(query), n, topM: Math.min(order.length, Number(opts.idfClusterTopM) || IDF_CLUSTER_TOP_M_DEF), cluster: cl.n, lam: Math.round(lam * 1e3) / 1e3, terms: cl.terms }));
+            } catch {
+              /* 诊断输出不许影响检索 */
+            }
+          }
+          if (lam > 0) {
+            const alpha = Number.isFinite(opts.idfAlpha) && opts.idfAlpha >= 0 ? opts.idfAlpha : IDF_ALPHA_DEF;
+            idfOf = (t) => {
+              const g = idfGlobal(t);
+              const pG = (df.get(t) ?? 0) / n;
+              const p = (cl.df.get(t) ?? 0) + alpha * pG;
+              const den = cl.n + alpha;
+              const pr = den > 0 ? p / den : pG;
+              if (!(pr > 1e-9)) return g;
+              return (1 - lam) * g + lam * Math.log(1 + (1 - pr) / pr);
+            };
+            qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
+            raw.fill(0);
+            coverOf.fill(0);
+            if (candSet === null) {
+              for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
+            } else {
+              for (const di of candSet) raw[di] = scanDoc(di);
+            }
+            adapt = { lam, cluster: cl.n };
+          }
+        }
+      }
+    }
+  }
   // [macro-fusion 0.2.148] 标识符补分挪到「加权之后」：补分以前进 raw，会被每条自己的
   // importance / 新鲜度 / 状态权重再乘一遍——于是一条 impW=1.75 的措辞命中能把「问的正是这条 id」
   // 压下去（实测问 0mwq5zzv：措辞那条 17.96，被指认那条只有 16.16）。指认是同义反复的最高形态，
@@ -3131,9 +3267,13 @@ function search(query, docs, opts = {}) {
       ...docs[di].keywords === void 0 ? {} : { keywords: docs[di].keywords },
       ...docs[di].project === void 0 ? {} : { project: docs[di].project },
       ...docs[di].created_at === void 0 ? {} : { created_at: docs[di].created_at },
+      // [macro-fusion 0.6.0 · P4] status 以前不透传：回执里分不出这条是 active / stale / archived，
+      // 调用方得为了一个字符串再 memory_read 一次（多一次往返，也容易干脆不查）。
+      // 与上面 0.2.120 那批字段同规矩：原样透传，不参与打分、不改排序。
+      ...docs[di].status === void 0 ? {} : { status: docs[di].status },
       ...docs[di].source_session === void 0 ? {} : { source_session: docs[di].source_session },
       score: raw[di] * w * impW * stW * ruleFoldOf(di),
-      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * ruleFoldOf(di) * 1e3) / 1e3 } } : {}
+      ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: docs[di].importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(adapt === null ? {} : { adaptiveIdf: { lam: Math.round(adapt.lam * 1e3) / 1e3, cluster: adapt.cluster } }), ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(rawVerbatim[di] === null ? {} : { verbatim: rawVerbatim[di].matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * ruleFoldOf(di) * 1e3) / 1e3 } } : {}
     });
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
@@ -3266,7 +3406,11 @@ function searchAdaptive(query, docs, opts = {}) {
     }
   }
   if (!bridged) return first;
-  const alt = search(query, docs, { ...opts, synFormBridge: true });
+  // [macro-fusion 0.6.0 · P1] 第二遍（桥）不吃局部 idf：桥本来就只补第 2、第 3 位，
+  // 给它双尺度 idf 会让「补位候选」按另一套稀有度重排，把补位的名额压掉。第一遍按簇算、第二遍按全库算。
+  // 第二遍（词形桥）只吃全局 idf：实测双遍并不比单遍更好（换说法 hit@3 的微小差异只有 1 题，
+  // 却把改动面翻倍），所以定稿为「只有第一遍按簇重排」。
+  const alt = search(query, docs, { ...opts, synFormBridge: true, adaptiveIdf: false });
   if (alt.length === 0) return first;
   // 融合而不是替换：第一遍的排序是主（权重 1），第二遍按名次补位（权重 FORM_MERGE_W）。
   // 为什么不用「第二遍更确定就整份替换」：实测替换会把第一遍排第一的挤下去（财务「发票丢了
@@ -9206,13 +9350,17 @@ let denseWarmPromise = null;
 // [macro-fusion 0.5.0 · P1] 词法这一路换成 searchAdaptive：听不懂时再按「碎片 → 整词」的桥听一遍。
 // 稠密这一路只要接上了就用它的融合结果（FUSION 已经做了词法+稠密的取舍），接不上则整条路走词法。
 async function rankForSearch(query, docs, opts = {}) {
-  if (denseDisabled()) return searchAdaptive(query, docs, opts);
+  // [macro-fusion 0.6.0 · P1] 产品入口默认开「规模自适应 idf」：库越大越容易把正解淹掉，
+  // 这一层专治那个。引擎里自带规模闸门（N<300 时 λ 恒 0，逐位不变），所以小库零风险；
+  // 要退回 0.5.0 的老行为，调用时传 `adaptiveIdf:false`，不用改代码也不用改配置。
+  const o = opts.adaptiveIdf === false ? opts : { ...opts, adaptiveIdf: true };
+  if (denseDisabled()) return searchAdaptive(query, docs, o);
   let fused = null;
-  try { fused = await searchHybrid(query, docs, opts); } catch { fused = null; }
+  try { fused = await searchHybrid(query, docs, o); } catch { fused = null; }
   if (denseWarmPromise === null && denseRt.state !== 'off') {
     denseWarmPromise = denseWarm(docs, opts).catch(() => null);
   }
-  return fused ?? searchAdaptive(query, docs, opts);
+  return fused ?? searchAdaptive(query, docs, o);
 }
 
 // ═══════════════════════ [macro-fusion 0.2.154] 稠密向量：可选的一路 ═══════════════════════

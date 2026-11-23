@@ -68,6 +68,7 @@ const STEPS = [
   ['tools/probe-cooc.mjs', '共现自学习扩词量尺：词源是 keywords 不是切片 / 同条 2 跨文档 1 / 三道门 / 真进召回 / 库越大越准 / 开关与缓存口径位'],
   ['tools/probe-adapt.mjs', '跨领域适应力量尺：5 个陌生领域 × 12 条，换场景换说法 hit@3 / 阴性与消融 / 两遍只补位不翻盘'],
   ['tools/probe-cost.mjs', '效率量尺：三档语料（40 / 400 / 1200）的 p50/p95、结果快照、缓存只许省时间'],
+  ['tools/probe-idf.mjs', '规模自适应 idf 的开关账：默认关 / 小池不动 / λ=0 等价 / 闸门与旋钮真接上 / 成本 ≤2ms'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
