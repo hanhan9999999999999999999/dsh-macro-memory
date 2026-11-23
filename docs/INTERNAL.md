@@ -12193,11 +12193,13 @@ for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
 - **S4** 空手问句两条路都是 0 条且不含 `NaN`。
 - **S5** 300 条 × 30 问（LCG `seed = 20261125`，每 3 条带标题、每 5 条带关键词，`i % 7 === 0` 插 `nothinghere`）两路逐位相同，不一致 0。
 
-`verify.mjs` 新增 **OR076** 六条：S0–S5 标签在位 + `check-all` 挂线 + 取根例外表第六条 / 引擎里扫倒排四件（`const scoreCandSet = () => {` / `candArr.length = 0;` / 累加那句 / `if (fl & 1) fw += FIELD_TITLE_W;` 与 `if (fl & 2) fw += FIELD_KW_W;`）+ 倒排记 `p.f.push(v);` 与 `p.t.push(...)` 且**没有** `p.w.push` + 退路两处 / 换尺子顺序递增（含 `scoreCandSet();` 在 `raw.fill(0)` 之后）/ 进程内两路逐位相同且换成 `fieldKwW: 0` 仍一致 / 文档四处 / 版本地板 ≥ 0.6.16。**没有跟改老判据**：这一版只往倒排里加字段、把打分搬了个位置，`scoreCandSet` 是新名字，老钉子钉的都是 `scanDoc` 与回执形状，一律原样通过。
+`verify.mjs` 新增 **OR076** 六条：S0–S5 标签在位 + `check-all` 挂线 + 取根例外表第六条 / 引擎里扫倒排四件（`const scoreCandSet = () => {` / `candArr.length = 0;` / 累加那句 / `if (fl & 1) fw += FIELD_TITLE_W;` 与 `if (fl & 2) fw += FIELD_KW_W;`）+ 倒排记 `p.f.push(v);` 与 `p.t.push(...)` 且**没有** `p.w.push` + 退路两处 / 换尺子顺序递增（含 `scoreCandSet();` 在 `raw.fill(0)` 之后）/ 进程内两路逐位相同且换成 `fieldKwW: 0` 仍一致 / 文档四处 / 版本地板 ≥ 0.6.16。**跟改老判据 5 处**（见 9.215.6）：这一版只往倒排里加字段、把打分搬了个位置，`scoreCandSet` 是新名字，但「协调因子 / 长度惩罚 / 覆盖度三步」这几句算式在两个函数里各有一份，钉条数的老判据因此全部要跟着改成两处；`scanDoc` 本体、`ruleFoldOf`、`lead`、`keywordHitScore` 四处钉的仍是原形，原样通过。
 
 ### 9.215.6 账
 
-支数 43 → **44**（新增 `tools/probe-score.mjs`）；断言 3,727 → **3,733**（`probe-score` +6、`OR076` +6）。
+支数 43 → **44**（新增 `tools/probe-score.mjs`）；断言 3,727 → **3,739**（`probe-score` +6、`OR076` +6；verify 1888 → 1894，老判据按「改建不删」跟改 5 处后条数不变）。
+
+跟改的 5 处（都是同一件事：打分拆两条路之后，同一句算式在两个函数里各有一份）：`GZ 只免两样` 与 `HC 只动一处` 的协调因子 1 → **2** 处；`HZ14 长度惩罚按覆盖度打折` 的 `bEff` 1 → **3** 处、`(1 - bEff + bEff * len / dl)` 2 → **4** 处；`HZ14 覆盖度三步` 的取幂与协调各 1 → **2** 处（归一那句只剩退路 1 处）；`probe-gold` 的 `G22` 同步这三步计数、并补钉扫倒排路的 `coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);` 2 处；`OR075` 与 `probe-cover` 的 `C0` 因为倒排条目换成 `{ d, f, t }` 改钉 `const pd = p.d;` + `for (let pi = 0; pi < pd.length; pi++) coverAcc[pd[pi]] += w;`。
 
 ### 9.215.7 下一版候选（已定位，未做）
 
