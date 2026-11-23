@@ -933,10 +933,11 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    // 33 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
+    // 34 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
     //      + 0.5.0 的 probe-adapt（换场景适应力量尺）+ 0.6.0 的 probe-idf（规模自适应 idf 的开关账）
     //      + 0.6.2 的 probe-empty（空回账：不许把「有」说成「没有」）
-    steps.length === 33 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    //      + 0.6.3 的 probe-determinism（定序账：同一问句同一答案）
+    steps.length === 34 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -11608,7 +11609,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ')) ?? ''
     check(
       'HZ15 折价落在 _raw 上：分档按 _raw 走、档位优先于分数，只折 score 等于没折',
-      eng180.includes('hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score))') &&
+      // 0.6.3 起排序尾巴多了定序梯子（更新得更晚的在前 → id 自然序），但「档位 → 分数」这两跳没动：
+      // 折价仍必须折在 _raw 上，否则分档看不见它（这条断言守的是那两跳，不是结尾长什么样）。
+      eng180.includes('hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score)') &&
         rawLine.includes('* ruleFoldOf(di)'),
       rawLine.length > 0 ? `_raw 行 ${rawLine.trim().length} 字符，折价乘在末尾` : '_raw 行没找到',
     )
@@ -12733,6 +12736,49 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'XA10 量具在位：probe-cost 与它的结果快照',
     existsSync(new URL('./tools/probe-cost.mjs', import.meta.url)) && existsSync(new URL('./tools/fixtures/cost-snap.json', import.meta.url)),
+  )
+}
+
+// ── DT063（0.6.3）定序：同一问句同一答案 ─────────────────────────────────────
+// 病根：分数并列时 V8 稳定排序保留语料顺序，而语料顺序是存储层给的（更新改 rowid、VACUUM、分页），
+// 于是同一问句在两套插入顺序下给出两套前十。梯子换成 分档 → 分数 → 更新得更晚的在前 → id 自然序。
+dt063: {
+  const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const engLines = eng.split('\n')
+  const ladder = 'hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score) || (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id));'
+  const stampDefs = engLines.filter((l) => l.startsWith('function stampOf(')).length
+  const laterDefs = engLines.filter((l) => l.startsWith('function laterFirst(')).length
+  check(
+    'DT063 定序梯子在位：分档 → 分数 → 更新得更晚的在前 → id 自然序（四个键都是数据本身的属性）',
+    eng.includes(ladder) && stampDefs === 1 && laterDefs === 1,
+    `stampOf ${stampDefs} 处 / laterFirst ${laterDefs} 处`,
+  )
+  check(
+    'DT063 自适应 idf 挑簇不再按语料下标定序（`raw[y] - raw[x] || x - y` 已消失）',
+    eng.includes('order.sort((x, y) => raw[y] - raw[x] || laterFirst(docs, x, y));') && !eng.includes('raw[y] - raw[x] || x - y'),
+  )
+  const localeLines = engLines.filter((l) => l.includes('localeCompare') && /cos|fuse|bandOf|raw\[/.test(l))
+  check(
+    'DT063 检索定序里没有 localeCompare（locale 随机器/ICU 变，换了机器就换顺序）',
+    localeLines.length === 0,
+    localeLines.length ? `${localeLines.length} 处参与定序` : `全文件 ${engLines.filter((l) => l.includes('localeCompare')).length} 处都在显示分组`,
+  )
+  const dtProbe = readFileSync(new URL('./tools/probe-determinism.mjs', import.meta.url), 'utf8')
+  check(
+    'DT063 定序账挂进了 check-all',
+    readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes(`['tools/probe-determinism.mjs',`),
+  )
+  const needLabels = ['D1 ', 'D2 ', 'D3 ', 'D4 ', 'D5 ', 'D6 ', 'D7 ', 'D8 ']
+  const missingLabels = needLabels.filter((t) => !dtProbe.includes(`'${t}`))
+  check(
+    'DT063 探针钉住八条（D1–D8，含「挖掉梯子就换前十」的能红证明）',
+    missingLabels.length === 0,
+    missingLabels.length ? `缺 ${missingLabels.join(' ')}` : 'D1–D8 都在',
+  )
+  check(
+    'DT063 文档在位：INTERNAL 9.202 写了病根与梯子，README 里程碑写了「同一问句同一答案」',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.202 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('同一问句同一答案'),
   )
 }
 

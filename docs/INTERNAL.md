@@ -11442,3 +11442,70 @@ nate       → 5 条     （与真引擎同）
 ### 9.201.7 账
 
 `tools/probe-empty.mjs` 十四条进 check-all，支数 32 → **33**，断言 3,540 → **3,554**；`tools/bench-locomo.mjs` 进 `tools/manual-tools.mjs` 手动账本（`smoke: false`：数据集在仓库外，没有 `--data` 时按设计 exit 2 打用法），`tools/probe-tools.mjs` 由此 45 → **46 个脚本 = check-all 32 + 手动账本 8 + 仅被 import 6**。
+
+## 9.202 同一问句，同一答案：分数并列时不许「谁先进库谁在前」（0.6.3）
+
+### 9.202.1 症状：同一份记忆，两种插入顺序，两套前十
+
+`vendor/meow-memory/lib/index.js` 的 `bandize()` 是全库最后一跳定序：
+
+```js
+hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score));
+```
+
+分数并列时没有第三把钥匙。V8 的 `Array#sort` 是稳定排序，于是**并列组内的顺序 = 语料顺序**。造一份 40 条同构语料（内容一模一样，分数必然全并列）直接量：
+
+```
+原序  ：t-00,t-01,t-02,t-03,t-04
+乱序 1：t-31,t-23,t-28,t-38,t-27
+```
+
+前十换了一批人，而问句一个字没变。这不是「排序差一点点」，是**结果由存储布局决定**：生产里 `docs` 的顺序不是我们给的——存储层更新会改 rowid、VACUUM 与分页会换顺序、导出再导入会彻底打乱。于是「同一问句同一答案」这条产品承诺在现场不成立，`docs/EVAL-CLAIMS.md` 里每个读数也都只是「抽到的那一次」。
+
+顺带查出同一类的两处：
+
+- `searchAdaptive()` 的自适应 idf 挑簇那一跳写的是 `order.sort((x, y) => raw[y] - raw[x] || x - y)`——`x - y` 是**语料下标**，并列同样按插入顺序，簇一换、`lam` 与 top-M 跟着换；
+- 稠密通道与 RRF 融合的并列用 `String(a.id).localeCompare(String(b.id))`——`localeCompare` 的顺序随 ICU/locale 变，**换一台机器就换顺序**。
+
+### 9.202.2 处方：四把钥匙，全是数据本身的属性
+
+```js
+hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score) || (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id));
+```
+
+- **分档**（`_raw` 决定）→ **分数** → **更新得更晚的在前** → **id 自然序**。前三把是既有的语义（跨档不许越级、同档按分），第四把是这次补的：`bandize` 里原本一条时间也没比，而「两条一样相关时先给新的」本来就是宏记忆该有的偏好（`rankForSearch` 的收口那一跳早就在这么比）。
+- `stampOf(h)`：`updated_at` 数字原样、ISO 字符串 `Date.parse`、缺字段算 0——**全是 0 时整组落到 id 那一把**，不会因为「有人没写时间」就退回插入顺序。
+- `cmpText(a, b)`：按码元比，**数字段按数值比**——`D1:2` 排在 `D1:10` 前面。这条是被读数逼出来的，见 9.202.3。
+- `searchAdaptive` 的挑簇改成 `laterFirst(docs, x, y)`（同一把梯子的下标版）；两处 `localeCompare` 换成 `cmpText`。
+
+### 9.202.3 为什么 id 那把要「自然序」：先试了纯字典序，掉读数
+
+第一版写成纯码元序（`x < y ? -1 : x > y ? 1 : 0`），LoCoMo 1,531 问立刻掉：hit@1 0.3932 → **0.3926**、hit@5 0.6192 → **0.6179**、hit@20 0.7511 → **0.7505**、MRR 0.4958 → **0.4953**、recall@20 0.6322 → **0.6310**。原因很具体：LoCoMo 的 `dia_id` 是 `D1:2`、`D1:10` 这种，纯码元序把 `D1:10` 排到 `D1:2` 前面，正好与时间序相反——**用一个与数据语义相反的键去定序，等于拿读数换确定性**。
+
+改成数字段按数值比之后，读数**一位不差**地回到 0.3932 / 0.6192 / 0.6924 / 0.7511 / MRR 0.4958 / recall@20 0.6322 / 空回 0.0000，真库 660 条 52 问三档（照抄 0.921 / 换说法 0.417 / 时间锚 0.500）也一位不动。这一版是**纯赚**：确定性上去了，读数没让。
+
+### 9.202.4 判据：`tools/probe-determinism.mjs`（D1–D8，九行）
+
+进 `check-all`（排在 `probe-empty` 之后），纯内存语料、零网络、不写仓库文件：
+
+- **D1 重复**：同一进程连跑 5 次，id 序与分数逐位相同。
+- **D2 跨进程**：另起一个 `node` 进程跑同一份快照，哈希与本进程一致（结果里没有进程内随机态）。
+- **D3 打乱语料**：seed 3/11/42 三种插入顺序，`search` 前十逐位相同。
+- **D4 同上，`searchAdaptive` + `adaptiveIdf`**：跨过闸门那一遍（挑簇 + `lam`）也逐位相同。
+- **D5 并列组里更新得更晚的在前**：两条同内容、`updated_at` 1000 / 9000，两种插入顺序都回 `v-2,v-1`。
+- **D6 id 自然序**：`D1:2` 先于 `D1:10`（纯码元序会反过来）。
+- **D7 定序里没有 `localeCompare`**：全文件剩下的两处都在显示分组（会话名、项目分组），不参与检索定序。
+- **D8 能红证明**：把梯子换回只有「分档 + 分数」两跳再编译，同一份语料打乱后前十必然不同（`t-00` ≠ `t-31`）——在**没 import 过真引擎的子进程**里量（同进程量出来是假绿，见 9.202.5）。
+
+### 9.202.5 坑
+
+- **D5 与 D6 不能合并**：时间那把和 id 那把是两把钥匙，缺一把都能被「恰好时间相同」的语料蒙过去。D5 用时间不同的双胞胎、D6 用时间全缺的双胞胎，各钉一把。
+- **`stampOf` 必须解析 ISO 字符串**：`updated_at` 在真库里既有毫秒数也有 ISO 串（`Number('2026-11-24T…')` 是 `NaN`，一路 `NaN` 比较会让排序直接乱掉）。第一版直接用 `Number(v) || 0` 会把整组打回「全是 0」，等于白改。
+- **别用 `localeCompare` 当代替品**：它看起来「更智能」，实际是「本机更智能」——换 locale 就换顺序，正好是这条要消灭的东西。
+- **`Module._compile` 的 `filename` 必须落在引擎自己那一层**：D8 要「把梯子挖掉再编译」来证明红线在梯子上。第一版把文件名写成 `'red-det.js'`，于是源码里的裸包名（`@deepseek-ai/dsh-llm`、`@deepseek-ai/schemastery`）按 cwd 解析——`check-all` 是在 `E:\Temp\macro-neutral-cwd-*` 里跑每一支的（这条设计本身是对的：不替被检查者补环境），红成 `ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-llm' imported from E:\Temp\macro-neutral-cwd-lA5PV9\red-det.js`。改成 `red.filename = enginePath` 之后，解析锚点回到引擎目录，从仓库 `node_modules` 里找得到。
+- **红线必须在没 import 过真引擎的子进程里量**：`red.filename` 改成 `enginePath` 之后，D8 反而「钉不住」了——a 与 b 都是 `t-00,t-01,t-02,t-03,t-04`。逐层排掉（`E:\Temp\cmp\dbg-red2/3/4/5.mjs`）：裸脚本里同一段 `_compile` 能给出 `t-00` vs `t-31`；只要同进程里 `import` 过一次真引擎（**一次 `search` 都不调用也算**），红模块的两套顺序就都变成 `t-00..t-04`。也排除过「索引缓存把两种顺序混成一张表」这个解释：`indexSignature` 是按 docs 顺序算的签名（`index.js:2934`），顺序不同就是不同的键，而且带 `cache: false` 复跑照样钉不住。结论是「同进程里已加载的那份引擎」影响了红模块的行为，成因没继续挖——**判据不许建立在一个没查清的副作用上**，所以 D8 改成 `execFileSync(node, ['--input-type=module','-e', redCode])` 在干净子进程里量，stdout 回 `DIFF t-00 t-31` 才算过。一条规则：**「挖掉补丁看它变红」这种证明，必须在补丁运行环境之外量**，否则测到的是「这一版这份进程」而不是「这条代码」。
+- **D3/D4 一律带 `cache: false`**：这条要钉的是「定序不靠语料顺序」，把索引缓存这个变量摘掉才量得干净（缓存键虽含顺序签名，但缓存热着时比较的是两张不同的表，读数不再只反映定序）。
+
+### 9.202.6 账
+
+`tools/probe-determinism.mjs` 九条进 check-all，支数 33 → **34**；`tools/probe-tools.mjs` 46 → **47 个脚本 = check-all 33 + 手动账本 8 + 仅被 import 6**。`verify.mjs` 的「根」那条从 33 支改 34 支，另开 `DT063` 一节六条（梯子在位 / 挑簇改走 laterFirst / 没有 localeCompare / 挂进 check-all / 探针八条标签都在 / 文档在位）；HZ15 那条原来把整条 `hits.sort(...)` 写死在断言里，改成只钉「档位 → 分数」两跳——它守的是「折价必须折在 `_raw` 上」，不是结尾长什么样。

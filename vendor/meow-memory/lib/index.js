@@ -2515,8 +2515,57 @@ function bandize(hits, rawKey) {
     bandOf.set(h, band);
   }
   for (const [h, b] of bandOf) { h._band = b; if (h.explain !== void 0) h.explain.band = b; }
-  hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score));
+  // [macro-fusion 0.6.3] 并列时不许「谁先进语料谁在前」：同一问句在两种插入顺序下会给出两套前十，
+  // 而 docs 的顺序在生产里是存储层给的（更新会改 rowid、VACUUM/分页会改顺序），于是「同一问句同一答案」
+  // 这条产品承诺就不成立，所有对外读数也变成「抽到的那一次」。定序改成 分档 → 分数 → 记忆更新得更晚的
+  // 在前 → id 字典序，四个键全是数据本身的属性，与语料顺序无关（`probe-determinism` 钉住）。
+  hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score) || (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id));
   return hits;
+}
+
+/** 两条记忆谁排前面：更新得更晚的在前，同刻按 id 自然序（下标版，给只拿得到 docs 下标的排序用）。 */
+function laterFirst(docs, x, y) {
+  const sx = stampOf(docs[x]);
+  const sy = stampOf(docs[y]);
+  if (sx !== sy) return sx > sy ? -1 : 1;
+  return cmpText(docs[x].id, docs[y].id);
+}
+
+/** 记忆的「更新时刻」按毫秒数比：数字原样、ISO 字符串解析、其余算 0（缺字段的共同起跑线）。 */
+function stampOf(h) {
+  const v = h === null || h === void 0 ? void 0 : h.updated_at;
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  if (typeof v === "string" && v !== "") {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+
+/** 字典序比较：按码元，不按 locale（locale 会随机器变，定序也就跟着变）；数字段按数值比，
+ *  这样 `D1:2` 排在 `D1:10` 前面——纯码元序会把 10 排到 2 前面，与「时间先后」正好相反。 */
+function cmpText(a, b) {
+  const x = a === null || a === void 0 ? "" : String(a);
+  const y = b === null || b === void 0 ? "" : String(b);
+  if (x === y) return 0;
+  const xa = x.match(/\d+|\D+/g) ?? [];
+  const ya = y.match(/\d+|\D+/g) ?? [];
+  for (let i = 0; i < Math.min(xa.length, ya.length); i++) {
+    const p = xa[i];
+    const q = ya[i];
+    if (p === q) continue;
+    const pd = p.charCodeAt(0) >= 48 && p.charCodeAt(0) <= 57;
+    const qd = q.charCodeAt(0) >= 48 && q.charCodeAt(0) <= 57;
+    if (pd && qd) {
+      const pn = Number(p);
+      const qn = Number(q);
+      if (pn !== qn) return pn < qn ? -1 : 1;
+      if (p.length !== q.length) return p.length < q.length ? -1 : 1;
+      continue;
+    }
+    return p < q ? -1 : 1;
+  }
+  return xa.length === ya.length ? 0 : xa.length < ya.length ? -1 : 1;
 }
 var IDENT_RES = [
   /[A-Za-z]:\\[^\s，。；、）)\]】]+/g,
@@ -3174,7 +3223,10 @@ function search(query, docs, opts = {}) {
       const order = [];
       for (let di = 0; di < docs.length; di++) if (raw[di] > 0) order.push(di);
       if (order.length >= 2) {
-        order.sort((x, y) => raw[y] - raw[x] || x - y);
+        // [macro-fusion 0.6.3] 原来并列按 `x - y`（语料下标）定序，等于「谁先进库谁说了算」：
+        // 存储层换个顺序（更新改 rowid、VACUUM、分页）同一问句的簇就换了人，lam 与 top-M 跟着变。
+        // 与 `bandize` 同一把梯子：更新得更晚的在前 → id 自然序。见 `tools/probe-determinism.mjs`。
+        order.sort((x, y) => raw[y] - raw[x] || laterFirst(docs, x, y));
         const cl = idfClusterOf(qKept, tf, df, n, order, raw, opts);
         if (cl !== null) {
           const lam = adaptiveLamOf(raw[order[0]], raw[order[1]], opts);
@@ -9649,7 +9701,7 @@ async function denseRank(query, docs, opts = {}) {
     scored.push({ id: String(d.id), cos: denseDot(q0, v) });
   }
   if (covered === 0) return null;
-  scored.sort((a, b) => b.cos - a.cos || String(a.id).localeCompare(String(b.id)));
+  scored.sort((a, b) => b.cos - a.cos || cmpText(a.id, b.id));
   const top = Math.max(1, Math.min(scored.length, Number.isFinite(opts.denseTop) ? opts.denseTop : DENSE_TOP_DOCS));
   return { ranked: scored.slice(0, top), covered, total: docs.length };
 }
@@ -9740,7 +9792,7 @@ function fuseDenseHits(lexHits, denseRes, docs, opts = {}) {
   denseRes.ranked.forEach((d, i) => fuse.set(d.id, (fuse.get(d.id) ?? 0) + w / (K + i + 1)));
   const docById = new Map(docs.map((d) => [String(d.id), d]));
   const byId = new Map(lexHits.map((h) => [String(h.id), h]));
-  const order = [...fuse.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+  const order = [...fuse.entries()].sort((a, b) => b[1] - a[1] || cmpText(a[0], b[0]));
   const maxRrf = order.length > 0 ? order[0][1] : 0;
   // 分数口径：把 RRF 归一化回「词法的榜首分」——下游的 min_rel 是相对榜首的百分比，
   // 换一套尺度会让 0.35 这条线突然变成另一个意思。

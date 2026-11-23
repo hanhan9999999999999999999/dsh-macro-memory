@@ -70,6 +70,7 @@ const STEPS = [
   ['tools/probe-cost.mjs', '效率量尺：三档语料（40 / 400 / 1200）的 p50/p95、结果快照、缓存只许省时间'],
   ['tools/probe-idf.mjs', '规模自适应 idf 的开关账：默认关 / 小池不动 / λ=0 等价 / 闸门与旋钮真接上 / 成本 ≤2ms'],
   ['tools/probe-empty.mjs', '空回账：库外词不顶掉能命中的词、不凭空编、老护栏不回退、正常问句两态逐位相同'],
+  ['tools/probe-determinism.mjs', '定序账：同一问句同一答案——重复/跨进程/打乱插入顺序都逐位相同，并列按更新时间与 id 自然序'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
