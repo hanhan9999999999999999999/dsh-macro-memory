@@ -17,6 +17,7 @@
  *   D9 成本：p95 增量 ≤2ms（321 条语料）
  *   D10 回执形态：开关不许改返回条数/字段，status 要透传（0.6.0 · P4）
  *   D11 候选不许凭空长出来（打开后每个 id 都来自语料）
+ *   D12 接线点还在：`rankForSearch` 默认打开、词形桥那遍显式关（删掉任何一处，前 13 条仍会全绿）
  *
  * 用法：node tools/probe-idf.mjs      （挂进 check-all；零 LLM、不碰真库、不写任何文件）
  */
@@ -174,6 +175,19 @@ check('D1 不传 adaptiveIdf 与显式关逐位相同（宽池/窄池/合成）'
   check('D11 打开时仍是同一批候选（不许凭空造条目）', ids.split(',').every((id) => SYN.some((d) => d.id === id)), ids.split(',').length + ' 个 id 全部来自语料')
 }
 
-const totalChecks = 13
+{
+  // 静态账：这条机制在引擎里有两个「接线点」，删掉任何一个，上面 13 条全绿而线上悄悄退回 0.5.0。
+  // ①rankForSearch 产品入口默认打开 ②searchAdaptive 的词形桥那遍显式关掉（§8 未决 3）。
+  const src = readFileSync(join(root, 'vendor', 'meow-memory', 'lib', 'index.js'), 'utf8')
+  const entryOn = /const o = opts\.adaptiveIdf === false \? opts : \{ \.\.\.opts, adaptiveIdf: true \};/.test(src)
+  const bridgeOff = /search\(query, docs, \{ \.\.\.opts, synFormBridge: true, adaptiveIdf: false \}\)/.test(src)
+  check(
+    'D12 接线点还在：产品入口默认开、词形桥那遍显式关',
+    entryOn && bridgeOff,
+    `入口=${entryOn ? '开' : '缺失'} 桥=${bridgeOff ? '关' : '缺失'}`,
+  )
+}
+
+const totalChecks = 14
 console.log(`\n${failures === 0 ? 'ALL PASS' : 'FAILED'}  probe-idf：${totalChecks - failures}/${totalChecks}`)
 if (failures > 0) process.exitCode = 1

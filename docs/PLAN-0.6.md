@@ -219,7 +219,7 @@ idf_used  = (1−λ)·idf_global + λ·idf_local
 | 落 live 代码（`index.js:2955` 主改点） | **已完成** | 2026-11-23 | 双尺度 `idfOf` + `idfClusterOf` + `adaptiveLamOf` + 规模闸门；`rankForSearch` 产品路径默认开、传 `adaptiveIdf:false` 回 0.5.0 |
 | 判据 A7/A8 + 能红证明 | **已完成** | 2026-11-23 | A7 同尺横比：三历史引擎逐位相同、只有本节双升｜A8 默认=关 52/52｜能红：α=0 与去闸门都能红（`probe-idf` D4/D8/D8b） |
 | 文档收尾（EVAL-CLAIMS / INTERNAL / README） | **已完成** | 2026-11-23 | 表 A 新增「库变大后的照抄召回」行 + 「关于「3,536」的来路」；`docs/INTERNAL.md` 9.199；README 0.6.0 里程碑 + 专节 |
-| `tools/probe-idf.mjs`（13 条，进 check-all） | **已完成** | 2026-11-23 | D1–D11 全 PASS；不测准确率（理由见 `docs/EVAL-CLAIMS.md`「关于「3,536」的来路」） |
+| `tools/probe-idf.mjs`（14 条，进 check-all） | **已完成** | 2026-11-23 | D1–D12 全 PASS（D12 是 0.6.1 补的接线点判据）；不测准确率（理由见 `docs/EVAL-CLAIMS.md`「关于「3,537」的来路」） |
 | **其他七件候选（§12）** | 部分完成 | 2026-11-23 | #1 回执带 `status` 已做（不参与打分）；#2 评测单次→3 次均值、#7 两树同步自动化 仍未做；花 LLM token 的候选已按主人指令撤下 |
 
 ---
