@@ -3061,6 +3061,43 @@ function idfClusterOf(qToks, tf, df, n, order, raw, opts) {
   for (const di of pick) for (const t of tf[di].keys()) dfL.set(t, (dfL.get(t) ?? 0) + 1);
   return { df: dfL, n: pick.length, terms: [...w].filter(([, v]) => v > 0).map(([t]) => t) };
 }
+// ═══════════════ [macro-fusion 0.6.4] 单字问句：切不出词 ≠ 库里没有 ═══════════════
+// 症状：`tokenize` 只产出中日韩**二元组**（本文件 `if (run.length >= 2)`），一个汉字的问句切出来是
+// 空数组，`search` 第一道门 `if (q.length === 0 && idents.length === 0) return []` 直接空手。
+// 于是「读」「钱」「税」「梦」这类最直接的问法，库里明明写着，回执永远是空的——还是 0.6.2 那条
+// 「把『有』说成『没有』」，只是那条治「剔词剔空」，这条治「压根切不出词」。两条是同一族病：
+// 一个汉字进来，不该因为分词器的粒度而变成「没有」。
+// 处方（窄到只治这一件事）：仅当**问句切不出任何词**、且问句就是**单个汉字**时，按原文子串在
+// title/content/keywords 里找一次（NFKC + 小写），命中次数当分数，定序仍走 `bandize` 的四把钥匙。
+// 为什么只放单字、不放任意短串：
+//   · 两个汉字以上的中文问句本来就能切成二元组，走常规词法，不需要兜底；
+//   · 英文问句一个字也能切（`run.join("").toLowerCase()`），而 `the`/`a` 这类被停用词表吃掉的
+//     英文问句**绝不能**做子串——那才是真噪声，`probe-gold` G8「没有的事就空手」会当场判红。
+//   · 所以这里的闸门是「一个码点 + 汉字」，不是「短」。
+function literalFallback(query, docs, opts = {}) {
+  const needle = String(query ?? "").normalize("NFKC").trim().toLowerCase();
+  const cps = Array.from(needle);
+  if (cps.length !== 1 || !/[\u3400-\u9fff\uf900-\ufaff]/.test(cps[0])) return [];
+  const hits = [];
+  for (const d of docs) {
+    if (d === null || d === void 0 || typeof d !== "object") continue;
+    const kw = Array.isArray(d.keywords) ? d.keywords.join(" ") : String(d.keywords ?? "");
+    const hay = `${d.title ?? ""} ${d.content ?? ""} ${kw}`.normalize("NFKC").toLowerCase();
+    let tf2 = 0;
+    let at = hay.indexOf(needle);
+    while (at >= 0) {
+      tf2 += 1;
+      at = hay.indexOf(needle, at + cps[0].length);
+    }
+    if (tf2 === 0) continue;
+    hits.push({ ...d, _raw: tf2, cover: 0, score: tf2, ...opts.explain === true ? { explain: { bm25: 0, literal: tf2, score: tf2 } } : {} });
+  }
+  if (hits.length === 0) return [];
+  bandize(hits, "_raw");
+  const k2 = opts.k ?? 5;
+  if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k2) && k2 > 0 ? Math.round(k2) : hits.length);
+  return trimByBand(hits, k2, opts);
+}
 function search(query, docs, opts = {}) {
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
@@ -3076,7 +3113,8 @@ function search(query, docs, opts = {}) {
   const n = docs.length;
   // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 verbHay 为 null，后面整段跳过）
   const { idents, verbHay, rawVerbatim, subjRatio } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
-  if (q.length === 0 && idents.length === 0) return [];
+  // [macro-fusion 0.6.4] 切不出词不等于库里没有：单字问句交给原文子串兜底（账在 `literalFallback` 上方）。
+  if (q.length === 0 && idents.length === 0) return literalFallback(query, docs, opts);
   // [macro-fusion 0.2.153] 切词与建表挪进索引：这部分跟「问什么」无关，只跟「库里有什么」有关。
   const index = searchIndexOf(docs, opts);
   const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
@@ -3545,7 +3583,8 @@ function keywordHitScore(query, docs, opts = {}) {
   const n = docs.length;
   // [macro-fusion 0.2.147] 与 search() 同口径：标识符原样命中也在这里补分（两个打分器不许两套口径）
   const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.title ?? "") + " " + String(d.content ?? "") + " " + (Array.isArray(d.keywords) ? d.keywords.join(" ") : ""));
-  if (q.length === 0 && idents.length === 0) return [];
+  // [macro-fusion 0.6.4] 单字问句在这里也照同一口径兜底：词法切不出 ≠ 关键词里没有。
+  if (q.length === 0 && idents.length === 0) return literalFallback(query, docs, opts);
   const docToks = docs.map((d) => keep(tokenize([d.content, d.title ?? ""].join(" "))));
   const df = /* @__PURE__ */ new Map();
   const tf = [];

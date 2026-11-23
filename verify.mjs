@@ -937,7 +937,8 @@ function makeHostCtx() {
     //      + 0.5.0 的 probe-adapt（换场景适应力量尺）+ 0.6.0 的 probe-idf（规模自适应 idf 的开关账）
     //      + 0.6.2 的 probe-empty（空回账：不许把「有」说成「没有」）
     //      + 0.6.3 的 probe-determinism（定序账：同一问句同一答案）
-    steps.length === 34 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    //      + 0.6.4 的 probe-literal（单字问句账：切不出词 ≠ 库里没有）
+    steps.length === 35 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -11606,7 +11607,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     // bandize() 的排序：先比档位、再比分数。档位是从 _raw 算出来的，
     // 所以要动名次就必须动 _raw——这是 0.2.179 折价失效的确切位置。
-    const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ')) ?? ''
+    // 0.6.4 起 `literalFallback` 里也有 `_raw: tf2`，所以这里按「折价那一行」定位，不是按第一处 `_raw: `。
+    const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ') && l.includes('ruleFoldOf(di)')) ?? ''
     check(
       'HZ15 折价落在 _raw 上：分档按 _raw 走、档位优先于分数，只折 score 等于没折',
       // 0.6.3 起排序尾巴多了定序梯子（更新得更晚的在前 → id 自然序），但「档位 → 分数」这两跳没动：
@@ -12261,8 +12263,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       idSrc.includes('h.score += add;'),
   )
   check(
-    'VV 源码: 早退改成「词与标识符都没有才空」，否则 BM25 为 0 的原样命中会被提前挡掉',
-    idSrc.includes('if (q.length === 0 && idents.length === 0) return [];'),
+    'VV 源码: 早退改成「词与标识符都没有才空」，否则 BM25 为 0 的原样命中会被提前挡掉（0.6.4 起单字问句在这里转交兜底，不许直接回空）',
+    idSrc.includes('if (q.length === 0 && idents.length === 0) return literalFallback(query, docs, opts);'),
   )
   check(
     'VV 源码: 一键回旧口径（verbatim:false 直接不给标识符，整段惰性）',
@@ -12780,6 +12782,41 @@ dt063: {
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.202 ') &&
       readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('同一问句同一答案'),
   )
+}
+
+// ── 0.6.4 单字问句：一个汉字切不出词，也不许说「没有」 ──────────────────────────
+{
+  const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const fbHead = 'function literalFallback(query, docs, opts = {}) {'
+  check(
+    'LT064 单字兜底在位：一个 `literalFallback`，闸门是「一个码点 + 汉字」不是「短」',
+    eng.split(fbHead).length - 1 === 1 && eng.includes('if (cps.length !== 1 || !/[\\u3400-\\u9fff\\uf900-\\ufaff]/.test(cps[0])) return [];'),
+    `${eng.split(fbHead).length - 1} 处定义`,
+  )
+  const fbCalls = eng.split('return literalFallback(query, docs, opts);').length - 1
+  check(
+    'LT064 两条打分路径的空手门都改走兜底（search 与 keywordHitScore），且旧 `return []` 已清零',
+    fbCalls === 2 && !eng.includes('if (q.length === 0 && idents.length === 0) return [];'),
+    `兜底调用 ${fbCalls} 处`,
+  )
+  check(
+    'LT064 兜底扫的是 title + content + keywords（只扫 content 会漏掉关键词里写着的字）',
+    eng.includes('const hay = `${d.title ?? ""} ${d.content ?? ""} ${kw}`'),
+  )
+  const ltProbe = readFileSync(new URL('./tools/probe-literal.mjs', import.meta.url), 'utf8')
+  check(
+    'LT064 单字账挂进了 check-all',
+    readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes(`['tools/probe-literal.mjs',`),
+  )
+  const ltLabels = ['L1 ', 'L2 ', 'L3 ', 'L4 ', 'L5 ', 'L6 ', 'L7 ', 'L8 ']
+  const ltMissing = ltLabels.filter((t) => !ltProbe.includes(`'${t}`))
+  check('LT064 探针钉住 L1–L8（含「挖掉兜底就回空」的能红证明）', ltMissing.length === 0, ltMissing.length ? `缺 ${ltMissing.join(' ')}` : 'L1–L8 都在')
+  check(
+    'LT064 文档在位：INTERNAL 9.203 写了病根与闸门，README 里程碑写了「切不出词 ≠ 库里没有」',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.203 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('切不出词 ≠ 库里没有'),
+  )
+  check('LT064 版本号已抬到 0.6.4', readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(`export const version = '0.6.4'`))
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
