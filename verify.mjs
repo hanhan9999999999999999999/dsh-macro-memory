@@ -35,8 +35,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 写成 `>=` 之后，减一支（删套件 / 忘了注册）立刻红，加一支不必动这里。
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
-// 0.6.11 起 = 40（加 probe-verbatim）。
-const SUITE_FLOOR = 40
+// 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）。
+const SUITE_FLOOR = 41
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -928,8 +928,9 @@ function makeHostCtx() {
   check('根: 没有脚本用 import.meta.dirname 自己往上一层摸', viaMeta.length === 0, viaMeta.join(', '))
 
   // 3) 被 check-all 点名的那几支，凡是要读本仓文件的，一律从 _root.mjs 取。
-  //    两支例外有明确理由，写在表里而不是「漏了」：
-  //    probe-inject 只经相对 import 读 vendor；check-yaml 只读 DSH 安装与 profile。
+  //    三支例外有明确理由，写在表里而不是「漏了」：
+  //    probe-inject 只经相对 import 读 vendor；check-yaml 只读 DSH 安装与 profile；
+  //    probe-order（0.6.12）只经相对 import 取 bandize，不读仓内任何文件。
   //    支数是知识：28 = 原 24 支 + 0.3.1 的 probe-mq（查询分解量尺）+ 0.4.0 的 probe-consolidate
   //    （写入端巩固量尺）、probe-hygiene（写入端通胀量尺）与 probe-supersede（自动取代量尺）。少一支说明有人从套件里
   //    摘了东西，多一支说明新加的判据没在基线里记账——两种都要在这里显形。
@@ -937,6 +938,7 @@ function makeHostCtx() {
   const NO_ROOT = {
     'tools/probe-inject.mjs': '只经相对 import 读 vendor，不拼仓内路径',
     'tools/check-yaml.mjs': '只读 DSH 安装与 profile，不读本仓',
+    'tools/probe-order.mjs': '只经相对 import 取 bandize（0.6.12），不读仓内任何文件',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -10638,7 +10640,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HY 档位留痕: bandize 现在始终把 _band 挂在 hit 上（以前只有 explain 才有 band）',
-      eng.includes('h._band = b;') && eng.includes('delete h._band;'),
+      eng.includes('h._band = h._bandTmp;') && eng.includes('delete h._band;'),
     )
     const MeowHY = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
     // 受控语料：5 条几乎同分（band 0）、4 条弱命中（band 1）。噪声地板不必关——同档的 5 条本来就在。
@@ -11131,9 +11133,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑；0.6.11 起分支标记是 hayOf !== null）',
-      eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');") &&
+      eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw', k);") &&
         eng.indexOf('if (h._lv !== 1) {') < eng.lastIndexOf('if (hayOf !== null) {'),
-      `乘法在 bandize 前=${eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');")} 分支标记=${eng.lastIndexOf('if (hayOf !== null) {')}`,
+      `乘法在 bandize 前=${eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw', k);")} 分支标记=${eng.lastIndexOf('if (hayOf !== null) {')}`,
     )
     check(
       'HZ8 行为探针与文档都在',
@@ -11180,8 +11182,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ9 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
       eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0') &&
         eng.includes('h.score *= 1 + tipAssertW * tr;') &&
-        eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw');"),
-      `_raw 项在=${eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0')} 乘法在 bandize 前=${eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw');")}`,
+        eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw', k);"),
+      `_raw 项在=${eng.includes('tipOn ? tipAssertW * assertRatioOf(docs[di].content) : 0')} 乘法在 bandize 前=${eng.indexOf('h.score *= 1 + tipAssertW * tr;') < eng.indexOf("bandize(hits, '_raw', k);")}`,
     )
     check(
       'HZ9 行为探针与文档都在',
@@ -11304,7 +11306,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ11 两处落地：定义一次、调用一次；post-pass 在 bandize 之前（进档前改分才有意义）',
       (eng176.match(/statusDigestOf\(/g) || []).length === 2 &&
         eng176.indexOf('const statusDig = statusDigestOf(docs, query, verbHay !== null, opts);') <
-          eng176.indexOf("bandize(hits, '_raw');") &&
+          eng176.indexOf("bandize(hits, '_raw', k);") &&
         eng176.includes('explain: { bm25: 0, statusDigest: true, score: Math.round(digScore * 1e3) / 1e3 }'),
       `statusDigestOf( 出现 ${(eng176.match(/statusDigestOf\(/g) || []).length} 次`,
     )
@@ -11619,9 +11621,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     const rawLine = eng180.split('\n').find((l) => l.includes('_raw: ') && l.includes('ruleFoldOf(di)')) ?? ''
     check(
       'HZ15 折价落在 _raw 上：分档按 _raw 走、档位优先于分数，只折 score 等于没折',
-      // 0.6.3 起排序尾巴多了定序梯子（更新得更晚的在前 → id 自然序），但「档位 → 分数」这两跳没动：
-      // 折价仍必须折在 _raw 上，否则分档看不见它（这条断言守的是那两跳，不是结尾长什么样）。
-      eng180.includes('hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score)') &&
+      // 0.6.12 起定序比较器抽成 orderOf（档位 → 分数 → 更新得更晚的在前 → id 自然序），
+      // 有界堆与全序两路共用它；折价仍必须折在 _raw 上，否则分档看不见它。
+      eng180.includes('const orderOf = (a, b) => (a._bandTmp - b._bandTmp) || (b.score - a.score)') &&
         rawLine.includes('* ruleFoldOf(di)'),
       rawLine.length > 0 ? `_raw 行 ${rawLine.trim().length} 字符，折价乘在末尾` : '_raw 行没找到',
     )
@@ -12371,7 +12373,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   // 源码顺序：补分块必须在 push 循环之后（而不是写进 raw）
   const iPush = MW.indexOf('_vb: rawVerbatim[di] === null ? void 0 : rawVerbatim[di]')
   const iUnit = MW.indexOf('const unitScore = topScore > 0 ? topScore : 1;')
-  const iSort = MW.indexOf("bandize(hits, '_raw')")
+  const iSort = MW.indexOf("bandize(hits, '_raw', k)")
   check('VW1 补分块在 push 之后', iPush > 0 && iUnit > iPush, `${iPush}/${iUnit}`)
   check('VW2 补分块在 sort 之前（排位之前就定死）', iUnit > 0 && iSort > iUnit, `${iUnit}/${iSort}`)
   check('VW3 单位取榜首实际分数', MW.includes('const unitScore = topScore > 0 ? topScore : 1;'))
@@ -12555,9 +12557,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check('VY1 常量 IMP_BAND = 0.85（相邻差 17% 内算同档）', MY.includes('var IMP_BAND = 0.85;'))
   check('VY2 常量 RECENCY_FLOOR = 0.6（时间折扣有下限）', MY.includes('var RECENCY_FLOOR = 0.6;'))
   check(
-    'VY3 分档器存在且在档内才比分数（bandize 里 sort 用 bandOf 再比 score）',
-    MY.includes('function bandize(hits, rawKey)') &&
-      MY.includes('(bandOf.get(a) - bandOf.get(b)) || (b.score - a.score)'),
+    'VY3 分档器存在且在档内才比分数（bandize 里 orderOf 先比 _bandTmp 再比 score，档号不再走 Map）',
+    MY.includes('function bandize(hits, rawKey, limit = Infinity)') &&
+      MY.includes('(a._bandTmp - b._bandTmp) || (b.score - a.score)') &&
+      !MY.includes('bandOf.set('),
   )
   check(
     'VY4 两处新鲜度都用同一个 85% 带（IMP_BAND）而不是各自写死 0.85',
@@ -12577,14 +12580,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VY7 两支打分器都走 bandize，且临时字段有死期',
-    (MY.match(/bandize\((hits|out), '_raw'\);/g) || []).length === 2 &&
+    (MY.match(/bandize\((hits|out), '_raw', k\);/g) || []).length === 2 &&
       (MY.match(/delete h\._ident;/g) || []).length === 2,
   )
   check(
     'VY8 指认命中与主语位都排最前（band -1），词分为 0 也不许被扫到最后一档',
-    MY.includes("if (h._ident === true || h._subj === 1) {") && MY.includes('bandOf.set(h, -1);'),
+    MY.includes("if (h._ident === true || h._subj === 1) {") && MY.includes('h._bandTmp = -1;'),
   )
-  check('VY9 档号写进 explain（档位对调用方可见）', MY.includes('h.explain.band = b;'))
+  check('VY9 档号写进 explain（档位对调用方可见）', MY.includes('h.explain.band = h._band;'))
 
   // 行为：同一句话两条记忆，档内由重要度改判
   const vyDoc = (id, content, imp, extra) => ({
@@ -12757,13 +12760,20 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 dt063: {
   const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const engLines = eng.split('\n')
-  const ladder = 'hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score) || (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id));'
+  // 0.6.12 起梯子抽成 orderOf（四个键仍是数据本身的属性），两个出口（全序 / 有界堆）共用同一条。
+  const ladderHead = 'const orderOf = (a, b) => (a._bandTmp - b._bandTmp) || (b.score - a.score) ||'
+  const ladderTail = '(stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id);'
   const stampDefs = engLines.filter((l) => l.startsWith('function stampOf(')).length
   const laterDefs = engLines.filter((l) => l.startsWith('function laterFirst(')).length
   check(
     'DT063 定序梯子在位：分档 → 分数 → 更新得更晚的在前 → id 自然序（四个键都是数据本身的属性）',
-    eng.includes(ladder) && stampDefs === 1 && laterDefs === 1,
-    `stampOf ${stampDefs} 处 / laterFirst ${laterDefs} 处`,
+    eng.includes(ladderHead) &&
+      eng.includes(ladderTail) &&
+      eng.includes('hits.sort(orderOf);') &&
+      eng.includes('heap.sort(orderOf);') &&
+      stampDefs === 1 &&
+      laterDefs === 1,
+    `梯子头在=${eng.includes(ladderHead)} 尾在=${eng.includes(ladderTail)} 两出口=${eng.includes('hits.sort(orderOf);')}/${eng.includes('heap.sort(orderOf);')} stampOf ${stampDefs} 处 / laterFirst ${laterDefs} 处`,
   )
   check(
     'DT063 自适应 idf 挑簇不再按语料下标定序（`raw[y] - raw[x] || x - y` 已消失）',
@@ -13120,6 +13130,62 @@ dt063: {
   const vS2 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS2 = vS2.length === 3 ? vS2[0] * 10000 + vS2[1] * 100 + vS2[2] : 0
   check('VV071 版本号不低于 0.6.11（后续补丁不必回头改这一条）', vNumS2 >= 611, vS2.join('.'))
+}
+
+// 0.6.12：定序只排前 k——三个调用点接下来都只读前 k 条，没有一处回头读第 k 条以后的
+{
+  const oSrc = readFileSync(new URL('./tools/probe-order.mjs', import.meta.url), 'utf8')
+  const oLabels = ['O1 ', 'O2 ', 'O3 ', 'O4 ', 'O5 ', 'O6 ', 'O7 ', 'O8 ']
+  const oMissing = oLabels.filter((t) => !oSrc.includes(`'${t}`) && !oSrc.includes(`\`${t}`))
+  const wiredO = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-order.mjs'")
+  check(
+    'OR072 定序探针钉住 O1–O8（与全量排序逐位对拍 / 截到 min(k,n) / 档位同步无残留 / k<=0 退回全序 / 并列按 id 自然序 / 指认档恒 -1 / 换序不变 / 丢档位筛选必红）并挂进 check-all',
+    oMissing.length === 0 && wiredO,
+    `${oMissing.length ? `缺 ${oMissing.join(' ')}` : 'O1–O8 都在'} / check-all ${wiredO ? 'ok' : 'miss'}`,
+  )
+  const engineSrc3 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const sigO = engineSrc3.includes('function bandize(hits, rawKey, limit = Infinity)')
+  const noMapO = !engineSrc3.includes('const bandOf = new Map()')
+  const heapO = engineSrc3.includes('const siftUp = (i) =>') && engineSrc3.includes('const siftDown = (i) =>') &&
+    engineSrc3.includes('} else if (orderOf(h, heap[0]) < 0) {')
+  const tmpO = engineSrc3.includes('h._bandTmp = -1;') && engineSrc3.includes('delete h._bandTmp;')
+  check(
+    'OR072 引擎里是「档位写条目自己身上 + 有界堆选前 k」：bandize 收 limit、Map<对象,档> 已撤、siftUp/siftDown 在位、_bandTmp 用完就删',
+    sigO && noMapO && heapO && tmpO,
+    `签名 ${sigO ? 'ok' : 'miss'} / 撤 Map ${noMapO ? 'ok' : 'miss'} / 有界堆 ${heapO ? 'ok' : 'miss'} / _bandTmp ${tmpO ? 'ok' : 'miss'}`,
+  )
+  const callsO = engineSrc3.includes('bandize(hits, "_raw", k2);') && engineSrc3.includes("bandize(hits, '_raw', k);") &&
+    engineSrc3.includes("bandize(out, '_raw', k);")
+  check(
+    'OR072 三个调用点都把 k 传下去（search / literalFallback / keywordHitScore），不再默认全序',
+    callsO,
+    callsO ? '3/3' : '有调用点还在全序',
+  )
+  const O1 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const canOrder = typeof O1.bandize === 'function'
+  let ordOk = false
+  let ordDetail = 'bandize 未导出'
+  if (canOrder) {
+    const mk = (id, raw, score) => ({ id, score, _raw: raw, updated_at: 1000 })
+    const hits = [mk('a', 10, 1), mk('b', 5, 9), mk('c', 4, 8), mk('d', 1, 99), mk('e', 0.5, 100)]
+    const full = O1.bandize(hits.map((h) => ({ ...h })), '_raw', Infinity).map((h) => `${h.id}:${h._band}`)
+    const top2 = O1.bandize(hits.map((h) => ({ ...h })), '_raw', 2)
+    ordOk = full.slice(0, 2).join(',') === top2.map((h) => `${h.id}:${h._band}`).join(',') &&
+      top2.length === 2 && top2.every((h) => h._bandTmp === undefined)
+    ordDetail = `全序前二 ${full.slice(0, 2).join(',')} / 截断 ${top2.map((h) => `${h.id}:${h._band}`).join(',')}`
+  }
+  check('OR072 进程内可见：只排前 k 与全序前 k 逐位相同，且 hits 真的被截断（探针据此证明「没读的不算钱」）', canOrder && ordOk, ordDetail)
+  check(
+    'OR072 文档在位：INTERNAL 9.211 写了定序的账，README 写了「定序只排前 k」，DESIGN 有 ## 207.，PLAN §11 有 0.6.12 行',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.211 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('定序只排前 k') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 207. ') &&
+      readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('定序只排前 k') &&
+      /0\.6\.12/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS3 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS3 = vS3.length === 3 ? vS3[0] * 10000 + vS3[1] * 100 + vS3[2] : 0
+  check('OR072 版本号不低于 0.6.12（后续补丁不必回头改这一条）', vNumS3 >= 612, vS3.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

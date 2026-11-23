@@ -136,7 +136,10 @@ check('D7 检索定序里没有 localeCompare（显示分组那两处不算）',
 // 同一个 `Module._compile` 出来的红模块，裸进程里两套顺序给出 t-00..t-04 / t-31,t-23…，
 // 可进程里只要 import 过一次真引擎（哪怕一次 search 都不调用），两套顺序就都变成 t-00..t-04——
 // 红线被「同进程里已加载过的那份引擎」悄悄钉死，量出来是假绿。子进程里没有这份状态，才是真读数。
-const NEW = 'hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score) || (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id));'
+// [0.6.12] 梯子抽成了 `orderOf`（全序与有界堆两路共用同一条），所以红证明改成**把梯子本身换掉**：
+// 只留「分数」一跳，档位与并列的两把钥匙一起消失——两套插入顺序立刻分叉。
+const NEW = 'const orderOf = (a, b) => (a._bandTmp - b._bandTmp) || (b.score - a.score) ||\n    (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id);'
+const RED = 'const orderOf = (a, b) => b.score - a.score;'
 if (!src.includes(NEW)) {
   check('D8 能红证明：定序梯子还在源码里（能定位到才谈得上「删掉就红」）', false)
 } else {
@@ -151,7 +154,7 @@ const red = new Module('red-det', null)
 // 而 check-all 是在 E:\\Temp\\macro-neutral-cwd-* 里跑每一支的（第一版就是这么红的）。
 red.filename = enginePath
 red.paths = Module._nodeModulePaths(enginePath.slice(0, enginePath.lastIndexOf('/')))
-red._compile(src.replace(${JSON.stringify(NEW)}, 'hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score));'), enginePath)
+red._compile(src.replace(${JSON.stringify(NEW)}, ${JSON.stringify(RED)}), enginePath)
 const docs = []
 for (let i = 0; i < 40; i++) docs.push({ id: 't-' + String(i).padStart(2, '0'), title: '复测', content: '滴定终点读两遍，记在备忘里。', level: 'fact', status: 'active' })
 let s = 1 >>> 0

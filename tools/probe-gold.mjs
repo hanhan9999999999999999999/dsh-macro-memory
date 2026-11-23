@@ -903,7 +903,7 @@ if (denseUsable) {
   if (occur('function trimByBand(') !== 1) wrong.push('trimByBand 没有唯一实现')
   if (occur('return trimByBand(') < 3) wrong.push('search / hybrid / dense 退路没有共用同一个裁剪口径')
   if (!eng.includes('if (opts.keepBand === true) return hits.slice(0,')) wrong.push('hybrid 拿不到带档位的中间结果')
-  if (!eng.includes('h._band = b;')) wrong.push('bandize 没有把档位留在 hit 上')
+  if (!eng.includes('h._band = h._bandTmp;')) wrong.push('bandize 没有把档位留在 hit 上')
 
   // 行为：默认回执 = 同档 + 至少 5 条，且绝不越过 k
   const lens = []

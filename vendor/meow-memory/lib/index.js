@@ -2529,16 +2529,34 @@ function trimByBand(hits, k, opts = {}) {
   return out;
 }
 
-function bandize(hits, rawKey) {
-  if (hits.length < 2) return hits;
+// [macro-fusion 0.6.12] 定序只排前 k。
+//
+// 症状（`E:\Temp\cmp\prof012b.mjs` + `--cpu-prof`，10,000 条 / 300 问，单次 `search` 27.4ms）：
+// 三个调用点（`search`、`literalFallback`、`keywordHitScore`）都是「bandize 全量 → 取前 k」，
+// 而 bandize 内部把**全量**排了两遍：先按 `_raw` 排一遍定档（16.5% + 7.7% 采样），
+// 再按 (档, 分数, 时间, id) 排一遍定序（16.1%）——加起来占一次热检索的四成，
+// 全部花在「注定被 trimByBand 的 slice(0, k) 丢掉的那些条目」上。
+//
+// 处方两条，都不改口径：
+//  ① 档位不再挂 Map<对象, 档>：算出来直接写在条目自己身上（`_bandTmp`），定序比较读属性而不是查表。
+//     同一个 Map 在瓶颈里既是 set 热点（bandize 自证 4.9ms）又是 comparator 里的 get 热点。
+//  ② 定序改成**有界堆选前 k**：档位仍按全量算（档是「相对榜首 85%」定义的，跳不掉），
+//     但排序只对入选的 k 条做一次。传入 `limit`（= 调用点接下来要取的 k）时 hits 会被截到 k 条，
+//     与 `trimByBand` 的 `slice(0, want)` / `keepBand` 的 `slice(0, k)` 逐位一致。
+//
+// 为什么截断是安全的：三个调用点在 bandize 之后**只**碰前 k 条（`trimByBand` 里
+// `sliced.length - out.length` 用的也是 min(k, hits.length)），没有任何一处回头读第 k 条以后的东西。
+// 判据 `tools/probe-order.mjs` O1–O8：与「全量排序再取前 k」的参考实现在 500 组随机语料上逐位对拍。
+function bandize(hits, rawKey, limit = Infinity) {
+  const total = hits.length;
+  if (total < 2) return hits;
   const byRaw = hits.slice().sort((a, b) => b[rawKey] - a[rawKey]);
-  const bandOf = new Map();
   let band = -1;
   let anchorRaw = 0;
   for (const h of byRaw) {
     // [macro-fusion 0.2.150] 指认（问的正是这条 id）是最强证据形态，词分为 0 也不许被扫到最后一档。
     if (h._ident === true || h._subj === 1) {
-      bandOf.set(h, -1);
+      h._bandTmp = -1;
       continue;
     }
     const r = h[rawKey];
@@ -2546,14 +2564,63 @@ function bandize(hits, rawKey) {
       band += 1;
       anchorRaw = r;
     }
-    bandOf.set(h, band);
+    h._bandTmp = band;
   }
-  for (const [h, b] of bandOf) { h._band = b; if (h.explain !== void 0) h.explain.band = b; }
   // [macro-fusion 0.6.3] 并列时不许「谁先进语料谁在前」：同一问句在两种插入顺序下会给出两套前十，
   // 而 docs 的顺序在生产里是存储层给的（更新会改 rowid、VACUUM/分页会改顺序），于是「同一问句同一答案」
   // 这条产品承诺就不成立，所有对外读数也变成「抽到的那一次」。定序改成 分档 → 分数 → 记忆更新得更晚的
   // 在前 → id 字典序，四个键全是数据本身的属性，与语料顺序无关（`probe-determinism` 钉住）。
-  hits.sort((a, b) => (bandOf.get(a) - bandOf.get(b)) || (b.score - a.score) || (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id));
+  const orderOf = (a, b) => (a._bandTmp - b._bandTmp) || (b.score - a.score) ||
+    (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id);
+  // limit<=0 不许走有界路：`trimByBand` 在 k<=0 时 want=hits.length，等于要全序。
+  const want = Number.isFinite(limit) && limit > 0 ? Math.round(limit) : total;
+  if (want >= total) {
+    hits.sort(orderOf);
+  } else {
+    // 有界堆：根是「当前入选里最差」的那条（orderOf 更大 = 更靠后）。
+    const heap = [];
+    const swap = (i, j) => { const t = heap[i]; heap[i] = heap[j]; heap[j] = t; };
+    const siftUp = (i) => {
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (orderOf(heap[i], heap[p]) <= 0) break;
+        swap(i, p);
+        i = p;
+      }
+    };
+    const siftDown = (i) => {
+      for (;;) {
+        const l = i * 2 + 1;
+        if (l >= heap.length) break;
+        const r = l + 1;
+        let m = i;
+        if (orderOf(heap[l], heap[m]) > 0) m = l;
+        if (r < heap.length && orderOf(heap[r], heap[m]) > 0) m = r;
+        if (m === i) break;
+        swap(i, m);
+        i = m;
+      }
+    };
+    for (const h of hits) {
+      if (heap.length < want) {
+        heap.push(h);
+        siftUp(heap.length - 1);
+      } else if (orderOf(h, heap[0]) < 0) {
+        heap[0] = h;
+        siftDown(0);
+      }
+    }
+    heap.sort(orderOf);
+    hits.length = heap.length;
+    for (let i = 0; i < heap.length; i++) hits[i] = heap[i];
+  }
+  const kept = hits.length;
+  for (let i = 0; i < kept; i++) {
+    const h = hits[i];
+    h._band = h._bandTmp;
+    if (h.explain !== void 0) h.explain.band = h._band;
+    delete h._bandTmp;
+  }
   return hits;
 }
 
@@ -3266,8 +3333,9 @@ function literalFallback(query, docs, opts = {}) {
     hits.push({ ...d, _raw: tf2, cover: 0, score: tf2, ...opts.explain === true ? { explain: { bm25: 0, literal: tf2, score: tf2 } } : {} });
   }
   if (hits.length === 0) return [];
-  bandize(hits, "_raw");
   const k2 = opts.k ?? 5;
+  // [macro-fusion 0.6.12] 只排前 k（下面只取前 k 条，全序没人读）。
+  bandize(hits, "_raw", k2);
   if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k2) && k2 > 0 ? Math.round(k2) : hits.length);
   return trimByBand(hits, k2, opts);
 }
@@ -3654,7 +3722,8 @@ function search(query, docs, opts = {}) {
       }
     }
   }
-  bandize(hits, '_raw');
+  // [macro-fusion 0.6.12] 只排前 k：keepBand / trimByBand 都只读前 k 条。
+  bandize(hits, '_raw', k);
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
   if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
   return trimByBand(hits, k, opts);
@@ -3838,7 +3907,8 @@ function keywordHitScore(query, docs, opts = {}) {
     }
   }
   // [macro-fusion 0.2.150] 与 search 同口径：分档排序。
-  bandize(out, '_raw');
+  // [macro-fusion 0.6.12] 只排前 k（下面只 slice(0, k)）。
+  bandize(out, '_raw', k);
   for (const h of out) {
     delete h._raw;
     delete h._ident;
@@ -10353,6 +10423,8 @@ export {
   searchIndexCacheInfo,
   clearSearchIndexCache,
   keywordHitScore,
+  // [macro-fusion 0.6.12] 定序原语对探针开放：`probe-order` 要拿它跟「全量排序再取前 k」逐位对拍。
+  bandize,
   statusWeight,
   foldNearDupes,
   pickKeeper,
