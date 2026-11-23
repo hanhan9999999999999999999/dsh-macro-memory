@@ -11710,6 +11710,6 @@ function kwList(d) {
 
 ### 9.205.6 账
 
-支数 **36**（新增 `tools/probe-dirty.mjs`）；断言 3,599 → **3,615**（`probe-dirty` +9、`verify.mjs` 1,832 → 1,839 的 `DT066` +7）。
+支数 **36**（新增 `tools/probe-dirty.mjs`）；断言 3,599 → **3,616**（`probe-dirty` +9、`verify.mjs` 1,832 → 1,840 的 `DT066` +7，另有一格落在既有的版本对齐计数里）。
 
 
