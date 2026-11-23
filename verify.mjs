@@ -34,8 +34,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 支数每一版都在动，写成 `===` 就是「每加一支红一次、还得手工改两处文档」；
 // 写成 `>=` 之后，减一支（删套件 / 忘了注册）立刻红，加一支不必动这里。
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
-// 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）。
-const SUITE_FLOOR = 38
+// 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）。
+const SUITE_FLOOR = 39
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -12702,9 +12702,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check('XA1 缓存上限是常量（4 张：多工作区够用，又不许无限长内存）', MX.includes('const SEARCH_INDEX_CACHE_MAX = 4;'))
   check(
-    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写；0.6.6 起关键词走 kwList，字符串形态也纳入签名）',
-    MX.includes('mix(content.slice(0, 40));') && MX.includes('mix(content.slice(-40));') &&
-      MX.includes("mix(kwList(d).join('\\u0001'));"),
+    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写；0.6.6 起关键词走 kwList，字符串形态也纳入签名；0.6.10 起折进条级哈希）',
+    MX.includes('put(String(content.length));') && MX.includes('put(content.slice(0, 40));') && MX.includes('put(content.slice(-40));') &&
+      MX.includes('put(String(kw[i] ?? \'\'));') && MX.includes('return h >>> 0;'),
   )
   check('XA3 倒排表能关（阴性对照要有开关，否则证明不了它真在起作用）', MX.includes('const postings = opts.inverted === false ? null : new Map();'))
   check('XA4 缓存能关（opts.cache === false 走现建现用）', MX.includes('if (opts.cache === false) return buildSearchIndex(docs, opts, key);'))
@@ -12888,8 +12888,9 @@ dt063: {
     `kwToks ${kwToksLine.includes('kwList(d)') ? 'ok' : 'miss'} / kwSets ${kwSetsLine.includes('kwList(d)') ? 'ok' : 'miss'}`,
   )
   check(
-    'DT066 索引签名也走 kwList：字符串词表被改写要让缓存失效，不许拿旧索引答新库',
-    eng.includes("mix(kwList(d).join('\\u0001'));") && !eng.includes("mix(Array.isArray(d?.keywords) ? d.keywords.join('\\u0001') : -1);"),
+    'DT066 索引签名也走 kwList：字符串词表被改写要让缓存失效，不许拿旧索引答新库（0.6.10 起在 sigDocHash 里逐词 put）',
+    /function sigDocHash\(d, kw\)/.test(eng) && eng.includes("put(String(kw[i] ?? ''));") &&
+      /const kw = kwList\(d\);/.test(eng) && !eng.includes("mix(Array.isArray(d?.keywords) ? d.keywords.join('\\u0001') : -1);"),
   )
   check(
     'DT066 keywordHitScore 的 content 归一化在位（keywords 缺失时退回正文，不抛）',
@@ -13016,6 +13017,51 @@ dt063: {
   const vR = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumR = vR.length === 3 ? vR[0] * 10000 + vR[1] * 100 + vR[2] : 0
   check('RT069 版本号不低于 0.6.9（后续补丁不必回头改这一条）', vNumR >= 609, vR.join('.'))
+}
+
+// 0.6.10：签名自己也要记账（每问都重算整库签名 = 把「库没变」忘掉）
+{
+  const sigSrc = readFileSync(new URL('./tools/probe-signature.mjs', import.meta.url), 'utf8')
+  const sLabels = ['S1 ', 'S2 ', 'S3 ', 'S4 ', 'S5 ', 'S6 ', 'S7 ', 'S8 ', 'S9 ']
+  const sMissing = sLabels.filter((t) => !sigSrc.includes(`'${t}`) && !sigSrc.includes(`\`${t}`))
+  const wiredS = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-signature.mjs'")
+  check(
+    'SG070 签名探针钉住 S1–S9（参考实现横比 / 只复用不重算 / 就地改正文·关键词·四个字段都要变 / 换序要变 / 脏形状走直算 / 快 5 倍 / 只按身份记账的坏实现必红）并挂进 check-all',
+    sMissing.length === 0 && wiredS,
+    `${sMissing.length ? `缺 ${sMissing.join(' ')}` : 'S1–S9 都在'} / check-all ${wiredS ? 'ok' : 'miss'}`,
+  )
+  const engineSrc = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  // 记账必须「比的是值」：既要留字段快照，也要逐字段比较（只比对象身份 = 就地改看不见）
+  const valueCmp = /prev\.c === d\.content/.test(engineSrc) && /prev\.t === d\.title/.test(engineSrc) && /sigKwSame\(rawKw, prev\.kw\)/.test(engineSrc)
+  const hasCache = engineSrc.includes('const SIG_DOC_CACHE = new WeakMap();') && engineSrc.includes('function sigDocHash(d, kw)')
+  const dirtyBypass = /if \(!cacheable\) \{/.test(engineSrc) && /if \(!kwOk\) return h;/.test(engineSrc)
+  check(
+    'SG070 引擎里记账三件都在：WeakMap 条级缓存 + 逐字段值比较（不是对象身份）+ 判不出有没有变的形状走直算',
+    hasCache && valueCmp && dirtyBypass,
+    `缓存 ${hasCache ? 'ok' : 'miss'} / 值比较 ${valueCmp ? 'ok' : 'miss'} / 直算兜底 ${dirtyBypass ? 'ok' : 'miss'}`,
+  )
+  const V0 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const canStat = typeof V0.indexSignatureStats === 'function' && typeof V0.resetIndexSignatureStats === 'function'
+  const d1 = [{ id: 'a', title: 't', content: '正文'.repeat(30), keywords: ['甲'] }]
+  V0.resetIndexSignatureStats()
+  V0.indexSignature(d1); V0.indexSignature(d1)
+  const st = V0.indexSignatureStats()
+  check(
+    'SG070 记账进程内可见：reset 归零、第二次只复用不重算（探针据此证明「库没变就不重付钱」）',
+    canStat && st.calls === 2 && st.reused === 1 && st.rebuilt === 1,
+    `calls ${st.calls} / 复用 ${st.reused} / 重算 ${st.rebuilt} / 已算 ${st.hashed}`,
+  )
+  check(
+    'SG070 文档在位：INTERNAL 9.209 写了签名的账，README 写了「签名自己也要记账」，DESIGN 有 ## 205.，PLAN §11 有 0.6.10 行',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.209 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('签名自己也要记账') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 205. ') &&
+      readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('签名自己也要记账') &&
+      /0\.6\.10/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS = vS.length === 3 ? vS[0] * 10000 + vS[1] * 100 + vS[2] : 0
+  check('SG070 版本号不低于 0.6.10（后续补丁不必回头改这一条）', vNumS >= 610, vS.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

@@ -2663,34 +2663,117 @@ function verbatimInputs(query, docs, opts, textOf) {
 // 所以把「跟问句无关的那一半」提出来做成一张索引：同一次会话里连问五个问题，
 // 只该付一次切词的钱。索引带签名（条数 + 每条 id/更新时间/正文长度的哈希），
 // 签名不对就重建——宁可多花 30ms，也不许拿旧表答新库。
-function indexSignature(docs) {
+//
+// [macro-fusion 0.6.10] 签名自己也要记账：签名是**每问一次**都要算的固定开销，
+// 而它算的东西（「库还是不是上一张库」）绝大多数时候答案是「没变」。
+// 实测（660 / 2,000 / 5,000 / 10,000 条同构语料，`E:\Temp\cmp\scale010.mjs`）：
+// 签名占一次热检索的 **28.8%–30.6%**，且随条数线性涨（0.96 / 2.84 / 7.04 / 14.16ms）。
+// 钱花在两处：①每条都要切头 40、切尾 40、把关键词 join 成串——三次分配；
+// ②逐字符 Math.imul 的 FNV 混算。既然「同一条记忆、字段没动」就该给出同一个数，
+// 那就按**条**记账：WeakMap 以 doc 对象为键，存「上次算出的条级哈希 + 参与计算的字段快照」，
+// 下次来先做值比较（字符串 === 在原生侧是 memcmp，比 JS 逐字符混算便宜一个量级），
+// 全等就直接复用条级哈希。三条命门：
+//   ① 比较的必须是**值**不是对象身份：同一对象就地改 content / 就地改 keywords 数组，
+//      对象还是那个对象，值已经变了——签名必须跟着变，否则「拿旧表答新库」。
+//   ② 条级哈希必须**与外部状态无关**才能缓存：老实现把每条一路 XOR/imul 进同一个滚动值里，
+//      同一条的贡献随「前面有谁」变化，天然不可缓存。改成「每条先算自己的 32 位哈希，
+//      再折进总账」，条级值就只由这条自己决定。
+//   ③ 不参与缓存的形状（字段是对象、keywords 元素不是标量）走直算路径：缓存只许接
+//      「值比较就能判断有没有变」的条目，判不了就别猜。
+const SIG_DOC_CACHE = new WeakMap();
+const sigStats = { calls: 0, hashed: 0, reused: 0, rebuilt: 0 };
+function indexSignatureStats() {
+  return { ...sigStats };
+}
+function resetIndexSignatureStats() {
+  sigStats.calls = 0;
+  sigStats.hashed = 0;
+  sigStats.reused = 0;
+  sigStats.rebuilt = 0;
+}
+function sigPrim(v) {
+  const t = typeof v;
+  return v === null || v === undefined || t === 'string' || t === 'number' || t === 'boolean';
+}
+// 条级哈希：字段、顺序、分隔符与 0.2.153 那版逐字相同（探针拿参考实现横比），只是不再共享滚动值。
+function sigDocHash(d, kw) {
   let h = 2166136261 >>> 0;
-  const mix = (x) => {
-    const str = String(x ?? '');
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
+  const put = (s) => {
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
       h = Math.imul(h, 16777619) >>> 0;
     }
+  };
+  const sep = () => {
     h ^= 0x7c;
     h = Math.imul(h, 16777619) >>> 0;
   };
+  // 只看长度会把「同一秒内等长改写」当成同一张库：字数一样、头尾一动就漏。
+  // 取「长度 + 头 40 + 尾 40 + 标题全文 + 关键词全文 + 会话」——比全量哈希便宜一个量级，
+  // 又把「等长改写」压到几乎不可能（真要撞上，得同时保住字数、首尾 80 字与标题关键词）。
+  put(String(d?.id ?? '')); sep();
+  put(String(d?.updated_at ?? d?.updatedAt ?? '')); sep();
+  const content = String(d?.content ?? '');
+  put(String(content.length)); sep();
+  put(content.slice(0, 40)); sep();
+  put(content.slice(-40)); sep();
+  put(String(d?.title ?? '')); sep();
+  // [macro-fusion 0.6.6] 关键词也走 kwList：字符串形态的词表换了内容同样是「另一张库」，
+  // 只认数组会让「逗号串被改写」漏过签名、拿旧索引答新库。
+  for (let i = 0; i < kw.length; i++) {
+    if (i > 0) put('\u0001');
+    put(String(kw[i] ?? ''));
+  }
+  sep();
+  put(String(d?.source_session ?? '')); sep();
+  return h >>> 0;
+}
+function sigKwSame(raw, store) {
+  if (Array.isArray(raw)) {
+    if (!Array.isArray(store)) return false;
+    if (raw.length !== store.length) return false;
+    for (let i = 0; i < raw.length; i++) if (raw[i] !== store[i]) return false;
+    return true;
+  }
+  return raw === store;
+}
+function sigDocOf(d) {
+  sigStats.hashed++;
+  const obj = d !== null && typeof d === 'object';
+  const cacheable = obj && sigPrim(d.id) && sigPrim(d.updated_at) && sigPrim(d.updatedAt) &&
+    sigPrim(d.content) && sigPrim(d.title) && sigPrim(d.source_session);
+  if (!cacheable) {
+    sigStats.rebuilt++;
+    return sigDocHash(d, kwList(d));
+  }
+  // 关键词元素也得是标量才敢缓存：元素是对象时 String() 可能随它自己的状态变，值比较判不出来。
+  const rawKw = d.keywords;
+  const kwOk = Array.isArray(rawKw) ? rawKw.every(sigPrim) : sigPrim(rawKw);
+  const prev = kwOk ? SIG_DOC_CACHE.get(d) : void 0;
+  if (prev !== void 0 && prev.id === d.id && prev.u1 === d.updated_at && prev.u2 === d.updatedAt &&
+      prev.c === d.content && prev.t === d.title && prev.s === d.source_session && prev.kwOk === kwOk &&
+      sigKwSame(rawKw, prev.kw)) {
+    sigStats.reused++;
+    return prev.h;
+  }
+  const kw = kwList(d);
+  const h = sigDocHash(d, kw);
+  sigStats.rebuilt++;
+  if (!kwOk) return h;
+  SIG_DOC_CACHE.set(d, {
+    id: d.id, u1: d.updated_at, u2: d.updatedAt, c: d.content, t: d.title, s: d.source_session,
+    kwOk, kw: Array.isArray(rawKw) ? rawKw.slice() : rawKw, h
+  });
+  return h;
+}
+function indexSignature(docs) {
+  sigStats.calls++;
+  let h = 2166136261 >>> 0;
   h ^= docs.length;
   h = Math.imul(h, 16777619) >>> 0;
   for (const d of docs) {
-    mix(d?.id);
-    mix(d?.updated_at ?? d?.updatedAt ?? '');
-    // 只看长度会把「同一秒内等长改写」当成同一张库：字数一样、头尾一动就漏。
-    // 取「长度 + 头 40 + 尾 40 + 标题全文 + 关键词全文 + 会话」——比全量哈希便宜一个量级，
-    // 又把「等长改写」压到几乎不可能（真要撞上，得同时保住字数、首尾 80 字与标题关键词）。
-    const content = String(d?.content ?? '');
-    mix(content.length);
-    mix(content.slice(0, 40));
-    mix(content.slice(-40));
-    mix(String(d?.title ?? ''));
-    // [macro-fusion 0.6.6] 关键词也走 kwList：字符串形态的词表换了内容同样是「另一张库」，
-    // 只认数组会让「逗号串被改写」漏过签名、拿旧索引答新库。
-    mix(kwList(d).join('\u0001'));
-    mix(d?.source_session);
+    h ^= sigDocOf(d);
+    h = Math.imul(h, 16777619) >>> 0;
   }
   return `${docs.length}:${h >>> 0}`;
 }
@@ -10213,6 +10296,8 @@ export {
   searchHybrid,
   searchAdaptive,
   indexSignature,
+  indexSignatureStats,
+  resetIndexSignatureStats,
   searchIndexOf,
   searchIndexCacheInfo,
   clearSearchIndexCache,
