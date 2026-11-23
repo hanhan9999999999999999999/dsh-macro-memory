@@ -34,8 +34,9 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 支数每一版都在动，写成 `===` 就是「每加一支红一次、还得手工改两处文档」；
 // 写成 `>=` 之后，减一支（删套件 / 忘了注册）立刻红，加一支不必动这里。
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
-// 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）。
-const SUITE_FLOOR = 39
+// 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
+// 0.6.11 起 = 40（加 probe-verbatim）。
+const SUITE_FLOOR = 40
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -11129,10 +11130,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
     )
     check(
-      'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑）',
+      'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑；0.6.11 起分支标记是 hayOf !== null）',
       eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');") &&
-        eng.indexOf('if (h._lv !== 1) {') < eng.lastIndexOf('if (verbHay !== null) {'),
-      `乘法在 bandize 前=${eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');")}`,
+        eng.indexOf('if (h._lv !== 1) {') < eng.lastIndexOf('if (hayOf !== null) {'),
+      `乘法在 bandize 前=${eng.indexOf('h.score *= 1 + levelIntentW;') < eng.indexOf("bandize(hits, '_raw');")} 分支标记=${eng.lastIndexOf('if (hayOf !== null) {')}`,
     )
     check(
       'HZ8 行为探针与文档都在',
@@ -12263,8 +12264,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       idSrc.includes('matched.push(c >= 1 ? t : t + "(局部)");'),
   )
   check(
-    'VV 源码: 候选文本含 id 与 project（短 id 指认靠的是字段，不是正文里恰好出现那几个字）',
-    idSrc.includes('(d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d)'),
+    'VV 源码: 候选文本含 id 与 project（短 id 指认靠的是字段，不是正文里恰好出现那几个字；0.6.11 起这段搬进索引的 hayAt 懒建）',
+    idSrc.includes("(String(d?.id ?? '') + ' ' + String(d?.project ?? '') + ' ' + docText(d)).toLowerCase()"),
   )
   check(
     'VV 源码: 加法补分（单位分数 × ratio × 权重，指认 id 时用 1.5 那一档）——0.2.148 起落在加权之后的 post-pass 里；0.2.178 起坐标位上的标识符不给加成',
@@ -13062,6 +13063,63 @@ dt063: {
   const vS = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS = vS.length === 3 ? vS[0] * 10000 + vS[1] * 100 + vS[2] : 0
   check('SG070 版本号不低于 0.6.10（后续补丁不必回头改这一条）', vNumS >= 610, vS.join('.'))
+}
+
+// 0.6.11：原样匹配的 haystack 也不许每问重拼（库没变时它跟切词表一样是「库里有什么」）
+{
+  const vvSrc = readFileSync(new URL('./tools/probe-verbatim.mjs', import.meta.url), 'utf8')
+  const vLabels = ['V1 ', 'V2 ', 'V3 ', 'V4 ', 'V5 ', 'V6 ', 'V7 ', 'V8 ', 'V9 ']
+  const vMissing = vLabels.filter((t) => !vvSrc.includes(`'${t}`) && !vvSrc.includes(`\`${t}`))
+  const wiredV = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-verbatim.mjs'")
+  check(
+    'VV071 原样匹配探针钉住 V1–V9（与现拼逐位相同 / 只拼一次 / 改正文·project·keywords 都要跟着变 / 与老口径等价 / 10,000 条份额 ≤25% / 无标识符不建 / 只按条数缓存必红）并挂进 check-all',
+    vMissing.length === 0 && wiredV,
+    `${vMissing.length ? `缺 ${vMissing.join(' ')}` : 'V1–V9 都在'} / check-all ${wiredV ? 'ok' : 'miss'}`,
+  )
+  const engineSrc2 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const lazyHay = /const hayArr = new Array\(n\);/.test(engineSrc2) && /const hayAt = \(di\) =>/.test(engineSrc2) && /hayAt\n?/.test(engineSrc2)
+  const idxHasHay = /hayAt\s*\n?\s*\};/.test(engineSrc2) || engineSrc2.includes('hayAt\n  };') || /coocForms,\s*\n\s*hayAt/.test(engineSrc2)
+  const projInSig = /put\(String\(d\?\.project \?\? ''\)\); sep\(\);/.test(engineSrc2) && /prev\.p === d\.project/.test(engineSrc2)
+  const lazyStats = /const verbStats = \{ calls: 0, built: 0, reused: 0 \};/.test(engineSrc2)
+  check(
+    'VV071 引擎里是「懒建 + 随索引缓存 + 签名盯住 project」：hayArr/hayAt 在 buildSearchIndex 里、project 进 sigDocHash 与值比较、verbStats 记账',
+    lazyHay && idxHasHay && projInSig && lazyStats,
+    `懒建 ${lazyHay ? 'ok' : 'miss'} / 随索引 ${idxHasHay ? 'ok' : 'miss'} / project 进签名 ${projInSig ? 'ok' : 'miss'} / 记账 ${lazyStats ? 'ok' : 'miss'}`,
+  )
+  check(
+    'VV071 老写法已清干净：search 里不再有 `docs.map((d) => textOf(d).toLowerCase())`，消费点走 hayOf(di)/verbOn',
+    !/verbHay/.test(engineSrc2.replace(/^.*有 verbHay.*$/m, '')) && engineSrc2.includes('verbatimOf(idents, hayOf(di))'),
+    engineSrc2.includes('verbatimOf(idents, hayOf(di))') ? 'hayOf(di) 在位' : '仍是 verbHay[di]',
+  )
+  const V1 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const canStatV = typeof V1.verbatimHayStats === 'function' && typeof V1.resetVerbatimHayStats === 'function'
+  V1.clearSearchIndexCache()
+  V1.resetVerbatimHayStats()
+  const dV = [
+    { id: 'a', title: '超时', content: 'kv_store 超时 8000ms', keywords: ['kv'], project: 'P1', updated_at: 1 },
+    { id: 'b', title: '别的', content: '无关正文', keywords: ['x'], project: 'P2', updated_at: 2 },
+  ]
+  const qV = 'kv_store timeout fix'
+  V1.search(qV, dV, { k: 2 })
+  const stV1 = V1.verbatimHayStats()
+  V1.search(qV, dV, { k: 2 })
+  const stV2 = V1.verbatimHayStats()
+  check(
+    'VV071 记账进程内可见：第一次建 2 条、第二次只复用不重拼（探针据此证明「库没变就不重付钱」）',
+    canStatV && stV1.built === 2 && stV2.built === 2 && stV2.reused > stV1.reused,
+    `第一次 建${stV1.built}/复${stV1.reused} · 第二次 建${stV2.built}/复${stV2.reused}`,
+  )
+  check(
+    'VV071 文档在位：INTERNAL 9.210 写了原样匹配的账，README 写了「原样匹配也要记账」，DESIGN 有 ## 206.，PLAN §11 有 0.6.11 行',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.210 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('原样匹配也要记账') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 206. ') &&
+      readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('原样匹配也要记账') &&
+      /0\.6\.11/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS2 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS2 = vS2.length === 3 ? vS2[0] * 10000 + vS2[1] * 100 + vS2[2] : 0
+  check('VV071 版本号不低于 0.6.11（后续补丁不必回头改这一条）', vNumS2 >= 611, vS2.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

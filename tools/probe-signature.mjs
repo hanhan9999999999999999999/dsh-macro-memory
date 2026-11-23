@@ -86,6 +86,8 @@ function refDocHash(d) {
   }
   sep()
   put(String(d?.source_session ?? '')); sep()
+  // [0.6.11] project 也进签名：原样匹配的 haystack 搬进索引之后，它就该跟正文一样被签名盯着。
+  put(String(d?.project ?? '')); sep()
   return h >>> 0
 }
 function refSignature(docs) {
@@ -267,6 +269,17 @@ for (let i = 0; i < 200; i++) shapes.push(shape(i))
   check('S9 能红证明：只按对象身份记账的坏实现看不见就地改（真实现看得见）',
     badBefore === badAfter && V.indexSignature([doc]) === realBefore,
     `坏实现 ${badBefore} = ${badAfter}（漏了）· 真实现看见改变`)
+}
+
+// ── S10：project 也进签名（0.6.11 的新命门：haystack 搬进索引之后） ─────────────
+{
+  const d = { id: 'p', title: '标', content: '正文'.replace(/./g, '字').repeat(30), keywords: ['甲'], updated_at: 5, source_session: 's', project: 'A' }
+  const before = V.indexSignature([d])
+  d.project = 'B'
+  const after = V.indexSignature([d])
+  const refSees = refDocHash({ ...d, project: 'A' }) !== refDocHash({ ...d, project: 'B' })
+  check('S10 就地改 project → 签名必变（原样匹配的 haystack 里含 project）',
+    before !== after && refSees, `${before} → ${after}`)
 }
 
 console.log(failures === 0 ? `\nALL PASS  probe-signature：${total}/${total}` : `\n${failures} 条失败（共 ${total}）`)

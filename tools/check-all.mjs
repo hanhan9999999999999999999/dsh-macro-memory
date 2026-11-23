@@ -76,6 +76,7 @@ const STEPS = [
   ['tools/probe-monotone.mjs', '单调式账：版本 / 支数 / 断言总数 / 耗时预算这类会随时间前进的量，只许写成单调式（地板只抬不降、历史里程碑保留自己那版的数字、扫描器能红）'],
   ['tools/probe-rigor.mjs', '量尺账：连跑 3 次 std=0、语料与问句换顺序读数逐位相同、独立 scorer 交叉验一致、注入位置偏置必红（这把尺子不许自己先抖）'],
   ['tools/probe-signature.mjs', '签名账：库没变时不许重付签名钱（按条记账、比的是值不是对象身份、就地等长改写与改 keywords 元素都要变、脏形状走直算、记账后快 5 倍以上、只按身份记账的坏实现必红）'],
+  ['tools/probe-verbatim.mjs', '原样匹配账：库没变时不许重拼 haystack（懒建+随索引缓存、改正文/project/keywords 都要跟着变、与现拼口径逐位等价、无标识符问句一条不建、只按条数缓存必红）'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],

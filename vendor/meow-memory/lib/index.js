@@ -2648,11 +2648,36 @@ function verbatimOf(idents, hay) {
   }
   return { ratio: idents.length === 0 ? 0 : Math.min(1, sum / idents.length), matched };
 }
-function verbatimInputs(query, docs, opts, textOf) {
-  const idents = opts.verbatim === false ? [] : identsOf(query);
+// [macro-fusion 0.6.11] 「库里有什么」的那一半，不该每问一次重拼一遍。
+// 读数（`E:\Temp\cmp\scale011.mjs` / `scale011b.mjs`，660 / 2,000 / 5,000 / 10,000 条同构语料）：
+// 问句里带标识符时（英文问句基本都带），原样匹配通道占一次热检索的 **35.7% / 50.6% / 42.7% / 42.9%**；
+// 这一块里「逐条拼 haystack + toLowerCase」占 **5.78ms / 10.49ms ≈ 55%**，真正的逐条比标识符只要 0.51ms。
+// 也就是钱全花在「把每条记忆重新拼成一个字符串」——而这件事跟问什么毫无关系，只跟库有什么有关，
+// 它本来就该跟切词表、倒排表一起待在索引里。
+// 三条命门（和 0.6.10 同一个道理，但落点不同）：
+//   ① haystack 只由「这条记忆的字段」决定：id + project + docText（标题/正文/关键词），全小写。
+//   ② 它待在索引里，就必须被签名覆盖：project 原先不在签名里——这是 0.6.10 没暴露的洞，
+//      因为老实现每问现拼所以看不出来，一旦搬进索引，「改 project 不重建」就成了拿旧串答新库。
+//   ③ 懒建 + 记账：没有标识符的问句一条 haystack 都不许建（中文问句占绝大多数），
+//      有标识符时只建真正参与比较的条目，且同一张库连问多次只付一次钱。
+const verbStats = { calls: 0, built: 0, reused: 0 };
+function verbatimHayStats() {
+  return { ...verbStats };
+}
+function resetVerbatimHayStats() {
+  verbStats.calls = 0;
+  verbStats.built = 0;
+  verbStats.reused = 0;
+}
+function verbatimInputs(query, docs, opts, textOf, hayFor = null, identsIn = null) {
+  verbStats.calls++;
+  const idents = identsIn ?? (opts.verbatim === false ? [] : identsOf(query));
   return {
     idents,
-    verbHay: idents.length === 0 ? null : docs.map((d) => textOf(d).toLowerCase()),
+    // 语义与老实现逐字相同（`docs.map((d) => textOf(d).toLowerCase())` 的下标版）：
+    // 给了 `hayFor`（索引里的懒建访问器）就用它，否则退回现拼——keywordHitScore 走的就是后者，
+    // 它的 haystack 少 id/project、只含标题/正文/关键词。
+    hayOf: idents.length === 0 ? null : (hayFor ?? ((di) => textOf(docs[di]).toLowerCase())),
     rawVerbatim: docs.map(() => null),
     subjRatio: docs.map(() => 0)
   };
@@ -2726,6 +2751,10 @@ function sigDocHash(d, kw) {
   }
   sep();
   put(String(d?.source_session ?? '')); sep();
+  // [macro-fusion 0.6.11] project 也进签名：它不进切词表，但进「原样匹配」那份 haystack。
+  // 索引里存了 haystack 之后，project 一改而签名不变，就等于拿旧 haystack 答新库
+  // （探针 `probe-verbatim` V4 就是拿这一条当红样本：去掉这行立刻红）。
+  put(String(d?.project ?? '')); sep();
   return h >>> 0;
 }
 function sigKwSame(raw, store) {
@@ -2741,7 +2770,7 @@ function sigDocOf(d) {
   sigStats.hashed++;
   const obj = d !== null && typeof d === 'object';
   const cacheable = obj && sigPrim(d.id) && sigPrim(d.updated_at) && sigPrim(d.updatedAt) &&
-    sigPrim(d.content) && sigPrim(d.title) && sigPrim(d.source_session);
+    sigPrim(d.content) && sigPrim(d.title) && sigPrim(d.source_session) && sigPrim(d.project);
   if (!cacheable) {
     sigStats.rebuilt++;
     return sigDocHash(d, kwList(d));
@@ -2751,8 +2780,8 @@ function sigDocOf(d) {
   const kwOk = Array.isArray(rawKw) ? rawKw.every(sigPrim) : sigPrim(rawKw);
   const prev = kwOk ? SIG_DOC_CACHE.get(d) : void 0;
   if (prev !== void 0 && prev.id === d.id && prev.u1 === d.updated_at && prev.u2 === d.updatedAt &&
-      prev.c === d.content && prev.t === d.title && prev.s === d.source_session && prev.kwOk === kwOk &&
-      sigKwSame(rawKw, prev.kw)) {
+      prev.c === d.content && prev.t === d.title && prev.s === d.source_session && prev.p === d.project &&
+      prev.kwOk === kwOk && sigKwSame(rawKw, prev.kw)) {
     sigStats.reused++;
     return prev.h;
   }
@@ -2761,7 +2790,7 @@ function sigDocOf(d) {
   sigStats.rebuilt++;
   if (!kwOk) return h;
   SIG_DOC_CACHE.set(d, {
-    id: d.id, u1: d.updated_at, u2: d.updatedAt, c: d.content, t: d.title, s: d.source_session,
+    id: d.id, u1: d.updated_at, u2: d.updatedAt, c: d.content, t: d.title, s: d.source_session, p: d.project,
     kwOk, kw: Array.isArray(rawKw) ? rawKw.slice() : rawKw, h
   });
   return h;
@@ -3035,11 +3064,27 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts);
   // [macro-fusion 0.5.0 · P1] 碎片 → 整词的桥（opts.coocForms === false 可单独关掉，用来量这一层值多少分）。
   const coocForms = opts.coocForms === false ? null : buildCoocForms(docs, coocSyn);
+  // [macro-fusion 0.6.11] 原样匹配的 haystack：懒建、随索引缓存（账在 `verbStats` 上方）。
+  // 只在「问句里有标识符」时才被碰到；没碰过的条目一个字节都不占。
+  const hayArr = new Array(n);
+  const hayAt = (di) => {
+    const got = hayArr[di];
+    if (got !== void 0) {
+      verbStats.reused++;
+      return got;
+    }
+    const d = docs[di];
+    const s = (String(d?.id ?? '') + ' ' + String(d?.project ?? '') + ' ' + docText(d)).toLowerCase();
+    hayArr[di] = s;
+    verbStats.built++;
+    return s;
+  };
   return {
     __n: n,
     __sig: sig ?? indexSignature(docs),
     __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`,
-    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn, coocForms
+    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn, coocForms,
+    hayAt
   };
 }
 
@@ -3241,12 +3286,16 @@ function search(query, docs, opts = {}) {
     ? []
     : queryEntities(query).map((e) => tokenize(e)).filter((t) => t.length === 1).map((t) => t[0]);
   const n = docs.length;
-  // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 verbHay 为 null，后面整段跳过）
-  const { idents, verbHay, rawVerbatim, subjRatio } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.project ?? "") + " " + docText(d));
+  // [macro-fusion 0.2.147] 标识符原样匹配的输入（问句里没有标识符时 hayOf 为 null，后面整段跳过）
+  const idents = opts.verbatim === false ? [] : identsOf(query);
   // [macro-fusion 0.6.4] 切不出词不等于库里没有：单字问句交给原文子串兜底（账在 `literalFallback` 上方）。
   if (q.length === 0 && idents.length === 0) return literalFallback(query, docs, opts);
   // [macro-fusion 0.2.153] 切词与建表挪进索引：这部分跟「问什么」无关，只跟「库里有什么」有关。
   const index = searchIndexOf(docs, opts);
+  // [macro-fusion 0.6.11] 原样匹配的 haystack 也走索引（懒建 + 随索引重建），这里只领一个访问器：
+  // 老实现是 `docs.map((d) => textOf(d).toLowerCase())`——每问一次拼一遍整库，占热检索的四成。
+  const { hayOf, rawVerbatim, subjRatio } = verbatimInputs(query, docs, opts, null, index.hayAt, idents);
+  const verbOn = hayOf !== null;
   const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
@@ -3348,8 +3397,8 @@ function search(query, docs, opts = {}) {
       for (const t of entToks) if (entSets[di].has(t)) hit++;
       if (hit > 0) s *= 1 + ENT_W * (hit / entToks.length);
     }
-    if (verbHay !== null) {
-      const vb = verbatimOf(idents, verbHay[di]);
+    if (verbOn) {
+      const vb = verbatimOf(idents, hayOf(di));
       if (vb.matched.length > 0) {
         rawVerbatim[di] = vb;
         const lead = String(docs[di].content ?? "").trimStart().toLowerCase();
@@ -3363,7 +3412,7 @@ function search(query, docs, opts = {}) {
   };
   const raw = new Array(docs.length).fill(0);
   const coverOf = new Array(docs.length).fill(0);
-  const candSet = postings === null || verbHay !== null ? null : (() => {
+  const candSet = postings === null || verbOn ? null : (() => {
     const set = new Set();
     for (const term of qLoop) {
       const p = postings.get(term);
@@ -3471,7 +3520,7 @@ function search(query, docs, opts = {}) {
   const situationRuleFold = Number.isFinite(opts.situationRuleFold) ? Math.min(1, Math.max(0, opts.situationRuleFold)) : SITUATION_RULE_FOLD;
   const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;
   const tipOn = tipAssertOn(query) && opts.tipAssert !== false;
-  const statusDig = statusDigestOf(docs, query, verbHay !== null, opts);
+  const statusDig = statusDigestOf(docs, query, verbOn, opts);
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
     const lvHit = lvIntent !== null && lvIntent.has(String(docs[di].level ?? "")) && raw[di] >= (lvRatio ?? 0.5) * maxRaw;
@@ -3517,7 +3566,7 @@ function search(query, docs, opts = {}) {
   }
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
   // importance 更高的措辞命中不会再把它压下去；摘掉临时挂的原样证据，别让它漏进回执。
-  if (verbHay !== null) {
+  if (verbOn) {
     let topScore = 0;
     for (const h of hits) if (h.score > topScore) topScore = h.score;
     const unitScore = topScore > 0 ? topScore : 1;
@@ -3714,7 +3763,7 @@ function keywordHitScore(query, docs, opts = {}) {
   for (const t of qUse) qTf.set(t, (qTf.get(t) ?? 0) + 1);
   const n = docs.length;
   // [macro-fusion 0.2.147] 与 search() 同口径：标识符原样命中也在这里补分（两个打分器不许两套口径）
-  const { idents, verbHay, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.title ?? "") + " " + String(d.content ?? "") + " " + (Array.isArray(d.keywords) ? d.keywords.join(" ") : ""));
+  const { idents, hayOf, rawVerbatim } = verbatimInputs(query, docs, opts, (d) => String(d.id ?? "") + " " + String(d.title ?? "") + " " + String(d.content ?? "") + " " + (Array.isArray(d.keywords) ? d.keywords.join(" ") : ""));
   // [macro-fusion 0.6.4] 单字问句在这里也照同一口径兜底：词法切不出 ≠ 关键词里没有。
   if (q.length === 0 && idents.length === 0) return literalFallback(query, docs, opts);
   const docToks = docs.map((d) => keep(tokenize([d.content, d.title ?? ""].join(" "))));
@@ -3738,8 +3787,8 @@ function keywordHitScore(query, docs, opts = {}) {
     for (const [t, f] of qTf) {
       if (tf[di].has(t)) s += idf(t) * f;
     }
-    if (verbHay !== null) {
-      const vb = verbatimOf(idents, verbHay[di]);
+    if (hayOf !== null) {
+      const vb = verbatimOf(idents, hayOf(di));
       if (vb.matched.length > 0) rawVerbatim[di] = vb;
     }
     return s;
@@ -3775,7 +3824,7 @@ function keywordHitScore(query, docs, opts = {}) {
     });
   }
   // [macro-fusion 0.2.148] 与 search 同口径：单位取榜首实际分数，补完再排序。
-  if (verbHay !== null) {
+  if (hayOf !== null) {
     let topScore = 0;
     for (const h of out) if (h.score > topScore) topScore = h.score;
     const unitScore = topScore > 0 ? topScore : 1;
@@ -10298,6 +10347,8 @@ export {
   indexSignature,
   indexSignatureStats,
   resetIndexSignatureStats,
+  verbatimHayStats,
+  resetVerbatimHayStats,
   searchIndexOf,
   searchIndexCacheInfo,
   clearSearchIndexCache,

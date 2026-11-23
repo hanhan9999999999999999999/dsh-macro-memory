@@ -11861,3 +11861,41 @@ M1 地板在位（`SUITE_FLOOR` 声明 + `steps.length >= SUITE_FLOOR` 在用 + 
 ### 9.209.6 账
 
 支数 38 → **39**（新增 `tools/probe-signature.mjs`）；断言 3,653 → **3,667**（`probe-signature` +9、`SG070` +5）。
+
+## 9.210 原样匹配也要记账（0.6.11）
+
+### 9.210.1 症状：每问都在重拼整库字符串
+
+原样匹配通道要判断「这条里有没有原样出现这个问题串里的标识符」。实现上它先把整库拼一遍：`docs.map((d) => textOf(d).toLowerCase())`，`textOf` = `id + ' ' + project + ' ' + docText(d)`，而 `docText(d)` 又是 `title + content + keywords.join(' ')`。于是每次检索都要重建一份「全库小写大字符串」：660 条 0.66 MB、10,000 条 2.03 MB。**匹配本身很便宜，造 Haystack 很贵**——10,000 条时 5.78 ms vs 0.51 ms。
+
+### 9.210.2 发现路径
+
+0.6.10 省掉签名那笔钱后，接着按**通道**开账：同语料同问句，只关掉一条通道（`{ verbatim: false }`），差值就是这条通道的钱。`E:\Temp\cmp\scale011.mjs` 给出份额 **35.7% / 50.6% / 42.7% / 42.9%**（660 / 2,000 / 5,000 / 10,000）；再用 `scale011b.mjs` 把这条通道拆成「造串」与「扫标识符」两段，确认钱在造串（5.78 vs 0.51 ms）。同一套办法在 0.6.10 用来抓签名，这次抓到了它。
+
+### 9.210.3 处方：搬进索引、懒建、且必须进签名
+
+1. **跟着索引走**：`buildSearchIndex()` 末尾预置 `hayArr` 与 `hayAt(di)`；命中 `verbStats.reused++`，未命中才拼并 `verbStats.built++`。haystack 的生命周期与切词表一致，不另立缓存。
+2. **懒建 + 不在路上不建**：`verbatimInputs(query, docs, opts, textOf, hayFor, identsIn)` 多收一个 `hayFor`；`hayOf = idents.length === 0 ? null : (hayFor ?? 老现拼)`。没有标识符时 `hayOf === null`，一条都不许建。
+3. **搬进索引的字段必须先被签名覆盖**：haystack 含 `project`，而 `project` 从来不进签名——老实现每问现拼所以看不出来，搬进索引后才成为「改 project 拿旧串答新库」。修法：`sigDocHash` 在 `source_session` 之后追加 `put(String(d?.project ?? '')); sep();`；`sigDocOf` 的 `cacheable` 加 `sigPrim(d.project)`、值比较加 `prev.p === d.project`、快照存 `p`。
+4. **消费点统一**：`search()` 与 `keywordHitScore()` 都改走 `{ idents, hayOf, rawVerbatim }`，`verbHay !== null` 全部换成 `verbOn`，`verbatimOf(idents, verbHay[di])` 换成 `verbatimOf(idents, hayOf(di))`（含 `statusDigestOf` 的入参）。全仓已无 `verbHay` 残留（只剩一句注释）。
+
+### 9.210.4 读数
+
+| 条数 | 0.6.10 全量 | 0.6.11 全量 | 变化 | 原样匹配份额（前 → 后） |
+| --- | --- | --- | --- | --- |
+| 660 | 2.04 ms | **1.62 ms** | −20.6% | 35.7% → 20.7% |
+| 2,000 | 5.04 ms | **4.20 ms** | −16.7% | 50.6% → 34.9% |
+| 5,000 | 11.88 ms | **9.12 ms** | −23.2% | 42.7% → 22.8% |
+| 10,000 | 24.45 ms | **18.82 ms** | −23.0% | 42.9% → 18.6% |
+
+排序侧逐位不变：LoCoMo（1,531 问）hit@1 0.3932 / hit@5 0.6192 / hit@10 0.6924 / hit@20 0.7511 / MRR 0.4958 / recall@20 0.6322 / 空回 0.0000；真库 52 问三档 0.921 / 0.417 / 0.500、平均取回 6.342 / 6.917 / 5、两条 #2→#1 位移；`0.6.0 关 与 v0.5.0 逐位相同？ true`。
+
+### 9.210.5 判据 V1–V9 与 S10
+
+`tools/probe-verbatim.mjs` 九条：V1 haystack 与现拼逐位相同（200 种形状，200/200）；V2 连问 5 次结果一致且只拼一次（660 条 `built=660` / `reused=2,640`）；V3 就地改正文、V4 就地改 `project`、V5 就地改 `keywords` 元素，haystack 都要跟着变；V6 命中条目的 `explain.verbatim` 与参考实现现算一致（6 问句）；V7 10,000 条时该通道份额 ≤25%（实测 18.5%，4.33 / 23.43 ms）；V8 无标识符问句 `built === 0`；V9 能红证明——只按条数当缓存键的坏实现看不见 `project` 改动。
+
+`tools/probe-signature.mjs` 由 9 条扩到 **10 条**：参考实现补上 `project`，新增 **S10**（就地改 `project` → 签名必变）。`verify.mjs` 的 `VV071` 五条把探针标签与挂线、引擎三件（懒建 / `project` 进签名 / `verbStats`）、老写法已清干净、记账进程内可见、文档四处与版本地板钉在一起。
+
+### 9.210.6 账
+
+支数 39 → **40**（新增 `tools/probe-verbatim.mjs`）；断言 3,667 → **3,683**（`probe-verbatim` +9、`VV071` +5、`probe-signature` 的 S10 +1，其余 +1 来自本支实测对齐：0.6.10 记的 3,667 比本次实测少一条）。
