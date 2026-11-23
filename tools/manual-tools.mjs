@@ -54,4 +54,9 @@ export const MANUAL_TOOLS = [
     args: [],
     why: '把本仓同步到阅读树与装机树；默认只体检不写盘（--apply 才 robocopy /E，从不删除），所以随时可跑',
   },
+  {
+    file: 'tools/bench-locomo.mjs',
+    smoke: false,
+    why: '英文独立量尺：数据集（LoCoMo locomo10.json）在仓库外，没有 --data 时按设计 exit=2 打用法——自动冒烟必然报「跑不起来」，与脚本好坏无关',
+  },
 ]

@@ -933,9 +933,10 @@ function makeHostCtx() {
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
   check(
     '根: check-all 里要读本仓的每一支都从 _root.mjs 取根',
-    // 32 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
+    // 33 = 原 24 支 + 0.3.1 的 probe-mq + 0.4.0 的 probe-consolidate、probe-hygiene、probe-supersede、probe-entity 与 probe-cooc
     //      + 0.5.0 的 probe-adapt（换场景适应力量尺）+ 0.6.0 的 probe-idf（规模自适应 idf 的开关账）
-    steps.length === 32 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    //      + 0.6.2 的 probe-empty（空回账：不许把「有」说成「没有」）
+    steps.length === 33 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root

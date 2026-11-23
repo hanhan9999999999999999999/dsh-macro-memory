@@ -3058,6 +3058,25 @@ function search(query, docs, opts = {}) {
     qKept = qTerms;
     qLoop = q;
   }
+  // [macro-fusion 0.6.2] 护栏②（「剔完一个词不剩就整段回退」）漏了同一件事的另一半：
+  // **剔完还剩词，但剩的那些词库里一个都没有**（df=0）——那不是「宁可噪声」，是「必然空手」。
+  // 读数（LoCoMo 10 段 / 1,531 问，`tools/bench-locomo.mjs`）：8 问回 0 条，全是这一支。
+  // 例：`What Console does Nate own?` 切成 `consol`（库外，df=0）+ `nate`（629 条里 454 条有，
+  // df 比 72% ≥ 一半）→ 噪声地板按设计剔掉 `nate`，留下 `consol`，于是候选择集里没有一条能命中。
+  // 剔除「到处都是」的词本来是对的，错在**留下了一个不可能命中的词顶位**。
+  // 处方：留下的词全都命中不了、而噪声地板确实剔过词时，把这些词「救回来」——它们是
+  // df ≥ 一半的高频词，在本库里必然命中，救回来只会让回执从空变成「有」，不会开门给噪声。
+  // 只救噪声地板剔的词（`noiseDropped`），不救虚词地板剔的（`funcDropped` 是「哪都没有也不带信息」，
+  // 救回来就是硬凑；两层都剔掉的词按虚词算——`zzzz 什么` 不许因为语料里满是「什么」就凑出回执）：
+  // 这一条是 G8「没有的事就空手」逼出来的——第一版把「问句里所有库里存在的词」
+  // 都救回来，14 条无关问句里 `光合作用的暗反应发生在哪里`、`上一届世界杯冠军是谁` 立刻被
+  // `合作/作用/反应`、`冠军/世界` 凑出回执（空手 10/14 → 8/14，G8 红）。救噪声词两件都满足：
+  // 修掉「有却说没有」，且无关问句照旧空手（读数见 `docs/INTERNAL.md` 9.201，判据 `probe-empty` E1/E7）。
+  const rescued = noiseDropped.filter((t) => !funcDropped.includes(t) && (df.get(t) ?? 0) > 0);
+  if (rescued.length > 0 && !qKept.some((t) => (df.get(t) ?? 0) > 0)) {
+    qKept = rescued;
+    qLoop = q.filter((t) => rescued.includes(t));
+  }
   let qIdfSum = opts.coord === false ? 0 : qKept.reduce((s2, t) => s2 + idfOf(t), 0) || 1;
   // 同义扩词只扩问句：表里没有的词、库里 df=0 的词都不进（扩了也没人能命中，白算一遍）。
   // [macro-fusion 0.4.0 · P5] 第四参是索引随库自建出来的共现表——手工表管「人确定过的说法」，
