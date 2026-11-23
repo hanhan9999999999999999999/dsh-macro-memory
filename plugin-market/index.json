@@ -52,7 +52,7 @@
                                                       "order":  "desc"
                                                   }
                                   },
-                     "publishTimestamp": 1795354934
+                     "publishTimestamp": 1795447234
                  },
     "plugins":  [
                     {
@@ -62,8 +62,8 @@
                                       "zh":  "宏记忆"
                                   },
                         "description":  {
-                                            "en":  "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory\u0027s seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 13,567 B (−76.1%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart. 0.4.0 adds query decomposition, write-time consolidation, supersede + inflation checks, an entity layer on the graph, and co-occurrence query expansion learned from your own keywords — every one of them has an off switch and an on/off reading. 0.5.0 bridges CJK word forms so a paraphrase still lands. 0.6.0 makes scoring scale-adaptive: on a 660-entry snapshot, verbatim hit@1 0.895 → 0.921 and paraphrased 0.333 → 0.417 with zero wrong flips, and every hit now carries its `status`. Self-checked by 32 suites / 3,536 executable assertions in about 220 seconds.",
-                                            "zh":  "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 13,567 B（−76.1%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。0.4.0 又加了查询分解、写入巩固、自动取代与通胀体检、实体层、以及从你自己的 keywords 学出来的共现扩词——每一件都有开关，也都有开/关对照读数；0.5.0 用 CJK 词形桥让换说法也能落地。0.6.0 让打分随库规模自适应：660 条快照上照抄 hit@1 0.895 → 0.921、换说法 0.333 → 0.417、误伤 0，每条命中顺带带 `status`。自检 32 支、3,536 条可执行断言、约 220 秒跑完。"
+                                            "en":  "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory\u0027s seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 13,567 B (−76.1%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart. 0.4.0 adds query decomposition, write-time consolidation, supersede + inflation checks, an entity layer on the graph, and co-occurrence query expansion learned from your own keywords — every one of them has an off switch and an on/off reading. 0.5.0 bridges CJK word forms so a paraphrase still lands. 0.6.0 makes scoring scale-adaptive: on a 660-entry snapshot, verbatim hit@1 0.895 → 0.921 and paraphrased 0.333 → 0.417 with zero wrong flips, and every hit now carries its `status`. 0.6.1 turns the three-trees-out-of-sync problem into one command (`tools/sync-trees.mjs`, dry-run by default, never deletes), pins the adaptive-idf wiring with two static regexes so a silent behaviour regression cannot pass green, and fixes a `%20` path bug in a maintenance script — engine bytes unchanged. Self-checked by 32 suites / 3,537 executable assertions in about 220 seconds.",
+                                            "zh":  "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 13,567 B（−76.1%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。0.4.0 又加了查询分解、写入巩固、自动取代与通胀体检、实体层、以及从你自己的 keywords 学出来的共现扩词——每一件都有开关，也都有开/关对照读数；0.5.0 用 CJK 词形桥让换说法也能落地。0.6.0 让打分随库规模自适应：660 条快照上照抄 hit@1 0.895 → 0.921、换说法 0.333 → 0.417、误伤 0，每条命中顺带带 `status`。0.6.1 把「三棵树没同步」做成一条命令（`tools/sync-trees.mjs`，默认只体检、从不删除），用两条静态正则钉住自适应 idf 的接线点（判据全绿但行为回退这种沉默故障过不去），并修掉一个维护脚本的 `%20` 路径 bug——引擎字节未变。自检 32 支、3,537 条可执行断言、约 220 秒跑完。"
                                         },
                         "icon":  "icon.png",
                         "author":  "主人 \u0026 小代码酱",
@@ -90,11 +90,20 @@
                                                         "self-tested"
                                                     ],
                                          "sortKeys":  {
-                                                          "updated":  1795442892
+                                                          "updated":  1795447234
                                                       },
-                                         "publishTimestamp": 1795442892
+                                         "publishTimestamp": 1795447234
                                      },
                         "versions":  [
+                                         {
+                                             "version":  "0.6.1",
+                                             "publishTimestamp": 1795447234,
+                                             "source":  {
+                                                            "type":  "git",
+                                                            "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
+                                                            "commit": "863e80294722700653932b796f6b33f52e295ddf"
+                                                        }
+                                         },
                                          {
                                              "version":  "0.6.0",
                                              "publishTimestamp": 1795442892,
@@ -132,11 +141,11 @@
                                                         }
                                          }
                                      ],
-                        "version":  "0.6.0",
+                        "version":  "0.6.1",
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit": "fb1f504ddf113ec7dfa47755eef5ddaf652d062d"
+                                       "commit": "863e80294722700653932b796f6b33f52e295ddf"
                                    }
                     }
                 ]
