@@ -94,23 +94,39 @@ check(
 )
 
 // ── M4：文档「现在」的条数 = 基线合计 ──────────────────────────────────────────
+// 这里有个先有鸡还是先有蛋：新加一支套件时，基线里还没有它的条数，而它自己正
+// 被 `--update-baselines` 这一趟跑着——于是「文档 = 基线合计」在记账之前必然差
+// 一支。为此不加宽判据，而是**把这两种状态分开说**：
+//   · 基线已覆盖 check-all 的每一支 → 严格相等，差一条就红；
+//   · 基线还缺某支（正在记账）→ 只要求「文档数 >= 基线合计」并把缺的那支点名，
+//     等 `--update-baselines` 跑完自动转回严格态（缺支已由 check-all 自己报出来）。
 const base = JSON.parse(read('tools/baselines.json'))
 const baseTotal = Object.values(base.counts).reduce((a, n) => a + n, 0)
 const baseSuites = Object.keys(base.counts).length
+const registered = Object.keys(base.counts)
+// 「正在记账」只看 check-all 真正跑的那些支：tools 下还有一堆只给人工跑的
+// 辅助脚本（sync-trees / make-vendor-manifest / bench-locomo…），它们永远不
+// 会有基线——拿它们判「缺支」会让严格态永远不生效。
+const checkAllSrc = read('tools/check-all.mjs')
+const suiteSteps = [...checkAllSrc.matchAll(/\[\s*'(verify\.mjs|tools\/[\w-]+\.mjs)'/g)].map((m) => m[1])
+const absent = suiteSteps.filter((f) => !registered.includes(f))
 const readme = read('README.md')
 const scaleRow = (readme.match(/^\| 自证规模 \| \*\*(\d+) 支自检 \/ ([\d,]+) 条可执行断言\*\*/m) ?? []).slice(1)
 const rowSuites = Number(scaleRow[0])
 const rowTotal = Number((scaleRow[1] ?? '').replace(/,/g, ''))
+const strict = absent.length === 0
 check(
-  'M4 README 自证规模行与基线合计一致',
-  rowSuites === baseSuites && rowTotal === baseTotal,
-  `README ${rowSuites} 支 / ${rowTotal} 条 · 基线 ${baseSuites} 支 / ${baseTotal} 条`,
+  `M4 README 自证规模行与基线合计一致${strict ? '' : '（记账中：只要求不少于合计）'}`,
+  strict ? rowSuites === baseSuites && rowTotal === baseTotal : rowTotal >= baseTotal && rowSuites >= baseSuites,
+  `README ${rowSuites} 支 / ${rowTotal} 条 · 基线 ${baseSuites} 支 / ${baseTotal} 条${absent.length ? ` · 还没记账 ${absent.join(',')}` : ''}`,
 )
 const claimsSrc = read('docs/EVAL-CLAIMS.md')
 const claimRow = (claimsSrc.match(/^\| 健康基线 \| (\d+) 支 suite \/ \*\*([\d,]+) 断言\*\*/m) ?? []).slice(1)
+const claimSuites = Number(claimRow[0])
+const claimTotal = Number((claimRow[1] ?? '').replace(/,/g, ''))
 check(
-  'M4b EVAL-CLAIMS 健康基线行与基线合计一致',
-  Number(claimRow[0]) === baseSuites && Number((claimRow[1] ?? '').replace(/,/g, '')) === baseTotal,
+  `M4b EVAL-CLAIMS 健康基线行与基线合计一致${strict ? '' : '（记账中：只要求不少于合计）'}`,
+  strict ? claimSuites === baseSuites && claimTotal === baseTotal : claimTotal >= baseTotal && claimSuites >= baseSuites,
   `EVAL-CLAIMS ${claimRow[0] ?? '?'} 支 / ${claimRow[1] ?? '?'} 条`,
 )
 
@@ -143,7 +159,9 @@ check(
 )
 
 // ── M6：历史里程碑保留自己那版的数字 ──────────────────────────────────────────
-const m066 = (readme.match(/0\.6\.6 里程碑[\s\S]{0,4000}?\*\*(\d+) 支自检 \/ ([\d,]+) 条断言\*\*/) ?? []).slice(1)
+// 只能按「那一行」取：里程碑都是单行长文，跨行抓会把后面几版的数字一起吞进来。
+const m066Line = readme.split('\n').find((l) => l.startsWith('> **0.6.6 里程碑**')) ?? ''
+const m066 = (m066Line.match(/\*\*(\d+) 支自检 \/ ([\d,]+) 条断言\*\*/) ?? []).slice(1)
 check(
   'M6 0.6.6 里程碑保留自己那版的数字（不被连带改成当前数）',
   m066.length === 2 && Number(m066[1].replace(/,/g, '')) === 3616,

@@ -37,9 +37,11 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）。
 const SUITE_FLOOR = 37
 let failures = 0
+let passes = 0
 function check(label, ok, extra) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra === undefined ? '' : '  ' + extra}`)
   if (!ok) failures++
+  else passes++
 }
 
 // ── A. 宿主侧 ───────────────────────────────────────────────────────────────
@@ -12961,8 +12963,8 @@ dt063: {
     `声明 ${floorDecl ? 'ok' : 'miss'} / 用 ${floorUsed ? 'ok' : 'miss'} / 旧等值 ${eqGone ? '清零' : '还在'}`,
   )
   const mtProbe = readFileSync(new URL('./tools/probe-monotone.mjs', import.meta.url), 'utf8')
-  const mLabels = ['M1 ', 'M2 ', 'M3 ', 'M4 ', 'M4b ', 'M5 ', 'M6 ', 'M7 ', 'M8 ']
-  const mMissing = mLabels.filter((t) => !mtProbe.includes(`'${t}`))
+  const mLabels = ['M1 ', 'M2 ', 'M3 ', 'M4', 'M4b ', 'M5 ', 'M6 ', 'M7 ', 'M8 ']
+  const mMissing = mLabels.filter((t) => !mtProbe.includes(`'${t}`) && !mtProbe.includes(`\`${t}`))
   const wired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-monotone.mjs'")
   check(
     'MT068 探针钉住 M1–M8（地板 / 静态扫描 / 扫描器能红 / 两处文档对账 / 阶梯单调 / 旧账冻结 / 耗时预算 / 扫描面完整）并挂进 check-all',
@@ -12975,18 +12977,30 @@ dt063: {
       readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('会随时间前进的量') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 203. '),
   )
-  const baseMt = JSON.parse(readFileSync(new URL('./tools/baselines.json', import.meta.url), 'utf8'))
-  const totalMt = Object.values(baseMt.counts).reduce((a, n) => a + n, 0)
-  const claimsMt = readFileSync(new URL('./docs/EVAL-CLAIMS.md', import.meta.url), 'utf8')
-  const claimNum = Number(((claimsMt.match(/\*\*([\d,]+) 断言\*\*/) ?? [])[1] ?? '').replace(/,/g, ''))
-  check(
-    'MT068 文档「现在」的断言总数与基线合计一致（数字由事实现取，不靠手抄）',
-    totalMt > 0 && claimNum === totalMt,
-    `文档 ${claimNum || '?'} / 基线 ${totalMt}`,
-  )
+  // 「文档里的总数 = 基线合计」这条偏偏不能写在这里：本支套件自己的条数也要
+  // 进基线，而基线是这一支跑绿之后才记得上的——放在中途就成了先有鸡还是先有蛋
+  // （新加一支时必然差一支，于是永远绿不了、也就永远记不上账）。0.6.8 起把它
+  // 挪到全文件末尾，用**本次实际跑过的 PASS 条数**当自己的那格，环就断了：
+  // 期望值 = Σ(其它支的基线) + 本支本次 PASS 条数，与基线里旧的那格无关。
   const v = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNum = v.length === 3 ? v[0] * 10000 + v[1] * 100 + v[2] : 0
   check('MT068 版本号不低于 0.6.8（后续补丁不必回头改这一条）', vNum >= 608, v.join('.'))
+}
+
+// 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
+{
+  const baseTail = JSON.parse(readFileSync(new URL('./tools/baselines.json', import.meta.url), 'utf8'))
+  const others = Object.entries(baseTail.counts)
+    .filter(([f]) => f !== 'verify.mjs')
+    .reduce((a, [, n]) => a + n, 0)
+  const expected = others + passes + 1 // +1 = 这一条自己
+  const claimsTail = readFileSync(new URL('./docs/EVAL-CLAIMS.md', import.meta.url), 'utf8')
+  const claimTail = Number(((claimsTail.match(/\*\*([\d,]+) 断言\*\*/) ?? [])[1] ?? '').replace(/,/g, ''))
+  check(
+    'MT068 文档「现在」的断言总数 = 其它支基线合计 + 本支本次实测（数字由事实拼出来，不靠手抄）',
+    expected > 0 && claimTail === expected,
+    `文档 ${claimTail || '?'} / 实测 ${expected}（其它 ${others} + 本支 ${passes} +1）`,
+  )
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
