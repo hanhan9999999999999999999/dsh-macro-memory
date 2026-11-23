@@ -12789,8 +12789,8 @@ dt063: {
   const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const fbHead = 'function literalFallback(query, docs, opts = {}) {'
   check(
-    'LT064 单字兜底在位：一个 `literalFallback`，闸门是「一个码点 + 汉字」不是「短」',
-    eng.split(fbHead).length - 1 === 1 && eng.includes('if (cps.length !== 1 || !/[\\u3400-\\u9fff\\uf900-\\ufaff]/.test(cps[0])) return [];'),
+    'LT064 单字兜底在位：一个 `literalFallback`，闸门是「一个汉字」不是「短」',
+    eng.split(fbHead).length - 1 === 1 && eng.includes('if (new Set(han).size !== 1) return [];'),
     `${eng.split(fbHead).length - 1} 处定义`,
   )
   const fbCalls = eng.split('return literalFallback(query, docs, opts);').length - 1
@@ -12816,7 +12816,39 @@ dt063: {
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.203 ') &&
       readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('切不出词 ≠ 库里没有'),
   )
-  check('LT064 版本号已抬到 0.6.4', readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(`export const version = '0.6.4'`))
+  const ltVer = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const ltVerNum = ltVer.length === 3 ? ltVer[0] * 10000 + ltVer[1] * 100 + ltVer[2] : 0
+  check('LT064 版本号不低于 0.6.4（后续补丁不必回头改这一条）', ltVerNum >= 604, ltVer.join('.'))
+}
+// ── 0.6.5 单字问句带标点：标点只是外壳，不许把问题变成「没有」 ────────────────
+{
+  const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const gate = [
+    'const han = cps.filter(isHan);',
+    'const rest = cps.filter((c) => !isHan(c));',
+    'if (new Set(han).size !== 1) return [];',
+    'if (!rest.every((c) => /[\\s\\p{P}]/u.test(c))) return [];',
+  ]
+  const gateMissing = gate.filter((l) => !eng.includes(l))
+  check(
+    'LT065 闸门改成「剥掉标点后正好一个汉字」：只放汉字 + 标点/空白，不放字母数字符号',
+    gateMissing.length === 0 && !eng.includes('if (cps.length !== 1 || !/['),
+    gateMissing.length ? `缺 ${gateMissing.join(' | ')}` : '四行都在，旧闸门已清零',
+  )
+  const needleUses = eng.split('needle1').length - 1
+  check('LT065 兜底按剥好的那个汉字找子串（`needle1` 在定义后用上，不是拿原问句找）', needleUses >= 3 && eng.includes('hay.indexOf(needle1)') && eng.includes('at + needle1.length'), `needle1 ${needleUses} 处`)
+  const ltProbe = readFileSync(new URL('./tools/probe-literal.mjs', import.meta.url), 'utf8')
+  const pLabels = ['L9 ', 'L10 ', 'L11 ', 'L12 ', 'L13 ']
+  const pMissing = pLabels.filter((t) => !ltProbe.includes(`'${t}`))
+  check('LT065 探针钉住 L9–L13（标点命中 / 闸门不认短 / 重复按一个算 / 同口径 / 退回即红）', pMissing.length === 0, pMissing.length ? `缺 ${pMissing.join(' ')}` : 'L9–L13 都在')
+  check(
+    'LT065 文档在位：INTERNAL 9.204 写了「标点是外壳」，README 里程碑写了「标点也是人打的」',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.204 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('标点也是人打的'),
+  )
+  const ltVer5 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const ltVerNum5 = ltVer5.length === 3 ? ltVer5[0] * 10000 + ltVer5[1] * 100 + ltVer5[2] : 0
+  check('LT065 版本号不低于 0.6.5（后续补丁不必回头改这一条）', ltVerNum5 >= 605, ltVer5.join('.'))
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

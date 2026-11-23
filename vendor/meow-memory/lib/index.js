@@ -3073,21 +3073,30 @@ function idfClusterOf(qToks, tf, df, n, order, raw, opts) {
 //   · 两个汉字以上的中文问句本来就能切成二元组，走常规词法，不需要兜底；
 //   · 英文问句一个字也能切（`run.join("").toLowerCase()`），而 `the`/`a` 这类被停用词表吃掉的
 //     英文问句**绝不能**做子串——那才是真噪声，`probe-gold` G8「没有的事就空手」会当场判红。
-//   · 所以这里的闸门是「一个码点 + 汉字」，不是「短」。
+//   · 所以这里的闸门是「一个汉字 + 标点」，不是「短」。
+// [macro-fusion 0.6.5] 0.6.4 只认「正好一个码点」，于是 `读？` / `钱。` / `「花」` 又回到空手——
+//   人打单字问题时几乎总带一个标点，闸门必须先把标点与空白剥掉再数汉字。剥法是「汉字之外只许标点
+//   或空白」：字母/数字/符号（`读$`、`读1`）一律不放行，英文停用词照旧一个都不救（G8 仍要空手）。
+//   同一个汉字重复（`读 读`）按一个算——问的是同一个字，不必造新口径。
 function literalFallback(query, docs, opts = {}) {
   const needle = String(query ?? "").normalize("NFKC").trim().toLowerCase();
   const cps = Array.from(needle);
-  if (cps.length !== 1 || !/[\u3400-\u9fff\uf900-\ufaff]/.test(cps[0])) return [];
+  const isHan = (c) => /[\u3400-\u9fff\uf900-\ufaff]/.test(c);
+  const han = cps.filter(isHan);
+  const rest = cps.filter((c) => !isHan(c));
+  if (new Set(han).size !== 1) return [];
+  if (!rest.every((c) => /[\s\p{P}]/u.test(c))) return [];
+  const needle1 = han[0];
   const hits = [];
   for (const d of docs) {
     if (d === null || d === void 0 || typeof d !== "object") continue;
     const kw = Array.isArray(d.keywords) ? d.keywords.join(" ") : String(d.keywords ?? "");
     const hay = `${d.title ?? ""} ${d.content ?? ""} ${kw}`.normalize("NFKC").toLowerCase();
     let tf2 = 0;
-    let at = hay.indexOf(needle);
+    let at = hay.indexOf(needle1);
     while (at >= 0) {
       tf2 += 1;
-      at = hay.indexOf(needle, at + cps[0].length);
+      at = hay.indexOf(needle1, at + needle1.length);
     }
     if (tf2 === 0) continue;
     hits.push({ ...d, _raw: tf2, cover: 0, score: tf2, ...opts.explain === true ? { explain: { bm25: 0, literal: tf2, score: tf2 } } : {} });

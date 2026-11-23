@@ -16,7 +16,7 @@
  * 只放单字、不放任意短串：两个汉字以上本来就能切，英文单字（`the`/`a`）做子串才是真噪声——
  * `tools/probe-gold.mjs` 的 G8「没有的事就空手」就是专门抓这个的。
  *
- * 这里钉住九条性质（都是行为断言，删掉兜底 L1/L2/L6/L7/L8 立刻红）：
+ * 这里钉住十三条性质（都是行为断言，删掉兜底 L1/L2/L6/L7/L8 立刻红）：
  *   L1 单字中文问句不再空手，且每条命中真的含那个字
  *   L2 只写在 keywords 里的字也认（兜底不是只扫 content）
  *   L3 英文停用词仍然空手（`the`/`a` 一个都不许放进来）
@@ -25,6 +25,12 @@
  *   L6 三条检索路径（search / searchAdaptive / keywordHitScore）同口径
  *   L7 能红证明：挖掉兜底后同一问句回空（在子进程里量）
  *   L8 库里没有的字仍然空手
+ *   L9（0.6.5）单字带标点照样命中（`读？` / `钱。` / `「花」`）——0.6.4 只认「正好一个码点」，
+ *      人打单字问题几乎总带标点，于是又回到空手
+ *   L10 闸门剥的是标点，不是「短」：字母/数字/符号（`读1` / `读$`）一律不放行，纯标点仍旧空手
+ *   L11 同一个汉字重复按一个算（`读 读` 与 `读` 同集合）
+ *   L12 标点版也走三条路径同口径
+ *   L13 能红证明：把闸门退回 0.6.4（只认一个码点），`读？` 立刻回空
  *
  * 用法：node tools/probe-literal.mjs      （挂进 check-all；零 LLM、不碰真库、不写任何文件）
  */
@@ -136,6 +142,78 @@ process.stdout.write(one.length + ',' + two.length)
 // ── L8：不凭空编——库里没有的字仍然空手 ──────────────────────────────────────────
 const whale = V.search('鲸', structuredClone(docs), { k: 5 })
 check('L8 库里没有的字仍然空手（`鲸` → 0 条）', whale.length === 0, `${whale.length} 条`)
+
+// ── L9–L12（0.6.5）：标点随行的单字问句 ─────────────────────────────────────────
+// 0.6.4 的闸门是「正好一个码点」，于是 `读？`（人打单字问题最常见的形状）又回空——
+// 修法是把「汉字之外只许标点或空白」剥掉再数，闸门守的仍是「一个汉字」，不是「短」。
+const punctQs = ['读？', '读?', '读。', '读，', '「读」', '读…', '读·', '钱:']
+const punctMiss = punctQs.filter((q) => V.search(q, structuredClone(docs), { k: 5 }).length === 0)
+check('L9 单字带标点照样命中（八种标点逐个试）', punctMiss.length === 0, punctMiss.length ? `空手：${punctMiss.join(' ')}` : '8/8 命中')
+check(
+  'L9 带标点的回执与不带标点同集合（标点只是外壳，不是查询内容）',
+  punctQs.every((q) => {
+    const base = q.replace(/[\s\p{P}]/gu, '')
+    return sortedIds(V.search(q, structuredClone(docs), { k: 5 })) === sortedIds(V.search(base, structuredClone(docs), { k: 5 }))
+  }),
+  punctQs.map((q) => `${q}=${idsOf(V.search(q, structuredClone(docs), { k: 5 }))}`).join(' '),
+)
+
+// 闸门剥的是标点：字母 / 数字 / 符号一个都不放行，否则「短串兜底」会变成噪声源（G8 会红）。
+const badQs = ['读1', '读9', '读x', '读$', '读+', '读读']
+const badHits = badQs.map((q) => V.search(q, structuredClone(docs), { k: 5 }).length)
+check(
+  'L10 闸门不认字母 / 数字 / 符号（`读1` `读x` `读$` `读+` `读读` 都不是「一个汉字 + 标点」）',
+  badHits.slice(0, 5).every((n) => n === 0),
+  badQs.map((q, i) => `${q}=${badHits[i]}`).join(' '),
+)
+check('L10 纯标点仍然空手（`？` `。` `「」` 都不许凭空命中）', ['？', '。', '「」', '...'].every((q) => V.search(q, structuredClone(docs), { k: 5 }).length === 0))
+
+// 同一个字重复（`读 读`）问的是同一个字，按一个算，不必造新口径。
+check(
+  'L11 同一个汉字重复按一个算（`读 读` 与 `读` 同集合）',
+  sortedIds(V.search('读 读', structuredClone(docs), { k: 5 })) === sortedIds(du),
+  idsOf(V.search('读 读', structuredClone(docs), { k: 5 })),
+)
+
+const punctAdaptive = V.searchAdaptive('读？', structuredClone(docs), { k: 5, adaptiveIdf: true })
+const punctKeyword = typeof V.keywordHitScore === 'function' ? V.keywordHitScore('读？', structuredClone(docs), { k: 5 }) : []
+check(
+  'L12 标点版也走三条路径同口径（search / searchAdaptive / keywordHitScore）',
+  punctAdaptive.length > 0 && punctKeyword.length > 0 && sortedIds(punctAdaptive) === sortedIds(du) && sortedIds(punctKeyword) === sortedIds(du),
+  `${sortedIds(du)} | ${sortedIds(punctAdaptive)} | ${sortedIds(punctKeyword)}`,
+)
+
+// ── L13：能红证明——闸门退回 0.6.4（只认一个码点），`读？` 立刻回空 ────────────────
+const PUNCT_GATE = 'if (!rest.every((c) => /[\\s\\p{P}]/u.test(c))) return [];'
+if (!src.includes(PUNCT_GATE)) {
+  check('L13 能红证明：标点闸门还在源码里（能定位到才谈得上「退回去就红」）', false)
+} else {
+  const redPunct = `
+import { readFileSync } from 'node:fs'
+import Module from 'node:module'
+const enginePath = ${JSON.stringify(enginePath)}
+const src = readFileSync(enginePath, 'utf8')
+const red = new Module('red-punct', null)
+red.filename = enginePath
+red.paths = Module._nodeModulePaths(enginePath.slice(0, enginePath.lastIndexOf('/')))
+const patched = src.replace(${JSON.stringify(PUNCT_GATE)}, 'if (cps.length !== 1) return [];')
+red._compile(patched, enginePath)
+const docs = [
+  { id: 'L-a', title: '实验', content: '滴定终点读两遍，再记一次。', updated_at: 1000 },
+  { id: 'L-c', title: '记账', content: '钱要记清楚，别凭印象。', updated_at: 500 },
+]
+const plain = red.exports.search('读', docs, { k: 5 })
+const withPunct = red.exports.search('读？', docs, { k: 5 })
+process.stdout.write(plain.length + ',' + withPunct.length)
+`
+  let outP = ''
+  try {
+    outP = execFileSync(process.execPath, ['--input-type=module', '-e', redPunct], { encoding: 'utf8' }).trim()
+  } catch (e) {
+    outP = `ERR ${e.message.slice(0, 120)}`
+  }
+  check('L13 能红证明：退回「只认一个码点」后 `读` 仍中、`读？` 回空（子进程里量）', /^\d+,\s*0$/.test(outP) && !outP.startsWith('0,'), outP)
+}
 
 console.log(failures === 0 ? `\nALL PASS  probe-literal：${total}/${total}` : `\n${failures} 条失败`)
 process.exit(failures === 0 ? 0 : 1)
