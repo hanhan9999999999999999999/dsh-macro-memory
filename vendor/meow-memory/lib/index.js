@@ -1904,8 +1904,29 @@ function stemEn(word) {
   if (/ll$/.test(w) && MGR1.test(w)) w = w.slice(0, -1);
   return w;
 }
+// [macro-fusion 0.6.6] keywords 的形态不止一种：真数组、逗号/顿号分隔的一整串、甚至 JSON 字符串。
+// 引擎里凡是「把 keywords 当词表用」的地方都必须走这一个入口——形态不同不该等于这条记忆不存在。
+function kwList(d) {
+  const raw = d?.keywords;
+  if (Array.isArray(raw)) return raw.filter((w) => typeof w === "string" && w.length > 0);
+  if (typeof raw !== "string") return [];
+  const s = raw.trim();
+  if (s === "") return [];
+  if (s.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) return parsed.filter((w) => typeof w === "string" && w.length > 0);
+    } catch {
+      // 不是合法 JSON 就按分隔符切，别把整串丢掉
+    }
+  }
+  return s.split(/[,，、;；]/).map((w) => w.trim()).filter((w) => w.length > 0);
+}
 function docText(d) {
-  return [d.title ?? "", d.content, ...d.keywords].join(" ");
+  // [macro-fusion 0.6.6] 一条脏记忆不许把整次检索打成异常：老库里 keywords 可能是 null / undefined /
+  // 逗号串（导入的行、别的插件写的行、调用方自己拼的 docs），而这里原来直接 `...d.keywords`——
+  // 一条缺字段的条目就让 verbatimInputs 在遍历时抛 TypeError，整个 search 变异常而不是「少一条」。
+  return [d.title ?? "", d.content ?? "", kwList(d).join(" ")].join(" ");
 }
 // [macro-fusion 0.2.131] 会话主题扩展：一条 20 字的短条目接不住问句的三四个实词——数据侧证据是
 // omni33/34/35（LoCoMo 649 题同题配对）：把「这一段对话里 tf-idf 最高的 12 个实词」补给条目，
@@ -2653,7 +2674,9 @@ function indexSignature(docs) {
     mix(content.slice(0, 40));
     mix(content.slice(-40));
     mix(String(d?.title ?? ''));
-    mix(Array.isArray(d?.keywords) ? d.keywords.join('\u0001') : -1);
+    // [macro-fusion 0.6.6] 关键词也走 kwList：字符串形态的词表换了内容同样是「另一张库」，
+    // 只认数组会让「逗号串被改写」漏过签名、拿旧索引答新库。
+    mix(kwList(d).join('\u0001'));
     mix(d?.source_session);
   }
   return `${docs.length}:${h >>> 0}`;
@@ -2878,7 +2901,7 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
 
   const df = new Map();
   const tf = [];
-  const kwToks = opts.kwSeparate === false ? null : docs.map((d) => (Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ''))));
+  const kwToks = opts.kwSeparate === false ? null : docs.map((d) => kwList(d).flatMap((w) => tokenize(String(w ?? ''))));
   // 倒排：词 → 出现过它的条目下标。打分只碰「问句里那几个词真的出现过」的条目，
   // 而不是把整库每条都乘一遍。opts.inverted === false 可关掉，用于阴性对照。
   const postings = opts.inverted === false ? null : new Map();
@@ -2910,7 +2933,7 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
     tf.push(m);
   }
   const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? '')))) : null;
-  const kwSets = useField ? docs.map((d) => new Set((Array.isArray(d.keywords) ? d.keywords : []).flatMap((w) => tokenize(String(w ?? ''))))) : null;
+  const kwSets = useField ? docs.map((d) => new Set(kwList(d).flatMap((w) => tokenize(String(w ?? ''))))) : null;
   // [macro-fusion 0.4.0 · P5] 共现表跟索引一起建（库一变就重算，不需要额外失效逻辑）。
   // coocLearn:false 一键回到「只有手工表」的旧口径，用来做开/关对照。
   const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts);
@@ -4092,7 +4115,8 @@ function hitQuery(db, workspace, sessionId, userText, o, dir) {
   const docs = toDocs(hitRows).map((d) => ({
     ...d,
     // 匹配面 = 条目关键词（LLM 提取或自动 bigram；无关键词的旧条目回退内容前 100 字）。
-    content: d.keywords.length > 0 ? d.keywords.join(" ") : d.content.slice(0, 100)
+    // [macro-fusion 0.6.6] 同 docText：keywords 缺失 / 非数组时不许在这里抛（旧条目会整批读不出来）。
+    content: Array.isArray(d.keywords) && d.keywords.length > 0 ? d.keywords.join(" ") : String(d.content ?? "").slice(0, 100)
   }));
   const hits = keywordHitScore(query, docs, { k: o.hitTopK });
   const byId = new Map(hitRows.map((r) => [r.id, r]));

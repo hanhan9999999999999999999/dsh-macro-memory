@@ -938,7 +938,8 @@ function makeHostCtx() {
     //      + 0.6.2 的 probe-empty（空回账：不许把「有」说成「没有」）
     //      + 0.6.3 的 probe-determinism（定序账：同一问句同一答案）
     //      + 0.6.4 的 probe-literal（单字问句账：切不出词 ≠ 库里没有）
-    steps.length === 35 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
+    //      + 0.6.6 的 probe-dirty（脏记忆账：缺 keywords 的条目不许把整次检索打成异常）
+    steps.length === 36 && notImported.length === 0 && Object.keys(NO_ROOT).every((f) => steps.includes(f)),
     notImported.length ? notImported.join(', ') : `${needRoot.length} 支取根 / ${Object.keys(NO_ROOT).length} 支有理由例外`,
   )
   // 例外表不能成为逃逸口：被豁免的那支必须真的不碰 root
@@ -11754,12 +11755,14 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     })(),
   )
   check(
-    'HC 行为·关键词通道只认数组: 同样的词装成 keywords 数组就能命中，装成 JSON 文本则整条失效（raw row 的坑）',
+    'HC 行为·关键词三种形态都进通道: 数组 / JSON 文本 / 逗号串都能命中（0.6.6 起 kwList 归一，raw row 的那个坑已经填了）',
     (() => {
       const base = { id: 'kw-probe', level: 'fact', title: '', content: '这条正文一个问句词都没有。', importance: 2, status: 'active' }
-      const asArray = MeowHC.search('舵轮校准', [{ ...base, keywords: ['舵轮校准'] }], { k: 1 })
-      const asText = MeowHC.search('舵轮校准', [{ ...base, keywords: '["舵轮校准"]' }], { k: 1 })
-      return asArray.length === 1 && asArray[0].cover > 0.9 && (asText.length === 0 || asText[0].cover < 0.01)
+      const shapes = [['舵轮校准'], '["舵轮校准"]', '舵轮校准, 罗盘']
+      return shapes.every((kw) => {
+        const hits = MeowHC.search('舵轮校准', [{ ...base, keywords: kw }], { k: 1 })
+        return hits.length === 1 && hits[0].cover > 0.9
+      })
     })(),
   )
   const probe164 = readFileSync(join(root, 'tools', 'probe-gold.mjs'), 'utf8')
@@ -12693,9 +12696,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check('XA1 缓存上限是常量（4 张：多工作区够用，又不许无限长内存）', MX.includes('const SEARCH_INDEX_CACHE_MAX = 4;'))
   check(
-    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写）',
+    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写；0.6.6 起关键词走 kwList，字符串形态也纳入签名）',
     MX.includes('mix(content.slice(0, 40));') && MX.includes('mix(content.slice(-40));') &&
-      MX.includes("mix(Array.isArray(d?.keywords) ? d.keywords.join('\\u0001') : -1);"),
+      MX.includes("mix(kwList(d).join('\\u0001'));"),
   )
   check('XA3 倒排表能关（阴性对照要有开关，否则证明不了它真在起作用）', MX.includes('const postings = opts.inverted === false ? null : new Map();'))
   check('XA4 缓存能关（opts.cache === false 走现建现用）', MX.includes('if (opts.cache === false) return buildSearchIndex(docs, opts, key);'))
@@ -12849,6 +12852,59 @@ dt063: {
   const ltVer5 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const ltVerNum5 = ltVer5.length === 3 ? ltVer5[0] * 10000 + ltVer5[1] * 100 + ltVer5[2] : 0
   check('LT065 版本号不低于 0.6.5（后续补丁不必回头改这一条）', ltVerNum5 >= 605, ltVer5.join('.'))
+}
+
+// ── 0.6.6 脏记忆：一条缺字段的条目不许把整次检索打成异常 ──────────────────────
+{
+  const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const kwHead = 'function kwList(d) {'
+  const kwBranches = [
+    'if (Array.isArray(raw)) return raw.filter((w) => typeof w === "string" && w.length > 0);',
+    'if (typeof raw !== "string") return [];',
+    'if (s.startsWith("[")) {',
+    'return s.split(/[,，、;；]/).map((w) => w.trim()).filter((w) => w.length > 0);',
+  ]
+  const kwMissing = kwBranches.filter((l) => !eng.includes(l))
+  check(
+    'DT066 keywords 归一化在位：数组 / 非字符串 / JSON 串 / 逗号顿号四路都认，`kwList` 只此一份',
+    eng.split(kwHead).length - 1 === 1 && kwMissing.length === 0,
+    kwMissing.length ? `缺 ${kwMissing.join(' | ')}` : `${eng.split(kwHead).length - 1} 处定义`,
+  )
+  check(
+    'DT066 docText 改走 kwList，旧 `...d.keywords` 已清零（脏条目不再让 verbatimInputs 抛 TypeError）',
+    eng.includes('return [d.title ?? "", d.content ?? "", kwList(d).join(" ")].join(" ");') && !eng.includes('...d.keywords].join'),
+  )
+  const kwToksLine = eng.split('\n').find((l) => l.includes('const kwToks = opts.kwSeparate === false')) ?? ''
+  const kwSetsLine = eng.split('\n').find((l) => l.includes('const kwSets = useField')) ?? ''
+  check(
+    'DT066 打分面两处（kwToks / kwSets）同样走 kwList——逗号串的关键词真的进 tf-idf，不只是不崩',
+    kwToksLine.includes('kwList(d).flatMap') && kwSetsLine.includes('new Set(kwList(d).flatMap'),
+    `kwToks ${kwToksLine.includes('kwList(d)') ? 'ok' : 'miss'} / kwSets ${kwSetsLine.includes('kwList(d)') ? 'ok' : 'miss'}`,
+  )
+  check(
+    'DT066 索引签名也走 kwList：字符串词表被改写要让缓存失效，不许拿旧索引答新库',
+    eng.includes("mix(kwList(d).join('\\u0001'));") && !eng.includes("mix(Array.isArray(d?.keywords) ? d.keywords.join('\\u0001') : -1);"),
+  )
+  check(
+    'DT066 keywordHitScore 的 content 归一化在位（keywords 缺失时退回正文，不抛）',
+    eng.includes('content: Array.isArray(d.keywords) && d.keywords.length > 0 ? d.keywords.join(" ") : String(d.content ?? "").slice(0, 100)'),
+  )
+  const dtProbe = readFileSync(new URL('./tools/probe-dirty.mjs', import.meta.url), 'utf8')
+  const dLabels = ['D1 ', 'D2 ', 'D3 ', 'D4 ', 'D5 ', 'D6 ', 'D7 ', 'D8 ']
+  const dMissing = dLabels.filter((t) => !dtProbe.includes(`'${t}`))
+  check(
+    'DT066 探针钉住 D1–D8（不崩 / 仍可命中 / 逗号串成词 / null 数字对象 / 不改写别人 / content 缺失 / 三路同口径 / 挖掉归一化即红）',
+    dMissing.length === 0 && readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes(`['tools/probe-dirty.mjs',`),
+    dMissing.length ? `缺 ${dMissing.join(' ')}` : 'D1–D8 都在，且挂进了 check-all',
+  )
+  check(
+    'DT066 文档在位：INTERNAL 9.205 写了病根，README 里程碑写了「脏记忆不许把整次检索打成异常」',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.205 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('脏记忆不许把整次检索打成异常'),
+  )
+  const dtVer = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const dtVerNum = dtVer.length === 3 ? dtVer[0] * 10000 + dtVer[1] * 100 + dtVer[2] : 0
+  check('DT066 版本号不低于 0.6.6（后续补丁不必回头改这一条）', dtVerNum >= 606, dtVer.join('.'))
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

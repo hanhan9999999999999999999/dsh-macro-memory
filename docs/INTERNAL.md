@@ -11644,3 +11644,72 @@ const needle1 = han[0];
 
 支数仍 **35**（没有新增套件，只扩条数）；`probe-literal` 11 → 18 条，`verify.mjs` 1,827 → 1,832 条（新增 `LT065` 一节，实测净增五条——有一格落在既有的版本对齐计数里），断言总数 3,587 → **3,599**。
 
+## 9.205 脏记忆不许把整次检索打成异常（0.6.6）
+
+### 9.205.1 症状：不是少一条，是一个都拿不回来
+
+`docText(d)` 原来是一行：
+
+```js
+return [d.title ?? "", d.content, ...d.keywords].join(" ");
+```
+
+`?? ` 把 `undefined` 兜住了，`...` 没有。`keywords` 在老库里不止一种形态——缺字段、`null`、逗号串（`'浇花, 施肥, 换盆'`），来源是导入行、别的插件写的行、以及调用方自己拼的 docs。一条这样的条目进到遍历里，当场：
+
+```
+TypeError: d.keywords is not iterable
+    at docText (vendor/meow-memory/lib/index.js:1908)
+```
+
+`docText` 不是某一条支路的装饰品：`findSimilar`（`memory_read` 的邻居）、`topicDrift`、写侧重复判定都走它，`verbatimInputs` 那条链上也要把整批 docs 过一遍字面量。所以后果不是「这条没命中」，而是**这次调用整体抛异常**——调用方拿到的不是「没有」，是崩溃。
+
+### 9.205.2 发现顺序：它是被探针崩出来的
+
+这一条不是设计出来的，是写「标点漂移」探针（`E:\Temp\cmp\punct-drift.mjs`，量 LoCoMo 400 对问句尾部加 `？` 会不会换答案，结果 **0 对漂移 / 0.0%**）时，脚本自己崩在 `docText` 上。当时的反应不是「给脚本补上 keywords 字段就完了」——**调用方不该为了让引擎不崩而伪造数据的形状**，这条一补进去，就等于把真实世界里的脏数据判成「不存在」。
+
+### 9.205.3 处方：一个入口，四路都认
+
+```js
+function kwList(d) {
+  const raw = d?.keywords;
+  if (Array.isArray(raw)) return raw.filter((w) => typeof w === "string" && w.length > 0);
+  if (typeof raw !== "string") return [];
+  const s = raw.trim();
+  if (s === "") return [];
+  if (s.startsWith("[")) { try { const parsed = JSON.parse(s); if (Array.isArray(parsed)) return parsed.filter(...) } catch {} }
+  return s.split(/[,，、;；]/).map((w) => w.trim()).filter((w) => w.length > 0);
+}
+```
+
+三处取舍：
+
+1. **归一化放在一个函数里，而不是每个调用点各写一份 `Array.isArray`**。引擎里已有四处「把 keywords 当词表」的地方（`docText` / `kwToks` / `kwSets` / `keywordHitScore` 的 `content`），各写一份的结果是迟早有一处忘掉——而忘掉的那处正是这次崩的那处。
+2. **逗号串要真的进 tf-idf，不只是「不崩」**。原来 `kwToks` 写的是 `Array.isArray(d.keywords) ? d.keywords : []`：字符串形态的词表被静默判成空表，等于老数据的关键词一直是隐形的。归一化顺手把这条也治了——`search('浇花', [K-2])` 从 `[]` 变成命中。
+3. **索引签名跟着走**（`mix(kwList(d).join('\u0001'))`）。签名原来只认数组，`-1` 兜底：字符串词表被改写，签名不变 → 拿旧索引答新库。这条和 0.6.3 的定序账是同一族的纪律：**缓存的键必须覆盖所有影响结果的东西**。
+
+### 9.205.4 读数：一位没动
+
+- LoCoMo（1,531 问）：hit@1 0.3932 / hit@5 0.6192 / hit@10 0.6924 / hit@20 0.7511 / MRR 0.4958 / recall@20 0.6322 / 平均取回 17.8 / 空回 0.0000。
+- 真库 660 条 52 问：照抄 0.921 / 0.974 / 0.947、换说法 0.417 / 0.750 / 0.569、时间锚 0.500，两条 #2→#1 位移不变。
+- 原因：这两份语料的 keywords 本来就是数组或缺失，归一化只把「坏形状」救回来——它修的是**可达性**（该拿回来的回执不许变成异常），不是排序，也不是多凑几条。
+
+### 9.205.5 判据
+
+`tools/probe-dirty.mjs` **9 条**（`ALL PASS  probe-dirty：9/9`），干净池两条 + 七条脏条目（缺字段 / 逗号串 / `null` / 数字 / 对象 / 只有标题 / `content` 为 `null`）：
+
+- **D1** 缺 `keywords` 的条目不再把多词问句打成异常（回数组，不是 `TypeError`）。
+- **D2** 缺字段的条目仍然可被命中——归一化不是「跳过这一条」。
+- **D3** 逗号串当词表用（`浇花` 能命中）。
+- **D4** `null` / 数字 / 对象既不抛，也不凭空命中。
+- **D5** 一条脏条目混进干净池，干净问句的第一名逐位不变（脏数据不许改写别人的排序）。
+- **D6** `content` 缺失 / `null` 不抛，且字面量 `undefined` 不成词。
+- **D7** `search` / `searchAdaptive` / `keywordHitScore` 三路同口径。
+- **D8** 能红证明：子进程里把 `kwList` 换回 `[...d.keywords]`，同一问句立刻 `d.keywords is not iterable`。
+
+`verify.mjs` 新增 `DT066` 一节七条：`kwList` 四路分支在位且只此一份 / `docText` 改走 `kwList` 且旧 `...d.keywords` 清零 / `kwToks`·`kwSets` 同样走 `kwList`（真的进 tf-idf）/ 索引签名走 `kwList` 且旧 `-1` 兜底清零 / `keywordHitScore` 的 `content` 归一化在位 / 探针 D1–D8 标签在位并挂进 check-all / INTERNAL 9.205 与 README「脏记忆不许把整次检索打成异常」在位、版本 ≥0.6.6。
+
+### 9.205.6 账
+
+支数 **36**（新增 `tools/probe-dirty.mjs`）；断言 3,599 → **3,615**（`probe-dirty` +9、`verify.mjs` 1,832 → 1,839 的 `DT066` +7）。
+
+
