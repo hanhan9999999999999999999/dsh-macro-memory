@@ -52,7 +52,7 @@
                                                       "order":  "desc"
                                                   }
                                   },
-                     "publishTimestamp": 1795454972
+                     "publishTimestamp": 1795457125
                  },
     "plugins":  [
                     {
@@ -62,8 +62,8 @@
                                       "zh":  "宏记忆"
                                   },
                         "description":  {
-                                            "en":  "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory\u0027s seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 13,567 B (−76.1%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart. 0.4.0 adds query decomposition, write-time consolidation, supersede + inflation checks, an entity layer on the graph, and co-occurrence query expansion learned from your own keywords — every one of them has an off switch and an on/off reading. 0.5.0 bridges CJK word forms so a paraphrase still lands. 0.6.0 makes scoring scale-adaptive: on a 660-entry snapshot, verbatim hit@1 0.895 → 0.921 and paraphrased 0.333 → 0.417 with zero wrong flips, and every hit now carries its `status`. 0.6.1 turns the three-trees-out-of-sync problem into one command (`tools/sync-trees.mjs`, dry-run by default, never deletes), pins the adaptive-idf wiring with two static regexes so a silent behaviour regression cannot pass green, and fixes a `%20` path bug in a maintenance script — engine bytes unchanged. 0.6.2 fixes a recall bug where the store said nothing when something was there: the noise floor dropped the only matchable word and left a word that does not exist in the store in its place (8 of 1,531 English questions came back empty). It now rescues only the words the noise floor dropped and never function words, so empty replies went 0.52% → 0 while hit@1/5/10/20, MRR and the 660-entry snapshot readings stayed bit-identical. 0.6.3 makes answers reproducible: a tie on score used to fall back to corpus order (V8's stable sort), so the same question could give two different top-tens depending on how the store happened to lay the rows out. The ladder now ends with updated-later-first and a natural id order, the adaptive-idf cluster pick no longer breaks ties by array index, and no ordering step uses localeCompare — and every reading stayed bit-identical. Self-checked by 34 suites / 3,569 executable assertions in about 220 seconds.",
-                                            "zh":  "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 13,567 B（−76.1%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。0.4.0 又加了查询分解、写入巩固、自动取代与通胀体检、实体层、以及从你自己的 keywords 学出来的共现扩词——每一件都有开关，也都有开/关对照读数；0.5.0 用 CJK 词形桥让换说法也能落地。0.6.0 让打分随库规模自适应：660 条快照上照抄 hit@1 0.895 → 0.921、换说法 0.333 → 0.417、误伤 0，每条命中顺带带 `status`。0.6.1 把「三棵树没同步」做成一条命令（`tools/sync-trees.mjs`，默认只体检、从不删除），用两条静态正则钉住自适应 idf 的接线点（判据全绿但行为回退这种沉默故障过不去），并修掉一个维护脚本的 `%20` 路径 bug——引擎字节未变。0.6.2 修的是一个把「有」说成「没有」的缺陷：噪声地板剔掉了唯一能命中的词、留下库里根本不存在（df=0）的词顶位，1,531 条英文问句里 8 条回执为空；处方只救被噪声地板剔掉的词（虚词一个都不救），空回 0.52% → 0，hit@1/5/10/20、MRR 与 660 条快照三档读数逐位不变。0.6.3 让答案是可复现的：分数并列时以前会退回语料顺序（V8 稳定排序），同一个问句能因为存储布局不同给出两套前十；定序梯子现在末尾是「更新得更晚的在前」+ id 自然序，自适应 idf 挑簇不再按数组下标破平，整条链上也没有 localeCompare——所有读数逐位不变。自检 34 支、3,569 条可执行断言、约 220 秒跑完。"
+                                            "en":  "One memory plugin instead of three: 8 unified memory_* tools and a single 1,235-character injection, with meow-memory\u0027s seven-layer SQLite as the main store and a rebuildable graph index. Tool schemas 56,759 B → 13,567 B (−76.1%), standing prompt 4,085 → 1,235 chars (−69.8%). Nothing was dropped: writes land in the main store first, graph links that cannot be written are queued instead of lost, and the setting page takes effect without a restart. 0.4.0 adds query decomposition, write-time consolidation, supersede + inflation checks, an entity layer on the graph, and co-occurrence query expansion learned from your own keywords — every one of them has an off switch and an on/off reading. 0.5.0 bridges CJK word forms so a paraphrase still lands. 0.6.0 makes scoring scale-adaptive: on a 660-entry snapshot, verbatim hit@1 0.895 → 0.921 and paraphrased 0.333 → 0.417 with zero wrong flips, and every hit now carries its `status`. 0.6.1 turns the three-trees-out-of-sync problem into one command (`tools/sync-trees.mjs`, dry-run by default, never deletes), pins the adaptive-idf wiring with two static regexes so a silent behaviour regression cannot pass green, and fixes a `%20` path bug in a maintenance script — engine bytes unchanged. 0.6.2 fixes a recall bug where the store said nothing when something was there: the noise floor dropped the only matchable word and left a word that does not exist in the store in its place (8 of 1,531 English questions came back empty). It now rescues only the words the noise floor dropped and never function words, so empty replies went 0.52% → 0 while hit@1/5/10/20, MRR and the 660-entry snapshot readings stayed bit-identical. 0.6.3 makes answers reproducible: a tie on score used to fall back to corpus order (V8's stable sort), so the same question could give two different top-tens depending on how the store happened to lay the rows out. The ladder now ends with updated-later-first and a natural id order, the adaptive-idf cluster pick no longer breaks ties by array index, and no ordering step uses localeCompare — and every reading stayed bit-identical. 0.6.4 fixes single-character queries: the tokenizer only emits CJK bigrams, so a one-hanzi question yields no tokens and the retrieval gate treated “cannot tokenize” as “not in memory” — the most direct questions (`读`, `钱`, `花`) always came back empty. It now falls back to a literal substring pass over title/content/keywords only when the query is a single CJK code point and tokenization produced nothing, still going through the same ordering ladder; English stopwords and punctuation stay closed. Every reading is bit-identical — this restores reachability, not ranking. Self-checked by 35 suites / 3,587 executable assertions in about 220 seconds.",
+                                            "zh":  "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,235 字符常驻注入，主库仍是 meow-memory 的七层 SQLite，星图退成可重建的索引。工具 schema 56,759 B → 13,567 B（−76.1%），常驻注入 4,085 → 1,235 字符（−69.8%）。能力一条没砍：写入先落主库，连不上星图的连线排队不丢，设置页改完即刻生效、不用重启。0.4.0 又加了查询分解、写入巩固、自动取代与通胀体检、实体层、以及从你自己的 keywords 学出来的共现扩词——每一件都有开关，也都有开/关对照读数；0.5.0 用 CJK 词形桥让换说法也能落地。0.6.0 让打分随库规模自适应：660 条快照上照抄 hit@1 0.895 → 0.921、换说法 0.333 → 0.417、误伤 0，每条命中顺带带 `status`。0.6.1 把「三棵树没同步」做成一条命令（`tools/sync-trees.mjs`，默认只体检、从不删除），用两条静态正则钉住自适应 idf 的接线点（判据全绿但行为回退这种沉默故障过不去），并修掉一个维护脚本的 `%20` 路径 bug——引擎字节未变。0.6.2 修的是一个把「有」说成「没有」的缺陷：噪声地板剔掉了唯一能命中的词、留下库里根本不存在（df=0）的词顶位，1,531 条英文问句里 8 条回执为空；处方只救被噪声地板剔掉的词（虚词一个都不救），空回 0.52% → 0，hit@1/5/10/20、MRR 与 660 条快照三档读数逐位不变。0.6.3 让答案是可复现的：分数并列时以前会退回语料顺序（V8 稳定排序），同一个问句能因为存储布局不同给出两套前十；定序梯子现在末尾是「更新得更晚的在前」+ id 自然序，自适应 idf 挑簇不再按数组下标破平，整条链上也没有 localeCompare——所有读数逐位不变。0.6.4 修的是「一个汉字也是问题」：分词只产二元组，一个汉字的问句切出来是空数组，检索的第一道门就把「切不出词」当成「没有」，于是 `读`/`钱`/`花` 这类最直白的问法永远空手。现在只在「切不出词 + 单个汉字」时按原文子串在标题、正文与关键词里找一次，仍走同一套定序；英文停用词与标点一个都不放行。所有读数逐位不变——修的是可达性，不是排序。自检 35 支、3,587 条可执行断言、约 220 秒跑完。"
                                         },
                         "icon":  "icon.png",
                         "author":  "主人 \u0026 小代码酱",
@@ -90,11 +90,20 @@
                                                         "self-tested"
                                                     ],
                                          "sortKeys":  {
-                                                          "updated":  1795454972
+                                                          "updated":  1795457125
                                                       },
-                                         "publishTimestamp": 1795454972
+                                         "publishTimestamp": 1795457125
                                      },
                         "versions":  [
+                                         {
+                                             "version":  "0.6.4",
+                                             "publishTimestamp": 1795457125,
+                                             "source":  {
+                                                            "type":  "git",
+                                                            "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
+                                                            "commit": "175a0ff25b96cfc4eb7b7816e0d90134b8ebabce"
+                                                        }
+                                         },
                                          {
                                              "version":  "0.6.3",
                                              "publishTimestamp": 1795454972,
@@ -159,11 +168,11 @@
                                                         }
                                          }
                                      ],
-                        "version":  "0.6.3",
+                        "version":  "0.6.4",
                         "source":  {
                                        "type":  "git",
                                        "url":  "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
-                                       "commit": "9479e341f08de7aeaf3111f37968300cb4cfd8cc"
+                                       "commit": "175a0ff25b96cfc4eb7b7816e0d90134b8ebabce"
                                    }
                     }
                 ]
