@@ -3158,11 +3158,20 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   });
   const avgBody = bodyLen.reduce((s2, x) => s2 + x, 0) / n || 1;
 
+  // [macro-fusion 0.6.16] 字段命中（标题 / 关键词）在建索引时一次算进倒排条目，热路不再
+  // 每条每个词查两次 Set。两个集合本来就只由 docs 决定，提前建不影响任何读法。
+  const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? '')))) : null;
+  const kwSets = useField ? docs.map((d) => new Set(kwList(d).flatMap((w) => tokenize(String(w ?? ''))))) : null;
   const df = new Map();
   const tf = [];
   const kwToks = opts.kwSeparate === false ? null : docs.map((d) => kwList(d).flatMap((w) => tokenize(String(w ?? ''))));
-  // 倒排：词 → 出现过它的条目下标。打分只碰「问句里那几个词真的出现过」的条目，
-  // 而不是把整库每条都乘一遍。opts.inverted === false 可关掉，用于阴性对照。
+  // 倒排：词 → 出现过它的条目（`d` 下标、`f` 该条的词频、`t` 该条的字段命中位：1=标题 2=关键词）。
+  // 打分只碰「问句里那几个词真的出现过」的条目，而不是把整库每条都乘一遍。
+  // opts.inverted === false 可关掉，用于阴性对照。
+  // [macro-fusion 0.6.16] 以前这里只记下标，热路再回 `tf[di]` 查词频、回 titleSets/kwSets 查字段——
+  // 同一趟里每个（条, 词）对要三次哈希查找，其中大多数还是「这个词这条根本没有」的空手。
+  // 词频与字段命中位都是建索引时就定死的，记在倒排里，热路就只剩数组读 + 浮点乘加。
+  // 字段权重值本身不预乘（opts.fieldKwW 是每问参数），这里只记「命中了哪几个字段」。
   const postings = opts.inverted === false ? null : new Map();
   for (let di = 0; di < docToks.length; di++) {
     const m = new Map();
@@ -3173,8 +3182,8 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
         seen.add(t);
         df.set(t, (df.get(t) ?? 0) + 1);
         const p = postings?.get(t);
-        if (p) p.push(di);
-        else postings?.set(t, [di]);
+        if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
+        else p.d.push(di);
       }
     }
     if (kwToks !== null) {
@@ -3184,15 +3193,24 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
           seen.add(t);
           df.set(t, (df.get(t) ?? 0) + 1);
           const p = postings?.get(t);
-          if (p) p.push(di);
-          else postings?.set(t, [di]);
+          if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
+          else p.d.push(di);
         }
+      }
+    }
+    if (postings !== null) {
+      // 这一条的最终词频（含 kwTfW 加成）与字段命中位一次落进倒排；`m` 的插入序与上方
+      // 首见序一致，所以 `f`/`t` 与 `d` 同下标对齐。
+      const ts = titleSets === null ? null : titleSets[di];
+      const ks = kwSets === null ? null : kwSets[di];
+      for (const [t, v] of m) {
+        const p = postings.get(t);
+        p.f.push(v);
+        p.t.push((ts !== null && ts.has(t) ? 1 : 0) | (ks !== null && ks.has(t) ? 2 : 0));
       }
     }
     tf.push(m);
   }
-  const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? '')))) : null;
-  const kwSets = useField ? docs.map((d) => new Set(kwList(d).flatMap((w) => tokenize(String(w ?? ''))))) : null;
   // [macro-fusion 0.4.0 · P5] 共现表跟索引一起建（库一变就重算，不需要额外失效逻辑）。
   // coocLearn:false 一键回到「只有手工表」的旧口径，用来做开/关对照。
   const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts);
@@ -3521,7 +3539,8 @@ function search(query, docs, opts = {}) {
       const p = postings.get(qKept[qi]);
       if (p === void 0) continue;
       const w = qKeptIdf[qi];
-      for (let pi = 0; pi < p.length; pi++) coverAcc[p[pi]] += w;
+      const pd = p.d;
+      for (let pi = 0; pi < pd.length; pi++) coverAcc[pd[pi]] += w;
     }
   };
   buildCoverAcc();
@@ -3608,20 +3627,98 @@ function search(query, docs, opts = {}) {
     const set = new Set();
     for (const term of qLoop) {
       const p = postings.get(term);
-      if (p) for (let pi = 0; pi < p.length; pi++) set.add(p[pi]);
+      if (p !== void 0) {
+        const pd = p.d;
+        for (let pi = 0; pi < pd.length; pi++) set.add(pd[pi]);
+      }
     }
     if (synOf !== null) {
       for (const alts of synOf.values()) for (const a of alts) {
         const p = postings.get(a);
-        if (p) for (let pi = 0; pi < p.length; pi++) set.add(p[pi]);
+        if (p !== void 0) {
+          const pd = p.d;
+          for (let pi = 0; pi < pd.length; pi++) set.add(pd[pi]);
+        }
       }
     }
     return set;
   })();
+  // [macro-fusion 0.6.16] 打分改成「按词扫倒排」：一次问句的 BM25 只加在「这个词真出现过」的条上，
+  // 每条拿到的加数顺序仍是 qLoop 原序，所以浮点和逐位不变。词频与字段权重在建索引时就记在条目里
+  // （见 buildSearchIndex），这一趟不再有哈希查找；「这个词这条根本没有」的格子被整个省掉——
+  // 0.6.15 之后 scanDoc 的头号热点正是这些空手查找（535.3ms / 300 问）。
+  const kDen = candSet === null ? null : new Float64Array(docs.length);
+  const cvrOf = candSet === null ? null : new Float64Array(docs.length);
+  const candArr = candSet === null ? null : [];
+  const scoreCandSet = () => {
+    // 先把每条自己的常数算好（覆盖度、长度惩罚、协调项），再让每个词只碰它真出现过的条。
+    // 换尺子那趟会再进来一次，候选表要重铺（不然同一条会被收尾循环算两遍）。
+    candArr.length = 0;
+    for (const di of candSet) {
+      let cvr = 0;
+      if (qIdfSum > 0) {
+        coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);
+        cvr = Math.pow(coverOf[di], COORD_POW);
+      }
+      cvrOf[di] = cvr;
+      const bEff = b * (1 - coverLenRelief * cvr);
+      const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
+      const dl = opts.lengthOnBody === false ? avgdl : avgBody;
+      kDen[di] = k1 * (1 - bEff + bEff * len / dl);
+      candArr.push(di);
+    }
+    for (let qi = 0; qi < qLoop.length; qi++) {
+      const e = postings.get(qLoop[qi]);
+      if (e === void 0) continue;
+      const idf0 = qLoopIdf[qi];
+      const pd = e.d;
+      const pf = e.f;
+      const pt = e.t;
+      for (let pi = 0; pi < pd.length; pi++) {
+        const di = pd[pi];
+        const f = pf[pi];
+        const fl = pt[pi];
+        let fw = 1;
+        if (fl & 1) fw += FIELD_TITLE_W;
+        if (fl & 2) fw += FIELD_KW_W;
+        raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));
+      }
+    }
+    for (let ci = 0; ci < candArr.length; ci++) {
+      const di = candArr[ci];
+      let s = raw[di];
+      const cvr = cvrOf[di];
+      if (synOf !== null) {
+        const tfi = tf[di];
+        const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
+        const dl = opts.lengthOnBody === false ? avgdl : avgBody;
+        const bEff = b * (1 - coverLenRelief * cvr);
+        const sat = (f) => f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl));
+        for (const alts of synOf.values()) {
+          let best = 0;
+          for (const a of alts) {
+            const f = tfi.get(a);
+            if (!f) continue;
+            const v = idfAt(a) * sat(f);
+            if (v > best) best = v;
+          }
+          s += synW * best;
+        }
+      }
+      if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
+      if (entSets) {
+        let hit = 0;
+        const es = entSets[di];
+        for (const t of entToks) if (es.has(t)) hit++;
+        if (hit > 0) s *= 1 + ENT_W * (hit / entToks.length);
+      }
+      raw[di] = s;
+    }
+  };
   if (candSet === null) {
     for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
   } else {
-    for (const di of candSet) raw[di] = scanDoc(di);
+    scoreCandSet();
   }
   // [macro-fusion 0.6.0 · P1] 规模自适应 idf 的第二遍：先用全库 idf 排一遍（上面那次），
   // 再按「这一问自己的簇」重算 idf 重扫。小库（N<闸门）和关掉的路径连排序都不做，逐位保持原样。
@@ -3668,7 +3765,7 @@ function search(query, docs, opts = {}) {
             if (candSet === null) {
               for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
             } else {
-              for (const di of candSet) raw[di] = scanDoc(di);
+              scoreCandSet();
             }
             adapt = { lam, cluster: cl.n };
           }

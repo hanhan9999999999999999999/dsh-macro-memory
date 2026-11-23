@@ -12132,3 +12132,75 @@ for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
 - `scanDoc :3564` 那一圈 **535.3ms**：打分循环仍按「候选 × 问句词」做 `tfi.get(term)`。可改成**顺倒排打分**——按 qLoop 原序把 `bm25` 那点贡献加到 `raw[di]` 上，每条候选的加法顺序与现在一致，浮点和仍逐位相同。前提是 `postings` 要带 tf 值（现在只存下标）。
 - `hits.push` 的对象字面量与 `explain` 展开（`index.js:3766-3771`、`:3784`、`:3770`，各 145–198ms，合计约 0.7s/300 问）：条件展开已经是最优形状（恒在字段试过，更慢），下一步只能减字段或把 explain 分两段拼。
 - `setBandsByThreshold`（244.3ms / 5.9%）与 `sigDocOf`（300.6ms / 7.3%）仍未动过。
+
+## 9.215 打分顺着倒排累加（0.6.16）
+
+### 9.215.1 症状：热点换人了，换成打分循环里的 `tfi.get(term)`
+
+9.214 的处方落地后复测（10,000 条 / 300 问，单次 10.44–10.72ms）。函数视图（`E:\Temp\cmp\prof16\s16.cpuprofile`，总采样 **3,295.9ms**，0.6.15 是 4,143.7ms）：`search` 自证 **48.0%**（1,582.8ms）、`sigDocOf` 9.5%（314.0ms）、`setBandsByThreshold` 7.5%（247.6ms）、`(anon)`@3626（候选集那支 IIFE）4.3%（140.4ms）、`buildSearchIndex` 4.2%（138.6ms）、`scoreCandSet` 2.8%（93.1ms）、GC 2.4%。**`scanDoc` 已经掉出前 25 名**（`node E:\Temp\cmp\prof-lines.mjs … scanDoc 8` 一行都不打印）。
+
+那 535.3ms 没有消失，是换了地方：它原本就在打分循环里，现在整段被搬进 `scoreCandSet`，而 `scoreCandSet` 的大部分被内联进 `search`（所以 `search` 自证从 40.6% 涨到 48.0%）。行视图按 `search` 摊开，头五名全是 `index.js:3863-3868` 那一串（hit 对象字面量与 `explain` 展开，各 134–176ms），`3427` 110.9ms 是函数入口的固定开销。
+
+### 9.215.2 发现路径
+
+打分那段的算式是 BM25：`idf × 字段权重 × tf × (k1 + 1) / (tf + k1 × (1 - b + b × len/dl))`。三个输入里——
+
+- **词频 `tf`**：建索引时就定死了（`m.set(t, (m.get(t) ?? 0) + 1)`，关键词再 `+ kwTfW`）；
+- **字段命中**：「这个词在不在标题 / 关键词里」也是建索引时定死的（`titleSets` / `kwSets`）；
+- **字段权重值**：`FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;` 是**每问参数**，不能烧进索引。
+
+所以热路上那次 `tfi.get(term)` + `titleSet.has(term)` + `kwSet.has(term)` 全是重复劳动：三次哈希查找，而且**大多数是「这个词这条根本没有」的空手**——一个问句词若只出现在 300 条里，剩下 9,700 条每条都要白查一次。倒排 `postings` 里本来就有「词 → 哪些条」，把这件事反过来扫，热路就只剩数组读 + 浮点乘加。
+
+### 9.215.3 处方：倒排记词频与字段位 + 打分倒过来扫词 + 退路原样
+
+1. **倒排值从「下标数组」扩成 `{ d, f, t }`**（`vendor/meow-memory/lib/index.js`，`buildSearchIndex`）：
+   - `d` 下标（原来的 `[di]` 数组）、`f` 该条该词的词频（含 `kwTfW` 加成）、`t` 字段命中位（`1 = 标题`、`2 = 关键词`，取位或）。
+   - `f` / `t` 在同一条 doc 循环**末尾**按 `m` 的插入序 push：`for (const [t, v] of m) { const p = postings.get(t); p.f.push(v); p.t.push((ts !== null && ts.has(t) ? 1 : 0) | (ks !== null && ks.has(t) ? 2 : 0)); }`。`m` 的插入序与首见序一致，所以 `f` / `t` 与 `d` **同下标对齐**。
+   - `titleSets` / `kwSets` 的定义必须**提到 doc 循环之前**（原来在循环之后），否则末尾那段拿不到。
+   - **字段权重值不预乘**：第一版写成 `p.w.push(1 + … FIELD_KW_W …)` 直接 `ReferenceError: FIELD_KW_W is not defined`——它不是建索引作用域里的变量，更重要的是它随 `opts.fieldKwW` 变，预乘等于把索引缓存按权重分裂。
+2. **打分倒过来扫词**（`scoreCandSet`）：
+   - 第一趟只碰候选本身：`coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum)`、`cvr = Math.pow(coverOf[di], COORD_POW)`、`kDen[di] = k1 * (1 - bEff + bEff * len / dl)`，并把 `di` 压进 `candArr`。
+   - 第二趟按 `qLoop` **原序**：`const e = postings.get(qLoop[qi]); … for (let pi…){ const f = pf[pi]; const fl = pt[pi]; let fw = 1; if (fl & 1) fw += FIELD_TITLE_W; if (fl & 2) fw += FIELD_KW_W; raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di])); }`。qLoop 词的倒排条天然是候选集的子集，热路不需要再判成员。
+   - 第三趟收尾（按 `candArr`）：`synOf`（仍用 `tf[di].get(a)`，语义是「每个原词取最好的一个同义词」）、`if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;`、`entSets`、`raw[di] = s`——与老实现同一份算式。
+3. **退路一个字没动**：首趟与换尺子那趟都是 `if (candSet === null) { for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di); } else { scoreCandSet(); }`；`candSet === null` 的两条来源是「倒排关掉（`opts.inverted === false`）」与「问句带标识符（`verbOn`，走原样匹配通道）」。
+4. **换尺子那趟先重铺候选**：`scoreCandSet` 开头 `candArr.length = 0;`。
+
+**为什么口径一位不变**：每条候选人拿到的加数顺序仍是 `qLoop` 原序（外层词、内层条），加数算式与老实现逐字一致，`kDen[di]` 只是把 `k1 * (1 - bEff + bEff * len / dl)` 提前算好 → 浮点和逐位相同；`coverOf` 仍由 9.214 的 `coverAcc` 来；字段位与 `titleSet.has` / `kwSet.has` 等价（同一份 `titleSets` / `kwSets` 建出来的，`useField === false` 时两边都是全 0 / 全 `null`）。
+
+**踩过的坑**（第一次实测的指纹）：`scoreCandSet` 里忘了 `candArr.length = 0;`，自适应第二趟把候选又 push 一遍，收尾循环对同一条算两遍（`synOf` / 协调项 / 实体层叠乘）。症状是**非自适应路逐位相同、只有 `0.6.0 开` 偏**（换说法 hit@3 0.750 → 0.833、MRR 0.569 → 0.583、平均取回 6.34 → 6.61 / 6.92 → 7.33）——「同一函数被调两次」的标志。
+
+### 9.215.4 读数
+
+| 路径 | 0.6.15 | 0.6.16 | 变化 |
+| --- | --- | --- | --- |
+| `search` | 10.673 ms | **8.35 ms** | **−21.8%** |
+| `searchAdaptive`（产品走的这条） | 12.522 ms | **10.16 ms** | **−18.9%** |
+| 总采样（`--cpu-prof`） | 4,143.7 ms | **3,295.9 ms** | **−20.5%** |
+| `scanDoc` | 777.5 ms | 掉出前 25 名 | — |
+| `searchIndexOf` 热命中 | 0.698 ms | 0.692 ms | 噪声内持平 |
+| 冷建索引 | 271 ms | **~300 ms** | **+11%**（代价） |
+
+三次取中位（8.568 / 8.325 / 8.354；自适应 9.945 / 10.155 / 10.187）。相对 0.6.12 的 27.377ms，`search` 累计 **−69.5%**。冷建变慢是这一版唯一付出去的代价：倒排每个词多存两个数组（`f` / `t`），只在建索引时付一次。质量逐位不变：真库 52 问三档 0.921 / 0.417 / 0.500、平均取回 6.342 / 6.917 / 5、两条 #2→#1；LoCoMo（1,531 问）0.3932 / 0.6192 / 0.6924 / 0.7511、MRR 0.4958、recall@20 0.6322、空回 0；返回条数合计 1,500。
+
+### 9.215.5 判据 S0–S5 与 OR076
+
+新探针 `tools/probe-score.mjs` **6 条**（进程内，手搭小库；标题与关键词刻意和正文错开，字段位才不是白给）：
+
+- **S0** 两条路都在：`const scoreCandSet = () => {` / `raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));` / `candArr.length = 0;` / `p.f.push(v);` + `p.t.push((ts !== null && ts.has(t) ? 1 : 0) | (ks !== null && ks.has(t) ? 2 : 0));` / 退路 `raw[di] = scanDoc(di);` **两处**。
+- **S1** 倒排开着与关着（`inverted: false`）**逐位相同**（实测 `score 4.3915 / 1.8914 / 2.2584 / 1.0941 / 0.3209`）——两条独立实现互相验。
+- **S2** 字段命中位等价于 `titleSets` / `kwSets`：默认 / `fieldKwW: 0` / `fieldKwW: 3` / `fieldBoost: false` 四档，各档两条路都对得上，且档间确有差异（不然这条是白测）。
+- **S3** 换尺子顺序：自适应块内 `idfCache = new Map();` → `refreshQidf();` → `buildCoverAcc();` → `raw.fill(0);` → `scoreCandSet();` 递增，且开两次逐位相同、两路一致。
+- **S4** 空手问句两条路都是 0 条且不含 `NaN`。
+- **S5** 300 条 × 30 问（LCG `seed = 20261125`，每 3 条带标题、每 5 条带关键词，`i % 7 === 0` 插 `nothinghere`）两路逐位相同，不一致 0。
+
+`verify.mjs` 新增 **OR076** 六条：S0–S5 标签在位 + `check-all` 挂线 + 取根例外表第六条 / 引擎里扫倒排四件（`const scoreCandSet = () => {` / `candArr.length = 0;` / 累加那句 / `if (fl & 1) fw += FIELD_TITLE_W;` 与 `if (fl & 2) fw += FIELD_KW_W;`）+ 倒排记 `p.f.push(v);` 与 `p.t.push(...)` 且**没有** `p.w.push` + 退路两处 / 换尺子顺序递增（含 `scoreCandSet();` 在 `raw.fill(0)` 之后）/ 进程内两路逐位相同且换成 `fieldKwW: 0` 仍一致 / 文档四处 / 版本地板 ≥ 0.6.16。**没有跟改老判据**：这一版只往倒排里加字段、把打分搬了个位置，`scoreCandSet` 是新名字，老钉子钉的都是 `scanDoc` 与回执形状，一律原样通过。
+
+### 9.215.6 账
+
+支数 43 → **44**（新增 `tools/probe-score.mjs`）；断言 3,727 → **3,733**（`probe-score` +6、`OR076` +6）。
+
+### 9.215.7 下一版候选（已定位，未做）
+
+- **候选集那支 IIFE**（`index.js:3626`，`(anon)` 4.3% / 140.4ms）：现在用 `Set` 逐个 `add` 攒候选。语料大、问句词多时这是「几十万次 `Set.add`」。可改成按 `docs.length` 开一张 `Uint8Array` 位图（`seen[di] = 1`，顺手压进数组），语义与 `Set` 相同、`add` 换成数组下标写。
+- `hits.push` 的对象字面量与 `explain` 展开（`search` 行级 `:3863-:3868`、`:3427`，合计约 0.9s / 300 问）：条件展开已经是最优形状（恒在字段试过，更慢），下一步只能减字段或把 `explain` 分两段拼。
+- `setBandsByThreshold`（247.6ms / 7.5%）与 `sigDocOf`（314.0ms / 9.5%）：后者已是 0.6.10 的 WeakMap 记账形状，进一步要动签名算法本身（换更便宜的混合函数，风险是抗碰撞变差）。

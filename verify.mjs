@@ -36,8 +36,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
-// 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）。
-const SUITE_FLOOR = 43
+// 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）。
+const SUITE_FLOOR = 44
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -934,6 +934,7 @@ function makeHostCtx() {
   //    probe-order（0.6.12）只经相对 import 取 bandize，不读仓内任何文件；
   //    probe-hotpath（0.6.14）只经相对 import / `new URL(..., import.meta.url)` 取引擎，不拼仓内路径。
   //    probe-cover（0.6.15）同样只经相对 import 与 import.meta.url 取引擎。
+  //    probe-score（0.6.16）也是：读引擎源码只用 `new URL(..., import.meta.url)`，不拼仓内路径。
   //    支数是知识：28 = 原 24 支 + 0.3.1 的 probe-mq（查询分解量尺）+ 0.4.0 的 probe-consolidate
   //    （写入端巩固量尺）、probe-hygiene（写入端通胀量尺）与 probe-supersede（自动取代量尺）。少一支说明有人从套件里
   //    摘了东西，多一支说明新加的判据没在基线里记账——两种都要在这里显形。
@@ -944,6 +945,7 @@ function makeHostCtx() {
     'tools/probe-order.mjs': '只经相对 import 取 bandize（0.6.12），不读仓内任何文件',
     'tools/probe-hotpath.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.14），不拼仓内路径',
     'tools/probe-cover.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.15），不拼仓内路径',
+    'tools/probe-score.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.16），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -10333,7 +10335,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'GZ 只免两样: 词分与覆盖度一个字没动（动了就是改判据，不是改口径）',
-    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1 &&
+    // [0.6.16] 打分拆成两条路（扫倒排的 scoreCandSet 与逐条扫的 scanDoc），协调因子那句在两个
+    // 函数里各有一处、算式逐字相同——所以钉「两处」而不是「一处」，但仍是两处、不许再散。
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 2 &&
       !/COORD_W[^\n]*anchored/.test(eng) &&
       eng.split('const coverage = len > 0 ? overlap / len : 0;').length - 1 === 1 &&
       // [0.6.15] 两支打分器的 w 同形（都带 RECENCY_FLOOR 下限）。0.6.15 起 search 那支先落 `dOf`，
@@ -10627,7 +10631,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'HC 只动一处: 协调因子在打分路径里出现一次，线性旧写法一处不剩',
-    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 1 &&
+    // [0.6.16] 同上：扫倒排与逐条扫两条路各一处，算式逐字相同；线性旧写法仍是一处不剩。
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 2 &&
       eng.split('s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);').length - 1 === 0,
   )
   check(
@@ -11540,18 +11545,23 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       `relief=${valOf(eng179, 'COVER_LEN_RELIEF')} fold=${valOf(eng179, 'CAUSE_RULE_FOLD')}`,
     )
     check(
-      'HZ14 长度惩罚按覆盖度打折：bEff 一处、两处长度归一化都吃它、没有「直接拿 b 去归一」的残留',
-      countOf(eng179, 'const bEff = b * (1 - coverLenRelief * cvr);') === 1 &&
-        countOf(eng179, '(1 - bEff + bEff * len / dl)') === 2 &&
+      'HZ14 长度惩罚按覆盖度打折：bEff 三处（逐条扫 / 扫倒排两趟）、四处长度归一化都吃它、没有「直接拿 b 去归一」的残留',
+      // [0.6.16] 打分拆两条路之后：`bEff` 定义 3 处（scanDoc、scoreCandSet 备常数那趟、收尾补分那趟），
+      // `(1 - bEff + bEff * len / dl)` 4 处（scanDoc 的 BM25 主算式与 sat 闭包各一、扫倒排的 `kDen` 与收尾 sat 各一）。
+      // 口诀没变：长度惩罚一律吃打过折的 bEff，没有一处直接拿 b 去归一。
+      countOf(eng179, 'const bEff = b * (1 - coverLenRelief * cvr);') === 3 &&
+        countOf(eng179, '(1 - bEff + bEff * len / dl)') === 4 &&
         countOf(eng179, '(1 - b + b * len / dl)') === 0 &&
         eng179.includes('Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF'),
       `bEff ${countOf(eng179, '(1 - bEff + bEff * len / dl)')} 处`,
     )
     check(
-      'HZ14 覆盖度三步（归一 → 取幂 → 协调）各一处：G22 的判据就按这三步盯，拆开才能分别红',
+      'HZ14 覆盖度三步（归一 → 取幂 → 协调）各就各位：G22 的判据就按这三步盯，拆开才能分别红',
+      // [0.6.16] 覆盖度归一那句只剩逐条扫的退路（1 处，扫倒排那路走 `coverAcc` 的 `Math.min(1, coverAcc[di] / qIdfSum)`）；
+      // 取幂与协调两步在两条路各一处，算式逐字相同（共 2 处）。
       countOf(eng179, 'coverOf[di] = Math.min(1, cover / qIdfSum);') === 1 &&
-        countOf(eng179, 'cvr = Math.pow(coverOf[di], COORD_POW);') === 1 &&
-        countOf(eng179, 'if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;') === 1,
+        countOf(eng179, 'cvr = Math.pow(coverOf[di], COORD_POW);') === 2 &&
+        countOf(eng179, 'if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;') === 2,
       '三步都在，各一处',
     )
     check(
@@ -13362,10 +13372,13 @@ dt063: {
     cMissing.length ? `缺 ${cMissing.join(' ')}` : `挂线 ${cWired ? 'ok' : 'miss'} / 例外 ${cExcused ? 'ok' : 'miss'}`,
   )
   const engSrc6 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  // [0.6.16] 倒排条目从「下标数组」变成 `{ d, f, t }` 之后，覆盖度这趟改成先取 `const pd = p.d;`
+  // 再按 `pd.length` 遍历——旧钉 `coverAcc[p[pi]] += w;` 已经不在了，改钉新形（两半都得在）。
   const accOk =
     engSrc6.includes('const coverAcc = postings === null ? null : new Float64Array(docs.length);') &&
     engSrc6.includes('const buildCoverAcc = () => {') &&
-    engSrc6.includes('coverAcc[p[pi]] += w;') &&
+    engSrc6.includes('const pd = p.d;') &&
+    engSrc6.includes('for (let pi = 0; pi < pd.length; pi++) coverAcc[pd[pi]] += w;') &&
     engSrc6.includes('coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);') &&
     engSrc6.includes('const idf = qLoopIdf[qi];')
   // 退回路口径不许被顺手删掉：倒排缺席（opts.inverted === false）时仍逐条查表。
@@ -13414,6 +13427,82 @@ dt063: {
   const vS6 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS6 = vS6.length === 3 ? vS6[0] * 10000 + vS6[1] * 100 + vS6[2] : 0
   check('OR075 版本号不低于 0.6.15（后续补丁不必回头改这一条）', vNumS6 >= 615, vS6.join('.'))
+}
+
+// 0.6.16：打分也不许「每条 × 每个问句词」查表——倒排里记着词频与字段命中位，反过来扫词
+{
+  const sSrc = readFileSync(new URL('./tools/probe-score.mjs', import.meta.url), 'utf8')
+  const sLabels = ['S0 ', 'S1 ', 'S2 ', 'S3 ', 'S4 ', 'S5 ']
+  const sMissing = sLabels.filter((t) => !sSrc.includes(`'${t}`))
+  const sWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-score.mjs'")
+  const sExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-score.mjs'")
+  check(
+    'OR076 打分探针 S0–S5 在位（两条路 / 对拍逐位 / 字段位等价 / 换尺子先重铺 / 空手不留 NaN / 大库仍一致），check-all 挂线且列进取根例外',
+    sMissing.length === 0 && sWired && sExcused,
+    sMissing.length ? `缺 ${sMissing.join(' ')}` : `挂线 ${sWired ? 'ok' : 'miss'} / 例外 ${sExcused ? 'ok' : 'miss'}`,
+  )
+  const engSrc7 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const pathOk =
+    engSrc7.includes('const scoreCandSet = () => {') &&
+    engSrc7.includes('candArr.length = 0;') &&
+    engSrc7.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') &&
+    engSrc7.includes('if (fl & 1) fw += FIELD_TITLE_W;') &&
+    engSrc7.includes('if (fl & 2) fw += FIELD_KW_W;')
+  // 倒排要记词频与「命中了哪几个字段」；字段权重值本身不许预乘（opts.fieldKwW 是每问参数）。
+  const idxOk =
+    engSrc7.includes('p.f.push(v);') &&
+    engSrc7.includes('p.t.push((ts !== null && ts.has(t) ? 1 : 0) | (ks !== null && ks.has(t) ? 2 : 0));') &&
+    !/p\.w\.push/.test(engSrc7)
+  // 退路不许被顺手删掉：倒排缺席（opts.inverted === false）或问句带标识符时仍逐条扫，首趟与换尺子两处都在。
+  const fbOk = (engSrc7.split('raw[di] = scanDoc(di);').length - 1) === 2
+  check(
+    'OR076 引擎里打分顺倒排累加（候选先备常数再按词扫），倒排记着词频与字段命中位、字段权重不预乘，逐条扫的退路两处都在',
+    pathOk && idxOk && fbOk,
+    `扫倒排 ${pathOk ? 'ok' : 'miss'} / 倒排记 ${idxOk ? 'ok' : 'miss'} / 退路 ${fbOk ? 'ok' : 'miss'}`,
+  )
+  const adStart7 = engSrc7.indexOf('if (opts.adaptiveIdf === true) {')
+  const adEnd7 = adStart7 < 0 ? -1 : engSrc7.indexOf('adapt = { lam, cluster: cl.n };', adStart7)
+  const ad7 = adStart7 >= 0 && adEnd7 > adStart7 ? engSrc7.slice(adStart7, adEnd7) : ''
+  const iCache7 = ad7.indexOf('idfCache = new Map();')
+  const iQ7 = ad7.indexOf('refreshQidf();')
+  const iAcc7 = ad7.indexOf('buildCoverAcc();')
+  const iFill7 = ad7.indexOf('raw.fill(0);')
+  const iScore7 = ad7.indexOf('scoreCandSet();')
+  check(
+    'OR076 自适应换尺子那趟：清缓存 → 问句 idf → 覆盖度账 → 清账 → 重新打分（候选要重铺，否则同一条会被算两遍）',
+    ad7.length > 0 && iCache7 >= 0 && iQ7 > iCache7 && iAcc7 > iQ7 && iFill7 > iAcc7 && iScore7 > iFill7,
+    ad7.length === 0 ? '自适应块没找到' : `清缓存 ${iCache7} → 问句 idf ${iQ7} → 覆盖账 ${iAcc7} → 清账 ${iFill7} → 打分 ${iScore7}`,
+  )
+  const S2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  let scoreOk = false
+  let scoreDetail = 'search 未导出'
+  if (typeof S2.search === 'function') {
+    const docs = [
+      { id: '0msco111', content: 'astra', importance: 2, title: 'astra' },
+      { id: '0msco222', content: 'astra bravo', importance: 2, title: 'bravo' },
+      { id: '0msco333', content: 'astra bravo cygnus dorado', importance: 2, keywords: ['dorado'] },
+    ].map((d) => ({ ...d, level: 'fact', updated_at: '2026-01-01T00:00:00Z', project: 'p' }))
+    const q = 'astra bravo cygnus dorado'
+    const base = { k: 5, explain: true, now: 1795470000000 }
+    const on = JSON.stringify(S2.search(q, docs, base))
+    const off = JSON.stringify(S2.search(q, docs, { ...base, inverted: false }))
+    const kw0 = JSON.stringify(S2.search(q, docs, { ...base, fieldKwW: 0 }))
+    const kw0off = JSON.stringify(S2.search(q, docs, { ...base, fieldKwW: 0, inverted: false }))
+    const fin = S2.search(q, docs, base).every((h) => Number.isFinite(h.score))
+    scoreOk = on === off && kw0 === kw0off && fin
+    scoreDetail = `两路一致 ${on === off} / 关键词权重 0 也一致 ${kw0 === kw0off} / score 有限 ${fin}`
+  }
+  check('OR076 进程内：扫倒排与逐条扫两条路逐位相同，字段权重换成每问参数照样对得上', scoreOk, scoreDetail)
+  check(
+    'OR076 文档在位：INTERNAL 9.215 写了「打分顺着倒排累加」，README 写了「打分不再逐条查表」，DESIGN 有 ## 211.，PLAN 有 0.6.16',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.215 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('打分不再逐条查表') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 211. ') &&
+      /0\.6\.16/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS7 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS7 = vS7.length === 3 ? vS7[0] * 10000 + vS7[1] * 100 + vS7[2] : 0
+  check('OR076 版本号不低于 0.6.16（后续补丁不必回头改这一条）', vNumS7 >= 616, vS7.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

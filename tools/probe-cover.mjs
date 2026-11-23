@@ -48,7 +48,11 @@ const mk = (id, content, importance = 2, extra = {}) => ({
 
 // ── C0 ───────────────────────────────────────────────────────────────────
 {
-  const hasAcc = ENGINE.includes('const buildCoverAcc = () => {') && ENGINE.includes('coverAcc[p[pi]] += w;');
+  // [0.6.16] 倒排条目换成 `{ d, f, t }` 之后，记账这趟先取 `const pd = p.d;` 再按 `pd.length` 遍历。
+  const hasAcc =
+    ENGINE.includes('const buildCoverAcc = () => {') &&
+    ENGINE.includes('const pd = p.d;') &&
+    ENGINE.includes('for (let pi = 0; pi < pd.length; pi++) coverAcc[pd[pi]] += w;');
   const hasFallback = ENGINE.includes('for (let qi = 0; qi < qKept.length; qi++) if (tfi.has(qKept[qi])) cover += qKeptIdf[qi];');
   const usesAcc = ENGINE.includes('coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);');
   ok(
