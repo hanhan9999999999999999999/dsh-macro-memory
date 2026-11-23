@@ -7332,3 +7332,17 @@ title / content / keywords 里数命中次数，分数仍然交回四把钥匙�
 
 （判据：`tools/probe-dirty.mjs` D1–D8；账见 `docs/INTERNAL.md` 9.205。）
 
+
+## 202. 元素本身也可能是坏的（0.6.7）
+
+0.6.6 治的是**字段的形状**：`keywords` 缺失 / `null` / 逗号串。这一版治的是**元素本身**：`docs` 数组里混进一条 `null`、`undefined` 或标量（半写的行、导入被截断、调用方把 id 和对象搞混），`docText(d)` 的 `d.title` 立刻 `TypeError: Cannot read properties of null (reading 'title')`；`docs` 整个不是数组时死在 `docs.length`。同一族病、两种崩法，后果一样：**不是少一条命中，是一个回执都拿不回来**。
+
+三个取舍：
+
+1. **闸放在入口，不撒在每个函数里**。`docText` 被 `findSimilar` / `topicDrift` / `verbatimInputs` 共用，`keywordHitScore` 又自己遍历一遍；在每处加 `d &&` 是「记得住才行」的写法，下一处新调用点照样漏。所以只有一个入口闸 `liveDocs(docs)`，`search` 与 `keywordHitScore` 各一行 `docs = liveDocs(docs);`（`searchAdaptive` 走 `search`，自动同口径）。
+2. **干净路径不许付代价**。先扫一遍「有没有坏」，全好就**原样返回同一个引用**；脏了才 `filter` 出新数组。这条不只是省内存：干净路径不产生任何行为差，读数才可能一位不动。
+3. **闸不许打掉缓存**。索引缓存的键本来就是内容签名（`indexPathKey` = `${indexSignature(docs)}|开关位`），不靠数组身份，所以入口过滤不会让缓存失效；反过来说，0.6.4 记过的那条否决（「缺 id 的脏主键在入口过滤 → 每次造新数组、缓存全失效」）在内容签名落地之后不再成立，判据 D9 就是量这件事：坏元素在位时干净问句的第一名不许变。
+
+全是坏行时回空数组，不把 `null` 当一条记忆去打分——**脏数据的存在不等于脏数据有话语权**（与 0.6.6 的 D5 同一条原则）。
+
+（判据：`tools/probe-dirty.mjs` D9–D13；账见 `docs/INTERNAL.md` 9.206。）

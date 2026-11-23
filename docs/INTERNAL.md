@@ -11712,4 +11712,52 @@ function kwList(d) {
 
 支数 **36**（新增 `tools/probe-dirty.mjs`）；断言 3,599 → **3,616**（`probe-dirty` +9、`verify.mjs` 1,832 → 1,840 的 `DT066` +7，另有一格落在既有的版本对齐计数里）。
 
+## 9.206 一条坏行不许把整次检索打成异常（0.6.7）
+
+### 9.206.1 症状
+
+0.6.6 把**字段**归一化了（`kwList`），元素本身还是裸露的：
+
+- `search('滴定', [null, good])` → `TypeError: Cannot read properties of null (reading 'title')`（`docText` 里的 `d.title`）。`docText` 被 `findSimilar` / `topicDrift` / `verbatimInputs` 共用，`verbatimInputs` 又是**每条问句都要过的第一道工序**，所以一条坏行 = 整次检索抛异常。
+- `search('滴定', null)` / `search('滴定', '滴定终点')` → `TypeError: Cannot read properties of null (reading 'length')` / `docs.map is not a function`（`indexSignature` 与 `buildSearchIndex` 直接按数组用）。
+- `keywordHitScore('滴定', [null, good])` → `TypeError: Cannot read properties of null (reading 'content')`（它自己遍历 `docs` 取 `keywords` / `content`）。
+- 与 0.6.6 一样，这类条目不是理论构造：半写的行、导入被截断的行、别的插件写的行、调用方把 id 列表当 docs 传进来，都长这样。字符串 / 数字元素与怪参数（`k = -1`、`k = '3'`）本来就不抛，这一版不动它们。
+
+### 9.206.2 发现路径
+
+0.6.6 收尾时用手写的坏形状池（`tools/probe-dirty.mjs`）扫「字段」四种形态，扫完顺手把**元素**也换掉试了一遍：`docs` 整批只有一个 `null`，`search` 当场抛。于是把这一层当独立的一版，而不是塞进 0.6.6：字段归一化（`kwList`）与元素过滤（`liveDocs`）是两道不同的闸，改在一起会让「谁救回来的」说不清。
+
+### 9.206.3 处方
+
+唯一入口闸，放在 `docText` 之前：
+
+```js
+function liveDocs(docs) {
+  if (!Array.isArray(docs)) return [];
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i];
+    if (!d || typeof d !== "object") {
+      return docs.filter((x) => x && typeof x === "object");
+    }
+  }
+  return docs;
+}
+```
+
+`search(query, docs, opts = {})` 与 `keywordHitScore(query, docs, opts = {})` 各加一行 `docs = liveDocs(docs);`（`searchAdaptive` 先调 `search`，自动同口径）。三取舍见 `DESIGN.md` 202：闸在入口（不撒在每个函数里）/ 干净数组原样返回同一引用（干净路径零行为差）/ 缓存键是内容签名不靠身份（过滤不打掉缓存）。
+
+### 9.206.4 读数与代价
+
+一位没动：LoCoMo（1,531 问）hit@1 0.3932 / hit@5 0.6192 / hit@10 0.6924 / hit@20 0.7511 / MRR 0.4958 / recall@20 0.6322 / **空回 0.0000**；真库 660 条 52 问三档 0.921 / 0.417 / 0.500 与两条 #2→#1 位移。耗时同量级：同一池 660 条，干净 2.67ms/次、含一条 `null` 1.48ms/次（热身噪声范围内；闸的代价是「扫到第一个坏元素为止」，干净路径只多一次类型判断）。
+
+### 9.206.5 判据
+
+`tools/probe-dirty.mjs` 从 9 条扩到 **15 条**（文件头改写成 D1–D13 十三条，新增一节注释「0.6.7 补一层：坏的是元素本身」）：D9 混入 `[null, undefined, '滴定', 42, clean0, clean1]` 既不抛也能命中干净条目 / 坏元素在位时**不改写第一名**（与干净池逐条比 `baselineTop`）/ D10 `docs` 不是数组（`'滴定终点'` / `null` / 类数组对象 / `42`）一律回空数组 / D11 `[null, undefined, null]` 回空（全坏不回幻觉）/ D12 `keywordHitScore` 与 `searchAdaptive` 同批不抛 / D13 能红证明（子进程把 `liveDocs` 换成直通 `return docs;`，同一问句立刻抛 `Cannot read properties of null (reading 'title')`）。
+
+`verify.mjs` 在 `DT066` 之后新增 `DT067` 一节五条：入口闸在位且只此一份（含 `if (!Array.isArray(docs)) return [];`、`return docs.filter((x) => x && typeof x === "object");`、末尾 `return docs;`）/ `search` 与 `keywordHitScore` 两个入口都含 `docs = liveDocs(docs);` / 探针 D9–D13 标签在位 / INTERNAL 9.206 与 README「一条坏行不许把整次检索打成异常」在位 / 版本 ≥0.6.7。
+
+### 9.206.6 账
+
+支数仍 **36**（`probe-dirty` 只加断言、不开新套件）；断言 3,616 → **3,627**（`probe-dirty` 9→15 的 +6、`DT067` +5）。
+
 

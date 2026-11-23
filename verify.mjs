@@ -12907,5 +12907,43 @@ dt063: {
   check('DT066 版本号不低于 0.6.6（后续补丁不必回头改这一条）', dtVerNum >= 606, dtVer.join('.'))
 }
 
+// 0.6.7：坏的是元素本身（数组里一条 null），不是字段形状——入口闸 liveDocs
+{
+  const eng = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const liveHead = 'function liveDocs(docs) {'
+  const liveBody = (eng.match(/function liveDocs\(docs\) \{[\s\S]*?\n\}/) ?? [''])[0]
+  check(
+    'DT067 入口闸 liveDocs 在位且只此一份：非数组回 []，坏元素筛掉，干净数组原样返回（不打掉索引缓存）',
+    eng.split(liveHead).length - 1 === 1 &&
+      liveBody.includes('if (!Array.isArray(docs)) return [];') &&
+      liveBody.includes('return docs.filter((x) => x && typeof x === "object");') &&
+      liveBody.trimEnd().endsWith('return docs;\n}'),
+    liveBody ? `${liveBody.split('\n').length} 行` : '缺函数',
+  )
+  const searchHead = (eng.slice(eng.indexOf('function search(query, docs, opts = {})'), eng.indexOf('function search(query, docs, opts = {})') + 400))
+  const khsHead = (eng.slice(eng.indexOf('function keywordHitScore(query, docs, opts = {})'), eng.indexOf('function keywordHitScore(query, docs, opts = {})') + 400))
+  check(
+    'DT067 search 与 keywordHitScore 两个入口都先过 liveDocs（三处入口不许只修一处）',
+    searchHead.includes('docs = liveDocs(docs);') && khsHead.includes('docs = liveDocs(docs);'),
+    `search ${searchHead.includes('docs = liveDocs(docs);') ? 'ok' : 'miss'} / keywordHitScore ${khsHead.includes('docs = liveDocs(docs);') ? 'ok' : 'miss'}`,
+  )
+  const dtProbe = readFileSync(new URL('./tools/probe-dirty.mjs', import.meta.url), 'utf8')
+  const dLabels = ['D9 ', 'D10 ', 'D11 ', 'D12 ', 'D13 ']
+  const dMissing = dLabels.filter((t) => !dtProbe.includes(`'${t}`))
+  check(
+    'DT067 探针钉住 D9–D13（坏元素不抛 / 不改写第一名 / docs 非数组 / 全坏行 / 三路同口径 / 挖掉入口闸即红）',
+    dMissing.length === 0,
+    dMissing.length ? `缺 ${dMissing.join(' ')}` : 'D9–D13 都在',
+  )
+  check(
+    'DT067 文档在位：INTERNAL 9.206 写了「元素本身也可能是坏的」，README 里程碑写了「一条坏行不许把整次检索打成异常」',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.206 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('一条坏行不许把整次检索打成异常'),
+  )
+  const v = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNum = v.length === 3 ? v[0] * 10000 + v[1] * 100 + v[2] : 0
+  check('DT067 版本号不低于 0.6.7（后续补丁不必回头改这一条）', vNum >= 607, v.join('.'))
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

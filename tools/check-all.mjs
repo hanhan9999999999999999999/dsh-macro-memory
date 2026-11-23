@@ -72,7 +72,7 @@ const STEPS = [
   ['tools/probe-empty.mjs', '空回账：库外词不顶掉能命中的词、不凭空编、老护栏不回退、正常问句两态逐位相同'],
   ['tools/probe-determinism.mjs', '定序账：同一问句同一答案——重复/跨进程/打乱插入顺序都逐位相同，并列按更新时间与 id 自然序'],
   ['tools/probe-literal.mjs', '单字问句账：一个汉字切不出词也不许说「没有」（keywords 也认、停用词不开口、定序不看插入顺序、挖掉兜底即红）'],
-  ['tools/probe-dirty.mjs', '脏记忆账：一条缺 keywords 的条目不许把整次检索打成异常（逗号串也当词表、null 数字对象不凭空命中、挖掉归一化即红）'],
+  ['tools/probe-dirty.mjs', '脏记忆账：一条缺 keywords / 一条 null 行都不许把整次检索打成异常（逗号串也当词表、坏元素不凭空命中、挖掉归一化或入口闸即红）'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],

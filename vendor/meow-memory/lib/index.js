@@ -1922,6 +1922,19 @@ function kwList(d) {
   }
   return s.split(/[,，、;；]/).map((w) => w.trim()).filter((w) => w.length > 0);
 }
+// [macro-fusion 0.6.7] 库是一条条记录的集合，其中一条是 null/undefined/标量（坏行、半写行、调用方拼错），
+// 不该让整次检索抛异常：入口把非对象元素筛掉。原数组本来就干净时**返回同一个引用**，
+// 索引缓存（按数组身份判等）不会被这次过滤悄悄打掉。
+function liveDocs(docs) {
+  if (!Array.isArray(docs)) return [];
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i];
+    if (!d || typeof d !== "object") {
+      return docs.filter((x) => x && typeof x === "object");
+    }
+  }
+  return docs;
+}
 function docText(d) {
   // [macro-fusion 0.6.6] 一条脏记忆不许把整次检索打成异常：老库里 keywords 可能是 null / undefined /
   // 逗号串（导入的行、别的插件写的行、调用方自己拼的 docs），而这里原来直接 `...d.keywords`——
@@ -3131,6 +3144,8 @@ function literalFallback(query, docs, opts = {}) {
   return trimByBand(hits, k2, opts);
 }
 function search(query, docs, opts = {}) {
+  // [macro-fusion 0.6.7] 一条 null 不许把整次检索打成异常（账在 `liveDocs` 上方）
+  docs = liveDocs(docs);
   const k = opts.k ?? 5;
   const now = opts.now === void 0 ? Date.now() : opts.now;
   // [macro-fusion 0.2.170] 疑问框架先剥再切：`什么时候` 切成 `什么/么时/时候`，其中 `么时` 这类跨界碎片
@@ -3594,6 +3609,8 @@ function q0ToksOf(query) {
   return out;
 }
 function keywordHitScore(query, docs, opts = {}) {
+  // [macro-fusion 0.6.7] 与 search 同口径：坏行先筛掉，别让一条 null 引到 `d.content` 上抛
+  docs = liveDocs(docs);
   const k = opts.k ?? 2;
   const now = opts.now === void 0 ? Date.now() : opts.now;
   const keep = (ts) => ts.filter((t) => t.length >= 2);
