@@ -821,11 +821,13 @@ check(
   `句中提名那条 开=${pos10(r10on, '0r10a0002') + 1} 关=${pos10(r10off, '0r10a0002') + 1}（开时不得更靠前）`,
 )
 check(
-  'R10 免档不是免排序：同在第一档里仍按词分排，且这条规矩只写在 bandize 一处',
+  'R10 免档不是免排序：同在第一档里仍按词分排，且这条规矩只写在定档的两条路里（阈值链与退回的全量排序各一处）',
   SRC.includes('if (h._ident === true || h._subj === 1) {') &&
-    (SRC.match(/_subj === 1/g) || []).length === 1 &&
+    SRC.includes('function setBandsByThreshold(hits, rawKey) {') &&
+    SRC.includes('function setBandsBySort(hits, rawKey) {') &&
+    (SRC.match(/h\._bandTmp = -1;/g) || []).length === 2 &&
     SRC.includes('var IDENT_SUBJ_W = 0;'),
-  `免档判据在=${SRC.includes('h._ident === true || h._subj === 1')} 主语权重默认 0=${SRC.includes('var IDENT_SUBJ_W = 0;')}`,
+  `免档判据在=${SRC.includes('h._ident === true || h._subj === 1')} 定档两路=${(SRC.match(/h\._bandTmp = -1;/g) || []).length} 处落 -1 档 主语权重默认 0=${SRC.includes('var IDENT_SUBJ_W = 0;')}`,
 )
 check(
   'R10 explain 里看得见这一刀：subjBonus 只在给了权重时出现，默认 0 时不留空字段',
