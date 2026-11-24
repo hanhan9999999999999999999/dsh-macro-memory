@@ -6229,6 +6229,12 @@ function buildReinjection(db, workspace, sessionId, projects, opts = {}, dir = "
 //      以为库里就这么多——比多花几百 token 更贵。
 var INJECT_BODY_MIN = 60;
 var INJECT_BODY_CAP = 240;
+// [macro-fusion 0.6.48] injectBodyMax 现在说得更细：它是「基准上限」，按名次分配——
+// 本轮第一名拿两倍基准，其余各拿一半基准（且不低于 INJECT_BODY_MIN，否则会被整条丢掉）。
+// 标定（gold 池 45 问、k=2、floor 0、默认基准 240）：均分 240/240 → 556 字 / 65.3% 正解句覆盖；
+// 2 倍 / 0.6 倍 → 480/144 → 547 字 / 72.9%：少 1.7% 字、多 7.6 个点，因为多数条目本来就短，尾巴压掉的比头一条放宽花掉的多。
+var INJECT_BODY_TOP_RATIO = 2;
+var INJECT_BODY_TAIL_RATIO = 0.6;
 var INJECT_NOTE_RESERVE = 120;
 // [macro-fusion 0.6.41] 「本条还有 N 字 · 全文 memory_read("id")」那一行的预留长度（中英取长）。
 var INJECT_BODY_NOTE_MAX = 56;
@@ -6372,6 +6378,16 @@ function clipChars(text, cap) {
  * ② 拼出来仍超上限时，从「分最低、位置最靠后」的补充句开始丢，首句永远保留——
  *    宁可少留一句，也不把首句切成半截。
  */
+/** [macro-fusion 0.6.48] 一条条目本轮能占多少正文：按名次给，不平均分。
+ *  第一名最可能被用上，给它两倍基准；后面的条目常常只是「旁证」，一半就够。
+ *  基准 <= 0（用户显式不限）时原样返回 0，保持旧路径。 */
+function rankBodyMax(base, i) {
+  const b = Number.isFinite(base) ? Math.floor(base) : 0;
+  if (b <= 0) return 0;
+  if (i === 0) return b * INJECT_BODY_TOP_RATIO;
+  return Math.max(INJECT_BODY_MIN, Math.floor(b * INJECT_BODY_TAIL_RATIO));
+}
+
 function squeezeBody(body, cap, qTerms) {
   const text = String(body ?? '')
   if (text.length === 0) return { text: '', mode: 'full' }
@@ -6505,7 +6521,7 @@ function renderHitEntries(entries, o, query) {
     let per
     if (budgeted) {
       per = Math.min(bodyCap, rest - head.length - 1)
-      if (bodyMax > 0) per = Math.min(per, bodyMax)
+      if (bodyMax > 0) per = Math.min(per, rankBodyMax(bodyMax, i))
       // 放不下「头 + 一句像样的正文」就整条不列——只留一个 id 的占位条目对模型几乎无用，
       // 不如把预算留给前面几条完整呈现，并把「还有 N 条」说在尾巴上。
       if (per < INJECT_BODY_MIN) {
@@ -6514,11 +6530,12 @@ function renderHitEntries(entries, o, query) {
       }
       rest -= head.length + 1
     } else {
-      per = bodyMax
+      // [macro-fusion 0.6.48] 只开单条上限（不设总上限）时同样按名次分配。
+      per = bodyMax > 0 ? rankBodyMax(bodyMax, i) : 0
     }
     // 要摘要的条目先扣掉「全文在哪」那一行的位置，别让它把上限顶爆。
     const willCut = contentLen > per
-    if (willCut && per > INJECT_BODY_MIN + INJECT_BODY_NOTE_MAX) per -= INJECT_BODY_NOTE_MAX
+    if (willCut) per = Math.max(INJECT_BODY_MIN, per - INJECT_BODY_NOTE_MAX)
     const sq = squeezeBody(left.content, per, qTerms)
     modes.push(sq.mode)
     blocks.push(head)

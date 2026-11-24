@@ -47,10 +47,10 @@ const TEXT = {
       'settings.field.injectFloor.hint',
       'Keyword hits scoring below this are not injected (0–1; 0 = gate off). 0.35 is the measured default: strong hits still come through, fragments that only share one word stay out.',
     ],
-    ['settings.field.injectBodyMax.label', 'Per-entry body limit'],
+    ['settings.field.injectBodyMax.label', 'Per-entry body baseline'],
     [
       'settings.field.injectBodyMax.hint',
-      'Longest body injected for one entry (characters; 0 = the whole entry). An over-long entry keeps its first sentence plus the one most relevant to the question and says how much was folded away — memory_read returns the full text.',
+      'Baseline body characters per entry (0 = the whole entry). Rank decides the actual share each round: the most relevant hit gets twice the baseline, every later hit 60% of it. An over-long entry keeps its first sentence plus the one most relevant to the question and says how much was folded away — memory_read returns the full text.',
     ],
     ['settings.field.injectSessionBudget.label', 'Session injection budget'],
     [
@@ -86,10 +86,10 @@ const TEXT = {
       'settings.field.injectFloor.hint',
       '关键词命中分数低于它的不注入（0–1，0＝关闸）。0.35 是实测默认值：强命中照旧进来，只沾一个词的碎片被挡在外面。',
     ],
-    ['settings.field.injectBodyMax.label', '单条正文上限'],
+    ['settings.field.injectBodyMax.label', '单条正文基准上限'],
     [
       'settings.field.injectBodyMax.hint',
-      '单条记忆最多注入多少字的正文（0＝整条）。超长条目保留首句与最贴问句的那一句，并自述折叠了多少字；要全文用 memory_read。',
+      '单条记忆最多注入多少字的正文（0＝整条）。每轮按名次分配：最贴问的那条给两倍基准，其余各给六成。超长条目保留首句与最贴问的那一句，并自述折叠了多少字；要全文用 memory_read。',
     ],
     ['settings.field.injectSessionBudget.label', '会话注入预算'],
     [
@@ -123,10 +123,10 @@ const TEXT = {
       'settings.field.injectFloor.hint',
       'Acertos por palavra-chave abaixo deste valor não são injetados (0–1; 0 = desligado). 0,35 é o padrão medido: acertos fortes continuam passando, fragmentos que só compartilham uma palavra ficam de fora.',
     ],
-    ['settings.field.injectBodyMax.label', 'Limite de corpo por entrada'],
+    ['settings.field.injectBodyMax.label', 'Base de corpo por entrada'],
     [
       'settings.field.injectBodyMax.hint',
-      'Corpo máximo injetado por entrada (caracteres; 0 = a entrada inteira). Uma entrada longa mantém a primeira frase e a mais relevante para a pergunta, e informa quanto foi omitido — memory_read traz o texto completo.',
+      'Base de caracteres de corpo por entrada (0 = a entrada inteira). A divisão por posição define a cota de cada rodada: a entrada mais relevante recebe o dobro da base, as demais 60% dela. Uma entrada longa mantém a primeira frase e a mais relevante para a pergunta, e informa quanto foi omitido — memory_read traz o texto completo.',
     ],
     ['settings.field.injectSessionBudget.label', 'Orçamento de injeção por sessão'],
     [

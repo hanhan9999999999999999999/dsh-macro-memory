@@ -13851,3 +13851,33 @@ rawkTopPrev = top;
 **判据**：规模 61 支 / 4,267 → **61 支 / 4,283 断言**；`injectSessionBudget: 0`（出厂值）加 `injectMaxChars: 0` 时逐位等于 0.6.46（R7「额度宽裕时逐位不变」钉住）；面板两处只是读数；邻域那处是 `break`→`continue`。
 
 **踩坑两条**：①**夹具里的 `injectBodyMax` 会替你戴帽子**——只要它是 240，正文早被压到 ≤240，怎么调额度都「顶不穿」，第一次跑出来 2,179 字和 340 档一模一样，差一点误判成「出门闸没生效」；验出门闸必须把 `injectBodyMax` 也设 0，让正文真长（2,179 字）才显出差额。②**「被挤掉的条目下轮能回来」会被同话题闸先挡住**——两条断言互相干扰，复现时必须 `injectRepeatSim: 0`，否则看到的是 repeat 出口而不是「它本来可以回来」。另：**PowerShell here-string 写 JS 会吞双引号**——`logHitSkip(workspace, dir, "budget", …)` 落盘成 `dir, budget,`，`node --check` 仍然通过（变成变量引用），得靠 `Select-String` 才抓得住；一律先 `write` 落 `.mjs` 再 `node` 执行。
+
+### 9.247 0.6.48：单条正文预算按名次分配
+
+**症状**：`injectBodyMax`（0.6.41 起，默认 240）是「每条一个值」——榜首、第二名、第三名都在同一处被切，第二名永远在跟第一名抢同一份字数。gold 池 45 问（k=2、`injectFloor: 0`、`injectSessionBudget: 0`）实测：默认 240 → **556 字/问、正解句覆盖 65.3%**；320 → 78.1%；480 → 82.2%；不限 → 782 字 / 88.9%。差 23.6 点不是检索不准。更硬的证据是**支配关系**：`240/240` = 605 字 / 65.3% 被 `320/120` = **561 字 / 67.2%** 严格支配（更少字、更高覆盖），说明「平均分」这个形状本身就错。往下调更糟：`injectBodyMax: 120` → 488 字 / **14.3%**，120 字连「首句 + 正解句」都装不下，全被压成只剩首句。
+
+**处方**（`vendor/meow-memory/lib/index.js`）：
+
+1. **两个常量**（紧邻 `var INJECT_BODY_CAP = 240;`）：`var INJECT_BODY_TOP_RATIO = 2;` / `var INJECT_BODY_TAIL_RATIO = 0.6;`，注释里带标定数字（均分 240/240 → 556 字 / 65.3%；2 倍 / 0.6 倍 → 480/144 → 547 字 / 72.9%）。
+2. **一个纯函数**（放在 `squeezeBody` 之前）：
+   ```js
+   function rankBodyMax(base, i) {
+     const b = Number.isFinite(base) ? Math.floor(base) : 0;
+     if (b <= 0) return 0;
+     if (i === 0) return b * INJECT_BODY_TOP_RATIO;
+     return Math.max(INJECT_BODY_MIN, Math.floor(b * INJECT_BODY_TAIL_RATIO));
+   }
+   ```
+   `base <= 0` 一律 0 —— `injectBodyMax: 0`（整条）语义逐位不变。
+3. **两条 `per` 路径都换**：预算支 `if (bodyMax > 0) per = Math.min(per, rankBodyMax(bodyMax, i))`（原 `per = Math.min(per, bodyMax)`）；非预算支 `per = bodyMax > 0 ? rankBodyMax(bodyMax, i) : 0`（原 `per = bodyMax`）。**只改预算支是白改**：出厂 `injectSessionBudget: 0` 走的是非预算那支。
+4. **顺手修指路行的预留**：`if (willCut && per > INJECT_BODY_MIN + INJECT_BODY_NOTE_MAX) per -= INJECT_BODY_NOTE_MAX` → `if (willCut) per = Math.max(INJECT_BODY_MIN, per - INJECT_BODY_NOTE_MAX)`。旧写法在 `per ≤ 116` 时压根不预留「折叠了多少字」那行，实际渲染超声明上限最多 56 字。
+
+**比例怎么来的**：七组扫描（`E:\Temp\cmp\ratio48.mjs`，每组 45 问）：`1/1` → 25,024 字 / 65.3% / 首句条目 22；`1.5/0.75` → 24,958 / 71.5% / 32；`1.75/0.6` → 24,390 / 72.6% / 41；`2/0.5` → 23,892 / 70.6% / 43；**`2/0.6` → 24,606 / 72.9% / 41（选中）**；`2.5/0.5` → 24,239 / 72.9%；`1.5/1` → 26,399 / 74.1%。另试 squeezeBody 两个变体（性价比贪心 `score/字数` → 240 档 67.1%；`INJECT_SENT_KEEP` 2 → 4 → 65.6%），**收益远小于名次分配，未采纳**，`__v48a.mjs` / `__v48b.mjs` 已删。
+
+**读数**（`E:\Temp\cmp\curve48.mjs` 重扫）：默认 240 → **547 字/问（−1.7%）、覆盖 65.3% → 72.9%（+7.6 点）**；80 → 451 / 30.9%（旧 7.6%）；120 → 488 / 60.0%（旧 14.3%）；180 → 517 / 68.9%；320 → 586 / 78.8%；480 → 663 / 86.5%；720 → 702 / 88.1%；不限 782 / 88.9%。`injectBodyMax: 0` 路径逐位不变。
+
+**判据**：规模 61 支 / 4,283 → **61 支 / 4,289 断言**（`probe-budget` 34 → 39、`probe-client-ui` 19 → 20，其余逐支不变）。`tools/probe-budget.mjs`：B0 新增「常量与 `rankBodyMax` 在位」；B1 两条夹具显式加 `injectBodyMax: 0`；B1b 四条（`modes === 'full,squeeze,squeeze'`、首条 170 字整条全留、第二条正文 ≤ 144 且含正题句、`bodyCut === 2`）；B4/B5 的「被压」判据从 `squeeze|clip` 改成 `m !== 'full'`。`tools/probe-digest.mjs`：夹具 `repeat(6)` → `repeat(10)`（472 字顶不穿 480 份额）、D2 数字 240 → 480、D6/D8 文案跟着改。`tools/probe-client-ui.mjs`：label 列表首项改「单条正文基准上限」，新增一条 `panelText.includes('每轮按名次分配') && panelText.includes('两倍基准') && panelText.includes('六成')`。回退性：`injectBodyMax: 0` 逐位等于 0.6.47；把两个比例都设 1，逐位回旧的均匀分配。
+
+**面板**：`injectBodyMax` 三语 label 改为「单条正文基准上限 / Per-entry body baseline / Base de corpo por entrada」，hint 写清「最贴问的那条给两倍基准，其余各给六成」。改的是 `tools/patch-settings-fields.mjs`（构建期真源）与 `lib/client.js`（产物，174,957 B / sha256 `1B90FDE5…`）两处，只改产物下次构建就回退。
+
+**踩坑三条**：①**两处 `per` 只改一处**——出厂默认走非预算支，第一次改完曲线一点没变，还以为比例选错了；②**探针夹具顶不穿新份额**——默认首条份额变 480，472 字的老夹具「无论怎么压都在 480 内」，B1b/`probe-digest` 会全绿但空跑，夹具必须加长到 `repeat(10)`、断言数字跟着改成 480；③**变体副本忘删**——`vendor/meow-memory/lib/__v48a.mjs` / `__v48b.mjs` 各 678 KB 被 `.gitignore:12` 的 `_*.mjs` 藏住，`git status` 看不见，doctor 却报「账本 44 文件 / 2,183,906 B ≠ 实际 46 文件 / 3,542,220 B」——删掉后重跑 `node tools/make-vendor-manifest.mjs` 才归零。

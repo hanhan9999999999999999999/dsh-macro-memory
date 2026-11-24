@@ -223,10 +223,15 @@ try {
 } catch (err) {
   panelText = `ERR:${err && err.message}`
 }
-for (const label of ['单条正文上限', '命中相关度闸', '每轮带星图邻域', '每轮邻居条数', '邻域块字符上限', '邻居强度下限']) {
+for (const label of ['单条正文基准上限', '命中相关度闸', '每轮带星图邻域', '每轮邻居条数', '邻域块字符上限', '邻居强度下限']) {
   check(`0.6.42 面板渲染出「${label}」`, panelText.includes(label), panelText.startsWith('ERR:') ? panelText.slice(0, 120) : undefined)
 }
 check('0.6.42 面板里有「星图邻域」分组标题', panelText.includes('星图邻域'))
+check(
+  '0.6.48 面板说明写清「按名次分配」（最贴问的给两倍基准、其余六成）',
+  panelText.includes('每轮按名次分配') && panelText.includes('两倍基准') && panelText.includes('六成'),
+  panelText.slice(0, 200)
+)
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

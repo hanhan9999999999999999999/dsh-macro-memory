@@ -61,15 +61,28 @@ const Q = '降糖药 剂量'
   ok('B0 默认值是 0（不限＝旧行为）', /injectMaxChars: 0,/.test(src))
   ok('B0 配置进了热生效白名单', /LIVE_CONFIG_KEYS = \[[^\]]*"injectMaxChars"/.test(src))
   ok('B0 resolveConfig 落成非负整数', src.includes('Math.max(0, Math.floor(c.injectMaxChars))'))
+  ok('B0 名次分配的两个比例在位（第一名 2 倍 / 其余 0.6 倍）',
+    src.includes('var INJECT_BODY_TOP_RATIO = 2;') && src.includes('var INJECT_BODY_TAIL_RATIO = 0.6;') && src.includes('function rankBodyMax(base, i) {'))
 }
 
 // ── B1 默认不限：与旧拼法逐位相同 ───────────────────────────────────────────
 {
   const header = (V.labels && V.labels.inject && V.labels.inject.hitHeader) || ''
-  const r0 = V.renderHitEntries(ENTRIES, { injectMaxChars: 0, titleMax: 40 }, Q)
-  const rUndef = V.renderHitEntries(ENTRIES, { titleMax: 40 }, Q)
+  const r0 = V.renderHitEntries(ENTRIES, { injectMaxChars: 0, injectBodyMax: 0, titleMax: 40 }, Q)
+  const rUndef = V.renderHitEntries(ENTRIES, { injectBodyMax: 0, titleMax: 40 }, Q)
   ok('B1 默认 0：三条全量、无人被压', r0.modes.every((m) => m === 'full') && r0.dropped === 0, r0.modes.join(',') + ' drop ' + r0.dropped)
   ok('B1 不传字段等同传 0（老配置对象不会被改变行为）', r0.text === rUndef.text, `len ${r0.text.length} vs ${rUndef.text.length}`)
+  // [macro-fusion 0.6.48] 默认 240 不再是「每条 240」，而是「基准 240」：第一名两倍、其余六成。
+  {
+    const rb = V.renderHitEntries(ENTRIES, { injectBodyMax: 240 }, Q)
+    ok('B1b 名次分配：第一条整条给出、后面两条被压到六成份额',
+      rb.modes[0] === 'full' && rb.modes.slice(1).every((m) => m === 'squeeze'), rb.modes.join(','))
+    const seg = (i) => String(rb.text).split('[' + ENTRIES[i].id + ']')[1].split('\n\n')[0]
+    ok('B1b 第一条拿的是两倍基准（条目 170 字 < 480，整条全留）', seg(0).length > 120 && seg(0).includes('第五句收尾'), 'len ' + seg(0).length)
+    ok('B1b 第二条只拿六成基准（正文 ≤ 144 字，正题句仍在）',
+      seg(1).length <= 144 && seg(1).includes('降糖药第一次吃一般从最小剂量开始'), 'len ' + seg(1).length)
+    ok('B1b 名次分配不改变「有没有压」的记账：bodyCut 数的是被压条数', rb.bodyCut === 2, 'bodyCut ' + rb.bodyCut)
+  }
   ok('B1 默认输出含全部三条 id 与全部正文',
     ENTRIES.every((e) => r0.text.includes(e.id) && r0.text.includes(e.content)) && r0.text.length > 600,
     `len ${r0.text.length}`)
@@ -105,12 +118,12 @@ const Q = '降糖药 剂量'
 // ── B4/B5 压缩时的能力：首句必留 + 查询词所在句必留 ────────────────────────
 {
   const r = V.renderHitEntries(ENTRIES, { injectMaxChars: 600 }, Q)
-  const squeezed = r.modes.filter((m) => m === 'squeeze' || m === 'clip').length
-  ok('B4 600 档确实发生了正文压缩（否则这组断言没意义）', squeezed > 0, `squeezed ${squeezed} · modes ${r.modes.join(',')}`)
+  const squeezed = r.modes.filter((m) => m !== 'full').length
+  ok('B4 600 档确实发生了正文压缩（否则这组断言没意义）', squeezed > 0, `压缩 ${squeezed} 条 · modes ${r.modes.join(',')}`)
   ok('B4 压缩后查询词所在句被留住', r.text.includes('降糖药第一次吃一般从最小剂量开始'), '第 4 句在位')
   ok('B5 压缩后首句也在（开场白是这条的定位句）', r.text.includes('这句是开场'), '第 1 句在位')
   // 只有「被压缩的那条」才该丢铺垫句；整条全量留下的那条五句都在是正常。
-  const squeezedIdx = r.modes.findIndex((m) => m === 'squeeze' || m === 'clip')
+  const squeezedIdx = r.modes.findIndex((m) => m !== 'full')
   const squeezedSeg = squeezedIdx >= 0 ? r.text.split(ENTRIES[squeezedIdx].id)[1].split('\n\n')[0] : ''
   ok('B5 被压缩的那条丢的是铺垫句（第 2/3 句）而不是正题',
     squeezedIdx >= 0 && !squeezedSeg.includes('第二句继续铺垫') && squeezedSeg.includes('这句是开场'),

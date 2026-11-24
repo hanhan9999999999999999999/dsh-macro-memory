@@ -53,7 +53,7 @@ const mkRow = (id, level, content, kws, imp = 2) => ({
 // 长条目：首句是题眼；第 2 段有一句与问句词面重合；末句带硬信息（数字 + 反引号）。
 const S_HEAD = '星图邻域注入是每轮自动带来的参考，不是本轮指令。'
 const S_MID = '邻域默认最多 4 条、合计 420 字，超了就从分低的开始丢。'
-const S_FILL = '这条记忆里塞了很多与问题无关的背景，目的是把正文撑过单条上限。'.repeat(6)
+const S_FILL = '这条记忆里塞了很多与问题无关的背景，目的是把正文撑过单条上限。'.repeat(10)
 const S_TAIL = '边界：设 `injectBodyMax: 0` 就整条给，默认 240 只摘要超长条目。'
 const LONG = S_HEAD + S_FILL + S_MID + S_FILL + S_TAIL
 const SHORT = '备份目录固定放在 D:\\备份，一次一个时间戳子目录。'
@@ -107,7 +107,7 @@ const blockOf = (text, id) => {
   const body = blockOf(text, 'digest001')
   ok('D2 长条目仍被注入（摘要不等于丢条）', r !== null && r.injectedIds.includes('digest001'))
   ok('D2 回执里能看出压了几条', r !== null && r.budget.bodyCut === 1, 'bodyCut ' + (r?.budget?.bodyCut ?? '—'))
-  ok('D2 单条正文被压到 240 字以内', body.length > 0 && body.replace(/\n.*memory_read.*$/, '').length <= 240 + 60, 'body ' + body.length + ' 字')
+  ok('D2 单条正文被压到首条份额 480 字以内（基准 240 × 2）', body.length > 0 && body.replace(/\n.*memory_read.*$/, '').length <= 480 + 60, 'body ' + body.length + ' 字')
   ok('D2 首句必留', body.includes(S_HEAD))
   ok('D2 与问句重合的那句被捞出来了', body.includes('邻域默认最多 4 条'))
   ok('D2 正文后面跟着 memory_read 指路行', /memory_read\("digest001"\)/.test(text))
@@ -157,7 +157,7 @@ const blockOf = (text, id) => {
   ok('D6 两层上限同时生效时总长仍不超总预算', r !== null && r.text.length <= 300, (r?.text.length ?? -1) + ' ≤ 300')
   const r2 = runOn(ROWS_LONG, Q_LONG, { injectFloor: 0, injectMaxChars: 3000, injectBodyMax: 240 })
   const body2 = blockOf(r2 === null ? '' : r2.text, 'digest001')
-  ok('D6 总预算宽时单条仍按 240 压', body2.length > 0 && body2.length <= 240 + 60 + 20, 'body ' + body2.length)
+  ok('D6 总预算宽时单条仍按基准两倍（480）压', body2.length > 0 && body2.length <= 480 + 60 + 20, 'body ' + body2.length)
 }
 
 // ── D7 坏值：非数字回 240，负数夹成 0 ──────────────────────────────────────
@@ -177,7 +177,7 @@ const blockOf = (text, id) => {
   console.log('')
   console.log('MEASURE 长条目（' + LONG.length + ' 字）单条注入：')
   console.log('  不限（0）　　　' + (a0 === null ? '—' : a0.text.length + ' 字') + '　全文整条')
-  console.log('  默认（240）　　 ' + (a1 === null ? '—' : a1.text.length + ' 字') + '　压成首句 + 相关句 + 硬信息句 + 指路行')
+  console.log('  默认（240 → 首条 480）' + (a1 === null ? '—' : a1.text.length + ' 字') + '　压成首句 + 相关句 + 硬信息句 + 指路行')
   if (a0 !== null && a1 !== null) {
     console.log('  省　' + (100 * (1 - a1.text.length / a0.text.length)).toFixed(1) + '%')
   }
