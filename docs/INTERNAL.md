@@ -12437,3 +12437,70 @@ const anchors = anchorChainOf(vals, plain);
 - **`search` 178.9ms / 11.8%**、**`buildSearchIndex` 146.7ms / 9.6%**（只在冷建付）、**`scoreCandSet` 108.6ms / 7.1%**、`tokenize` 90.1ms / 5.9%、`classify` 79.8ms / 5.2%。
 - `setBandsByThreshold` 已从 14.0% 降到 4.9%，暂时不再是刀口。
 
+## 9.219 签名校验不再查 WeakMap：按数组下标对齐的行缓存（0.6.20）
+
+### 9.219.1 症状
+
+`--cpu-prof` 第八次点名（10,000 条 / 300 问，单次 `search` 2.52ms，总采样 **1,624.0ms**，`E:\Temp\cmp\prof20d\CPU.20261124.100100.1864.0.001.cpuprofile`）：`sigDocOf` **265.5ms / 16.4%** 登顶，紧随其后 `search` 215.5 / 13.3%、`buildSearchIndex` 143.4 / 8.8%、`scoreCandSet` 114.8 / 7.1%、`setBandsByThreshold` 83.7 / 5.2%。
+
+### 9.219.2 病根
+
+`indexSignature(docs)` 给整张库算一个总签名当 `searchIndexCache` 的键，逐条调 `sigDocOf(d)`：**① 先 `SIG_DOC_CACHE.get(d)`（WeakMap，键是文档对象）把上次那份条级记录取回来，② 再逐字段比（id / updated_at / updatedAt / content / title / source_session / project / 关键词），③ 异或进总签名**。字段比较本身便宜，贵的是**取**：10,000 条的库每问就是 10,000 次哈希表查找；而同一个数组第 2 次进来时 `docs[i]` 位置根本没变——要的是「按下标取上一次的结论」，付的却是「按对象查哈希表」的钱。顺带 `searchIndexOf` 里签名还算了**两遍**（`indexPathKey` 一遍、`given.__sig` 一遍）。
+
+### 9.219.3 处方
+
+1. **对齐行缓存**：`const SIG_ROW_CACHE = new WeakMap();`，键是**文档数组**，值 `{ n, visits, row }`；`row = new Array(n)` 与下标一一对齐，行里放的就是 `SIG_DOC_CACHE` 那份条级记录（同一对象）。取值改由 `sigDocOfRow(row, i, d)` 完成，命中判据与原来逐字段一致，外加关键词逐元素比 `sigKwSame`。
+2. **只在第 2 次访问才铺行**：`if (slot.row === null && slot.visits >= 2) slot.row = new Array(n);`——调用方每次新建数组时（真库里常见）不铺一万格空表，首访只记计数。
+3. **计数口径与合并顺序不动**：行命中照旧 `sigStats.hashed++` / `sigStats.reused++`；非对象、字段非标量、关键词元素非标量的条目行里留空（`row[i] = fresh === void 0 ? void 0 : fresh;`）照旧现算；`h ^= …; h = Math.imul(h, 16777619) >>> 0;` 仍按文档顺序逐条合并。非数组的可迭代物走原 `for (const d of docs)` 旧路。
+4. **签名一问只算一次**：`const sig = indexSignature(docs);` → `indexPathKey(docs, opts, sig)` 与 `given.__sig === sig &&` 共用。
+
+```js
+function indexSignature(docs) {
+  sigStats.calls++;
+  const n = docs.length;
+  let h = 2166136261 >>> 0;
+  h ^= n;
+  h = Math.imul(h, 16777619) >>> 0;
+  if (Array.isArray(docs)) {
+    const row = sigRowFor(docs, n).row;
+    for (let i = 0; i < n; i++) {
+      h ^= row === null ? sigDocOf(docs[i]) : sigDocOfRow(row, i, docs[i]);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return `${n}:${h >>> 0}`;
+  }
+  for (const d of docs) { h ^= sigDocOf(d); h = Math.imul(h, 16777619) >>> 0; }
+  return `${n}:${h >>> 0}`;
+}
+```
+
+### 9.219.4 读数
+
+| 读数 | 0.6.19 | 0.6.20 | 变化 |
+| --- | --- | --- | --- |
+| `search`（10,000 条 / 300 问，三次中位） | 2.522ms | **2.042ms** | −19.0%（相对 0.6.12 的 27.377ms 累计 −92.5%） |
+| `searchAdaptive` | 3.51ms | **2.59ms** | −26.1%（自适应要算两趟签名） |
+| 总采样 | 1,624.0ms | **1,433.5ms** | −11.7% |
+| `sigDocOf` | 265.5ms / 16.4% | 掉出前 20（并进 `indexSignature` 116.3ms / 8.1%） | — |
+| 「每次新建数组」那条路 | 2.579ms | 2.604ms | 噪声内（首访不铺行，不退化） |
+| 冷建 | 291–300ms | 291–297ms | 同量级 |
+
+答案一位没动：LoCoMo locomo10（10 样本 / 5,882 条轮次 / **1,986 问**）逐问比对新旧引擎 top-20 → **0 处不同**（`E:\Temp\cmp\ab20.mjs`）；`final.mjs` 与 0.6.19 逐行一致（`0.6.0 关 与 v0.5.0 逐位相同？ true`，两条 `#2→#1` 位移仍在）。
+
+### 9.219.5 判据
+
+`tools/probe-sigrow.mjs` **R0–R5**：R0 形状八件（侧表 / 取行 / 首访不铺 / 行内校验 / 行命中计数 / 两路合并 / 非数组旧路）/ R1 行缓存那趟与「每次新建数组」那趟 **4,018 次对拍逐位相同** / R2 计数口径（同一数组连算两次 vs 两次都新建数组：calls 2 · hashed 400 · reused 200 · rebuilt 200，两路相同）/ R3 八种改法必被看见 / R4 三次一致且副本同签名 / R5 脏值两路同签名。`verify.mjs` **OR080 六条**：R0–R5 标签与挂线及取根例外 / 引擎八件（含单趟签名三处）/ 进程内 40 库两路对拍 + 改一处两路一起变 / 计数口径 / 文档四处 / 版本地板 `vNumS11 >= 620`。
+
+一次假红：R2 第一次红是**测量顺序**——两条路共用一批文档对象时先跑的会把条级缓存填满，后跑的自然全 `reused`；两路必须各用一份互不相干的同形库。
+
+### 9.219.6 账
+
+支数 47 → **48**（新增 `tools/probe-sigrow.mjs`）；断言 3,773 → **3,785**（`probe-sigrow` +6、`OR080` +6；`SUITE_FLOOR` 47 → **48**，`NO_ROOT` 补 `tools/probe-sigrow.mjs`）。条数以 `verify.mjs` 的 `MT068` 实测对账为准。
+
+### 9.219.7 下一版候选（按 1,433.5ms 的榜重排）
+
+- **`search` 216.1ms / 15.1%**：行级零散（循环体 + 打分调用），下一步得按行摊开看。
+- **`buildSearchIndex` 140.5ms / 9.8%**：只在冷建付，`bumpIn` 46.4 / `buildCoocSyn` 38.8 / `coocShareHan` 49.3 / `tokenize` 79.6 都在这条链上，可以合成一版。
+- **`indexSignature` 116.3ms / 8.1%**：行缓存之后剩下的就是「按下标逐字段比」本身，要再降只能减少每条的字段数（会撞签名，暂不动）。
+- **`scoreCandSet` 114.9ms / 8.0%**、`classify` 88.7 / 6.2%、`sessionTopicTerms` 50.2 / 3.5%、GC 75.4 / 5.3%。
+

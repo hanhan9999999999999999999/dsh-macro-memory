@@ -3037,16 +3037,67 @@ function sigDocOf(d) {
   });
   return h;
 }
+// [macro-fusion 0.6.20] 条级哈希的对齐行缓存：同一张库连问 N 个问题，不要再走 N 遍 WeakMap。
+// 病根：`sigDocOf` 占热检索采样 17.4%（10,000 条 × 每问一遍），其中大头是「每条一次 WeakMap.get」
+// ——键是文档对象，10,000 条就是 10,000 次哈希表查找，而同一个数组第 2 次进来时这些位置一模一样。
+// 处方：按「数组下标」对齐的侧表（`new Array(n)`），行里存的就是 `SIG_DOC_CACHE` 里那份条级记录；
+// 校验还是逐字段比（id / updated_at / updatedAt / content / title / source_session / project / 关键词），
+// 只是把「查表」换成「按下标取」。
+// 三条不许省的：
+//   ① 只有**同一个数组**第 2 次进来才铺行（`visits >= 2`）。调用方每次新建数组时（真库里很常见），
+//      多铺一张 10,000 格的空表纯属反过来变慢，所以首次访问只记一格计数、不分配。
+//   ② 行缓存不放过任何一条不该缓存的：非标量字段、关键词元素不是标量的条目，行里留空、照旧现算，
+//      计数（hashed / reused / rebuilt）与不带行缓存时逐次相同——`verify.mjs` 钉着 calls 2 / 复用 1 / 重算 1。
+//   ③ 合并顺序必须与原来逐条异或的顺序一致（行缓存只换「取值方式」，不换顺序），否则签名会变，
+//      `probe-signature` 与索引缓存的键一起崩。
+const SIG_ROW_CACHE = new WeakMap();
+function sigRowFor(docs, n) {
+  let slot = SIG_ROW_CACHE.get(docs);
+  if (slot === void 0 || slot.n !== n) {
+    slot = { n, visits: 0, row: null };
+    SIG_ROW_CACHE.set(docs, slot);
+  }
+  slot.visits++;
+  if (slot.row === null && slot.visits >= 2) slot.row = new Array(n);
+  return slot;
+}
+// 行命中时计数与 `sigDocOf` 完全同口径：hashed++（每条都算一次）+ reused++（复用上次的哈希）。
+function sigDocOfRow(row, i, d) {
+  const e = row[i];
+  // 非对象的 d 一律照旧现算：条级记录只对「字段全是标量的对象」才有意义，
+  // 拿 undefined 互相比会把两条形状完全不同的脏值认成同一条。
+  if (e !== void 0 && d !== null && typeof d === 'object' &&
+      e.id === d.id && e.u1 === d.updated_at && e.u2 === d.updatedAt &&
+      e.c === d.content && e.t === d.title && e.s === d.source_session && e.p === d.project &&
+      sigKwSame(d.keywords, e.kw)) {
+    sigStats.hashed++;
+    sigStats.reused++;
+    return e.h;
+  }
+  const h = sigDocOf(d);
+  const fresh = d !== null && typeof d === 'object' ? SIG_DOC_CACHE.get(d) : void 0;
+  row[i] = fresh === void 0 ? void 0 : fresh;
+  return h;
+}
 function indexSignature(docs) {
   sigStats.calls++;
+  const n = docs.length;
   let h = 2166136261 >>> 0;
-  h ^= docs.length;
+  h ^= n;
   h = Math.imul(h, 16777619) >>> 0;
+  if (Array.isArray(docs)) {
+    const row = sigRowFor(docs, n).row;
+    for (let i = 0; i < n; i++) {
+      h ^= row === null ? sigDocOf(docs[i]) : sigDocOfRow(row, i, docs[i]);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return `${n}:${h >>> 0}`;
+  }
   for (const d of docs) {
     h ^= sigDocOf(d);
     h = Math.imul(h, 16777619) >>> 0;
   }
-  return `${docs.length}:${h >>> 0}`;
+  return `${n}:${h >>> 0}`;
 }
 
 // [macro-fusion 0.4.0 · P5] 自学习扩词：等价说法不再只靠手工表。
@@ -3355,16 +3406,21 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
 const SEARCH_INDEX_CACHE_MAX = 4;
 const searchIndexCache = new Map();
 
-function indexPathKey(docs, opts) {
-  return `${indexSignature(docs)}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`;
+// [macro-fusion 0.6.20] 签名只算一次：`indexPathKey` 与「传进来的表还能不能用」判的是同一个签名，
+// 原来一问算两遍（`--cpu-prof` 里 `sigDocOf` 249.9ms/16.4%，其中一半是自己算两遍付的）。
+// 签名是 docs 的纯函数（条级哈希走 SIG_DOC_CACHE，同样的 d 必得同样的数），所以算一遍传进来
+// 与算两遍逐位相同——判据 `probe-sig` 的 S3 就钉这一条：两处签名必须是同一份。
+function indexPathKey(docs, opts, sig) {
+  return `${sig === void 0 ? indexSignature(docs) : sig}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`;
 }
 
 // 调用方也可以直接传 opts.index（自己缓存那张表）；签名或口径对不上就自己重建——
 // 传错表比慢更要命，所以这里宁可多算一次签名，也不"信任调用方"。
 function searchIndexOf(docs, opts) {
-  const key = indexPathKey(docs, opts);
+  const sig = indexSignature(docs);
+  const key = indexPathKey(docs, opts, sig);
   const given = opts.index;
-  if (given && given.__n === docs.length && given.__sig === indexSignature(docs) &&
+  if (given && given.__n === docs.length && given.__sig === sig &&
       given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`) {
     return given;
   }

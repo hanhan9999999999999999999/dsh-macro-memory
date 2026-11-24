@@ -7578,3 +7578,40 @@ anchors.reverse();
 
 踩坑：①`new ArrayBuffer(8)` 不能下标赋值，必须 `new Uint8Array(b)[7] = …`；②小端判定要写 `u[6] = 0xf0; u[7] = 0x3f;`（1.0 的高字是 `0x3FF00000`），只写 byte7 会得到 `RAWK_LE === false`、静默走退路（慢但不报错）；③退路忘了 `subarray(0, n)` 时 `probe-order` 一次红掉 O1/O4/O6/O7/O9/O10 六条——复用缓冲的残值混进前 n 个，正是「缓冲复用」的指纹；④B4 第一次红是我的**参考实现写错**：用「数一遍锚点 > v」当参考，而引擎是 `m - 1 - lo`，两者在「落在 0.85 阈值缝里」的值上差一档——参考必须照 `setBandsBySort` 的字面语义（从大到小走、遇阈值才开档）写。
 
+## 215. 签名校验不再查 WeakMap：按数组下标对齐的行缓存（0.6.20）
+
+定档换成桶计数排序之后，`--cpu-prof` 第八次点名（单次 `search` 2.52ms，总采样 **1,624.0ms**）：第一名换成了 `sigDocOf`，**265.5ms / 16.4%**。它要回答的只有一句「这张库还是刚才那张库吗」——`indexSignature(docs)` 沿着文档数组走一遍，每条比八个字段，合成一个 FNV 风格的总签名，再拿这个签名当 `searchIndexCache` 的键：
+
+```js
+function indexSignature(docs) {
+  sigStats.calls++;
+  let h = 2166136261 >>> 0;
+  h ^= docs.length;
+  h = Math.imul(h, 16777619) >>> 0;
+  for (const d of docs) {
+    h ^= sigDocOf(d);                 // ① 先 WeakMap.get(d) 取上次那份条级记录 ② 再逐字段比
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return `${docs.length}:${h >>> 0}`;
+}
+```
+
+条级记录本身早就缓存了（`SIG_DOC_CACHE`，键是文档对象），所以字段比较是便宜的——贵的是**取**：10,000 条的库，每问 10,000 次哈希表查找。而同一个数组第 2 次进来时，`docs[i]` 连位置都没变。
+
+处方两条 + 三条不动：
+
+1. **对齐行缓存**。新增 `const SIG_ROW_CACHE = new WeakMap();`，键是**文档数组**，值是 `{ n, visits, row }`；`row = new Array(n)` 与下标一一对齐，行里放的就是 `SIG_DOC_CACHE` 里那份条级记录（同一个对象，不是副本）。取值从「按对象查哈希表」变成「按下标取数组元素」：`function sigDocOfRow(row, i, d)`，命中判据与原来逐字段一致（`id` / `updated_at` / `updatedAt` / `content` / `title` / `source_session` / `project`，再加上关键词逐元素比 `sigKwSame`）。
+2. **只在第 2 次访问才铺行**。`slot.visits++` 之后 `if (slot.row === null && slot.visits >= 2) slot.row = new Array(n);`。真库里调用方常常每次新建一个数组（`docs.slice()` / 每次从库里读一批），那时铺一张一万格的空表等于反过来变慢——首访只记一格计数、不分配，第二次才铺。
+
+三条不许省的：
+
+- **合并顺序不能动**。行缓存只换「取值方式」不换「合并顺序」：`h ^= …; h = Math.imul(h, 16777619) >>> 0;` 仍按文档顺序逐条合并，签名才与原来逐位相同（否则 `searchIndexCache` 的键、`probe-signature` 的断言会一起崩）。
+- **计数口径不能动**。行命中照旧 `sigStats.hashed++` / `sigStats.reused++`，与走 `sigDocOf` 时完全同口径；非对象、字段非标量、关键词元素非标量的条目**行里留空**、照旧现算（`row[i] = fresh === void 0 ? void 0 : fresh;`），否则两条形状不同的脏值会被认成同一条。
+- **非数组的可迭代物走旧路**。`if (Array.isArray(docs))` 才走行缓存，`for (const d of docs)` 的循环一字未动——数组以外的东西（生成器、array-like）没有「下标对位」这回事。
+
+顺带把 `searchIndexOf` 里「一问算两遍签名」收成一遍：`const sig = indexSignature(docs);` 之后 `const key = indexPathKey(docs, opts, sig);` 与 `given.__sig === sig &&` 共用同一份结果。
+
+读数（10,000 条 / 300 问，三次取中位）：`search` **2.52 → 2.04 ms（−19.0%；相对 0.6.12 的 27.377ms 累计 −92.5%）**、`searchAdaptive` **3.51 → 2.59 ms（−26.1%）**、总采样 **1,624.0 → 1,433.5ms（−11.7%）**、`sigDocOf` 从榜单掉出（活并进 `indexSignature`，116.3ms / 8.1%）；「每次新建数组」那条路 **2.58 → 2.60ms**（噪声内，不退化）。答案一位没动：LoCoMo locomo10 十个样本 / 5,882 条轮次 / **1,986 问**逐问比对新旧引擎 top-20 —— **0 处不同**；真库 52 问（`0.6.0 关` 与 v0.5.0 仍逐位相同）三档 0.921 / 0.417 / 0.500 照旧。判据 `probe-sigrow` R0–R5 与 `verify.mjs` OR080，账见 INTERNAL 9.219。
+
+踩坑：①R2 第一次红是**测量顺序**不是口径——两条路共用一批文档对象时，先跑的那条会把条级缓存填满，后跑的自然是全 `reused`，两路必须各用一份互不相干的同形库；②`sigDocOfRow` 第一版用 `e.id === d?.id` 逐项比，`d` 是 `null` / 字符串 / 数字时全部字段都 `undefined` 且相等，会把两条脏值认成同一条——补上 `d !== null && typeof d === 'object'` 这一道门；③`indexSignature` 换下标循环之后，`docs.length` 必须只取一次（`const n = docs.length;`），旧写法在循环里读 `docs.length`，遇到边算边改数组的调用方会读到中间态。
+

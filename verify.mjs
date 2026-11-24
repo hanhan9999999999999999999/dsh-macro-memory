@@ -37,8 +37,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
 // 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）；
-// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）。
-const SUITE_FLOOR = 47
+// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）；0.6.20 起 = 48（加 probe-sigrow）。
+const SUITE_FLOOR = 48
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -950,6 +950,7 @@ function makeHostCtx() {
     'tools/probe-hydrate.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.17），不拼仓内路径',
     'tools/probe-cand.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.18），不拼仓内路径',
     'tools/probe-band.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.19），不拼仓内路径',
+  'tools/probe-sigrow.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.20），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -13749,6 +13750,99 @@ dt063: {
   const vS10 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS10 = vS10.length === 3 ? vS10[0] * 10000 + vS10[1] * 100 + vS10[2] : 0
   check('OR079 版本号不低于 0.6.19（后续补丁不必回头改这一条）', vNumS10 >= 619, vS10.join('.'))
+}
+
+// 0.6.20：签名校验不再每问查一遍 WeakMap（对齐行缓存，见 INTERNAL 9.219 / DESIGN 215）。
+{
+  const gSrc = readFileSync(new URL('./tools/probe-sigrow.mjs', import.meta.url), 'utf8')
+  const gWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-sigrow.mjs'")
+  const gExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-sigrow.mjs'")
+  const gLabels = ['R0 行缓存形状', 'R1 行缓存与新建数组逐位相同', 'R2 计数口径', 'R3 变更必被看见', 'R4 三次一致', 'R5 脏值'].every((t) => gSrc.includes(t))
+  check(
+    'OR080 签名行缓存探针 R0–R5 在位（形状八件 / 与新建数组那条路逐位相同 / 计数口径 / 变更必被看见 / 三次一致 / 脏值不合并），check-all 挂线且列进取根例外',
+    gLabels && gWired && gExcused,
+    `标签 ${gLabels} / 挂线 ${gWired} / 取根例外 ${gExcused}`,
+  )
+
+  const ENGINE_G = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const partsG = {
+    侧表: ENGINE_G.includes('const SIG_ROW_CACHE = new WeakMap();'),
+    取行: ENGINE_G.includes('function sigRowFor(docs, n) {'),
+    首访不铺: ENGINE_G.includes('if (slot.row === null && slot.visits >= 2) slot.row = new Array(n);'),
+    行内校验: ENGINE_G.includes('function sigDocOfRow(row, i, d) {'),
+    行命中计数: ENGINE_G.includes('sigStats.hashed++;\n    sigStats.reused++;'),
+    两路合并: ENGINE_G.includes('h ^= row === null ? sigDocOf(docs[i]) : sigDocOfRow(row, i, docs[i]);'),
+    非数组旧路: ENGINE_G.includes('for (const d of docs) {'),
+    单趟签名: ENGINE_G.includes('const sig = indexSignature(docs);') &&
+      ENGINE_G.includes('const key = indexPathKey(docs, opts, sig);') &&
+      ENGINE_G.includes('given.__sig === sig &&'),
+  }
+  const missG = Object.keys(partsG).filter((k) => !partsG[k])
+  check(
+    'OR080 引擎里签名校验换成「按数组下标对齐的侧表」：行缓存只在第 2 次访问才铺、行命中计数与 sigDocOf 同口径、非数组可迭代物仍走旧路，签名一问只算一次',
+    missG.length === 0,
+    missG.length === 0 ? `${Object.keys(partsG).length} 件在位` : `缺 ${missG.join(' / ')}`,
+  )
+
+  let sameOk = false
+  let sameDetail = ''
+  try {
+    const S4 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const W = ['记忆', '插件', '索引', '签名', '缓存', '定档']
+    const r = (() => { let s = 0x51ed; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296 } })()
+    const mk = (i) => ({
+      id: '0mg' + i, project: i % 2 ? 'a' : 'b', title: W[i % 6],
+      content: W[Math.floor(r() * 6)] + '，' + W[Math.floor(r() * 6)] + '。第 ' + i + ' 条。',
+      keywords: [W[Math.floor(r() * 6)]], updated_at: 1795400000000 - i, source_session: 's' + (i % 3),
+    })
+    let bad = 0
+    let cases = 0
+    for (let s = 0; s < 40; s++) {
+      const docs = []
+      for (let i = 0; i < 1 + (s % 25); i++) docs.push(mk(i))
+      for (let k = 0; k < 3; k++) {
+        cases++
+        if (S4.indexSignature(docs) !== S4.indexSignature(docs.slice())) bad++
+        docs[0].content += '变'
+        cases++
+        if (S4.indexSignature(docs) !== S4.indexSignature(docs.slice())) bad++
+      }
+    }
+    sameOk = bad === 0
+    sameDetail = `${cases} 次对拍 · 不一致 ${bad}`
+  } catch (e) {
+    sameDetail = String(e && e.message)
+  }
+  check('OR080 进程内：行缓存那一趟与「每次新建数组」那一趟签名逐位相同，改一处两路一起变', sameOk, sameDetail)
+
+  let cntOk = false
+  let cntDetail = ''
+  try {
+    const S5 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+    const mkDoc = (i) => ({ id: '0mc' + i, project: 'p', title: 't' + i, content: '正文 ' + i, keywords: ['记忆'], updated_at: 1795400000000 - i, source_session: 's1' })
+    const a = []
+    const b = []
+    for (let i = 0; i < 120; i++) { a.push(mkDoc(i)); b.push(mkDoc(i)) }
+    const grab = (fn) => { S5.resetIndexSignatureStats(); fn(); const st = S5.indexSignatureStats(); return `${st.calls}/${st.hashed}/${st.reused}/${st.rebuilt}` }
+    const sameKey = grab(() => { S5.indexSignature(a); S5.indexSignature(a) })
+    const freshKey = grab(() => { S5.indexSignature(b.slice()); S5.indexSignature(b.slice()) })
+    cntOk = sameKey === freshKey
+    cntDetail = `同一数组 ${sameKey} / 每次新建 ${freshKey}`
+  } catch (e) {
+    cntDetail = String(e && e.message)
+  }
+  check('OR080 进程内：行缓存不偷偷改计数口径（calls / hashed / reused / rebuilt 与不带行缓存那条路相同）', cntOk, cntDetail)
+
+  check(
+    'OR080 文档在位：INTERNAL 9.219 写了「对齐行缓存」，README 写了「签名校验不再查 WeakMap」，DESIGN 有 ## 215.，PLAN 有 0.6.20',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.219 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('签名校验不再查 WeakMap') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 215. ') &&
+      /0\.6\.20/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS11 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS11 = vS11.length === 3 ? vS11[0] * 10000 + vS11[1] * 100 + vS11[2] : 0
+  check('OR080 版本号不低于 0.6.20（后续补丁不必回头改这一条）', vNumS11 >= 620, vS11.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
