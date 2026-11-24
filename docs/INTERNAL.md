@@ -12886,3 +12886,97 @@ for (let j = i + 1; j < ln; j++) {
 - **`shareHan` 31.6ms**（`buildCoocSyn` 87.9ms 里的大头）：每词对两次正则 `[\u4e00-\u9fff]`，可换码点区间判——与 0.6.25 的 `isLatinToken` 同一个道理。
 - **字段命中位两趟 `Set.has`**（`buildSearchIndex:3542` 20.5ms）：标题集与关键词集各只有两三个词，先把两个小集并成「词 → 位」的小表，落盘每词只查一次。
 - **`tokenizeSegs:1703` 24.5ms** 是 `text.normalize("NFKC")`，只在「确实含全角/合字」时才需要——可先扫一遍码点，没有可疑区间就跳过归一化。
+## 9.225 0.6.26：共现层内部只认整数词号
+
+### 9.225.1 症状
+
+0.6.25 冷建剖面（一万条记忆，总采样 726.6ms）里共现层还占：`buildCoocSyn` 87.9ms、`bumpIn`（`:3324`）43.8ms、`shareHan`（`:3314`）21.4ms、`buildCoocSyn`（`:3298`）19.8ms。项目层那一段 0.6.23 已经提过行，剩下的钱全在共现内层。
+
+### 9.225.2 病根
+
+1. `pairs` / `projPairs` / `kwDf` 三层都拿**词本身**当键，每写一对要算两次串哈希、读一次再算一次；而键域只有几百个词。
+2. `hanMemo` 是 `Map<string, Map<string, bool>>` 两级表：行按串找、列也按串找，而行的身份本来就是「第几个词」。
+3. 内层热循环里每个词对还要再回一次 `pairs.get(a)` / `hanMemo.get(a)`。
+
+### 9.225.3 处方
+
+进层先发词号（按第一次出现的顺序）：
+
+```js
+const wid = new Map();
+const wById = [];
+const idOf = (w) => {
+  let id = wid.get(w);
+  if (id === void 0) {
+    id = wById.length;
+    wid.set(w, id);
+    wById.push(w);
+  }
+  return id;
+};
+```
+
+共享汉字记忆表改下标数组：
+
+```js
+const hanMemo = [];
+const hanRow = (a) => {
+  let row = hanMemo[a];
+  if (row === void 0) {
+    row = /* @__PURE__ */ new Map();
+    hanMemo[a] = row;
+  }
+  return row;
+};
+const hanHas = (row, a, b) => {
+  let got = row.get(b);
+  if (got === void 0) {
+    got = coocShareHan(wById[a], wById[b]);
+    row.set(b, got);
+  }
+  return got;
+};
+```
+
+- `pairUp` 内层进 b 循环前 `const rowH = hanRow(a);`，判据 `hanHas(rowH, a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w`。
+- 项目层同款：`const rowH = hanRow(a);` + `hanHas(rowH, a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ`。
+- `const wordsArr = docs.map((d) => coocWordsOf(d).map(idOf));`；`kwDf` 按词号累加 `kwDf.set(id, (kwDf.get(id) ?? 0) + 1)`。
+- 出门换回原词，**必须 `.map`**：
+
+```js
+const words = list.slice(0, COOC_TOP_PER_TERM).map((id) => wById[id]);
+out.set(wById[a], words);
+```
+
+写成 `new Array(k)` + 逐位赋值会造 holey 数组，热路读它要做洞检查。0.6.26 也顺手删掉了已无调用点的 `const shareHan = (a, b) => hanHas(hanRow(a), a, b);`——两层都改成提行传 row，别名不再有人用。
+
+### 9.225.4 读数
+
+| 量的是什么 | 0.6.25 | 0.6.26 |
+| --- | --- | --- |
+| 共现层单独建表（隔离 A/B，15 轮交替） | 40.09ms | **29.90ms**（−25.4%） |
+| 冷建全量（21 轮交替中位） | 135.67ms | **122.81ms**（−9.5%） |
+| 剖面总采样 | 726.6ms | **679.1ms** |
+| `bumpIn` | 43.8ms | **8.3ms** |
+| `buildCoocSyn` | 87.9ms | 72.3ms |
+| 热查（单引擎分进程） | 1.851 / 1.847ms | 1.865 / 1.827ms（噪声内） |
+
+热查的坑：两个引擎的索引同时常驻、交替测会互相污染，读出来是 +11~19% 的假退化（建造顺序对调也一样）；只有单引擎、各自一个进程才准。量具：`node_modules\.tmp-diff\coocab26.mjs`（层内隔离）、`warmone26.mjs`（单引擎热查，`ENG=` 选引擎）。
+
+### 9.225.5 判据
+
+- `tools/probe-cooc.mjs` **26/26**：K9a 六处形状（词号表 / 按下标发号 / 汉字表下标数组 / 对内只认词号 / 出门换回原词 / 没有 `out.set(a,`）；K9b 键与值的每个元素都还是词、键集合与朴素尺子相同。K7b / K8b / K1–K6 全部照旧。
+- `tools/probe-cold.mjs` **9/9**、`tools/probe-lex.mjs` **6/6**（本版没碰切词与填表）。
+- `verify.mjs` OR086 六条：探针在位 / 引擎四处形状 / 进程内键值里没有词号漏出 / 同一批文档建两次逐键逐值逐序相同 / 文档在位（INTERNAL 9.225、DESIGN 221、README、PLAN）/ 版本号 ≥ 0.6.26。
+- 对拍：`colddiff26` 462 项 0 不一致、`tokdiff26` 15,810 项 0 不一致。
+
+### 9.225.6 复盘
+
+0.6.23（项目层提行）→ 0.6.25（共现内层提行）→ 0.6.26（三层表的键换整数）是同一笔钱的三截：先少回表，再让回表便宜。`bumpIn` 43.8 → 8.3ms 说明热循环里最贵的不是算术，是**键的哈希**。
+
+### 9.225.7 下一版候选
+
+- `buildSearchIndex:3583` 55.9ms：正文支路的关键词拼接与 `p.t.push` 字段位那两趟 `Set.has`（`:3542` 20.5ms）。
+- `tokenizeSegs:1703` 31.0ms：`text.normalize("NFKC")`——先扫一遍有没有可疑码点，没有就不归一。
+- `sessionTopicTerms` 58.4ms（`:2050` 21.2、`:2025` 15.9）：两趟合一。
+- `sigDocHash` 22.8ms（`:3056` 20.6）：逐条签名哈希的字段拼装。

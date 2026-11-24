@@ -405,6 +405,64 @@ const show = (m) => (m ? [...m].map(([k, v]) => k + '→' + v.join('/')).join(' 
     ok('K8b 提行之后共现表仍与朴素尺子逐键逐值逐序相同（40 组随机夹具：长表 / 重复词 / 共享汉字 / 多项目）',
       rdiff.length === 0, rdiff.length ? rdiff[0].slice(0, 300) : '40 组全同')
   }
+
+  // ── K9 共现层内部一律用整数词号（0.6.26）───────────────────────────────────────
+  // 病根：这一层原来拿词本身当键——`pairs`/`kwDf`/`hanMemo` 三层都是字符串键的 Map，
+  // 每写一对都要算一次串哈希；`hanMemo` 还是个「串→行」的两级表，等于每次判共享汉字
+  // 都要先按串找行。0.6.26 给每个词发一个整数词号，层内只认词号，出门那一刻用 `.map`
+  // 换回原词（`new Array` + 逐位赋值会造 holey 数组，热路读它要多做洞检查）。
+  // K9a 钉形状，K9b 钉「出门换回原词」这件事本身：键与值的类型、取值域都必须还是词。
+  {
+    const src = readFileSync(new URL('../vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const begin = src.indexOf('function buildCoocSyn(docs, n, opts) {')
+    const body = begin < 0 ? '' : src.slice(begin, src.indexOf('\nfunction buildCoocForms', begin))
+    const code = body.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+    const shape = {
+      wordIds: code.includes('const wid = new Map();') && code.includes('const wById = [];') &&
+        code.includes('const idOf = (w) => {'),
+      idByFirstSeen: code.includes('id = wById.length;') && code.includes('wid.set(w, id);') &&
+        code.includes('wById.push(w);'),
+      hanRowsById: code.includes('const hanMemo = [];') && code.includes('hanMemo[a] = row;') &&
+        code.includes('hanMemo.get(') === false,
+      pairKeyedByNumber: code.includes('got = coocShareHan(wById[a], wById[b]);') &&
+        code.includes('const wordsArr = docs.map((d) => coocWordsOf(d).map(idOf));'),
+      outByWord: code.includes('const words = list.slice(0, COOC_TOP_PER_TERM).map((id) => wById[id]);') &&
+        code.includes('out.set(wById[a], words);'),
+      noNumericLeak: code.includes('out.set(a, words)') === false && code.includes('out.set(a,') === false,
+    }
+    const miss = Object.keys(shape).filter((k) => !shape[k])
+
+    const docs = [
+      mk('k9a', 'pa', '苹果 香蕉 云朵 一起 出现', ['苹果', '香蕉', '云朵']),
+      mk('k9b', 'pa', '苹果 香蕉 海浪 出现', ['苹果', '香蕉', '海浪']),
+      mk('k9c', 'pa', '苹果 云朵 海浪 出现', ['苹果', '云朵', '海浪']),
+      mk('k9d', 'pb', '苹果 香蕉 云朵 一起', ['苹果', '香蕉', '云朵']),
+      mk('k9e', 'pb', '自测 自检 切片 片段', ['自测', '自检', '切片', '片段']),
+    ]
+    const table = V.buildCoocSyn(docs, docs.length)
+    const vocab = new Set()
+    for (const d of docs) { for (const w of d.keywords) vocab.add(w); for (const w of String(d.content).split(/\s+/)) if (w) vocab.add(w) }
+    const leaks = []
+    if (table instanceof Map === false) leaks.push('返回的不是 Map')
+    else {
+      for (const [k, vs] of table) {
+        if (typeof k !== 'string') leaks.push(`键不是词：${typeof k} ${String(k)}`)
+        else if (vocab.has(k) === false) leaks.push(`键不在词表里：${k}`)
+        if (Array.isArray(vs) === false) leaks.push(`值不是数组：${k}`)
+        else for (const v of vs) {
+          if (typeof v !== 'string') leaks.push(`值里漏出非词：${typeof v} ${String(v)}`)
+          else if (vocab.has(v) === false) leaks.push(`值不在词表里：${v}`)
+        }
+      }
+    }
+    const wantKeys = [...naiveCooc(docs).keys()].sort().join('|')
+    const gotKeys = table instanceof Map ? [...table.keys()].sort().join('|') : ''
+    ok('K9a 共现层内部只认整数词号：词号按首见顺序发、共享汉字表改成下标数组、出门用 .map 换回原词',
+      miss.length === 0, miss.length === 0 ? '六处形状全在' : `缺 ${miss.join(',')}`)
+    ok('K9b 出门换回原词：表的键与值的每个元素都还是词本身（没有词号漏进结果），键集合与朴素尺子相同',
+      leaks.length === 0 && gotKeys === wantKeys,
+      leaks.length ? leaks[0] : `键 ${table.size} 个 · 与尺子同集 ${gotKeys === wantKeys}`)
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

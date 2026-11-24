@@ -10,8 +10,8 @@
 
 | 项 | 读数 | 日期 | 版本 / commit | 复核命令 |
 |---|---|---|---|---|
-| 健康基线 | 50 支 suite / **3,837 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 13:2x | 0.6.25 | `node tools/check-all.mjs` |
-| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 13:2x | 0.6.25 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
+| 健康基线 | 50 支 suite / **3,845 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 14:0x | 0.6.26 | `node tools/check-all.mjs` |
+| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 14:0x | 0.6.26 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
 | 库变大后的照抄召回（新尺子） | 同一批 52 问、真库快照 660 条 active：照抄 **hit@1 0.895 → 0.921**、MRR 0.934 → 0.947；换说法 **0.333 → 0.417**、MRR 0.528 → 0.569；时间锚 0.500 不动；**救回 2 / 误伤 0 / 移位 0**（逐题只有两条 #2→#1）。关掉即回 0.5.0 逐位相同（52/52）。同尺横比 v0.3.0 / v0.4.0 / v0.5.0 三档逐位相同、只有本节双升 | 2026-11-23 22:00 | 0.6.0 · meow 补丁（局部 idf，`adaptiveIdf` 产品路径默认开） | `node tools/probe-idf.mjs`（D1–D12 十四条；读数见 `docs/PLAN-0.6.md` §1） |
 | 换场景适应力（新尺子） | 5 个陌生领域（医学/法律/园艺/天文/财务）× 12 条 + 10 条换说法问句：换说法 **hit@3 0.40 → 0.80**、hit@1 0.00 不动、MRR 0.342；两遍合并**第一名改判 0 题**；关共现自学习 hit@3 掉回 0.30；混库 60 条与单域持平；同词 hit@1 100% | 2026-11-22 22:40 | 0.5.0 · meow 补丁 `[macro-fusion 0.5.0 · P1]` | `node tools/probe-adapt.mjs`（A0–A5 九条） |
 | 版本与接口面 | 0.3.0，接口面冻结 | 2026-11-22 | `2c029b0`（`chore(baselines): 0.3.0 · 24 suites / 3323 assertions`） | `git log --oneline -1` |
@@ -271,3 +271,17 @@ Select-String -Path README.md,docs\*.md -Pattern "71\.95|0\.7195"
   - 老判据跟着源码换字面量、**条数不变**的三处：`OR082` 的 `plainToks就地`（`finishToks(ts.concat(cs))` → `finishToks(ts);` + 就地 push）、`OR084` 的 `切词不再造字符数组`（`out.push(prev + cur);` → `out.push(s.slice(ps, k + w));`）、`WZ2`（`plainToks[i] = kwSep ? … : finishToks(ts.concat(cs, …));` → `if (kwSep) {` + `plainToks[i] = finishToks(ts);`）；`检索自答` 那条同样只换字面量（`latin * 2 >= tokens.length` → `if (latin * 2 >= ln) return true;`、`/^[a-z]+$/.test(t)` → `if (c < 97 || c > 122) return false;`）。
 - 套件 **50 支不变**（`SUITE_FLOOR` 50，`NO_ROOT` 不加新文件——K8 加在已有的 `tools/probe-cooc.mjs`、C8 加在已有的 `tools/probe-cold.mjs` 里）。
 - 语义兜底：这一版**没有改任何判据的语义**——四条引擎改动（共现内层提行 / 二元组连续切片 / 拉丁判据按码点判 + 过半早退 / 标题集先取 + 词表就地接正文）由三把尺子同时兜住：`probe-cold` C8（正则版 `refMostly` 当尺子，261 例）、`probe-cooc` K8b（40 组 seeded 随机夹具与 `naiveCooc` 逐键逐值逐序相同）、`colddiff25.mjs` + `tokdiff25.mjs`（0.6.24 引擎 vs 0.6.25 引擎：全字段 **462 项 0 mismatch**、切词链 **15,810 项 0 mismatch**）。**K8b 首红不是引擎变慢**：`E:\Temp\cmp\k8dbg.mjs` 三方对拍给出 `{"fixtures":40,"oldNewDiff":0}` / `{"naiveDiffOld":39,"naiveDiffNew":39}`——新旧引擎 40/40 逐位相同，而朴素尺子对**两个**引擎各差 39/40，差异只表现为同分并列的先后，根因是尺子没过引擎那层 keyword 去重；夹具每条 keywords 先去重之后 40/40 全同。**尺子的口径缺口要修在尺子上，不许拿它当引擎的红**。
+
+### 关于「3,845」的来路
+
+从 0.6.25 的 3,837 到 3,845，净 +8，全部是可执行断言，没有一条是「文档里写了个数」：
+
+- `tools/probe-cooc.mjs` **+2**：K9a（共现层只认词号的六处形状）、K9b（出门换回原词：表的键与值的每个元素都还是词本身，键集合与朴素尺子相同）。
+- `verify.mjs` **+6**：`OR086` 六条——探针在位 / 引擎四处形状 / 进程内键值里没有词号漏出来 / 同一批文档建两次逐键逐值逐序相同 / 文档在位（INTERNAL 9.225、DESIGN 221、README、PLAN）/ 版本号 ≥ 0.6.26。
+
+跟着源码换字面量、条数不变的老判据（换的是形状，不是口径）：
+
+- `verify.mjs` 的「as: 三道门各在位」与 `OR084` 附近的 `汉字判据按词对记忆` / `两层走同一闭包`：`const hanMemo = new Map();` → `const hanMemo = [];`、`coocShareHan(a, b)` → `coocShareHan(wById[a], wById[b])`、`shareHan(a, b)` → `hanHas(rowH, a, b)`，条数不变。
+- `词表只解一遍`：`docs.map((d) => coocWordsOf(d))` → `docs.map((d) => coocWordsOf(d).map(idOf))`，`coocWordsOf(` 仍只出现一次。
+
+本版没有新增探针文件，也没有删探针；支数仍是 **50**。质量口径与上一版逐位相同：`colddiff26` 462 项 0 不一致、`tokdiff26` 15,810 项 0 不一致。

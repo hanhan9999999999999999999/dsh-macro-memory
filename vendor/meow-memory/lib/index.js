@@ -3304,16 +3304,35 @@ function buildCoocSyn(docs, n, opts) {
   // [macro-fusion 0.6.23] 「共享汉字」按词对只算一次：同一个词对在项目层会被访问上万次
   // （每个同项目文档都要为它重跑两条正则 + 逐字符包含），而它只由 (a, b) 决定、且是对称的。
   // 记忆表只存布尔，「降权值」仍由调用点的基数决定（同条层 2、项目层 1），所以两层的打分不变。
-  const hanMemo = new Map();
-  const shareHan = (a, b) => {
-    let row = hanMemo.get(a);
+  // [macro-fusion 0.6.26] 这一层内部的键一律换成整数词号：同一个词对要回表上万次，字符串键每次
+  // 都得按内容哈希一遍，而词号是整数，Map 直接按数值取。词号按「第一次出现」的顺序发（遍历顺序
+  // 与老写法一致），输出那一刻再换回原词，所以键的插入序与老写法逐位相同。
+  const wid = new Map();
+  const wById = [];
+  const idOf = (w) => {
+    let id = wid.get(w);
+    if (id === void 0) {
+      id = wById.length;
+      wid.set(w, id);
+      wById.push(w);
+    }
+    return id;
+  };
+  // 共享汉字记忆表：a 那一行在一整圈内层循环里被查上千次，回表只该回一次（0.6.23 的按词记忆、
+  // 0.6.26 的按行提表，防的是同一笔钱的两截）。
+  const hanMemo = [];
+  const hanRow = (a) => {
+    let row = hanMemo[a];
     if (row === void 0) {
       row = /* @__PURE__ */ new Map();
-      hanMemo.set(a, row);
+      hanMemo[a] = row;
     }
+    return row;
+  };
+  const hanHas = (row, a, b) => {
     let got = row.get(b);
     if (got === void 0) {
-      got = coocShareHan(a, b);
+      got = coocShareHan(wById[a], wById[b]);
       row.set(b, got);
     }
     return got;
@@ -3331,10 +3350,11 @@ function buildCoocSyn(docs, n, opts) {
       // （与 0.6.23 项目层内层提行同一个道理，只是这一层当时漏了）。建行时机不变——
       // 第一次真要写这一行时才建，所以键的插入序与老写法逐位相同。
       let rowA = pairs.get(a);
+      const rowH = hanRow(a);
       for (let j = i + 1; j < ln; j++) {
         const b = list[j];
         if (a === b) continue;
-        const ww = shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w;
+        const ww = hanHas(rowH, a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w;
         if (rowA === void 0) {
           rowA = /* @__PURE__ */ new Map([[b, ww]]);
           pairs.set(a, rowA);
@@ -3347,11 +3367,14 @@ function buildCoocSyn(docs, n, opts) {
   // 表里一律存原词（不切碎）：语义与「每词几个邻居」的名额都靠原词撑住，碎片桥在查表时补（buildCoocForms）。
   // [macro-fusion 0.6.23] 每条的词表只解一遍：原来同条层与项目层各调一次 coocWordsOf，
   // 真库里 keywords 是逗号串 / JSON 串时等于把同一份字符串解析两遍。
-  const wordsArr = docs.map((d) => coocWordsOf(d));
+  const wordsArr = docs.map((d) => coocWordsOf(d).map(idOf));
   for (let i = 0; i < docs.length; i++) {
     const words = wordsArr[i];
     if (words.length === 0) continue;
-    for (const w of words) kwDf.set(w, (kwDf.get(w) ?? 0) + 1);
+    for (let k = 0; k < words.length; k++) {
+      const id = words[k];
+      kwDf.set(id, (kwDf.get(id) ?? 0) + 1);
+    }
     pairUp(words, COOC_W_SAME);
   }
   const byProject = new Map();
@@ -3376,8 +3399,9 @@ function buildCoocSyn(docs, n, opts) {
         // 回表取行只该取一次；对称的那一行（b）每次都不同，照旧回表。
         // 建行的时机不变（第一次真要写这一行时才建），所以键的插入序与老写法逐位相同。
         let rowA = projPairs.get(a);
+        const rowH = hanRow(a);
         for (const b of others) {
-          const ww = shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
+          const ww = hanHas(rowH, a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
           if (rowA === void 0) {
             rowA = /* @__PURE__ */ new Map([[b, ww]]);
             projPairs.set(a, rowA);
@@ -3416,7 +3440,10 @@ function buildCoocSyn(docs, n, opts) {
       seen.add(w);
       list.push(w);
     }
-    out.set(a, list.slice(0, COOC_TOP_PER_TERM));
+    // 出门这一刻才换回原词：外面看到的仍是一张「词 → 桥词数组」的表，一模一样。
+    // 用 map 而不是 new Array + 逐位赋值——后者出来的是 holey 数组，热路读它要多做一次洞检查。
+    const words = list.slice(0, COOC_TOP_PER_TERM).map((id) => wById[id]);
+    out.set(wById[a], words);
   }
   return out.size > 0 ? out : null;
 }

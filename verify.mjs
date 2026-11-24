@@ -4285,11 +4285,12 @@ function makeHostCtx() {
     'as: 三道门各在位：次数不够丢、条件概率太低丢、共享汉字降权',
     fMeowSrc.includes('if (c < COOC_MIN_COUNT) continue;') &&
       fMeowSrc.includes('if (ratio < COOC_MIN_RATIO) continue;') &&
-      // [0.6.23] 共享汉字判据按词对记忆一次（hanMemo）：两层都走闭包 shareHan，降权基数各由调用点给
-      fMeowSrc.includes('const hanMemo = new Map();') &&
-      fMeowSrc.includes('got = coocShareHan(a, b);') &&
-      fMeowSrc.includes('shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w') &&
-      fMeowSrc.includes('shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ'),
+      // [0.6.23] 共享汉字判据按词对记忆一次（hanMemo）；[0.6.26] 记忆表换成词号下标数组、
+      // 两层都在进入 b 循环前把 a 那一行提到外面（hanRow / hanHas），降权基数仍由调用点给
+      fMeowSrc.includes('const hanMemo = [];') &&
+      fMeowSrc.includes('got = coocShareHan(wById[a], wById[b]);') &&
+      fMeowSrc.includes('hanHas(rowH, a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w') &&
+      fMeowSrc.includes('hanHas(rowH, a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ'),
     'gates',
   )
   check(
@@ -14108,10 +14109,10 @@ dt063: {
     return a < 0 ? '' : ENGINE_D.slice(a, ENGINE_D.indexOf('\nfunction recencyWeight', a))
   })()
   const partsD = {
-    汉字判据按词对记忆: coocD.includes('const hanMemo = new Map();') && coocD.includes('got = coocShareHan(a, b);'),
-    两层走同一闭包: coocD.includes('shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w') &&
-      coocD.includes('shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ'),
-    词表只解一遍: coocD.includes('const wordsArr = docs.map((d) => coocWordsOf(d));') &&
+    汉字判据按词对记忆: coocD.includes('const hanMemo = [];') && coocD.includes('got = coocShareHan(wById[a], wById[b]);'),
+    两层走同一闭包: coocD.includes('hanHas(rowH, a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w') &&
+      coocD.includes('hanHas(rowH, a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ'),
+    词表只解一遍: coocD.includes('const wordsArr = docs.map((d) => coocWordsOf(d).map(idOf));') &&
       (coocD.match(/coocWordsOf\(/g) ?? []).length === 1,
     项目层提行: coocD.includes('let rowA = projPairs.get(a);') &&
       coocD.includes('} else rowA.set(b, (rowA.get(b) ?? 0) + ww);') &&
@@ -14455,6 +14456,88 @@ dt063: {
   const vS16 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS16 = vS16.length === 3 ? vS16[0] * 10000 + vS16[1] * 100 + vS16[2] : 0
   check('OR085 版本号不低于 0.6.25（后续补丁不必回头改这一条）', vNumS16 >= 625, vS16.join('.'))
+}
+
+// 0.6.26：共现层内部一律用整数词号，词号出不了这一层（见 INTERNAL 9.225 / DESIGN 221）。
+{
+  const MvS = await import('./vendor/meow-memory/lib/index.js')
+  const ENGS = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const PROBE_COOC_S = readFileSync(new URL('./tools/probe-cooc.mjs', import.meta.url), 'utf8')
+  const CHECK_ALL_S = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8')
+  const sLabels = PROBE_COOC_S.includes('K9a ') && PROBE_COOC_S.includes('K9b ')
+  check(
+    'OR086 探针在位：probe-cooc 的 K9（层内只认词号 + 出门换回原词），同支挂线',
+    sLabels && CHECK_ALL_S.includes("'tools/probe-cooc.mjs'"),
+    `标签 ${sLabels}`,
+  )
+
+  const stripS = (s) => s.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+  const coocAt = ENGS.indexOf('function buildCoocSyn(docs, n, opts) {')
+  const coocCode = coocAt < 0 ? '' : stripS(ENGS.slice(coocAt, ENGS.indexOf('\nfunction buildCoocForms', coocAt)))
+  const shapeS = {
+    词号表: coocCode.includes('const wid = new Map();') && coocCode.includes('const wById = [];') &&
+      coocCode.includes('const idOf = (w) => {') && coocCode.includes('wById.push(w);'),
+    汉字表按下标: coocCode.includes('const hanMemo = [];') && coocCode.includes('hanMemo[a] = row;') &&
+      coocCode.includes('hanMemo.get(') === false,
+    对内只认词号: coocCode.includes('got = coocShareHan(wById[a], wById[b]);') &&
+      coocCode.includes('const wordsArr = docs.map((d) => coocWordsOf(d).map(idOf));') &&
+      coocCode.includes('kwDf.set(id, (kwDf.get(id) ?? 0) + 1);'),
+    出门换回原词: coocCode.includes('const words = list.slice(0, COOC_TOP_PER_TERM).map((id) => wById[id]);') &&
+      coocCode.includes('out.set(wById[a], words);') && coocCode.includes('out.set(a,') === false,
+  }
+  const missS = Object.keys(shapeS).filter((k) => !shapeS[k])
+  check('OR086 引擎里共现层只认词号：按首见顺序发号、共享汉字表改下标数组、层内键全是词号、出门用 .map 换回原词',
+    missS.length === 0, missS.length === 0 ? '四处形状全在' : `缺 ${missS.join(',')}`)
+
+  const sd = [
+    { id: 'o1', project: 'pa', title: '', content: '苹果 香蕉 云朵 一起 出现', keywords: ['苹果', '香蕉', '云朵'] },
+    { id: 'o2', project: 'pa', title: '', content: '苹果 香蕉 海浪 出现', keywords: ['苹果', '香蕉', '海浪'] },
+    { id: 'o3', project: 'pa', title: '', content: '苹果 云朵 海浪 出现', keywords: ['苹果', '云朵', '海浪'] },
+    { id: 'o4', project: 'pb', title: '', content: '苹果 香蕉 云朵 一起', keywords: ['苹果', '香蕉', '云朵'] },
+    { id: 'o5', project: 'pb', title: '', content: '自测 自检 切片 片段', keywords: ['自测', '自检', '切片', '片段'] },
+  ].map((d) => ({ ...d, level: 'fact', importance: 1, created_at: '2026-11-20T00:00:00Z',
+    updated_at: '2026-11-20T00:00:00Z', last_accessed_at: '2026-11-20T00:00:00Z', status: 'active' }))
+  let pureOk = false
+  let pureDetail = ''
+  try {
+    const tb = MvS.buildCoocSyn(sd, sd.length)
+    const vocab = new Set()
+    for (const d of sd) { for (const w of d.keywords) vocab.add(w); for (const w of String(d.content).split(/\s+/)) if (w) vocab.add(w) }
+    const leaks = []
+    for (const [k, vs] of tb) {
+      if (typeof k !== 'string' || vocab.has(k) === false) leaks.push(`键 ${typeof k} ${k}`)
+      for (const v of vs ?? []) if (typeof v !== 'string' || vocab.has(v) === false) leaks.push(`值 ${typeof v} ${v}`)
+    }
+    pureOk = leaks.length === 0 && tb.size > 0
+    pureDetail = leaks.length ? leaks[0] : `${tb.size} 个键 · 键值全是词`
+  } catch (e) {
+    pureDetail = String(e && e.message)
+  }
+  check('OR086 进程内：共现表的键与值里没有词号漏出来（层内整数、层外一律还是词本身）', pureOk, pureDetail)
+
+  let sameOk = false
+  let sameDetail = ''
+  try {
+    const dumpS = (m) => JSON.stringify([...m].map(([k, vs]) => [k, vs]))
+    const a = dumpS(MvS.buildCoocSyn(sd, sd.length))
+    const b = dumpS(MvS.buildCoocSyn(sd, sd.length))
+    sameOk = a === b && a.length > 2
+    sameDetail = sameOk ? `两次建表逐键逐值逐序相同（${a.length} 字符）` : '两次建表不同'
+  } catch (e) {
+    sameDetail = String(e && e.message)
+  }
+  check('OR086 进程内：同一批文档建两次共现表，键序与值序逐位相同（词号按首见顺序发，不受哈希顺序影响）', sameOk, sameDetail)
+
+  check(
+    'OR086 文档在位：INTERNAL 9.225 写了「层内只认词号」，README 写了「共现层内部只认词号」，DESIGN 有 ## 221.，PLAN 有 0.6.26',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.225 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('共现层内部只认词号') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 221. ') &&
+      /0\.6\.26/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS17 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS17 = vS17.length === 3 ? vS17[0] * 10000 + vS17[1] * 100 + vS17[2] : 0
+  check('OR086 版本号不低于 0.6.26（后续补丁不必回头改这一条）', vNumS17 >= 626, vS17.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
