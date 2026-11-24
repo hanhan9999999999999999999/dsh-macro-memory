@@ -7615,3 +7615,55 @@ function indexSignature(docs) {
 
 踩坑：①R2 第一次红是**测量顺序**不是口径——两条路共用一批文档对象时，先跑的那条会把条级缓存填满，后跑的自然是全 `reused`，两路必须各用一份互不相干的同形库；②`sigDocOfRow` 第一版用 `e.id === d?.id` 逐项比，`d` 是 `null` / 字符串 / 数字时全部字段都 `undefined` 且相等，会把两条脏值认成同一条——补上 `d !== null && typeof d === 'object'` 这一道门；③`indexSignature` 换下标循环之后，`docs.length` 必须只取一次（`const n = docs.length;`），旧写法在循环里读 `docs.length`，遇到边算边改数组的调用方会读到中间态。
 
+
+## 216. 词法分类不再逐字符跑正则：BMP 表 + 惰性建一次（0.6.21）
+
+0.6.20 把签名校验换成对齐行缓存之后，`--cpu-prof` 的行视图（`E:\Temp\cmp\profline.mjs`，输入 `E:\Temp\cmp\prof20c\CPU.20261124.095937.14676.0.001.cpuprofile`，10,000 条 / 300 问，总采样 1,433.5ms）把第一名指到了 `classify`：
+
+| 行 | 自证 | 干什么 |
+| --- | --- | --- |
+| `vendor/meow-memory/lib/index.js:1631` | **71.4ms / 5.0%** | `if (CJK.test(cp)) return "cjk";` |
+| `vendor/meow-memory/lib/index.js:1632` | **16.2ms / 1.1%** | `if (WORD.test(cp)) return "word";` |
+
+函数合计 **88.7ms / 6.2%**。它每调一次就过两道 Unicode 属性正则（`\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3005\u30fc` 与 `\p{L}\p{N}`），而 `tokenize` 对每个码点都要问一次、每段还要再问一次边界——建库时一万条正文、每问若干次，过的全是同一批码点。分类结果只由码点决定，这是纯查表问题，却在热路上反复跑正则引擎。
+
+旧码（0.6.20）：
+
+```js
+var CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3005\u30fc]/u;
+var WORD = /[\p{L}\p{N}]/u;
+function classify(cp) {
+  if (CJK.test(cp)) return "cjk";
+  if (WORD.test(cp)) return "word";
+  return "skip";
+}
+```
+
+处方两条，口径一字不改：
+
+1. **BMP 表**：`CLS_SKIP = 0` / `CLS_CJK = 1` / `CLS_WORD = 2`，`buildClsBmp()` 把 0x0000–0xFFFF 拼成一个大串（65,536 个码点），再用**那两条正则自己**扫出连续段填进 `new Uint8Array(65536)`：先 `new RegExp(CJK.source + "+", "gu")` 填 1，再 `WORD.source + "+"` 只补还是 `CLS_SKIP` 的格子——**语义等价是构造出来的，不是手抄区间猜出来的**。
+2. **惰性建一次**：`var clsBmp = null;`，`clsCode(cp)` 里 `cp.length === 1` 才查表（`t[cp.charCodeAt(0)]`），星外码点（`cp.length === 2`）与孤立代理项照旧走 `CJK.test` / `WORD.test`；表在第一次分类时才建，一次 64KB、实测 **3.5ms**，此后一次下标取数。
+
+```js
+function clsCode(cp) {
+  if (cp.length === 1) {
+    var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;
+    return t[cp.charCodeAt(0)];
+  }
+  if (CJK.test(cp)) return CLS_CJK;
+  if (WORD.test(cp)) return CLS_WORD;
+  return CLS_SKIP;
+}
+```
+
+`tokenize` 改吃数值（`cls === CLS_SKIP` / `cls === CLS_CJK`、`while (j < nCp && clsCode(cps[j]) === cls) j++`），不再比字符串；`classify(cp)` 留成 `'cjk'/'word'/'skip'` 的字符串包装，对外名一个字没改。
+
+三条不许省的：
+
+- **表必须由正则扫出来**：手抄 Han/Hiragana/Katakana 区间看着简单，但 `\u3005`（々）与 `\u30fc`（ー）是 Common 脚本，`\p{L}` 又收了一堆符号外的字母——抄漏一个就是切词变化，而这种错不会报错，只会悄悄改变召回。
+- **优先级照旧**：先 cjk 后 word，word 只补空格（同属两者的码点必须归 cjk）。
+- **星外不许进表**：`Uint8Array(65536)` 只有 BMP，`cp.length === 2` 的形状必须原路返回，否则代理对会被拆成两个半个码点。
+
+读数（10,000 条 / 300 问，三次取中位）：`search` **2.04 → 2.00ms（−2.1%；相对 0.6.12 的 27.377ms 累计 −92.7%）**、`searchAdaptive` **2.59 → 2.53ms（−2.5%）**、**冷建 292 → 233.5ms（−20%）**（tokenize 的大头在冷建）、总采样 **1,433.5 → 1,337.0ms（−6.7%）**，`classify` 从前 20 名掉出去。
+
+踩坑：①这一刀真正的收益在**冷建**不在热问——热问每问只切几个短句，省下的 88.7ms 摊在 300 问里看不见；读数要同时看 `coldMs`，否则会误判「改了没用」。②`buildClsBmp()` 里那个大串必须用 `String.fromCharCode` 逐个数拼成 6.5 万个码点（`String.fromCodePoint` 会产出代理对，破坏了「一个下标一个码点」的对齐）。③判据不能只测几个样本：`probe-lex` 的 L1 把全 1,112,064 个码点逐点与旧正则对拍，一次跑完约 1.5s，比任何抽样都便宜。

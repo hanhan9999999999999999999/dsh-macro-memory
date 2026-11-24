@@ -1627,10 +1627,40 @@ import { dirname as dirname5, join as join6 } from "node:path";
 // src/bm25.ts
 var CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3005\u30fc]/u;
 var WORD = /[\p{L}\p{N}]/u;
+// [macro-fusion 0.6.21] 词法分类不再逐字符跑两条 Unicode 正则。
+// 病根：tokenize 每遇到一个码点就调一次 classify，classify 里先 CJK.test(cp) 再 WORD.test(cp)——
+// 两条 Unicode 属性正则的入口开销（每次 ~0.6µs）乘上「一万条正文 × 每条 30 字 × 每问 300 问」，
+// 在 --cpu-prof 里 classify 88.7ms / 6.2%（行视图 line 1631 独占 71.4ms）。
+// 处方：BMP（0x0000–0xFFFF）造一张 64KB 的字节表，0=skip / 1=cjk / 2=word，首次非 ASCII
+// 分类时才建（惰性），此后一次下标取数代替两条正则；星外码点与孤立代理项仍走原正则。
+// 表由这两条正则自己扫出来，不是手抄区间 —— 语义等价是构造出来的，不是猜出来的。
+var CLS_SKIP = 0;
+var CLS_CJK = 1;
+var CLS_WORD = 2;
+var clsBmp = null;
+function buildClsBmp() {
+  var t = new Uint8Array(65536);
+  var s = "";
+  for (var c = 0; c < 65536; c += 1) s += String.fromCharCode(c);
+  for (var run of s.matchAll(new RegExp(CJK.source + "+", "gu"))) t.fill(CLS_CJK, run.index, run.index + run[0].length);
+  for (var run2 of s.matchAll(new RegExp(WORD.source + "+", "gu"))) {
+    var end = run2.index + run2[0].length;
+    for (var k = run2.index; k < end; k += 1) if (t[k] === CLS_SKIP) t[k] = CLS_WORD;
+  }
+  return t;
+}
+function clsCode(cp) {
+  if (cp.length === 1) {
+    var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;
+    return t[cp.charCodeAt(0)];
+  }
+  if (CJK.test(cp)) return CLS_CJK;
+  if (WORD.test(cp)) return CLS_WORD;
+  return CLS_SKIP;
+}
 function classify(cp) {
-  if (CJK.test(cp)) return "cjk";
-  if (WORD.test(cp)) return "word";
-  return "skip";
+  var k = clsCode(cp);
+  return k === CLS_CJK ? "cjk" : k === CLS_WORD ? "word" : "skip";
 }
 // [macro-fusion 0.2.119] 词法归一的开关以前挂在「会话提示词语言」上：只有 promptLang 是 en 时
 // 才走 normalizeEn（英文停用词 + Porter 词干）。而 DEFAULT_LANG 就是 zh —— 于是中文用户存下的
@@ -1647,17 +1677,18 @@ function isMostlyLatin(tokens) {
 function tokenize(text) {
   const cps = Array.from(text.normalize("NFKC"));
   const out = [];
+  const nCp = cps.length;
   let i = 0;
-  while (i < cps.length) {
-    const cls = classify(cps[i]);
-    if (cls === "skip") {
+  while (i < nCp) {
+    const cls = clsCode(cps[i]);
+    if (cls === CLS_SKIP) {
       i++;
       continue;
     }
     let j = i + 1;
-    while (j < cps.length && classify(cps[j]) === cls) j++;
+    while (j < nCp && clsCode(cps[j]) === cls) j++;
     const run = cps.slice(i, j);
-    if (cls === "cjk") {
+    if (cls === CLS_CJK) {
       if (run.length >= 2) {
         for (let k = 0; k + 1 < run.length; k++) out.push(run[k] + run[k + 1]);
       }

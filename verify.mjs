@@ -37,8 +37,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
 // 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）；
-// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）；0.6.20 起 = 48（加 probe-sigrow）。
-const SUITE_FLOOR = 48
+// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）；0.6.20 起 = 48（加 probe-sigrow）；0.6.21 起 = 49（加 probe-lex）。
+const SUITE_FLOOR = 49
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -951,6 +951,7 @@ function makeHostCtx() {
     'tools/probe-cand.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.18），不拼仓内路径',
     'tools/probe-band.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.19），不拼仓内路径',
   'tools/probe-sigrow.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.20），不拼仓内路径',
+  'tools/probe-lex.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.21），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -13845,7 +13846,125 @@ dt063: {
   check('OR080 版本号不低于 0.6.20（后续补丁不必回头改这一条）', vNumS11 >= 620, vS11.join('.'))
 }
 
+// 0.6.21：词法分类不再逐字符跑两条 Unicode 正则（BMP 表，见 INTERNAL 9.220 / DESIGN 216）。
+{
+  const lSrc = readFileSync(new URL('./tools/probe-lex.mjs', import.meta.url), 'utf8')
+  const lWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-lex.mjs'")
+  const lExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-lex.mjs'")
+  const lLabels = ['L0 形状', 'L1 全码点', 'L2 表本身', 'L3 切段', 'L4 惰性', 'L5 退化'].every((t) => lSrc.includes(t))
+  check(
+    'OR081 词法探针 L0–L5 在位（形状 / 全码点逐点相同 / 表本身逐格相同 / 切段逐串相同 / 惰性只建一次 / 退化），check-all 挂线且列进取根例外',
+    lLabels && lWired && lExcused,
+    `标签 ${lLabels} / 挂线 ${lWired} / 取根例外 ${lExcused}`,
+  )
+
+  const ENGINE_L = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const tokBodyL = (() => {
+    const a = ENGINE_L.indexOf('function tokenize(text) {')
+    return a < 0 ? '' : ENGINE_L.slice(a, ENGINE_L.indexOf('\n}\n', a))
+  })()
+  const partsL = {
+    三档常量: ENGINE_L.includes('var CLS_SKIP = 0;') && ENGINE_L.includes('var CLS_CJK = 1;') && ENGINE_L.includes('var CLS_WORD = 2;'),
+    惰性槽: ENGINE_L.includes('var clsBmp = null;'),
+    建表: ENGINE_L.includes('var t = new Uint8Array(65536);') && ENGINE_L.includes('var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;'),
+    表由正则扫出: ENGINE_L.includes('new RegExp(CJK.source + "+", "gu")') && ENGINE_L.includes('new RegExp(WORD.source + "+", "gu")'),
+    只补空格: ENGINE_L.includes('if (t[k] === CLS_SKIP) t[k] = CLS_WORD;'),
+    单码点快路: ENGINE_L.includes('if (cp.length === 1) {') && ENGINE_L.includes('return t[cp.charCodeAt(0)];'),
+    星外退路: ENGINE_L.includes('if (CJK.test(cp)) return CLS_CJK;') && ENGINE_L.includes('if (WORD.test(cp)) return CLS_WORD;'),
+    包装仍在: /function classify\(cp\) \{\n {2}var k = clsCode\(cp\);/.test(ENGINE_L),
+    切段数值比较: tokBodyL.includes('const cls = clsCode(cps[i]);') && tokBodyL.includes('if (cls === CLS_SKIP) {') &&
+      tokBodyL.includes('while (j < nCp && clsCode(cps[j]) === cls) j++;') && tokBodyL.includes('if (cls === CLS_CJK) {'),
+    不再走字符串: tokBodyL !== '' && tokBodyL.includes('classify(') === false,
+  }
+  const missL = Object.keys(partsL).filter((k) => !partsL[k])
+  check(
+    'OR081 引擎里词法分类换成 BMP 表：表由那两条正则自己扫出来（不是手抄区间）、惰性建一次、单码点走下标 + 星外码点走原正则、tokenize 改数值比较不再调 classify',
+    missL.length === 0,
+    missL.length === 0 ? `${Object.keys(partsL).length} 件在位` : `缺 ${missL.join(' / ')}`,
+  )
+
+  // 把 0.6.21 那一段切出来当纯函数跑：全码点逐点与旧正则对拍
+  const segL = (() => {
+    const a = ENGINE_L.indexOf('var CJK = ')
+    const b = ENGINE_L.indexOf('function tokenize(text) {')
+    return a >= 0 && b > a ? ENGINE_L.slice(a, b) : ''
+  })()
+  const CJK_REF = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3005\u30fc]/u
+  const WORD_REF = /[\p{L}\p{N}]/u
+  const refClassify = (cp) => (CJK_REF.test(cp) ? 'cjk' : WORD_REF.test(cp) ? 'word' : 'skip')
+  let cpOk = false
+  let cpDetail = ''
+  try {
+    const M6 = new Function(`${segL}\nreturn { classify, clsCode, CLS_CJK, CLS_WORD, CLS_SKIP };`)()
+    let mism = 0
+    let n = 0
+    let first = ''
+    for (let c = 0; c <= 0x10ffff; c += 1) {
+      if (c >= 0xd800 && c <= 0xdfff) continue
+      const ch = String.fromCodePoint(c)
+      n += 1
+      const a = refClassify(ch)
+      const b = M6.classify(ch)
+      if (a !== b) {
+        mism += 1
+        if (first === '') first = `U+${c.toString(16).toUpperCase()} ${a}≠${b}`
+      }
+    }
+    cpOk = mism === 0 && n === 1112064
+    cpDetail = mism === 0 ? `${n.toLocaleString('en-US')} 码点 · 0 不一致` : `${mism} 不一致 · 首例 ${first}`
+  } catch (e) {
+    cpDetail = String(e && e.message)
+  }
+  check('OR081 进程内：0x0000–0x10FFFF 全 1,112,064 个码点的分类与旧正则逐点相同', cpOk, cpDetail)
+
+  let segOk = false
+  let segDetail = ''
+  try {
+    const M7 = new Function(`${segL}\nreturn { classify };`)()
+    const segsOf = (text, cls) => {
+      const cps = Array.from(text.normalize('NFKC'))
+      const out = []
+      let i = 0
+      while (i < cps.length) {
+        const c = cls(cps[i])
+        if (c === 'skip') {
+          i += 1
+          continue
+        }
+        let j = i + 1
+        while (j < cps.length && cls(cps[j]) === c) j += 1
+        const run = cps.slice(i, j)
+        if (c === 'cjk') {
+          if (run.length >= 2) for (let k = 0; k + 1 < run.length; k += 1) out.push(run[k] + run[k + 1])
+        } else out.push(run.join('').toLowerCase())
+        i = j
+      }
+      return out
+    }
+    const corpus = ['记忆管理插件的性能优化：把 n-gram 共现换成倒排索引', 'Hello, World! 你好世界。 ＡＢＣ１２３（全角） ﾊﾝｶｸ', '読み 々 ー ｶﾀｶﾅ 한국어', '𠀋𠮷 astral 文字', '😀🎉 emoji', '', '中', '中a中', '\uD800\uDC00\uDFFF\uD800a']
+    let bad = 0
+    for (const s of corpus) if (JSON.stringify(segsOf(s, refClassify)) !== JSON.stringify(segsOf(s, M7.classify))) bad += 1
+    segOk = bad === 0
+    segDetail = `${corpus.length} 串 · 不一致 ${bad}`
+  } catch (e) {
+    segDetail = String(e && e.message)
+  }
+  check('OR081 进程内：切段（二元组 / 整词小写 / 跳过）与旧分类逐串相同，含全角、半角片假名、々ー、星外字、孤立代理项', segOk, segDetail)
+
+  check(
+    'OR081 文档在位：INTERNAL 9.220 写了「词法分类」，README 写了「词法分类不再逐字符跑正则」，DESIGN 有 ## 216.，PLAN 有 0.6.21',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.220 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('词法分类不再逐字符跑正则') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 216. ') &&
+      /0\.6\.21/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS12 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS12 = vS12.length === 3 ? vS12[0] * 10000 + vS12[1] * 100 + vS12[2] : 0
+  check('OR081 版本号不低于 0.6.21（后续补丁不必回头改这一条）', vNumS12 >= 621, vS12.join('.'))
+}
+
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
+
 {
   const baseTail = JSON.parse(readFileSync(new URL('./tools/baselines.json', import.meta.url), 'utf8'))
   const others = Object.entries(baseTail.counts)

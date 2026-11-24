@@ -12504,3 +12504,95 @@ function indexSignature(docs) {
 - **`indexSignature` 116.3ms / 8.1%**：行缓存之后剩下的就是「按下标逐字段比」本身，要再降只能减少每条的字段数（会撞签名，暂不动）。
 - **`scoreCandSet` 114.9ms / 8.0%**、`classify` 88.7 / 6.2%、`sessionTopicTerms` 50.2 / 3.5%、GC 75.4 / 5.3%。
 
+
+## 9.220 词法分类不再逐字符跑正则：BMP 表 + 惰性建一次（0.6.21）
+
+### 9.220.1 症状
+
+0.6.20 发版后重跑 `--cpu-prof`（10,000 条 / 300 问，`E:\Temp\cmp\prof012b.mjs`，单次 2.04ms，`E:\Temp\cmp\prof20c\CPU.20261124.095937.14676.0.001.cpuprofile`，总采样 **1,433.5ms**）：函数级榜首是 `search` 216.1ms / 15.1%，但按行摊开（`E:\Temp\cmp\profline.mjs`），最贵的单行不在 `search` 里，而在 `classify`：
+
+| 位置 | 自证 | 内容 |
+| --- | --- | --- |
+| `vendor/meow-memory/lib/index.js:1631` | **71.4ms / 5.0%** | `if (CJK.test(cp)) return "cjk";` |
+| `vendor/meow-memory/lib/index.js:1632` | **16.2ms / 1.1%** | `if (WORD.test(cp)) return "word";` |
+
+函数合计 **88.7ms / 6.2%**（`tokenize` 另 79.6ms / 5.6%，其中 `:1648` 36.2ms、`:1659` 19.0ms）。
+
+### 9.220.2 病根
+
+分类只由码点决定，是个纯查表问题；但热路上每遇到一个码点就要跑两次 **Unicode 属性正则**（`CJK` = `\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3005\u30fc`，`WORD` = `\p{L}\p{N}`）。`tokenize` 对每个码点问一次、对每个段的边界再问一次，于是建库时一万条正文、每问若干次，同一批码点被反复送进正则引擎。另外 `tokenize` 里比的是字符串（`cls === "skip"` / `classify(cps[j]) === cls`），也白付了字符串比较。
+
+### 9.220.3 处方
+
+1. **BMP 表**：`CLS_SKIP = 0` / `CLS_CJK = 1` / `CLS_WORD = 2`；`buildClsBmp()` 用 `String.fromCharCode` 把 0x0000–0xFFFF 拼成一个大串（65,536 个码点），再拿**那两条正则自己**扫连续段：`new RegExp(CJK.source + "+", "gu")` 的结果 `t.fill(CLS_CJK, m.index, m.index + m[0].length)`；`WORD.source + "+"` 的段逐格补 `CLS_WORD`，但只补 `t[k] === CLS_SKIP` 的格子（保持「先 cjk 后 word」的优先级）。
+2. **惰性建一次**：`var clsBmp = null;`，`clsCode(cp)` 里 `cp.length === 1` 才查表；星外码点与孤立代理项（`cp.length === 2`）仍走 `CJK.test` / `WORD.test`。表在第一次分类时建（一次 64KB、实测 3.5ms）。
+3. **`tokenize` 改吃数值**：`const cls = clsCode(cps[i]);` / `if (cls === CLS_SKIP) {` / `while (j < nCp && clsCode(cps[j]) === cls) j++;` / `if (cls === CLS_CJK) {`，并把 `cps.length` 读进 `nCp`。
+4. **`classify(cp)` 留成字符串包装**（`'cjk'/'word'/'skip'`），对外名与语义一字不改。
+
+```js
+var CLS_SKIP = 0;
+var CLS_CJK = 1;
+var CLS_WORD = 2;
+var clsBmp = null;
+function buildClsBmp() {
+  var t = new Uint8Array(65536);
+  var s = "";
+  for (var c = 0; c < 65536; c += 1) s += String.fromCharCode(c);
+  for (var run of s.matchAll(new RegExp(CJK.source + "+", "gu"))) t.fill(CLS_CJK, run.index, run.index + run[0].length);
+  for (var run2 of s.matchAll(new RegExp(WORD.source + "+", "gu"))) {
+    var end = run2.index + run2[0].length;
+    for (var k = run2.index; k < end; k += 1) if (t[k] === CLS_SKIP) t[k] = CLS_WORD;
+  }
+  return t;
+}
+function clsCode(cp) {
+  if (cp.length === 1) {
+    var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;
+    return t[cp.charCodeAt(0)];
+  }
+  if (CJK.test(cp)) return CLS_CJK;
+  if (WORD.test(cp)) return CLS_WORD;
+  return CLS_SKIP;
+}
+```
+
+### 9.220.4 读数
+
+| 指标 | 0.6.20 | 0.6.21 | 变化 |
+| --- | --- | --- | --- |
+| `search`（10,000 条 / 300 问，三次取中位） | 2.042ms | **2.000ms** | −2.1%（相对 0.6.12 的 27.377ms 累计 −92.7%） |
+| `searchAdaptive` | 2.593ms | **2.528ms** | −2.5% |
+| 冷建 `coldMs` | 292ms | **233.5ms** | **−20%** |
+| `--cpu-prof` 总采样 | 1,433.5ms | **1,337.0ms** | −6.7% |
+| `classify` 自证 | 88.7ms / 6.2% | 掉出前 20 名 | — |
+| 建表一次 | — | 3.5ms（惰性，只一次） | — |
+
+质量：`node E:\Temp\cmp\final.mjs` 与 0.6.20 逐行一致（`0.6.0 关` 与 v0.5.0 逐位相同 `true`，三档 0.921 / 0.417 / 0.500、两条 `#2→#1` 位移照旧）；`E:\Temp\cmp\ab20.mjs`（LoCoMo locomo10，10 样本 / 5,882 条 / 1,986 问，新旧引擎 top-20 逐问对拍）→ `{"mismatches":0}`。
+
+### 9.220.5 判据与踩坑
+
+`tools/probe-lex.mjs` **6 条**：
+
+- L0 形状：三档常量 / 惰性槽 / 表由 `CJK.source` 与 `WORD.source` 扫出 / `if (t[k] === CLS_SKIP) t[k] = CLS_WORD;` / 单码点快路 / 星外退路 / `classify` 仍是字符串包装 / `tokenize` 改数值比较且不再出现 `classify(`。
+- L1 **全码点**：0x0000–0x10FFFF（跳过代理区）**1,112,064** 个码点逐点与旧正则对拍，0 不一致。
+- L2 表本身：BMP 65,536 格与两条正则逐格一致（skip 15,356 / cjk 28,789 / word 21,391）、长度 65,536、建两次逐格相同。
+- L3 切段：14 串混排语料（全角、半角片假名、々/ー、emoji、星外字、孤立代理项、空串、单字）逐串相同。
+- L4 惰性：模块起来时 `clsBmp === null`、首调建好、此后 identity 不变。
+- L5 退化：空串 / 纯标点 / 单字 / 星外字 / 孤立代理项与参考同输出；标点串 0 token、单汉字 0 token、两汉字 1 个二元组。
+
+踩坑：
+
+1. **收益不在热问在冷建**：热问每问只切几个短句，88.7ms 摊在 300 问里，`perMs` 只降 2.1%；`coldMs` 292 → 233.5ms 才是真读数。只看 `perMs` 会误判「这刀没用」。
+2. **大串必须用 `String.fromCharCode`**：`String.fromCodePoint` 在星外会产出代理对，破坏「一个下标 = 一个码点」的对齐，表就错位。
+3. **判据一次跑全量**：L1 走完全部 1,112,064 个码点约 1.5s，比抽样便宜也更硬——分类错误不会报错，只会悄悄改变召回。
+
+### 9.220.6 账
+
+`tools/probe-lex.mjs` 6 条 + `verify.mjs` 的 `OR081` 6 条 = **+12**；套件 **48 → 49**，断言 **3,785 → 3,797**（verify 1,915 → 1,920 是同一支内新增判据与重排合计 +5，总数按 `check-all` 实测：其它 1,876 + 本支 1,920 + 1）。地板 `SUITE_FLOOR` 48 → 49，`NO_ROOT` 增 `tools/probe-lex.mjs` 一条。
+
+### 9.220.7 下一版候选
+
+- **`search` 232.2ms / 17.4%**（行视图 `:3622`、`:4099`、`:3837`）：零散在循环体与打分调用上，下一步只能按行摊开再挑一处。
+- **`buildSearchIndex` 138.3ms / 10.3%**：`bumpIn` 65.8 / `buildCoocSyn` 43.0 / `coocShareHan` 29.7 / `tokenize` 83.8 都在冷建这条链上，可以合成一版。
+- **`setBandsByThreshold` 97.5ms / 7.3%**：0.6.19 之后又回到 7% 量级（桶计数排序 + 段扫），桶内 `seg.sort()` 是下一处可动的。
+- **`indexSignature` 106.7ms / 8.0%**：行缓存之后剩下的就是「按下标逐字段比」本身。
