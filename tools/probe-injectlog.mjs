@@ -272,6 +272,37 @@ const body = panel.body
     !/一轮合计/.test(onlyHit) && /注入 100 字/.test(onlyHit), onlyHit.split('\n').length + ' 行')
 }
 
+// ── I10 本场会话累计：按 sid 把一场会话并起来（0.6.52）──────────────────────
+// 病根：0.6.51 只答得出「这一轮花了多少」，答不出「这场聊下来一共花了多少」。
+// 这一块守：按最近一场会话算、命中与邻域各自求和再合计、长 sid 截短、没有 sid 的老账不进这一行。
+{
+  const lines = [
+    '[2026-11-25T04:00:00.000Z] hit-chain pid=1 sid=sa textLen=240 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=240/∞',
+    '[2026-11-25T04:00:01.000Z] neighbor-chain pid=1 sid=sa ids=3 chars=320 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35',
+    '[2026-11-25T04:05:00.000Z] hit-chain pid=1 sid=sa textLen=300 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=540/∞',
+    '[2026-11-25T04:10:00.000Z] hit-chain pid=1 sid=sb textLen=120 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=120/∞',
+  ]
+  writeFileSync(LOG, lines.join('\n') + '\n', 'utf8')
+  const body = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', limit: 20, config: {} }).body
+  ok('I10.1 只算「最近一场会话」：sb 的 1 轮 120 字，不带上前一场的 540',
+    /本场会话（sb）：命中注入 1 轮 \/ 120 字，邻域 0 轮 \/ 0 字，合计 120 字/.test(body),
+    (body.match(/本场会话：[^\n]*/) ?? body.match(/本场会话[^\n]*/) ?? [''])[0])
+  // 把最新一条换成 sa：同一场里的两轮命中 + 一轮邻域都要并进来
+  writeFileSync(LOG, lines.slice(0, 3).join('\n') + '\n', 'utf8')
+  const saBody = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', limit: 20, config: {} }).body
+  ok('I10.2 同一场里命中 2 轮 540 字 + 邻域 1 轮 320 字 = 860 字',
+    /本场会话（sa）：命中注入 2 轮 \/ 540 字，邻域 1 轮 \/ 320 字，合计 860 字/.test(saBody),
+    (saBody.match(/本场会话[^\n]*/) ?? [''])[0])
+  // 长 sid 截成前 8 位 + 省略号（别把整串 uuid 铺在面板里）
+  writeFileSync(LOG, '[2026-11-25T04:20:00.000Z] hit-chain pid=1 sid=0123456789abcdef textLen=100 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=100/∞\n', 'utf8')
+  const longBody = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', config: {} }).body
+  ok('I10.3 长 sid 截成前 8 位加省略号', /本场会话（01234567…）：/.test(longBody), (longBody.match(/本场会话[^\n]*/) ?? [''])[0])
+  // 没有 sid 的老账：不许造一行「本场会话（）」
+  writeFileSync(LOG, '[2026-11-25T04:30:00.000Z] hit-chain pid=1 textLen=100 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=100/∞\n', 'utf8')
+  const noSid = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', config: {} }).body
+  ok('I10.4 没有 sid 的账不进这一行（空括号不写；.old 里带 sid 的账照旧念）', !/本场会话（）：/.test(noSid) && /本场会话（zzzz）：/.test(noSid), (noSid.match(/本场会话[^\n]*/) ?? [''])[0])
+}
+
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)
