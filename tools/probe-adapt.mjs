@@ -127,34 +127,43 @@ ok('A1 陌生领域同词召回：问句里的词就在正文里，第一条必�
   `${pct(sameH1)} · ${per.map((x) => x.name + ' ' + pct(x.same.hit1)).join(' / ')}`)
 console.log(`MEASURE 冷域换说法基线：hit@1 ${pct(paraH1)} · hit@3 ${pct(sum(paraAll, 'hit3'))} · MRR ${sum(paraAll, 'mrr').toFixed(3)}`)
 
-// ── A2 消融：三层扩词各自的账（0.6.37 起改成四档，旧的两条口径已失效） ─────────────
+// ── A2 消融：五档阶梯（0.6.39 起改成五档）────────────────────────────────────────
 // 判据看 hit@3 还是 hit@1：0.5.0 时桥只做「补位」，提升全落在第 2、3 位，所以只看 hit@3。
 // 0.6.37 的术语对照桥改的是**排序**（它把「口语词全都有」的对照条目降权），hit@1 真的会动，
-// 所以这一版起 hit@1 与 hit@3 一起看。
-// 档位说明（别把「关共现不掉」当成回归）：
+// 所以这一版起 hit@1 与 hit@3 一起看。0.6.39 又多了两层（声明对端平权、单字桥），层数从三层变五层，
+// 每层各管一件事，所以这里改成一条**阶梯**而不是「谁最差」：
 //   · 关共现（coocLearn:false）：0.6.37 让「对照表里有对端」的词不再吃共现邻居（见 synExpandOf
 //     里的 ownBridge 让位），而冷域问句的口语词恰好全在对照表里 → 这一档在冷域上等于默认。
 //     共现层的价值由`probe-gold` G21/G22 与宽池守住（那些池没有对照条目）。
-//   · 关对照桥（lookupBridge:false）：退回 0.6.36 的口径，hit@1 必须整体塌掉——这是本版的主账。
-//   · 关扩词（synBridge:false）：三层全关，必须是最差的一档。
+//   · 关对照桥（lookupBridge:false）：退回 0.6.36 的口径（连同降权一起没了），hit@1 必须整体塌掉
+//     ——它是「排序」那一层，所以只它能让 hit@1 塌到一半以下。
+//   · 关单字桥（charBridge:false）：**只该掉 hit@3，不该掉 hit@1**。它管的是「够不着」
+//     （`缺肥` 这种库里没有的词），不管「谁第一」——掉了 hit@1 就说明它越权去排序了。
+//   · 关扩词（synBridge:false）：五层全关，hit@1 与 hit@3 都必须比其余四档都低。
 {
   const paraH1 = sum(paraAll, 'hit1')
   const paraH3 = sum(paraAll, 'hit3')
   const para = (d) => d.queries.filter((q) => q.kind === 'para')
   const off = doms.map((d) => measure(d.docs, para(d), { coocLearn: false }))
   const noLook = doms.map((d) => measure(d.docs, para(d), { lookupBridge: false }))
+  const noChar = doms.map((d) => measure(d.docs, para(d), { charBridge: false }))
   const noLearned = doms.map((d) => measure(d.docs, para(d), { synBridge: false }))
   const offH1 = sum(off, 'hit1')
   const offH3 = sum(off, 'hit3')
   const noLookH1 = sum(noLook, 'hit1')
   const noLookH3 = sum(noLook, 'hit3')
+  const noCharH1 = sum(noChar, 'hit1')
+  const noCharH3 = sum(noChar, 'hit3')
   const noBridgeH1 = sum(noLearned, 'hit1')
   const noBridgeH3 = sum(noLearned, 'hit3')
-  console.log(`MEASURE 消融（换说法）：默认 h1 ${pct(paraH1)}/h3 ${pct(paraH3)} · 关共现 ${pct(offH1)}/${pct(offH3)} · 关对照桥 ${pct(noLookH1)}/${pct(noLookH3)} · 关扩词 ${pct(noBridgeH1)}/${pct(noBridgeH3)}`)
+  console.log(`MEASURE 消融（换说法）：默认 h1 ${pct(paraH1)}/h3 ${pct(paraH3)} · 关共现 ${pct(offH1)}/${pct(offH3)} · 关对照桥 ${pct(noLookH1)}/${pct(noLookH3)} · 关单字桥 ${pct(noCharH1)}/${pct(noCharH3)} · 关扩词 ${pct(noBridgeH1)}/${pct(noBridgeH3)}`)
   ok('A2 关掉术语对照桥，冷域换说法 hit@1 必须塌（本版的账在这儿）', noLookH1 <= paraH1 - 0.5,
     `${pct(paraH1)} → ${pct(noLookH1)}`)
-  ok('A2 关掉全部扩词，必须是最差的一档（三层不许有一层白吃饭）', noBridgeH3 < paraH3 - 0.2 && noBridgeH1 <= Math.min(paraH1, noLookH1) + 0.31,
-    `h3 ${pct(paraH3)} → ${pct(noBridgeH3)}；h1 ${pct(noBridgeH1)}`)
+  ok('A2 关掉单字桥只许丢到达率、不许丢第一名（它不参与排序）', noCharH3 < paraH3 && noCharH1 >= paraH1 - 0.11,
+    `h1 ${pct(paraH1)} → ${pct(noCharH1)}；h3 ${pct(paraH3)} → ${pct(noCharH3)}`)
+  ok('A2 关掉全部扩词 = 到达率最差（h3），关掉对照桥 = 排序最差（h1）：两把不同的尺子各归各的层',
+    noBridgeH3 < Math.min(paraH3, offH3, noLookH3, noCharH3) && noLookH1 < Math.min(paraH1, offH1, noCharH1, noBridgeH1),
+    `h3 最差: 关扩词 ${pct(noBridgeH3)}（其余 ${pct(paraH3)}/${pct(offH3)}/${pct(noLookH3)}/${pct(noCharH3)}）；h1 最差: 关对照桥 ${pct(noLookH1)}（其余 ${pct(paraH1)}/${pct(offH1)}/${pct(noCharH1)}/${pct(noBridgeH1)}）`)
   ok('A2 关共现允许不掉（对照表让位是设计后果），但不许比默认更好', offH1 <= paraH1 + 1e-9 && offH3 <= paraH3 + 1e-9,
     `${pct(paraH1)}/${pct(paraH3)} vs ${pct(offH1)}/${pct(offH3)}`)
 }

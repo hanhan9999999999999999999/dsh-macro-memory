@@ -221,8 +221,14 @@ const plain = [
 // [macro-fusion 0.6.29] 字段权重从「两次位与 + 两次加法」改成一次查表。
 // 表的四格必须与老写法的逐位结果相同——含非整值权重时加法顺序一换末位就会动，所以逐对用 Object.is 比。
 {
-  const shape = ENGINE.includes('const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];') &&
-    ENGINE.includes('const fw = FIELD_W_TAB[fl & 3];') &&
+  // [macro-decl 0.6.39] 表还在，只是外面多乘了一个「这个词在库里有声明对端就打 0.7」的系数
+  // （`qLoopDeclW`，按问句词给）。没有声明对端时它整条是 null，查表那一格逐位不变——
+  // 所以形状判据收成「表 + 乘系数」，再把「系数缺省时就是表值」单独断言。
+  const TABLE = 'const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];';
+  const TAB_ONLY = 'const fw = FIELD_W_TAB[fl & 3];';
+  const TAB_DECL = 'const fw = qLoopDeclW === null ? FIELD_W_TAB[fl & 3] : FIELD_W_TAB[fl & 3] * qLoopDeclW[qi];';
+  const shape = ENGINE.includes(TABLE) &&
+    (ENGINE.includes(TAB_DECL) || ENGINE.includes(TAB_ONLY)) &&
     ENGINE.includes('idf0 * fw * (f * k1p1 / (f + kDen[di]))') &&
     ENGINE.includes('if (fl & 1) fw += FIELD_TITLE_W;') === false;
   const oldWay = (fl, T, K) => {
@@ -241,6 +247,16 @@ const plain = [
     'H11 字段权重查表：四格与「逐位加成」逐位相同（含非整值权重），内层不再分支',
     shape && bad === 0 && r.length > 0,
     `形状=${shape} 表值不符=${bad}`,
+  );
+  // [macro-decl 0.6.39] 那条系数只在「问句里真有词带声明对端」时才不为 null：
+  // 普通问句上它整条是 null，走查表那一格，读数必须与不打折时逐位相同。
+  const gate = ENGINE.includes('if (declDirectW < 1 && lookupSyn !== null) {');
+  const a = JSON.stringify(search('alpha beta', plain, { k: 5, now: NOW }));
+  const b = JSON.stringify(search('alpha beta', plain, { k: 5, now: NOW, declDirectW: 1 }));
+  ok(
+    'H11b 声明折扣的系数是「有才对」：普通问句整条 null，读数与不打折逐位相同',
+    gate && a === b,
+    `闸门=${gate} 逐位相同=${a === b}`,
   );
 }
 

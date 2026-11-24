@@ -710,12 +710,16 @@ if (denseUsable) {
   const pOff = measure(fx.paraphrase, docs, { synBridge: false })
 
   // ③ 照抄池/锚点池零漂移（排名与读数都要一处不动）
-  const qOn = measure(fx.queries, docs)
-  const qOff = measure(fx.queries, docs, { synBridge: false })
-  const aOn = measure(fx.anchor, docs)
-  const aOff = measure(fx.anchor, docs, { synBridge: false })
-  const qDrift = ranksOf(fx.queries, {}).reduce((n, r, i) => n + (r === ranksOf(fx.queries, { synBridge: false })[i] ? 0 : 1), 0)
-  const aDrift = ranksOf(fx.anchor, {}).reduce((n, r, i) => n + (r === ranksOf(fx.anchor, { synBridge: false })[i] ? 0 : 1), 0)
+  // [0.6.39] 这一组量的是「同义桥不许拿照抄池换收益」，所以两臂都要把**别的层**按住：
+  // 0.6.39 的术语对照桥会让「现在主线推进到哪一版」从榜外进到第 5（照抄池里唯一一条动过的），
+  // 那是对照层的账，不是同义层的。两臂都关掉对照桥与单字桥，只让 synW 一个变量动。
+  const synOnly = { lookupBridge: false, charBridge: false }
+  const qOn = measure(fx.queries, docs, synOnly)
+  const qOff = measure(fx.queries, docs, { ...synOnly, synBridge: false })
+  const aOn = measure(fx.anchor, docs, synOnly)
+  const aOff = measure(fx.anchor, docs, { ...synOnly, synBridge: false })
+  const qDrift = ranksOf(fx.queries, synOnly).reduce((n, r, i) => n + (r === ranksOf(fx.queries, { ...synOnly, synBridge: false })[i] ? 0 : 1), 0)
+  const aDrift = ranksOf(fx.anchor, synOnly).reduce((n, r, i) => n + (r === ranksOf(fx.anchor, { ...synOnly, synBridge: false })[i] ? 0 : 1), 0)
   const same = (a, b) => Math.round(a * 1e3) === Math.round(b * 1e3)
 
   // ④ 覆盖度分母不动：同一条问句的开/关 cover 必须逐条相同（扩词不进 qIdfSum）

@@ -133,7 +133,22 @@ if (writeSnap || !existsSync(snapPath)) {
 //   C5b 关掉共现时，top-5 必须逐位回到那份冻结态 —— 锁住「不打分乱动」；
 //   C5c 打开共现时，至少有一问的答案必须与冻结态不同 —— 锁住「通道不空转」。
 // 两条合起来才有意义：只锁 C5b 等于允许通道白接，只锁 C5c 等于允许打分浮动。
+//
+// [macro-decl 0.6.39] 声明对端层（平权 + 字段加成 + 歧义折扣 + 单字桥）是有意的召回换代，
+// 快照同样换代一次：旧的两份冻成 `*-0638.json`，新快照用 `--write-snap` 重冻。
+// 换代归因的做法与 C5b 同构——把四个开关归位回 0.6.38 口径，读数必须逐位回到旧快照：
+//   C5d 四开关归位 → 命中注入侧的 top-5 逐位等于 0.6.38 快照（换代只来自这一层）；
+//   C5e 四开关归位 + 关共现 → 逐位等于 0.6.38 的 handonly 快照（两层各归各的账）。
+// 只冻新快照不给归因，等于允许「顺手把打分改了」也混过去——所以两条必须成对存在。
+const OLD_0638 = { synWLookup: 0.6, bridgeField: false, declDirectW: 1, charBridgeW: 0 }
 const handPath = join(root, 'tools', 'fixtures', 'cost-snap-handonly.json')
+const snapOfOpts = (corpus, opts) => qs.map((q) =>
+  V.search(q, corpus, { k: 5, ...opts }).map((h) => `${h.id}:${(h.score ?? 0).toFixed(6)}`))
+if (writeSnap) {
+  const handNow = { version: '', docs: {}, m: { 40: snapOfOpts(corpora[40], { coocLearn: false }), 1200: snapOfOpts(corpora[1200], { coocLearn: false }) } }
+  writeFileSync(handPath, JSON.stringify(handNow, null, 1) + '\n', 'utf8')
+  console.log('      结果快照（关共现态）已写入 tools/fixtures/cost-snap-handonly.json')
+}
 if (existsSync(handPath)) {
   const hand = JSON.parse(readFileSync(handPath, 'utf8'))
   const offSnap = (corpus) => qs.map((q) =>
@@ -154,6 +169,36 @@ if (existsSync(handPath)) {
   for (let i = 0; i < off40.length; i++) if (nowSnap.m['40'][i].join(',') !== off40[i].join(',')) moved++
   check('C5c 共现通道不空转：打开共现后至少有一问的答案与关闭时不同（否则这条通道等于白接）',
     moved > 0, `40 条池上 ${moved}/${qs.length} 问答案不同`)
+
+  // ── C5d/C5e 换代归因（0.6.39 声明对端层）：四个开关归位就必须回到 0.6.38 ──
+  const oldSnapPath = join(root, 'tools', 'fixtures', 'cost-snap-0638.json')
+  const oldHandPath = join(root, 'tools', 'fixtures', 'cost-snap-handonly-0638.json')
+  if (existsSync(oldSnapPath) && existsSync(oldHandPath)) {
+    const oldSnap = JSON.parse(readFileSync(oldSnapPath, 'utf8'))
+    const oldHand = JSON.parse(readFileSync(oldHandPath, 'utf8'))
+    const back40 = snapOfOpts(corpora[40], OLD_0638)
+    const back1200 = snapOfOpts(corpora[1200], OLD_0638)
+    let firstBack = ''
+    for (let i = 0; i < back40.length; i++) {
+      if (!pairSame0([oldSnap.m['40'][i]], [back40[i]])) {
+        firstBack = `第 ${i + 1} 问「${qs[i]}」0638 快照 ${oldSnap.m['40'][i].join(',')} → 归位后 ${back40[i].join(',')}`
+        break
+      }
+    }
+    check('C5d 换代归因（0.6.39）：四个开关归位，top-5 逐位回到 0.6.38 的快照',
+      pairSame0(oldSnap.m['40'], back40) && pairSame0(oldSnap.m['1200'], back1200),
+      firstBack || `${qs.length} 问 × 两档全同`)
+    const backHand40 = snapOfOpts(corpora[40], { ...OLD_0638, coocLearn: false })
+    const backHand1200 = snapOfOpts(corpora[1200], { ...OLD_0638, coocLearn: false })
+    check('C5e 换代归因（0.6.39）：四开关归位 + 关共现，逐位回到 0.6.38 的 handonly 快照——两层各归各的账',
+      pairSame0(oldHand.m['40'], backHand40) && pairSame0(oldHand.m['1200'], backHand1200),
+      `${qs.length} 问 × 两档全同`)
+    // 换代确实发生了：新快照至少有一问与 0.6.38 不同，否则这一层等于白接
+    let moved0638 = 0
+    for (let i = 0; i < nowSnap.m['40'].length; i++) if (nowSnap.m['40'][i].join(',') !== oldSnap.m['40'][i].join(',')) moved0638++
+    check('C5d 换代不空转：新快照至少有一问与 0.6.38 不同（声明对端层真的进了召回）',
+      moved0638 > 0, `40 条池上 ${moved0638}/${qs.length} 问答案变了`)
+  }
 }
 
 // ── C6 缓存不许答旧库：等长改写（同一秒、字数一模一样）跑不掉 ───────────────

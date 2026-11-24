@@ -13681,3 +13681,23 @@ rawkTopPrev = top;
 **判据**：新探针 `tools/probe-budget.mjs`（B0–B9 共 34 条：形状 / 默认逐位 / 九档 ≤ cap / 前缀保留 / 压缩留查询句 / 首句必留 + 铺垫句可丢 / 自述在位 / 极小上限只给骨架 / 段级保头尾 / 两档省 55%–65% 钉基线）与 `tools/probe-neighbor.mjs`（N0–N8 共 26 条：常量 / 弱邻居不注入且强邻居一条不少 / 全弱回 null / `minScore=0` 阴性对照 / 尾部含 path→mute 指引与首条 id / 三档字数 / `max=0` 与 `skip` 后改指第二条 / 配置面接线 / 端到端三档），挂 `tools/check-all.mjs`（suite 53 → **55 支**）；`probe-fusion` 的 RV4c 断言从硬编码 `6` 改成 `NEIGHBOR_DEFAULT_MAX + 4`（理由写进注释：强度过滤会刷掉一部分，不多要就凑不满 max）。
 
 **踩坑五条**：①单条正文上限第一版写死 `INJECT_BODY_CAP`，cap 2000 时也照压（宽预算被误伤成 7 条全 `squeeze`、省 0%），改成 `Math.max(INJECT_BODY_CAP, floor(cap * 0.5))` 后宽档恢复全 `full`；②尾部预留会抢条目预算，`chars <= NEIGHBOR_TAIL_RESERVE + 100` 时必须先保条目；③`why` 不带来源 id 时 mute 无从下手——**纠错指引必须指名到 id**，否则那句话只是安慰；④探针自身断言三次写错（600 档放不下 3 条、`full` 条目里也有铺垫句、95 档走骨架分支没有 dropOnly 尾巴）——**先看分支再写断言**；⑤用 `Add-Content -Encoding UTF8` 往 `DESIGN.md` 追加会带进 CRLF，大文件一律用 `write`/`edit` 工具改。
+
+
+### 9.238 0.6.39：声明对端与中心语素桥
+
+**症状**：三条同域干扰，cold 域「换说法」hit@1 只有 70.0%。（1）问「降糖药第一次吃多少量」，`md02`《降糖药调整原则》压住 `md01`《二甲双胍起始》；（2）问「星点老是跑偏怎么回事」，`tw11`《马赛克拼接》压住 `tw01`《对极轴》；（3）问「叶子发黄是不是缺肥」，`yy07`《施肥配比》**整条不进榜**。三条都不是「库里没有」，而是「字面对不上」或者「对上了别人」。
+
+**病根**：（1）**声明出来的对端待遇低一档**——对照表（`术语A＝术语B`）挖出来的对端走扩词窄通道，只拿 `synW 0.6`，**不加字段权重**；而「类名命中标题」是直接词，`fw = 1.95`。`md02` bm25 16.502 / `md01` 5.775，`IMP_BAND 0.85` 让 `md01` 直接掉档——**定档是排序第一键**（`orderOf = (_bandTmp 差) || (score 差) || …`），`importance ×1.5` 让总分反超也没用。（2）**库外词没有入口**——`tokenize('缺肥')` 切出 `缺肥` 一个碎片，但它不在 df 里；`yy12` 对照表里有 `叶子发黄`、`缺氮`，字面分全落在术语表上。（3）**整词不在索引里**——`tokenize('二甲双胍')` → `["二甲","甲双","双胍"]`，整词只存在 `keywords` 侧；第一版用「对端整词有没有出现在候选集」判 `isDecl`，`differs` 恒假，改动整段静默失效（`globalThis.__DBG39` 打出 `SYN 降糖 -> 二甲,甲双,双胍 | decl= ["二甲双胍"]` 才看清）。
+
+**处方四点**：
+
+1. `synPlan` 按问句建一次替代词行，`br = 1` 标声明对端、`w = synWLookup`（`SYN_W_LOOKUP_DEF = 1`，`opts.synWLookup`），其余仍 `synW 0.6`；两条打分路都改成「权重在行内乘、外层取最大」（与旧写法乘法单调等价，开关关掉一位不差）。`declFragOf(decl)` 把对端整词与碎片都展开成集合，`isDecl = decl !== null && decl.includes(a)`。字段加成只给声明对端（`bridgeField`，`BRIDGE_FIELD_DEF = true`）。
+2. 歧义类名折扣 `declDirectW`（`DECL_DIRECT_W_DEF = 0.7`）：问句词在库里有声明对端 → 字面命中打折，按词给（`qLoopDeclW: Float64Array`），热路 `FIELD_W_TAB[fl & 3] * qLoopDeclW[qi]`；`declDirectW < 1 && lookupSyn !== null` 且真有词命中才建，否则整条 `null`。
+3. 对照表不吃字段加成：`declDocOff = lookupPen !== null && lookupPen[di] < 1`（热路 `declDocK`），判据 `if (it.br !== 0 && !declDocOff)`。加这条之前法律域当场回退（`lw12` 抢第一）。
+4. 中心语素桥 `buildCharBridge(docs)`：词源只取 `keywords`、df ≤ 8、长度 2–4、全汉字（判据 `t.charCodeAt(i) < 11904`——第一版误写 73216，整表为空），按**词尾字**建 `Map<char, string[]>`（同字候选按 df 升序取前 8）；词内碎片各按自己的词尾挂。打分只补 `sDirect === 0` 的条目、桥必须落在标题/关键词上、多个候选累加封顶 `best × CHAR_BRIDGE_SUM_CAP(3)`；锚点闸门 `CHAR_BRIDGE_ANCHOR_RATIO 0.25` / `CHAR_BRIDGE_ANCHOR_MIN_TOK 4`；门控在 `synBridge` 下，`inverted: false` 时不建表。
+
+**读数**（60 条五域夹具，`measure(para)`）：默认 **90.0% / 100.0% / 0.950**（0.6.38 是 70.0 / 90.0 / 0.800）；`md01` 36.96 vs `md02` 24.95、`tw01` 20.97 vs `tw11` 2.58、`yy07` 3.99 排第 2（前面是术语表 `yy12` 6.45）；四开关归位 `{synWLookup:0.6, bridgeField:false, declDirectW:1, charBridgeW:0}` → **70.0 / 90.0 / 0.800 逐位相同**；`{synBridge:false}` → 30.0 / 30.0 / 0.300。空手 10/14 与 0.6.38 相同。`probe-cost` 快照换代一次并补归因（C5d：四开关归位逐位回到 `cost-snap-0638.json`；C5e：再关共现逐位回到 `cost-snap-handonly-0638.json`；40 条池上 5/45 问答案变了）。
+
+**断言**：新探针 `tools/probe-decl.mjs`（D1 形状 / D2 平权落差 / D3 折扣 / D4 让位 / D5 唯一来路 / D6 不参与排序 / D7 门控与锚点 / D8 回旧口径，共 **23 条**）；`probe-adapt` A2 改成五档阶梯（关对照桥管 h1、关扩词管 h3、关单字桥只丢 h3、关共现允许不掉）；`probe-hotpath` H11 收成「表 + 可选声明系数」并新增 H11b（系数是「有才对」）；`probe-gold` G21 两臂都按住对照桥与单字桥（「现在主线推进到哪一版」从榜外进第 5 是对照层的账，不是同义层的）。规模 **55 支 / 4,038 条 → 56 支 / 4,066 条**。
+
+**踩坑三条**：①`searchIndexOf` 的索引缓存键是 `__sig + __opts`，**不含 `charBridge`**——用 `{charBridge:false}` 量「关桥」会复用已建好的索引，拿到「关了还 0/14」这种假读数；量开关一律走打分侧 `charBridgeW: 0`。②给引擎打补丁别用 pwsh here-string（反引号会被 PowerShell 吃掉，报 `Expected ',', got 'ident'`，而且 `node --check` 检查的可能是没改成功的文件）——一律先 `write` 到 `E:\Temp\cmp\*.cjs` 再 `node` 跑；补丁模板里的中文注释也不许含反引号。③改引擎先改装机树（`D:\dsh-home\vendor\dsh-macro-memory\`），改完立刻 `Copy-Item` 到阅读树（探针从这里 import），否则跑出来是旧引擎的读数——这一轮白跑过一次。

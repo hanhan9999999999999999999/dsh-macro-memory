@@ -13535,7 +13535,10 @@ dt063: {
     ((engSrc7.includes('if (fl & 1) fw += FIELD_TITLE_W;') &&
       engSrc7.includes('if (fl & 2) fw += FIELD_KW_W;')) ||
       (engSrc7.includes('const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];') &&
-        engSrc7.includes('const fw = FIELD_W_TAB[fl & 3];')))
+        // [0.6.39] 表外面多乘一个「这个词在库里有声明对端就打 0.7」的系数（qLoopDeclW）；
+        // 没有声明对端时它整条 null，走的还是原来那一格。两种形状任在位即算过。
+        (engSrc7.includes('const fw = FIELD_W_TAB[fl & 3];') ||
+          engSrc7.includes('const fw = qLoopDeclW === null ? FIELD_W_TAB[fl & 3] : FIELD_W_TAB[fl & 3] * qLoopDeclW[qi];'))))
   // 倒排要记词频与「命中了哪几个字段」；字段权重值本身不许预乘（opts.fieldKwW 是每问参数）。
   const idxOk =
     engSrc7.includes('p.f.push(v);') &&
@@ -14859,7 +14862,9 @@ dt063: {
   check('OR089 探针在位：probe-hotpath 有 H11–H13 三条，check-all 挂了它',
     ['H11 ', 'H12 ', 'H13 '].every((t) => hotS29.includes(t)) && allS29.includes('probe-hotpath'))
   const tabS29 = engS29.includes('const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];') &&
-    engS29.includes('const fw = FIELD_W_TAB[fl & 3];') &&
+    // [0.6.39] 同上：表外多一个按问句词给的声明折扣系数，缺省时就是表值。
+    (engS29.includes('const fw = FIELD_W_TAB[fl & 3];') ||
+      engS29.includes('const fw = qLoopDeclW === null ? FIELD_W_TAB[fl & 3] : FIELD_W_TAB[fl & 3] * qLoopDeclW[qi];')) &&
     engS29.includes('if (fl & 1) fw += FIELD_TITLE_W;') === false &&
     engS29.includes('idf0 * fw * (f * k1p1 / (f + kDen[di]))')
   const invS29 = engS29.includes('const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;') &&

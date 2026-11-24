@@ -2589,6 +2589,38 @@ var FIELD_KW_W_DEF = 0.6;
 // 同词池（15 问）与 `probe-gold` 的照抄/锚点池在整个扫档里一处不动。
 var LOOKUP_PEN_DEF = 0.25;
 var LOOKUP_TYPE_RATIO = 0.35;
+// ═══════════ [macro-fusion 0.6.39 · P1] 声明对照的对端与直接词同权：同域词面干扰的根在这里 ═══════════
+// 0.6.37 把对照条目从「答案」降回「桥」，但桥搭好之后**走到对岸的词只拿 0.6 的扩词权重**，
+// 于是「类名命中标题」总能压过「具体术语命中标题」：冷域问 `降糖药第一次吃多少量`，
+// `降糖药调整原则`（md02，库里只有这一条沾「降糖药」且它在标题里）bm25 16.50 压住
+// `二甲双胍起始`（md01，正解，靠 降糖药＝二甲双胍 这一对声明桥命中，标题里就写着 二甲双胍）
+// 的 5.78；问 `星点老是跑偏怎么回事` 同理被 马赛克拼接（正文里出现「星点对齐」）压住。
+// 病根不是「扩词太多」，是**声明桥与直接命中的待遇不对称**——用户亲口说「降糖药」，库里写着
+// 「降糖药＝二甲双胍」，那 二甲双胍 就是这句话的另一种说法，不是「差不多相关」的邻居。
+// 处方两条，都只作用于**声明对照（`A＝B`）**这一层，共现自学习层一个字不动（共现本来就宽，抬权会泛）：
+//   ① `SYN_W_LOOKUP`：声明对端的权重从 synW（默认 0.6）提到 1.0，与直接词平权；
+//   ② `BRIDGE_FIELD`：对端命中落在**标题/关键词**字段时，吃与直接词一样的字段加成
+//      （`fw += FIELD_TITLE_W` / `fw += FIELD_KW_W`）——「这条的中心词就是那个对端」比
+//      「正文里顺带提了一句」强得多，字段加成不该只有直接词能拿。
+// 关掉：`opts.synWLookup`（设 1 恢复旧权重）、`opts.bridgeField === false`（不吃字段加成）。
+var SYN_W_LOOKUP_DEF = 1;
+var BRIDGE_FIELD_DEF = true;
+// 歧义类名的直接命中折扣（见 P2）。0.7 是量出来的：冷域十题 hit@1 0.70 →（0.7）0.90 →（0.5）0.90
+// 且 0.5 会把「同词池」里本来就对的题压低（照抄池 hit@1 1.00 → 0.93），所以取 0.7——够把类名从
+// 「压死人」降到「让位」，又不至于把字面命中当噪声。
+var DECL_DIRECT_W_DEF = 0.7;
+// 单字桥（P4）：只在罕用词上建（df ≤ 8），只给「库里根本没有」的问句词用，权重很低。
+var CHAR_BRIDGE_DF_MAX = 8;
+var CHAR_BRIDGE_W_DEF = 0.3;
+var CHAR_BRIDGE_CAP = 8;
+// 单字桥一行里最多按几个词累加（超过就封顶）：命中多个罕用词才说明「讲的是同一件事」，
+// 但一条靠字面巧合也能撞上三四个，所以封在 best × 3。
+var CHAR_BRIDGE_SUM_CAP = 3;
+// 中心语素桥是「补齐」，不是「硬凑」：问句里大半的词本库根本没有时（光合作用 / 七言绝句），
+// 这件事就是没有，桥不许把它连出个答案来。只在「至少四分之一的词有落点」时开工。
+// 短问句（少到 4 个词以下）不看比例——「缺肥」两个字就是全部，按比例算必然是 0。
+var CHAR_BRIDGE_ANCHOR_RATIO = 0.25;
+var CHAR_BRIDGE_ANCHOR_MIN_TOK = 4;
 // 问句自己在问「这词等于什么」时不降权：这时候对照条目就是标准答案。
 var LOOKUP_ASK_RE = /(对照|术语|别名|又叫|怎么称呼|叫什么|等于什么|是什么意思|指的是什么|啥意思)/;
 var LOOKUP_PAIR_RE = /([^\s；;，,、。：:（）()＝=]{2,10})[＝=]([^\s；;，,、。：:（）()＝=]{2,10})/g;
@@ -2603,10 +2635,11 @@ function lookupPairsOf(text) {
 }
 // 一趟过全库：出「词 → 对端词」的双向桥表，以及「这条是不是对照型」的权重表。
 // 权重表用 Float64Array（热路一次元素读），1 = 不降权。桥表只在扩词侧用，不进覆盖度、不进候选。
-function addBridge(map, key, val) {
+function addBridge(map, key, val, cap) {
+  const max = Number.isFinite(cap) && cap > 0 ? cap : 6;
   const cur = map.get(key);
   if (cur === void 0) map.set(key, [val]);
-  else if (cur.length < 6 && !cur.includes(val)) cur.push(val);
+  else if (cur.length < max && !cur.includes(val)) cur.push(val);
 }
 function buildLookupBridge(docs, n, opts) {
   const penW = Number.isFinite(opts.lookupPen) && opts.lookupPen >= 0 && opts.lookupPen <= 1 ? opts.lookupPen : LOOKUP_PEN_DEF;
@@ -2638,6 +2671,60 @@ function buildLookupBridge(docs, n, opts) {
     if (got.length >= 2 && body > 0 && chars / body >= LOOKUP_TYPE_RATIO) pen[i] = penW;
   }
   return { syn: syn.size > 0 ? syn : null, pen, pairs, docs: hitDocs };
+}
+// [macro-fusion 0.6.39 · P4] 单字桥：库是两字碎片制的，问句里那种库里根本没有的词（缺肥）本来一个候选
+// 都点不亮。汉字词的可解释单位是字，所以按**罕用单字**拆开落到库里真有的词上（肥 → 氮肥/施肥）。
+// 三条例律：①只收 df ≤ CHAR_BRIDGE_DF_MAX 的词（常用字上的词连成一张网，连了就全是噪声）；
+// ②只给 OOV 问句词用（库里有的词自己有倒排，不需要这层）；③权重 CHAR_BRIDGE_W 只有 0.3，
+// 它负责「让够不着的东西被看见」，不负责「把它推到第一名」。
+function buildCharBridge(docs) {
+  // 候选词只从**关键词**里取，不从倒排的 df 里取。这是 0.6.39 量出来的：倒排是两字碎片制，
+  // 按 df 建表等于把「径的 / 人要 / 份要」这种碎片也当成词，于是「明天北京…」这类
+  // 与库毫无关系的问句也能撞上「径的」拿分，空手闸门整排失效（probe-gold G8 从 10/14 掉到 0/14）。
+  // 关键词是主人自己写的真词（施肥 / 氮肥过量 / 堆肥），落点才对得上。
+  // 只按**词尾字**建表：汉语复合词是「修饰语 + 中心语」，中心语素在尾巴上——
+  // 缺肥↔施肥/氮肥 同类，缺肥↔肥配 不同类。位置不对义就不同，宁可少连。
+  const seen = /* @__PURE__ */ new Map();
+  for (let i = 0; i < docs.length; i++) {
+    const ks = docs[i]?.keywords;
+    if (!Array.isArray(ks)) continue;
+    for (let j = 0; j < ks.length; j++) {
+      const w = String(ks[j]);
+      const len = w.length;
+      if (len < 2 || len > 4) continue;
+      let cjk = true;
+      for (let ci = 0; ci < len; ci++) {
+        if (w.charCodeAt(ci) < 11904) { cjk = false; break; }
+      }
+      if (!cjk) continue;
+      seen.set(w, (seen.get(w) ?? 0) + 1);
+    }
+  }
+  const acc = /* @__PURE__ */ new Map();
+  for (const [w, d] of seen) {
+    if (d > CHAR_BRIDGE_DF_MAX) continue;
+    // 整词在碎片倒排里查不到（「氮肥过量」只有 氮肥/肥过/过量），所以把它的碎片按各自的
+    // 中心语素收下：氮肥挂 肥、过量挂 量。碎片是「真词的碎片」，不是「正文里随便碰上的
+    // 两个字」，落点才对；每个碎片仍然只按自己的词尾字当键，位置不对义就不同。
+    for (let ci = 0; ci + 2 <= w.length; ci++) {
+      const frag = w.slice(ci, ci + 2);
+      const fch = frag[1];
+      let cur = acc.get(fch);
+      if (cur === void 0) { cur = []; acc.set(fch, cur); }
+      let dup = false;
+      for (let qi = 0; qi < cur.length; qi++) if (cur[qi][0] === frag) { dup = true; break; }
+      if (!dup && cur.length < CHAR_BRIDGE_CAP * 3) cur.push([frag, d]);
+    }
+  }
+  const out = /* @__PURE__ */ new Map();
+  for (const [ch, list] of acc) {
+    // 同一个中心语素上的候选按「几条记忆用它」升序取前 CAP 个：越罕用越像「同义的另一种说法」。
+    list.sort((x, y) => x[1] - y[1] || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+    const keep = [];
+    for (let i = 0; i < list.length && keep.length < CHAR_BRIDGE_CAP; i++) keep.push(list[i][0]);
+    out.set(ch, keep);
+  }
+  return out.size > 0 ? out : null;
 }
 function lookupTypeOf(docs) {
   const got = buildLookupBridge(docs, docs.length, {});
@@ -3826,6 +3913,8 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   // [macro-fusion 0.6.37 · P1] 术语对照桥与索引同寿命：它只由 docs 决定，库一变签名就变、这张表跟着重建。
   // 关掉（opts.lookupBridge === false）时两张都是 null，热路一个字节都不多读。
   const lookup = opts.lookupBridge === false ? null : buildLookupBridge(docs, n, opts);
+  // [macro-fusion 0.6.39 · P4] 单字桥与索引同寿命（只由 docs 决定）；关掉用 opts.charBridge === false。
+  const charBridge = opts.charBridge === false || opts.inverted === false ? null : buildCharBridge(docs);
   // [macro-fusion 0.6.11] 原样匹配的 haystack：懒建、随索引缓存（账在 `verbStats` 上方）。
   // 只在「问句里有标识符」时才被碰到；没碰过的条目一个字节都不占。
   const hayArr = new Array(n);
@@ -3850,6 +3939,7 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
     // 对照型」的权重（1 = 不是，<1 要乘进分数）。关掉时两张都是 null。
     lookupSyn: lookup === null ? null : lookup.syn,
     lookupPen: lookup === null ? null : lookup.pen,
+    charBridge,
     hayAt
   };
 }
@@ -4139,6 +4229,9 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.6.37 · P1] 术语对照桥：桥表进扩词，权重表进打分。问句自己在问「这词等于什么」
   // 时整张权重表作废——那种问法下对照条目就是标准答案，压它等于答错。
   const lookupSyn = index.lookupSyn ?? null;
+  const charBridge = opts.synBridge === false || (Number.isFinite(opts.synW) && opts.synW <= 0)
+    ? null
+    : index.charBridge ?? null;
   const lookupPenOn = index.lookupPen != null && !LOOKUP_ASK_RE.test(String(query));
   const lookupPen = lookupPenOn ? index.lookupPen : null;
   const FIELD_TITLE_W = 0.6;
@@ -4256,6 +4349,92 @@ function search(query, docs, opts = {}) {
   // 少了这一层，表里存的降糖药/二甲双胍与索引里的 降糖/糖药 根本碰不到一起。
   const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn, opts.synFormBridge === true ? coocForms : null, lookupSyn);
   const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;
+  // [macro-fusion 0.6.39 · P1] 声明对端的权重与字段标记，按问句算一次（热路只剩数组读）：
+  // `br === 1` 表示这个候选词来自库里的 `A＝B` 声明对照（不是共现、不是手工表），它该与直接词平权、
+  // 且命中标题/关键词时吃字段加成。关掉任一层：`synWLookup` 传 synW 即恢复旧权重，`bridgeField:false` 不吃加成。
+  const synWLookup = Number.isFinite(opts.synWLookup) && opts.synWLookup >= 0 ? opts.synWLookup : SYN_W_LOOKUP_DEF;
+  const bridgeField = opts.bridgeField === false ? false : BRIDGE_FIELD_DEF;
+  // [macro-fusion 0.6.39 · P1] 分类要按**碎片**算：打分坐标系是两字碎片，`二甲双胍` 这个整词在 df 里
+  // 根本不存在（索引只有 二甲/甲双/双胍），所以「对端是不是声明对照来的」只能拿对端词的碎片集去比。
+  // 不这样拆，对照表在扩词侧一次也认不出来（第一版就是这样白改的：`differs` 恒 false）。
+  const declFragOf = (decl) => {
+    if (decl === void 0 || decl === null) return null;
+    const out = [];
+    for (let i = 0; i < decl.length; i++) {
+      const b = decl[i];
+      if (typeof b !== "string" || b.length === 0) continue;
+      if (!out.includes(b)) out.push(b);
+      const frs = tokenize(b);
+      for (let k = 0; k < frs.length; k++) {
+        const f = frs[k];
+        if (f.length < 2 || f === b || out.includes(f)) continue;
+        out.push(f);
+      }
+    }
+    return out;
+  };
+  let synPlan = null;
+  if (synOf !== null || charBridge !== null) {
+    synPlan = [];
+    let differs = false;
+    if (synOf !== null) {
+      for (const [t, alts] of synOf) {
+        const decl = declFragOf(lookupSyn === null || lookupSyn === void 0 ? void 0 : lookupSyn.get(t));
+        const row = new Array(alts.length);
+        for (let ai = 0; ai < alts.length; ai++) {
+          const a = alts[ai];
+          const isDecl = decl !== null && decl.includes(a);
+          const w = isDecl ? synWLookup : synW;
+          const br = isDecl && bridgeField ? 1 : 0;
+          if (isDecl) differs = true;
+          row[ai] = { a, w, br };
+        }
+        synPlan.push(row);
+      }
+    }
+    // [macro-fusion 0.6.39 · P4] 单字桥那一行：只给库里查不到的问句词（df 里没有）建，
+    // 命中它只让条目「被看见」，所以只对直接分为 0 的条目生效（见下面两条打分路的 row.chr 判据）。
+    const charBW = Number.isFinite(opts.charBridgeW) && opts.charBridgeW >= 0 ? opts.charBridgeW : CHAR_BRIDGE_W_DEF;
+    let charAnchorOk = false;
+    if (charBridge !== null && charBW > 0 && qKept.length > 0) {
+      let inv = 0;
+      for (let qi = 0; qi < qKept.length; qi++) if (df.get(qKept[qi]) !== undefined) inv += 1;
+      charAnchorOk = qKept.length < CHAR_BRIDGE_ANCHOR_MIN_TOK || inv >= qKept.length * CHAR_BRIDGE_ANCHOR_RATIO;
+    }
+    if (charBridge !== null && charBW > 0 && charAnchorOk) {
+      for (let qi = 0; qi < qKept.length; qi++) {
+        const t = qKept[qi];
+        if (df.get(t) !== void 0) continue;
+        const row = [];
+        const list2 = charBridge.get(t[t.length - 1]);
+        if (list2 !== void 0 && list2 !== null) {
+          for (let li = 0; li < list2.length; li++) {
+            const a = list2[li];
+            let dup = false;
+            for (let ri2 = 0; ri2 < row.length; ri2++) if (row[ri2].a === a) { dup = true; break; }
+            if (!dup) row.push({ a, w: charBW, br: 0 });
+          }
+        }
+        if (row.length > 0) { row.chr = 1; synPlan.push(row); differs = true; }
+      }
+    }
+    // 一问里没有任何声明对端命中可能时，走老路（逐位与 0.6.38 相同的那个分支）。
+    if (!differs) synPlan = null;
+  }
+  // [macro-fusion 0.6.39 · P2] 有歧义的类名：问句里的词在库里声明着对端（`降糖药＝二甲双胍`）时，
+  // 「字面对上这个词」不再等于「这条答得上」——`降糖药调整原则` 就是这样用标题里的类名压住
+  // `二甲双胍起始` 的。直接命中按 `DECL_DIRECT_W` 打折，让「对端命中标题/关键词」有机会赢。
+  const declDirectW = Number.isFinite(opts.declDirectW) && opts.declDirectW >= 0 && opts.declDirectW <= 1 ? opts.declDirectW : DECL_DIRECT_W_DEF;
+  let qLoopDeclW = null;
+  if (declDirectW < 1 && lookupSyn !== null) {
+    let any = false;
+    const tmp = new Float64Array(qLoop.length).fill(1);
+    for (let qi = 0; qi < qLoop.length; qi++) {
+      const d = lookupSyn.get(qLoop[qi]);
+      if (d !== void 0 && d !== null && d.length > 0) { tmp[qi] = declDirectW; any = true; }
+    }
+    if (any) qLoopDeclW = tmp;
+  }
   // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
   const coverLenRelief = Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF;
   // 倒排缺席（opts.inverted===false）或问句里有标识符（要逐条比原文）时退回全库扫描。
@@ -4290,20 +4469,56 @@ function search(query, docs, opts = {}) {
       let fw = 1;
       if (titleSet !== null && titleSet.has(term)) fw += FIELD_TITLE_W;
       if (kwSet !== null && kwSet.has(term)) fw += FIELD_KW_W;
+      // [macro-fusion 0.6.39 · P2] 歧义类名打折（`qLoopDeclW` 为 null 时这一项不存在，逐位与旧版相同）。
+      if (qLoopDeclW !== null) fw *= qLoopDeclW[qi];
       s += idf * fw * (f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl)));
     }
     // 同义词只走一条窄通道：每个原始词最多取「最好的那个同义词」的一份分，不叠乘、不进覆盖度。
-    if (synOf !== null) {
+    const sDirect = s;
+    if (synOf !== null || synPlan !== null) {
       const sat = (f) => f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl));
-      for (const alts of synOf.values()) {
-        let best = 0;
-        for (const a of alts) {
-          const f = tfi.get(a);
-          if (!f) continue;
-          const v = idfAt(a) * sat(f);
-          if (v > best) best = v;
+      if (synPlan === null) {
+        for (const alts of synOf.values()) {
+          let best = 0;
+          for (const a of alts) {
+            const f = tfi.get(a);
+            if (!f) continue;
+            const v = idfAt(a) * sat(f);
+            if (v > best) best = v;
+          }
+          s += synW * best;
         }
-        s += synW * best;
+      } else {
+        // [macro-fusion 0.6.39 · P1] 声明对端按自己的权重与字段加成算（见 SYN_W_LOOKUP_DEF 的账）。
+        // 权重相同、`br === 0` 的对端走的是与旧写法同序同值的乘法（`base * synW`），逐位不漂。
+        // [macro-fusion 0.6.39 · P3] 字段加成不给对照型条目：它把 `A＝B` 两侧的词都收着，
+        // 一加成就是「最像答案」的那条，可它恰恰是「术语表」不是答案（法律域 `房东押金不退怎么办`
+        // 被它抢走第一就是这么来的）。权重照给，加成关掉，再由 `lookupPen` 打回原形。
+        const declDocOff = lookupPen !== null && lookupPen[di] < 1;
+        for (let ri = 0; ri < synPlan.length; ri++) {
+          const row = synPlan[ri];
+          if (row.chr === 1 && sDirect !== 0) continue;
+          let best = 0;
+          let total = 0;
+          for (let ai = 0; ai < row.length; ai++) {
+            const it = row[ai];
+            const f = tfi.get(it.a);
+            if (!f) continue;
+            const base = idfAt(it.a) * sat(f);
+            let v = base * it.w;
+            // 单字桥只认「落到标题/关键词上的词」：桥是按中心语素猜的，猜对了会落在
+            // 这条记忆的字段里（施肥/氮肥）；猜错了只会撞上正文里的两字碎片（关的/也是），
+            // 那是字面巧合，不作数。
+            if (row.chr === 1 && !((titleSet !== null && titleSet.has(it.a)) || (kwSet !== null && kwSet.has(it.a)))) continue;
+            if (it.br !== 0 && !declDocOff) {
+              if (titleSet !== null && titleSet.has(it.a)) v *= 1 + FIELD_TITLE_W;
+              if (kwSet !== null && kwSet.has(it.a)) v *= 1 + FIELD_KW_W;
+            }
+            if (v > best) best = v;
+            total += v;
+          }
+          s += row.chr === 1 ? (total < best * CHAR_BRIDGE_SUM_CAP ? total : best * CHAR_BRIDGE_SUM_CAP) : best;
+        }
       }
     }
     if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
@@ -4352,6 +4567,20 @@ function search(query, docs, opts = {}) {
       for (let pi = 0; pi < pd.length; pi++) {
         const di = pd[pi];
         if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }
+      }
+    }
+    if (synPlan !== null) {
+      for (let ri2 = 0; ri2 < synPlan.length; ri2++) {
+        const row2 = synPlan[ri2];
+        for (let ai2 = 0; ai2 < row2.length; ai2++) {
+          const p2 = postings.get(row2[ai2].a);
+          if (p2 === void 0) continue;
+          const pd2 = p2.d;
+          for (let pi2 = 0; pi2 < pd2.length; pi2++) {
+            const di2 = pd2[pi2];
+            if (candAt[di2] === 0) { candAt[di2] = 1; candBuf[candN++] = di2; }
+          }
+        }
       }
     }
     if (synOf !== null) {
@@ -4409,7 +4638,7 @@ function search(query, docs, opts = {}) {
         const di = pd[pi];
         const f = pf[pi];
         const fl = pt[pi];
-        const fw = FIELD_W_TAB[fl & 3];
+        const fw = qLoopDeclW === null ? FIELD_W_TAB[fl & 3] : FIELD_W_TAB[fl & 3] * qLoopDeclW[qi];
         raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));
       }
     }
@@ -4417,22 +4646,51 @@ function search(query, docs, opts = {}) {
       const di = candBuf[ci];
       let s = raw[di];
       const cvr = cvrOf[di];
-      if (synOf !== null) {
+      if (synOf !== null || synPlan !== null) {
         const tfi = tf[di];
         const len = onBody ? tokLen[di] : bodyLen[di];
         const bEff = b * (1 - coverLenRelief * cvr);
         // [macro-fusion 0.6.29] 饱和分母只由这条候选自己决定，原来写成 `sat(f)` 闭包，每个替身词
         // 都要把长度归一那段从头算一遍（还带一次闭包调用）。
         const satDen = k1 * (1 - bEff + bEff * len / lenDl);
-        for (const alts of synOf.values()) {
-          let best = 0;
-          for (const a of alts) {
-            const f = tfi.get(a);
-            if (!f) continue;
-            const v = idfAt(a) * (f * k1p1 / (f + satDen));
-            if (v > best) best = v;
+        const rawDirect = raw[di];
+        if (synPlan === null) {
+          for (const alts of synOf.values()) {
+            let best = 0;
+            for (const a of alts) {
+              const f = tfi.get(a);
+              if (!f) continue;
+              const v = idfAt(a) * (f * k1p1 / (f + satDen));
+              if (v > best) best = v;
+            }
+            s += synW * best;
           }
-          s += synW * best;
+        } else {
+          // [macro-fusion 0.6.39 · P1] 与 `scanDoc` 同一位置、同一算式（两条路对拍必须逐位一致）。
+          const titleSet = titleSets === null ? null : titleSets[di];
+          const kwSet = kwSets === null ? null : kwSets[di];
+          // [macro-fusion 0.6.39 · P3] 对照型条目不吃字段加成（与 `scanDoc` 同一判据）。
+          const declDocK = lookupPen !== null && lookupPen[di] < 1 ? 0 : 1;
+          for (let ri = 0; ri < synPlan.length; ri++) {
+            const row = synPlan[ri];
+            if (row.chr === 1 && rawDirect !== 0) continue;
+            let best = 0;
+            let total = 0;
+            for (let ai = 0; ai < row.length; ai++) {
+              const it = row[ai];
+              const f = tfi.get(it.a);
+              if (!f) continue;
+              let v = idfAt(it.a) * (f * k1p1 / (f + satDen)) * it.w;
+              if (row.chr === 1 && !((titleSet !== null && titleSet.has(it.a)) || (kwSet !== null && kwSet.has(it.a)))) continue;
+              if (it.br !== 0 && declDocK === 1) {
+                if (titleSet !== null && titleSet.has(it.a)) v *= 1 + FIELD_TITLE_W;
+                if (kwSet !== null && kwSet.has(it.a)) v *= 1 + FIELD_KW_W;
+              }
+              if (v > best) best = v;
+              total += v;
+            }
+            s += row.chr === 1 ? (total < best * CHAR_BRIDGE_SUM_CAP ? total : best * CHAR_BRIDGE_SUM_CAP) : best;
+          }
         }
       }
       if (cvr > 0) s *= coordKeep + COORD_W * cvr;
