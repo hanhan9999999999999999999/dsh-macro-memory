@@ -13762,7 +13762,7 @@ rawkTopPrev = top;
 4. `lib/index.js` 的 `resolveConfig` 交换两句顺序：旧嵌套 `macro:` 段铺底、根键覆盖（原来嵌套段反盖根键，面板写入被静默顶掉）。
 5. `probe-client-ui` 升级成真渲染；`probe-tools` 的 importer 扫描补根目录 `build.mjs` 与 `from './tools/…'` 写法。
 
-**读数**：`probe-settings` 27 条（S0–S6）；`probe-client-ui` 19 条；规模 59 支 / 4,166 断言（0.6.41 是 58 支 / 4,132）。
+**读数**：`tools/probe-settings.mjs` 27 条（S0–S6）；`tools/probe-client-ui.mjs` 19 条；规模 59 支 / 4,166 断言（0.6.41 是 58 支 / 4,132）。
 
 **踩坑三条**：①只锚 `title: "settings.group.reflect",` 会把新组插进旧对象体内部，bundle 语法错误；`check-client-bundle` 只读文本、全程绿着，只有真执行 client.js 的探针能抓到。②`escZh` 之后再 `JSON.stringify` 得到 `\\u661F`（六个字面字符）。③`probe-tools` 的归类扫描不含根目录 `build.mjs`，构建期补丁脚本被判「未归类」。另：`package.json` / `lib/index.js` 的版本号只能用 .NET UTF8 读写，禁 PowerShell `Get-Content`/`Set-Content`（0.6.41 踩过 GBK 事故）。
 

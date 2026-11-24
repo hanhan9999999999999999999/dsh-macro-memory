@@ -671,4 +671,4 @@ Bundled third-party code is MIT: `meow-memory` © 2026 Phant0Meow ([source](http
 
 ---
 
-<sub>内部开发日志（0.1.x 起逐轮记录，含每次事故与判据）在 [docs/INTERNAL.md](docs/INTERNAL.md)；设计取舍在 [DESIGN.md](DESIGN.md)。`lib/client.js` 为构建产物：164,507 B，sha256 `56E3A577…`。</sub>
+<sub>内部开发日志（0.1.x 起逐轮记录，含每次事故与判据）在 [docs/INTERNAL.md](docs/INTERNAL.md)；设计取舍在 [DESIGN.md](DESIGN.md)。`lib/client.js` 为构建产物：171,655 B，sha256 `74CF2465…`。</sub>
