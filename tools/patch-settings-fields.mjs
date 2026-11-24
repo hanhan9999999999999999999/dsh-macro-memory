@@ -13,17 +13,25 @@
  * 锚点少一处、多一处都直接抛错（`replaceN` 的做法），不静默放过。
  *
  * 补的是什么（三语 + 出厂值 + 字段表 + i18n 键清单）：
- *   1. 三份词典（en / zh / pt-br）各加 13 条：1 个分组标题 + 6 组 label/hint；
- *   2. `CONFIG_DEFAULTS` 加六个出厂值——设置页「恢复默认」写回的就是它们，
+ *   1. 三份词典（en / zh / pt-br）各加 17 条：1 个分组标题 + 8 组 label/hint；
+ *   2. `CONFIG_DEFAULTS` 加八个出厂值——设置页「恢复默认」写回的就是它们，
  *      所以它们必须与引擎 / 融合层的默认值逐个相等（`tools/probe-settings.mjs` 盯着）；
- *   3. `FIELDS` 的注入组补 `injectFloor` / `injectBodyMax`，并新开一组「星图邻域」；
+ *   3. `FIELDS` 的注入组补 `injectFloor` / `injectBodyMax` / `injectSessionBudget` /
+ *      `injectRepeatSim`，并新开一组「星图邻域」；
  *   4. `UI_KEYS`（面板文案键清单）补齐，缺键的界面会显示成 raw key。
+ *
+ * [0.6.44] 注入组多了两个节奏旋钮：会话累计预算（默认 0 = 不限）与同话题抑制（默认 0.25）。
+ * 前者就是主人 2026-11-25 说的那句「每次长期记忆注入要有限制，默认可以是没有限制」的
+ * **整会话版本**——injectMaxChars 管单次，这个管一次会话一共花多少。
  */
 
 /** 面板新增的字段（顺序即界面顺序）：key / type / 属于哪个分组。 */
 export const NEW_FIELDS = [
   { key: 'injectFloor', type: 'num', group: 'inject' },
   { key: 'injectBodyMax', type: 'num', group: 'inject' },
+  // 0.6.44：注入节奏两个旋钮——「一次会话一共允许多少字」与「同话题延续怎么判」。
+  { key: 'injectSessionBudget', type: 'num', group: 'inject' },
+  { key: 'injectRepeatSim', type: 'num', group: 'inject' },
   { key: 'neighborInject', type: 'bool', group: 'neighbor' },
   { key: 'neighborMax', type: 'num', group: 'neighbor' },
   { key: 'neighborChars', type: 'num', group: 'neighbor' },
@@ -44,8 +52,17 @@ const TEXT = {
       'settings.field.injectBodyMax.hint',
       'Longest body injected for one entry (characters; 0 = the whole entry). An over-long entry keeps its first sentence plus the one most relevant to the question and says how much was folded away — memory_read returns the full text.',
     ],
-    ['settings.field.neighborInject.label', 'Inject graph neighbourhood'],
+    ['settings.field.injectSessionBudget.label', 'Session injection budget'],
     [
+      'settings.field.injectSessionBudget.hint',
+      'Total characters of keyword-hit injection allowed across one session (0 = no limit). Once spent, no more hits are injected — the model can still memory_search what it needs.',
+    ],
+    ['settings.field.injectRepeatSim.label', 'Same-topic suppression'],
+    [
+      'settings.field.injectRepeatSim.hint',
+      'When this turn’s wording overlaps the previous injection’s question this much (0–1; 1 = off, default 0.25), only hits clearly more relevant than last turn’s best are injected — follow-ups stop re-reading the same neighbourhood.',
+    ],
+    ['settings.field.neighborInject.label', 'Inject graph neighbourhood'],    [
       'settings.field.neighborInject.hint',
       "Each turn, append what this message is connected to in the graph. Off falls back to “no lookup unless the model asks”.",
     ],
@@ -74,6 +91,16 @@ const TEXT = {
       'settings.field.injectBodyMax.hint',
       '单条记忆最多注入多少字的正文（0＝整条）。超长条目保留首句与最贴问句的那一句，并自述折叠了多少字；要全文用 memory_read。',
     ],
+    ['settings.field.injectSessionBudget.label', '会话注入预算'],
+    [
+      'settings.field.injectSessionBudget.hint',
+      '一次会话里关键词命中注入一共允许多少字（0＝不限）。花完就不再注入，模型要什么可以自己 memory_search。',
+    ],
+    ['settings.field.injectRepeatSim.label', '同话题抑制'],
+    [
+      'settings.field.injectRepeatSim.hint',
+      '这一轮的问句与上一次注入时的问句重合到这个程度（0–1，1＝关，默认 0.25），就只注入比上一轮最好那条明显更相关的条目——追问不再重复看同一批邻居。',
+    ],
     ['settings.field.neighborInject.label', '每轮带星图邻域'],
     [
       'settings.field.neighborInject.hint',
@@ -101,6 +128,16 @@ const TEXT = {
       'settings.field.injectBodyMax.hint',
       'Corpo máximo injetado por entrada (caracteres; 0 = a entrada inteira). Uma entrada longa mantém a primeira frase e a mais relevante para a pergunta, e informa quanto foi omitido — memory_read traz o texto completo.',
     ],
+    ['settings.field.injectSessionBudget.label', 'Orçamento de injeção por sessão'],
+    [
+      'settings.field.injectSessionBudget.hint',
+      'Total de caracteres de injeção por acerto de palavra-chave permitido em uma sessão (0 = sem limite). Esgotado, nada mais é injetado — o modelo ainda pode usar memory_search.',
+    ],
+    ['settings.field.injectRepeatSim.label', 'Supressão de mesmo assunto'],
+    [
+      'settings.field.injectRepeatSim.hint',
+      'Quando a frase deste turno se sobrepõe à pergunta da injeção anterior neste grau (0–1; 1 = desligado, padrão 0,25), só entram acertos claramente mais relevantes que o melhor do turno anterior.',
+    ],
     ['settings.field.neighborInject.label', 'Injetar vizinhança do grafo'],
     [
       'settings.field.neighborInject.hint',
@@ -125,6 +162,9 @@ const TEXT = {
 const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎默认（0.45 / 240 字），「恢复默认」写回它们。 */
   injectFloor: 0.45,
   injectBodyMax: 240,
+  /** 0.6.44：注入节奏两个旋钮的出厂值＝引擎默认（0＝会话累计不限；0.25＝同话题抑制生效）。 */
+  injectSessionBudget: 0,
+  injectRepeatSim: 0.25,
   /** 0.6.42：星图邻域四个旋钮的出厂值＝融合层默认（lib/macro/neighbor.js）。 */
   neighborInject: true,
   neighborMax: 4,
@@ -133,7 +173,9 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
 
 const FIELDS_BLOCK = `,
       { key: "injectFloor", label: "settings.field.injectFloor.label", type: "num", hint: "settings.field.injectFloor.hint" },
-      { key: "injectBodyMax", label: "settings.field.injectBodyMax.label", type: "num", hint: "settings.field.injectBodyMax.hint" }`
+      { key: "injectBodyMax", label: "settings.field.injectBodyMax.label", type: "num", hint: "settings.field.injectBodyMax.hint" },
+      { key: "injectSessionBudget", label: "settings.field.injectSessionBudget.label", type: "num", hint: "settings.field.injectSessionBudget.hint" },
+      { key: "injectRepeatSim", label: "settings.field.injectRepeatSim.label", type: "num", hint: "settings.field.injectRepeatSim.hint" }`
 
 const GROUP_BLOCK = `  {
     title: "settings.group.neighbor",

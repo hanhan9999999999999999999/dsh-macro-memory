@@ -1266,6 +1266,12 @@ var CONFIG_DEFAULTS = {
   // [macro-fusion 0.6.41] 单条正文上限（0 = 不限，逐位等同 0.6.40 的整条注入）。
   // 同样写死字面值：本对象求值早于 INJECT_BODY_MAX_DEF 那一行。
   injectBodyMax: 240,
+  // [macro-fusion 0.6.44] 会话累计预算（字；0 = 不限）：整个会话里命中注入一共允许多少字。
+  // 与 injectMaxChars 是两层账——那个管「这一次注入多大」，这个管「一整个会话一共花多少」。
+  injectSessionBudget: 0,
+  // [macro-fusion 0.6.44] 同话题延续判定（0–1；1 = 关）：上一轮问句与本轮词面重合到这个程度，
+  // 就只注入「明显更相关」的条目（见 injectRepeatBoost）。同 1264 行，写死字面值。
+  injectRepeatSim: 0.25,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -5664,7 +5670,7 @@ var INJECT_FLOOR_DEF = 0.45;
 // 0.6.41 只是把它从「预算耗尽时才生效」提升成独立常开的第三条闸。真库标定读数：
 // A 组 9 问 7,337 → 5,485 字（省 25.2%，只摘要最长的 12 条），B 组 13 问 8,272 → 5,926 字。
 var INJECT_BODY_MAX_DEF = 240;
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF };
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -5682,10 +5688,16 @@ function readSeenFile(workspace, sessionId, dir) {
       written: Array.isArray(parsed.written) ? parsed.written.filter((x) => typeof x === "string") : [],
       projectsQueried: Array.isArray(parsed.projectsQueried) ? parsed.projectsQueried.filter((x) => typeof x === "string") : [],
       reinjectPending: parsed.reinjectPending === true,
-      currentProject: typeof parsed.currentProject === "string" && parsed.currentProject.length > 0 ? parsed.currentProject : null
+      currentProject: typeof parsed.currentProject === "string" && parsed.currentProject.length > 0 ? parsed.currentProject : null,
+      // [macro-fusion 0.6.44] 注入节奏账：这三种字段是「会话累计预算」与「同话题延续」的判据。
+      // 老会话文件里没有它们 → 分别退化成 0 / 空 / 0，也就是「预算没用过、上一轮没有问句」，
+      // 逐位等于 0.6.43 的行为，不需要迁移。
+      injectChars: Number.isFinite(parsed.injectChars) ? Math.max(0, Math.floor(parsed.injectChars)) : 0,
+      lastQueryTerms: Array.isArray(parsed.lastQueryTerms) ? parsed.lastQueryTerms.filter((x) => typeof x === "string").slice(0, 60) : [],
+      lastTopScore: Number.isFinite(parsed.lastTopScore) ? parsed.lastTopScore : 0
     };
   } catch {
-    return { injected: [], searched: [], accessed: [], written: [], projectsQueried: [], reinjectPending: false, currentProject: null };
+    return { injected: [], searched: [], accessed: [], written: [], projectsQueried: [], reinjectPending: false, currentProject: null, injectChars: 0, lastQueryTerms: [], lastTopScore: 0 };
   }
 }
 function writeSeenFile(workspace, sessionId, seen, dir) {
@@ -5698,7 +5710,10 @@ function writeSeenFile(workspace, sessionId, seen, dir) {
     written: seen.written,
     projectsQueried: seen.projectsQueried,
     reinjectPending: seen.reinjectPending,
-    currentProject: seen.currentProject
+    currentProject: seen.currentProject,
+    injectChars: seen.injectChars,
+    lastQueryTerms: seen.lastQueryTerms,
+    lastTopScore: seen.lastTopScore
   }), "utf8");
 }
 function readInjected(workspace, sessionId, dir = ".dsh-meow") {
@@ -6210,6 +6225,26 @@ var INJECT_BODY_CAP = 240;
 var INJECT_NOTE_RESERVE = 120;
 // [macro-fusion 0.6.41] 「本条还有 N 字 · 全文 memory_read("id")」那一行的预留长度（中英取长）。
 var INJECT_BODY_NOTE_MAX = 56;
+// ── 0.6.44：注入节奏（会话累计预算 + 同话题延续）─────────────────────────────
+// 0.6.40 的 injectFloor 治的是**单轮**的浪费（「跑一下测试」「继续」也注入）。
+// 剩下的浪费在**频率**上：一个会话里的追问是连续的，「注入上限怎么设 → 那默认是多少 →
+// 面板在哪」这种，每轮都会命中一批**新的**相近条目，而模型上一轮刚看过同一批东西。
+// 真库标定（0.6.44，824 条 / 16 条真实问句）：其中 6 问已被 0.45 闸挡掉，剩下 10 轮
+// 平均 338 字——单轮体积不大，**轮次**才是账。
+//
+// 两道闸都只管注入、不管检索：被挡的条目照样 memory_search / memory_read 得到。
+//
+// 同话题判据：词面 Jaccard 的下限。**0.25 是实测出来的，不是拍的**——
+// 中文二元组下，同一件事换个说法地追问，Jaccard 落在 0.09–0.60（10 组真实追问的分布：
+// 0.09 / 0.20 / 0.25 / 0.273×3 / 0.286 / 0.30 / 0.455 / 0.588 / 0.60），
+// 而完全不同话题的 10 组全是 0.000（交集为 0）。所以 0.25 这条线：
+// 同话题召回 7/10，异话题误报 0/10。
+// 不能取 0.45/0.6：那只有 1–2 组追问能命中，「注入上限怎么设 → 那默认值多少」这种
+// 最典型的追问全被漏掉，闸门等于没开。真正的收口在 boost（1.3）上，不在相似度上。
+var INJECT_REPEAT_SIM_DEF = 0.25;
+var INJECT_REPEAT_BOOST_DEF = 1.3;
+// 词面少于这么多条时不判同话题：短句（「继续」「好的」）的重合度本来就不可信。
+var INJECT_REPEAT_MIN_TERMS = 4;
 var INJECT_SENT_SPLIT = /(?<=[。！？；!?;\n])/;
 var INJECT_WORD_RE = /[\u4e00-\u9fa5A-Za-z0-9_]{2,}/g;
 // [macro-fusion 0.6.41] 纯疑问/虚词二元组不算证据：它们出现在任何一句里都不说明「这就是答案那一句」。
@@ -6264,8 +6299,25 @@ function injectTermsOf(text) {
   return out
 }
 
-/** 句切分：中文句末标点与换行都算句子边界；空句丢掉。 */
-function splitSentsOf(body) {
+/**
+ * [macro-fusion 0.6.44] 两组词面的 Jaccard 重合度（0–1）。
+ * 用词面而不是向量：这里要判的是「用户还在说同一件事吗」，词面重合足够，
+ * 而且完全可复现、不需要模型调用（注入闸门在 pre-step 热路径上，不能等 LLM）。
+ * 一边为空按 0 算——「没话说」不等于「话题相同」。
+ */
+function termOverlapOf(a, b) {
+  if (a.length === 0 || b.length === 0) return 0;
+  const A = new Set(a);
+  const B = new Set(b);
+  let both = 0;
+  for (const t of A) {
+    if (B.has(t)) both += 1;
+  }
+  const union = A.size + B.size - both;
+  return union === 0 ? 0 : both / union;
+}
+
+/** 句切分：中文句末标点与换行都算句子边界；空句丢掉。 */function splitSentsOf(body) {
   const s = String(body ?? '')
   if (s.length === 0) return []
   const parts = s.split(INJECT_SENT_SPLIT)
@@ -6515,10 +6567,37 @@ function hitQuery(db, workspace, sessionId, userText, o, dir) {
     return { id: h.id, level: h.level, content: row?.content ?? h.content, project: row?.project ?? null, updated_at: row?.updated_at ?? null, score: h.score };
   });
 }
+/**
+ * [macro-fusion 0.6.44] 「这一轮为什么没注入」写进 dream-debug.log。
+ * 节奏闸的价值全在「省掉了什么」——不记一行，用户只会看到「有时候没有记忆注入」，
+ * 没法判断是闸在工作还是坏了。写盘失败一律不影响这一轮。
+ */
+function logHitSkip(workspace, dir, reason, extra = "") {
+  try {
+    appendFileSync2(join9(workspace, dir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-skip reason=${reason}${extra}
+`);
+  } catch {
+  }
+}
+
 function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = ".dsh-meow") {
   const o = { ...DEFAULT_OPTS, ...opts };
+  // [macro-fusion 0.6.44] 会话账本：累计注入字数 + 上一轮的词面与最高分。
+  // 这里单独读一次（hitQuery 内部也读），因为要在**检索之前**判预算：到顶了就别白检索一遍。
+  const seen = readSeenFile(workspace, sessionId, dir);
+  const spent = Number.isFinite(seen.injectChars) ? seen.injectChars : 0;
+  // 闸 ①：会话累计预算（0 = 不限，默认，逐位等同旧行为）。
+  // 到顶之后整轮不注入——账已经花完，再灌就是纯消耗。模型仍然可以自己 memory_search。
+  const sessionBudget = Number.isFinite(o.injectSessionBudget) ? Math.max(0, Math.floor(o.injectSessionBudget)) : 0;
+  if (sessionBudget > 0 && spent >= sessionBudget) {
+    logHitSkip(workspace, dir, "budget", ` spent=${spent} limit=${sessionBudget}`);
+    return null;
+  }
   const fresh = hitQuery(db, workspace, sessionId, userText, o, dir);
-  if (fresh.length === 0) return null;
+  if (fresh.length === 0) {
+    logHitSkip(workspace, dir, "empty");
+    return null;
+  }
   // [macro-fusion 0.6.40] 命中闸门：分数不到 injectFloor 的命中不注入。
   // 病根是「有命中就注入」——keywordHitScore 没有任何下限，于是「跑一下测试」「继续」
   // 这类问句也会把 0.30~0.42 分的条目正文搬进上下文，每条被注入的正文还会留在
@@ -6527,15 +6606,50 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   // 被挡的条目不当成「已注入」（不写 seen、不加 hit_count）：下一轮问句真问到它时还能进来。
   // 坏值的两种待遇见 resolveConfig 的注释：非数字回默认 0.45，负数夹成 0（显式关闸）。
   const floor = Number.isFinite(o.injectFloor) ? Math.max(0, o.injectFloor) : INJECT_FLOOR_DEF;
-  const kept = floor > 0 ? fresh.filter((h) => !(Number.isFinite(h.score) && h.score < floor)) : fresh;
+  let kept = floor > 0 ? fresh.filter((h) => !(Number.isFinite(h.score) && h.score < floor)) : fresh;
   const gated = fresh.length - kept.length;
-  if (kept.length === 0) return null;
+  if (kept.length === 0) {
+    logHitSkip(workspace, dir, "floor", ` gated=${gated} floor=${floor}`);
+    return null;
+  }
+  // 闸 ②：同话题延续（0.6.44）。上一轮问句与本轮词面 Jaccard ≥ injectRepeatSim 时，
+  // 只放「比上一轮最好那条还明显更相关」的条目进来（分数 ≥ 上轮最高分 × boost）。
+  // 注意这不是「同话题就不注入」，是「同话题只注入新信息」：模型上一轮已经看过同一批，
+  // 这一轮再灌一遍相同强度的近邻就是白花。追问里真出现更贴题的条目仍照常进来。
+  const sim = Number.isFinite(o.injectRepeatSim) ? o.injectRepeatSim : INJECT_REPEAT_SIM_DEF;
+  const curTerms = injectTermsOf(userText);
+  let repeated = 0;
+  if (sim > 0 && sim <= 1 && curTerms.length >= INJECT_REPEAT_MIN_TERMS) {
+    const prevTerms = seen.lastQueryTerms;
+    const prevTop = Number.isFinite(seen.lastTopScore) ? seen.lastTopScore : 0;
+    if (prevTerms.length >= INJECT_REPEAT_MIN_TERMS && prevTop > 0 && termOverlapOf(prevTerms, curTerms) >= sim) {
+      const boost = Number.isFinite(o.injectRepeatBoost) && o.injectRepeatBoost >= 1 ? o.injectRepeatBoost : INJECT_REPEAT_BOOST_DEF;
+      const bar = Math.max(floor, prevTop * boost);
+      const before = kept.length;
+      kept = kept.filter((h) => Number.isFinite(h.score) && h.score >= bar);
+      repeated = before - kept.length;
+    }
+  }
+  if (kept.length === 0) {
+    logHitSkip(workspace, dir, "repeat", ` repeated=${repeated} sim=${sim} prevTop=${seen.lastTopScore}`);
+    return null;
+  }
   const rendered = renderHitEntries(kept, o, userText);
   const text = rendered.text;
   const ids = kept.map((h) => h.id);
   markInjected(workspace, sessionId, ids, dir);
   for (const h of kept) db.bumpHit(h.level, h.id);
-  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0 } };
+  // 记账：累计字数 + 这一轮的词面与最高分（下一轮判同话题用）。
+  // 写盘失败不影响这一轮的注入——账少了只等于「下一轮判不准」，不该挡内容。
+  try {
+    const after = readSeenFile(workspace, sessionId, dir);
+    after.injectChars = spent + text.length;
+    after.lastQueryTerms = curTerms.slice(0, 60);
+    after.lastTopScore = Number.isFinite(kept[0].score) ? kept[0].score : 0;
+    writeSeenFile(workspace, sessionId, after, dir);
+  } catch {
+  }
+  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, spent: spent + text.length, sessionBudget } };
 }
 
 // src/tools.ts
@@ -10486,6 +10600,19 @@ var config = z.object({
    *  所以只动最长的大约一半条目，短条目逐字不动。
    *  设 0 = 整条给（逐位回到 0.6.40）；与 injectMaxChars 同时生效时单条取两者较小者。 */
   injectBodyMax: z.number().min(0).default(INJECT_BODY_MAX_DEF),
+  /** [macro-fusion 0.6.44] 会话累计预算：一整个会话里命中注入一共允许多少字（0 = 不限，默认）。
+   *  与 injectMaxChars 是两层账——那个管「一次注入多大」，这个管「一次会话一共花多少」。
+   *  到顶之后不再注入（模型仍可 memory_search）。用户拍板的方向：
+   *  「每次长期记忆注入要有限制，默认可以是没有限制」——默认 0 就是没限制，
+   *  想省的人自己给个值（如 4000 = 大约十几轮的命中注入）。 */
+  injectSessionBudget: z.number().min(0).default(0),
+  /** [macro-fusion 0.6.44] 同话题延续判定（0–1，1 = 关；默认 0.25）。
+   *  上一轮的问句与本轮词面 Jaccard 到这个程度，就认为「还在说同一件事」，
+   *  只注入分数 ≥ 上一轮最高分 × 1.3 的条目（真新信息），其余不重复灌。
+   *  0.25 是实测线：中文二元组下的 10 组真实追问落在 0.09–0.60，0.25 召回 7/10；
+   *  不同话题的 10 组全是 0.000，所以这个阈值不误伤。
+   *  设 1 = 关（逐位回到 0.6.43）。 */
+  injectRepeatSim: z.number().min(0).max(1).default(INJECT_REPEAT_SIM_DEF),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
@@ -10560,6 +10687,8 @@ function validateConfigUserLayer(value) {
   reqNum("injectMaxChars");
   reqNum("injectFloor");
   reqNum("injectBodyMax");
+  reqNum("injectSessionBudget");
+  reqNum("injectRepeatSim");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -10649,6 +10778,11 @@ function resolveConfig(config2) {
     // [macro-fusion 0.6.41] 单条正文上限是整数字数，取整后夹到非负：
     // 非数字 → 回默认 240（配置读坏了不许变成「整条灌进来」）；负数 → 夹成 0 = 不限。
     injectBodyMax: Number.isFinite(c.injectBodyMax) ? Math.max(0, Math.floor(c.injectBodyMax)) : INJECT_BODY_MAX_DEF,
+    // [macro-fusion 0.6.44] 两层新账。坏值待遇与 injectBodyMax 一致：非数字回默认，
+    // 负数夹成 0（会话预算 0 = 不限）。injectRepeatSim 是 0–1 的比例，夹到 [0,1]，
+    // 大于 1 视为关（buildHitInjection 里 `sim <= 1` 才启用）。
+    injectSessionBudget: Number.isFinite(c.injectSessionBudget) ? Math.max(0, Math.floor(c.injectSessionBudget)) : 0,
+    injectRepeatSim: Number.isFinite(c.injectRepeatSim) ? Math.min(1, Math.max(0, c.injectRepeatSim)) : INJECT_REPEAT_SIM_DEF,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -10806,7 +10940,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectBodyMax", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -11439,10 +11573,12 @@ ${e.stack ?? ""}` : String(e)}
           titleMax: resolved.titleMax,
           injectMaxChars: resolved.injectMaxChars,
           injectFloor: resolved.injectFloor,
-          injectBodyMax: resolved.injectBodyMax
+          injectBodyMax: resolved.injectBodyMax,
+          injectSessionBudget: resolved.injectSessionBudget,
+          injectRepeatSim: resolved.injectRepeatSim
         }, resolved.projectDir);
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0}
+          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }

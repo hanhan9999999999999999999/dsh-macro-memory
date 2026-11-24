@@ -88,7 +88,8 @@ function seenOf(sid) {
 // ── F1 形状：常量 / 默认值 / 配置面五处 / 观测字段 ────────────────────────────
 {
   ok('F1 默认分线常量在位（0.45）', src.includes('var INJECT_FLOOR_DEF = 0.45;'))
-  ok('F1 DEFAULT_OPTS 带上闸门', /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF \};/.test(src))
+  ok('F1 DEFAULT_OPTS 带上闸门（0.6.44 起还带注入节奏两项：会话预算 0 / 同话题 0.6）',
+    /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF \};/.test(src))
   ok('F1 CONFIG_DEFAULTS 里是字面 0.45（模块求值早于常量赋值）', /injectFloor: 0\.45,/.test(src))
   ok('F1 zod schema 默认跟常量走', src.includes('injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),'))
   ok('F1 设置页校验会挡坏值', src.includes('reqNum("injectFloor");'))

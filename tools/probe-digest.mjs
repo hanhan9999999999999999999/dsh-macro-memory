@@ -85,7 +85,7 @@ const blockOf = (text, id) => {
 // ── D1 形状：常量 / 默认值 / 配置面五处 / 标签 / 中文切词 ─────────────────────
 {
   ok('D1 单条上限常量在位（240）', src.includes('var INJECT_BODY_MAX_DEF = 240;'))
-  ok('D1 DEFAULT_OPTS 带上单条上限', /var DEFAULT_OPTS = \{[^}]*injectBodyMax: INJECT_BODY_MAX_DEF \};/.test(src))
+  ok('D1 DEFAULT_OPTS 带上单条上限（0.6.44 起还带注入节奏两项）', /var DEFAULT_OPTS = \{[^}]*injectBodyMax: INJECT_BODY_MAX_DEF[^}]*injectSessionBudget: 0[^}]*injectRepeatSim: INJECT_REPEAT_SIM_DEF[^}]*\};/.test(src))
   ok('D1 CONFIG_DEFAULTS 里是字面 240（模块求值早于常量赋值）', /injectBodyMax: 240,/.test(src))
   ok('D1 zod schema 默认跟常量走', src.includes('injectBodyMax: z.number().min(0).default(INJECT_BODY_MAX_DEF),'))
   ok('D1 设置页校验会挡坏值', src.includes('reqNum("injectBodyMax");'))

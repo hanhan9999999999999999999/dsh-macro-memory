@@ -63,8 +63,8 @@ const defaults = configDefaultsOf(client)
 
 // ── S0 补丁真的落到产物里（而不是只写在 tools/ 里） ─────────────────────────
 {
-  ok('S0 产物里有 0.6.42 的补丁痕迹（六个 key 全在）',
-    ['injectFloor', 'injectBodyMax', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
+  ok('S0 产物里有 0.6.42 / 0.6.44 的补丁痕迹（八个 key 全在）',
+    ['injectFloor', 'injectBodyMax', 'injectSessionBudget', 'injectRepeatSim', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
       .every((k) => client.includes(`"settings.field.${k}.label"`)))
   ok('S0 vendored meow bundle 没被手改（补丁在构建期，上游可升级）',
     !meowSrc.includes('settings.field.neighborMax.label') && !meowSrc.includes('injectBodyMax:'),
@@ -84,14 +84,14 @@ const defaults = configDefaultsOf(client)
     const s = spec(key)
     return s === null ? null : (/type: "(\w+)"/.exec(s)?.[1] ?? null)
   }
-  ok('S1 六个字段都进了 FIELDS', ['injectFloor', 'injectBodyMax', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
+  ok('S1 八个字段都进了 FIELDS', ['injectFloor', 'injectBodyMax', 'injectSessionBudget', 'injectRepeatSim', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
     .every((k) => spec(k) !== null))
-  ok('S1 类型对：neighborInject 是 bool，其余五个是 num',
+  ok('S1 类型对：neighborInject 是 bool，其余七个是 num',
     typeOf('neighborInject') === 'bool' &&
-      ['injectFloor', 'injectBodyMax', 'neighborMax', 'neighborChars', 'neighborMinScore'].every((k) => typeOf(k) === 'num'),
+      ['injectFloor', 'injectBodyMax', 'injectSessionBudget', 'injectRepeatSim', 'neighborMax', 'neighborChars', 'neighborMinScore'].every((k) => typeOf(k) === 'num'),
     `neighborInject=${typeOf('neighborInject')}`)
   ok('S1 都不带 sub（写的是根键，融合层才读得到）',
-    ['injectFloor', 'injectBodyMax', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
+    ['injectFloor', 'injectBodyMax', 'injectSessionBudget', 'injectRepeatSim', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
       .every((k) => !/sub:/.test(spec(k) ?? '')),
     '')
   ok('S1 新的一组插在「反思」前面（顺序：注入 → 邻域 → 反思）',
@@ -120,6 +120,12 @@ const defaults = configDefaultsOf(client)
       d.neighborMinScore === NB.NEIGHBOR_MIN_SCORE,
     `${d.neighborMax}/${d.neighborChars}/${d.neighborMinScore}`)
   ok('S2 neighborInject 出厂值是开（默认每轮带邻域）', d.neighborInject === true, String(d.neighborInject))
+  ok('S2 injectSessionBudget 出厂值 = 引擎默认（0＝会话累计不限）',
+    d.injectSessionBudget === ENG.CONFIG_DEFAULTS.injectSessionBudget,
+    `面板 ${d.injectSessionBudget} / 引擎 ${ENG.CONFIG_DEFAULTS.injectSessionBudget}`)
+  ok('S2 injectRepeatSim 出厂值 = 引擎默认（0.25 实测线）',
+    d.injectRepeatSim === ENG.CONFIG_DEFAULTS.injectRepeatSim,
+    `面板 ${d.injectRepeatSim} / 引擎 ${ENG.CONFIG_DEFAULTS.injectRepeatSim}`)
 }
 
 // ── S3 三语齐全，且 zh 是真中文（不是双转义的六个字符） ────────────────────
@@ -138,7 +144,7 @@ const defaults = configDefaultsOf(client)
   ok('S3 分组标题三语齐全', group.length === 3, group.join(' / '))
   ok('S3 分组标题 zh 是「星图邻域」（u 转义被正确解回一个字，不是字面反斜杠）',
     group[1] === '星图邻域', JSON.stringify(group[1]))
-  const keys = ['injectFloor', 'injectBodyMax', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
+  const keys = ['injectFloor', 'injectBodyMax', 'injectSessionBudget', 'injectRepeatSim', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']
   const missing = []
   for (const k of keys) {
     for (const suffix of ['label', 'hint']) {
@@ -146,7 +152,7 @@ const defaults = configDefaultsOf(client)
       if (vals.length !== 3 || vals.some((v) => typeof v !== 'string' || v.length === 0)) missing.push(`${k}.${suffix}:${vals.length}`)
     }
   }
-  ok('S3 六组 label/hint 三语齐全且都非空', missing.length === 0, missing.join(','))
+  ok('S3 八组 label/hint 三语齐全且都非空', missing.length === 0, missing.join(','))
   const zhHints = keys.map((k) => matches(`settings.field.${k}.hint`)[1] ?? '')
   ok('S3 zh 文案确实是中文（每条都含汉字）', zhHints.every((t) => /[\u4E00-\u9FFF]/.test(t)), '')
   ok('S3 没有双转义残留（\\u 被写成字面反斜杠的那种）', !/\\\\u[0-9A-Fa-f]{4}/.test(client), '')
@@ -155,13 +161,13 @@ const defaults = configDefaultsOf(client)
 // ── S4 文案键清单齐全（少一条就显示成 raw key） ────────────────────────────
 {
   const keys = ['settings.group.neighbor']
-  for (const k of ['injectFloor', 'injectBodyMax', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']) {
+  for (const k of ['injectFloor', 'injectBodyMax', 'injectSessionBudget', 'injectRepeatSim', 'neighborInject', 'neighborMax', 'neighborChars', 'neighborMinScore']) {
     keys.push(`settings.field.${k}.label`, `settings.field.${k}.hint`)
   }
   const uiStart = client.lastIndexOf('var UI_KEYS = [')
   const uiSeg = uiStart < 0 ? '' : client.slice(uiStart, client.indexOf('];', uiStart))
   const miss = keys.filter((k) => !uiSeg.includes(`"${k}"`))
-  ok('S4 UI_KEYS 里 13 条文案键一条不少', uiSeg !== '' && miss.length === 0, miss.join(','))
+  ok('S4 UI_KEYS 里 17 条文案键一条不少', uiSeg !== '' && miss.length === 0, miss.join(','))
 }
 
 // ── S5 面板 ↔ 配置面接得上（不然「改了不生效」） ──────────────────────────
@@ -193,6 +199,7 @@ const defaults = configDefaultsOf(client)
   const written = MAC.resolveConfig({
     neighborInject: false, neighborMax: 2, neighborChars: 300, neighborMinScore: 0.5,
     injectFloor: 0, injectBodyMax: 0,
+    injectSessionBudget: 3000, injectRepeatSim: 0.5,
   })
   ok('S6 面板写根键后，四个邻域旋钮都真的变了（不是写了个没人读的字段）',
     written.macro.neighborInject === false && written.macro.neighborMax === 2 &&
@@ -201,6 +208,9 @@ const defaults = configDefaultsOf(client)
   ok('S6 两个注入闸门的根键也透到 meow 段（0＝关闸 / 整条）',
     written.meow.injectFloor === 0 && written.meow.injectBodyMax === 0,
     JSON.stringify([written.meow.injectFloor, written.meow.injectBodyMax]))
+  ok('S6 两个节奏旋钮的根键也透到 meow 段（3000 字 / 0.5）',
+    written.meow.injectSessionBudget === 3000 && written.meow.injectRepeatSim === 0.5,
+    JSON.stringify([written.meow.injectSessionBudget, written.meow.injectRepeatSim]))
   ok('S6 旧的嵌套写法仍然认（macro: 段铺底、根键覆盖）',
     MAC.resolveConfig({ macro: { neighborMax: 3 } }).macro.neighborMax === 3 &&
       MAC.resolveConfig({ macro: { neighborMax: 3 }, neighborMax: 1 }).macro.neighborMax === 1)

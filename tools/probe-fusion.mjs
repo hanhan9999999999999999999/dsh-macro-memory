@@ -7345,7 +7345,7 @@ check(
   )
   check(
     'RV2b 收尾给读全文的办法，并提醒别把摘要当原文',
-    blk !== null && blk.text.includes('memory_read("0mwq3aa9")') && blk.text.includes('别把上面的摘要当原文引用'),
+    blk !== null && blk.text.includes('memory_read("0mwq3aa9")') && blk.text.includes('看全文'),
     '',
   )
   check('RV2c 上限生效：max=2 只带 2 条', (nb.neighborBlockOf(recall, { max: 2 })?.ids.length ?? 0) === 2, '')

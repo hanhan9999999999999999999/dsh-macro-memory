@@ -18,7 +18,7 @@
  *  - 配置面（`neighborMinScore`）从 schema 到注入器一路接得上，改设置能真的生效。
  */
 import { root } from './_root.mjs'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -67,9 +67,9 @@ const recall = [
 
 // ── N0 形状：常量与导出 ────────────────────────────────────────────────────
 {
-  ok('N0 常量：门槛 0.35 / 尾部预留 150 / 原有四条没被挪动',
+  ok('N0 常量：门槛 0.35 / 尾部预留 170 / 原有四条没被挪动',
     NB.NEIGHBOR_MIN_SCORE === 0.35 &&
-      NB.NEIGHBOR_TAIL_RESERVE === 150 &&
+      NB.NEIGHBOR_TAIL_RESERVE === 170 &&
       NB.NEIGHBOR_DEFAULT_MAX === 4 &&
       NB.NEIGHBOR_DEFAULT_CHARS === 420 &&
       NB.NEIGHBOR_MIN_QUERY === 6,
@@ -106,17 +106,25 @@ const recall = [
     loose === null ? 'null' : `${loose.ids.length} 条 / weak ${loose.weak}`)
 }
 
-// ── N4 尾部：给「看路径 + 断边」的指引，且用第一个 id 当 b 端 ──────────────
+// ── N4 尾部：0.6.44 起是「一步式」——直接教 mute，不再要模型先 path ──────────
 {
   const blk = NB.neighborBlockOf(recall, { max: 4, chars: 420 })
   const t = blk?.text ?? ''
-  ok('N4 尾部教模型用 nebula_link(action="path") 看路径',
-    t.includes('nebula_link(action="path"') && t.includes('b="0mwq3aa9"'), t.split('\n').pop()?.slice(0, 60))
-  ok('N4 尾部教模型用 action="mute" 断掉错的那一跳',
-    t.includes('action="mute"') && t.includes('重建也不再连'), '')
-  ok('N4 尾部仍保留读全文的办法（原有能力不许因为加指引而丢）', t.includes('memory_read("0mwq3aa9")') && t.includes('别把上面的摘要当原文引用'))
-  ok('N4 来源 id 从 why 里能抠出来（回执带「经由…」时模型才知道 a 端填谁）',
-    t.includes('经由') , '')
+  const tail = t.split('\n').pop() ?? ''
+  ok('N4 尾部直接教 nebula_link(action="mute")，不再绕两步去 path',
+    t.includes('nebula_link(action="mute"') && !t.includes('action="path"'), tail.slice(0, 70))
+  ok('N4 尾部交代 a/b 两端各填什么（a=why 里的来源 id / b=行首那 8 位）',
+    t.includes('它 why 里') && t.includes('行首') && t.includes('8 位'), tail.slice(0, 90))
+  ok('N4 尾部仍保留读全文的办法（原有能力不许因为加指引而丢）',
+    t.includes('memory_read("0mwq3aa9")') && t.includes('看全文'))
+  ok('N4 尾部把判断标准写清：断的是错边，不是「这轮用不上」',
+    t.includes('断的是错边') && t.includes('忽略即可'), tail.slice(-60))
+  ok('N4 不给 query 时没有任何条被打标记（词面闸没开就不该有「未沾词」）',
+    blk !== null && blk.flagged === 0 && !t.includes(NB.NEIGHBOR_UNRELATED_MARK), `flagged=${blk?.flagged}`)
+  ok('N4 neighborSourceIdOf 能从「经由…(8 位)」抠出 a 端；直接命中档返回空串',
+    NB.neighborSourceIdOf('经由「写入节流」 (0mwq3aa9) 的cooc关联扩散而来') === '0mwq3aa9' &&
+      NB.neighborSourceIdOf('直接命中查询词（跨工作区/普通）') === '' &&
+      NB.neighborSourceIdOf(undefined) === '')
 }
 
 // ── N5 预算：尾部不能挤掉条目；预算太小先保条目 ────────────────────────────
@@ -141,8 +149,11 @@ const recall = [
 {
   ok('N6 max=0 回 null', NB.neighborBlockOf(recall, { max: 0 }) === null)
   const skipped = NB.neighborBlockOf(recall, { skip: ['0mwq3aa9'] })
-  ok('N6 带过的（裸 id）不再带，且尾部 b 端换成新的第一个',
-    skipped !== null && !skipped.ids.includes('0mwq3aa9') && skipped.text.includes('b="0mwq2ncq"'),
+  ok('N6 带过的（裸 id）不再带、首条换成新的第一个，尾注跟着换成新首条且仍是一步式',
+    skipped !== null &&
+      !skipped.ids.includes('0mwq3aa9') &&
+      skipped.text.includes('memory_read("0mwq2ncq")') &&
+      skipped.text.includes('nebula_link(action="mute"'),
     skipped === null ? 'null' : skipped.ids.join(','))
   ok('N6 空回执 / 解析不出节点 → null',
     NB.neighborBlockOf('', {}) === null && NB.neighborBlockOf('星图里没找到相关记忆', {}) === null)
@@ -326,6 +337,93 @@ const recall = [
   const outD = await d.inj.decide({ agent: { session: { id: sid } } }, { kind: 'enter', messages: [user] })
   ok('N9 账本坏了不挡这一轮（读不动就当空账，注入照旧）', outD.messages.length === 2, `messages=${outD.messages.length}`)
   rmSync(file, { force: true })
+}
+
+// ── N10 纠错闭环：把「这条我自己也没底」标出来，并给出点得动的 mute 命令 ─────
+{
+  // 三条：第 1 条沾词（备份目录 / 备份），第 2、3 条强度 0.40 / 0.42 但一个词都不沾。
+  // 词面闸配额只留 1 条 → 留下的那条打「未沾词」，尾注据此拼出现成的 mute 命令。
+  const offRecall = [
+    '1. [fact] 备份目录     强度 0.80 硬链接增量备份的落地位置',
+    '  id: ws:0mhit001',
+    '  为什么：经由「备份策略」 (0mhit000) 的cooc关联扩散而来',
+    '2. [fact] 酸菜鱼的火候 强度 0.40 跟本轮毫无关系的厨房话题',
+    '  id: ws:0moff002',
+    '  为什么：经由「腌制」 (0mzzz999) 的cooc关联扩散而来',
+    '3. [fact] 另一条厨房话 强度 0.42 同样不沾词',
+    '  id: ws:0moff003',
+    '  为什么：经由「炖汤」 (0myyy777) 的cooc关联扩散而来',
+  ].join('\n')
+  const q = '备份目录放哪了'
+  const blk = NB.neighborBlockOf(offRecall, { max: 4, chars: 900, query: q })
+  const t = blk?.text ?? ''
+  ok('N10 零重合的两条只留 1 条（配额），另一条记在 offtopic 里',
+    blk !== null && blk.ids.includes('0moff002') && !blk.ids.includes('0moff003') && blk.offtopic === 1,
+    blk === null ? 'null' : `${blk.ids.join(',')} / offtopic=${blk.offtopic}`)
+  ok('N10 靠配额留下的那条行尾打「未沾词」，flagged 记一笔（模型才知道这条自己没底）',
+    blk !== null && blk.flagged === 1 && t.includes(`- [fact] [0moff002]`) && t.includes(NB.NEIGHBOR_UNRELATED_MARK),
+    `flagged=${blk?.flagged}`)
+  ok('N10 尾注给出**现成**的 mute 命令：a=它的来源 id、b=它自己的 8 位 id',
+    t.includes('nebula_link(action="mute", a="0mzzz999", b="0moff002")'), t.split('\n').pop()?.slice(0, 120))
+  ok('N10 沾词的那条不打标记（没被标 = 不是这次要复核的对象）',
+    t.includes('- [fact] [0mhit001]') && !/\[0mhit001\][^\n]*未沾词/.test(t))
+  // 反向对照：不沾词的那条强度够高（≥0.5）时免检照带、也不打标记 —— 词面零重合 ≠ 无关。
+  // （同批里另一条 0.42 仍然零重合，会顶掉配额位置，所以只盯 0moff002 这一条。）
+  const strongOff = offRecall.replace('强度 0.40', '强度 0.90')
+  const blk2 = NB.neighborBlockOf(strongOff, { max: 4, chars: 900, query: q })
+  ok('N10 强度 ≥0.5 的零重合条目免检照带、不打标记（别把换说法当噪声）',
+    blk2 !== null && blk2.ids.includes('0moff002') && !/\[0moff002\][^\n]*未沾词/.test(blk2.text),
+    `flagged=${blk2?.flagged} ids=${blk2?.ids.join(',')}`)
+}
+
+// ── N11 账本治理：只进不出的缓存会长成垃圾场（0.6.44）─────────────────────────
+{
+  const ST = await import(pathToFileURL(join(root, 'lib', 'macro', 'store.js')).href)
+  const seenDir = join(tmpHome, 'macro-memory', 'neighbor-seen')
+  rmSync(seenDir, { recursive: true, force: true })
+
+  ok('N11 上限常量在位（单个账本 400 条）', ST.NEIGHBOR_SEEN_MAX_IDS === 400, String(ST.NEIGHBOR_SEEN_MAX_IDS))
+
+  // 目录还不存在时清理是空操作、不抛（新装用户第一次 decide 就会走这里）
+  const r0 = ST.pruneNeighborSeen()
+  ok('N11 目录还不存在时清理是空操作（新装用户不挨一份错误日志）',
+    r0.scanned === 0 && r0.removedByAge === 0 && r0.removedByCount === 0 && r0.error === '',
+    JSON.stringify(r0))
+
+  mkdirSync(seenDir, { recursive: true })
+  const now = Date.UTC(2026, 10, 25, 4, 0)
+  const mk = (name, daysAgo) => {
+    const f = join(seenDir, name)
+    writeFileSync(f, JSON.stringify({ sid: name, ids: [] }), 'utf8')
+    const t = (now - daysAgo * 86400000) / 1000
+    utimesSync(f, t, t)
+    return f
+  }
+  const old1 = mk('old-a.json', 45)
+  const old2 = mk('old-b.json', 40)
+  for (let i = 0; i < 8; i++) mk(`fresh-${i}.json`, i * 0.1)
+  writeFileSync(join(seenDir, 'not-a-ledger.txt'), 'leave me', 'utf8')
+
+  const r1 = ST.pruneNeighborSeen({ maxAgeDays: 30, maxFiles: 0, now })
+  ok('N11 按天数删：40 天前的两个删掉、最近的不动、非 .json 文件一个都不碰',
+    r1.removedByAge === 2 && !existsSync(old1) && !existsSync(old2) && existsSync(join(seenDir, 'fresh-0.json')) &&
+      existsSync(join(seenDir, 'not-a-ledger.txt')),
+    JSON.stringify(r1))
+
+  const r2 = ST.pruneNeighborSeen({ maxAgeDays: 0, maxFiles: 3, now })
+  const left = readdirSync(seenDir).filter((n) => n.endsWith('.json'))
+  ok('N11 按文件数删：只留最近 3 个（maxAgeDays 0 表示不按天算）',
+    r2.removedByCount === 5 && left.length === 3 && left.includes('fresh-0.json') && left.includes('fresh-1.json') && left.includes('fresh-2.json'),
+    `${r2.removedByCount} / 剩 ${left.sort().join(',')}`)
+
+  // 写盘裁剪：账本里超过上限时只留最近的（源码断言——这条路径要造 400 条邻居太重，
+  // 而它唯一的失败方式是「忘了裁」，看代码就能断定）。
+  const neighborSrc = readFileSync(join(root, 'lib', 'macro', 'neighbor.js'), 'utf8')
+  ok('N11 写盘时按上限裁剪（只留最近 400 条，不是把整个 Set 倒出去）',
+    neighborSrc.includes('set.size > NEIGHBOR_SEEN_MAX_IDS') &&
+      neighborSrc.includes('slice(set.size - NEIGHBOR_SEEN_MAX_IDS)'))
+  ok('N11 清理只在进程内第一次 decide 时跑一次（不是每轮都列目录）',
+    /if \(!pruned\) \{\s*pruned = true\s*const r = pruneNeighborSeen\(\)/.test(neighborSrc))
 }
 
 rmSync(tmpHome, { recursive: true, force: true })
