@@ -235,16 +235,25 @@ function makeCorpus(n) {
     for (let i = 0; i < rounds; i++) fn()
     return Number(process.hrtime.bigint() - t0) / 1e6 / rounds
   }
-  const all = bench(() => V.search(q, docs, { k: 5 }))
-  const noVerb = bench(() => V.search(q, docs, { k: 5, verbatim: false }))
-  const verbCost = all - noVerb
+  // 三次取最小：这条判据量的是「这笔固定开销到底多贵」，调度噪声只会把它抬高、不会压低，
+  // 所以最小值才是那个数；真退化（多扫一遍、退化成 O(n)）在最小值上照样现形。
+  // 2026-11-24 二连假红的来历：单跑 6.32–6.63ms 绿，在 check-all 里撞上 7ms 就红一次，
+  // 绝对毫秒判据在忙机器上不可靠——别调阈值，调测法。
+  const best = (fn, tries = 3) => {
+    let m = Infinity
+    for (let i = 0; i < tries; i++) m = Math.min(m, bench(fn))
+    return m
+  }
+  const all = best(() => V.search(q, docs, { k: 5 }))
+  const noVerb = best(() => V.search(q, docs, { k: 5, verbatim: false }))
+  const verbCost = Math.max(0, all - noVerb)
   const share = verbCost / all
   // 0.6.15 起改口径：份额的分母（其它通道）在 0.6.12→0.6.15 之间掉了约六成，同一个固定开销摊在
   // 更小的分母上，25% 这条线必然假红（2026-11-24 实测 30.1%，而绝对开销 4.93ms 与 0.6.10 同级）。
   // 0.6.17 又把分母砍掉一半（`search` 8.35 → 3.5ms，回执对象先瘦后水化），份额升到 54.4% —— 同一笔
   // 固定开销、同样的绝对数，只因别的通道变快而「占比失控」。这笔账真正要守的始终是「固定开销不涨」，
   // 所以份额彻底降级成旁证（只打印，不参与判定）；拿分母变小说事会让优化越成功越红。
-  check('V7 10,000 条：原样匹配通道的固定开销 ≤ 7ms（份额只作旁证，不参与判定；分母在 0.6.12→0.6.17 掉了约八成）',
+  check('V7 10,000 条：原样匹配通道的固定开销 ≤ 7ms（三轮取最小；份额只作旁证，不参与判定；分母在 0.6.12→0.6.17 掉了约八成）',
     verbCost <= 7,
     `开销 ${verbCost.toFixed(2)}ms / 总 ${all.toFixed(2)}ms（${(share * 100).toFixed(1)}%）`)
 }
