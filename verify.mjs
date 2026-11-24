@@ -4303,7 +4303,8 @@ function makeHostCtx() {
   )
   check(
     'as: 扩出来的词合流在同一个出口：手工表在前、共现表在后，一共最多 6 个（名额按碎片算）',
-    fMeowSrc.includes('function synExpandOf(qTerms, df, n, cooc, forms)') &&
+    (fMeowSrc.includes('function synExpandOf(qTerms, df, n, cooc, forms)') ||
+      fMeowSrc.includes('function synExpandOf(qTerms, df, n, cooc, forms, extra)')) &&
       fMeowSrc.includes('.slice(0, SYN_MAX_PER_TERM)') &&
       fMeowSrc.includes('for (const a of map.get(t) ?? []) push(use, a);'),
     'merge',
@@ -10566,7 +10567,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'HB2 只扩问句: 开关与权重都从 opts 读，默认读常量（一处兜底，不是每处各写一遍）',
-    eng.includes('const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn, opts.synFormBridge === true ? coocForms : null);') &&
+    /const synOf = opts\.synBridge === false \? null : synExpandOf\(qKept, df, n, coocSyn, opts\.synFormBridge === true \? coocForms : null(, lookupSyn)?\);/.test(eng) &&
       eng.includes('const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;') &&
       eng.split('opts.synW : SYN_W').length - 1 === 1,
   )
@@ -15675,8 +15676,11 @@ dt063: {
     eng35.includes('const DOC_OBJ_CACHE = new Map();') &&
     eng35.includes('const DOC_OBJ_CACHE_MAX = 20000;') &&
     eng35.includes('let DOCS_LAST = null;')
+  // 0.6.36 起生产入口换成合并版 `stableDocsOf(filtered)`（一趟 map + 换格 + 盖章）：
+  // 这里「新旧都认」——判的是「身份层接在 memory_search 上」，不是「必须长成 0.6.35 那一句」。
   const wireOk35 = eng35.includes('const docFor = stableDocFor;') &&
-    eng35.includes('const docs = stableDocs(filtered.map(docFor));') &&
+    (eng35.includes('const docs = stableDocsOf(filtered);') ||
+      eng35.includes('const docs = stableDocs(filtered.map(docFor));')) &&
     eng35.includes('if (a.length !== n) a.length = n;')
   const expOk35 = /export\s*\{[^}]*\bstableDocFor\b/.test(eng35) &&
     /export\s*\{[^}]*\bstableDocs\b/.test(eng35) &&
@@ -15684,7 +15688,7 @@ dt063: {
     /export\s*\{[^}]*\bresetDocObjCache\b/.test(eng35)
   const oldGone35 = !eng35.includes('const docFor = (r) => ({') &&
     !eng35.includes('const docs = filtered.map(docFor);')
-  check('OR095 引擎形状：stableDocFor / stableDocs 两件 + 两行接法 + 四件导出 + 就地换格，老现造字面量全撤',
+  check('OR095 引擎形状：stableDocFor / stableDocs 两件 + 生产接法（0.6.35 的 old 写法或 0.6.36 的合并版）+ 四件导出 + 就地换格，老现造字面量全撤',
     fnOk35 && wireOk35 && expOk35 && oldGone35,
     `函数=${fnOk35} 接法=${wireOk35} 导出=${expOk35} 老写法已撤=${oldGone35}`)
   // ③ 进程内：身份口径（同一行两次同一只对象 / last_accessed_at 动就换新且旧对象不被改 /
@@ -15818,6 +15822,109 @@ dt063: {
   const vS35 = (readS35('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS35 = vS35.length === 3 ? vS35[0] * 10000 + vS35[1] * 100 + vS35[2] : 0
   check('OR095 版本号不低于 0.6.35（后续补丁不必回头改这一条）', vNumS35 >= 635, vS35.join('.'))
+}
+
+const Veng37 = await import(new URL('./vendor/meow-memory/lib/index.js', import.meta.url).href)
+// ═══════════════ [macro-fusion 0.6.36] OR096：签名只认版本章 ═══════════════
+// 病根：`stableDocFor` 每问都已经逐条比过签名字段，却把「变没变」的结论丢了；`indexSignature`
+// 只好把整表再比一遍（10,000 条 / 每问 1.00ms）。处方：稳定数组自己盖章（`DOCS_SEAL`），
+// 只有「签名字段变了」才抬版本，版本没抬就直接还上次的签名。
+// 这条钉四件事：探针在位、引擎形状（快路条件与老循环并存）、进程内计数真的动、文档与版本在位。
+{
+  const engS36 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const probeS36 = readFileSync(new URL('./tools/probe-sigseal.mjs', import.meta.url), 'utf8')
+  check('OR096 探针在位：probe-sigseal 有 S0–S6 七条（形状 / 盖章命中 / 六种签名变 / 非签名字段不重算 / 换格不比指针 / 长度 / 生产口径 ≥1.25 倍）',
+    ['S0 ', 'S1 ', 'S2 ', 'S3 ', 'S4 ', 'S5 ', 'S6 '].every((t) => probeS36.includes(t)) &&
+      probeS36.includes('seal.sigVer === seal.ver') &&
+      probeS36.includes('stableDocsOf'),
+    '7 条齐全')
+  check('OR096 引擎形状：印章表 + 版本抬升 + 快路条件 + 老循环原样保留',
+    engS36.includes('let DOCS_SEAL = new WeakMap();') &&
+      engS36.includes('function sealOf(arr) {') &&
+      engS36.includes('function sealBump(arr) {') &&
+      engS36.includes('seal.sig !== \'\' && seal.sigVer === seal.ver') &&
+      engS36.includes('const row = sigRowFor(docs, n).row;'),
+    '四件齐全')
+  check('OR096 进程内：签名字段一动就抬版本，只动 la/importance 不抬',
+    (() => {
+      const docs = Array.from({ length: 12 }, (_, i) => ({
+        id: 's36' + i, level: 'fact', status: 'active', importance: 2, project: 'p', title: 't' + i,
+        content: '内容 ' + i, keywords: ['k' + i], updated_at: 1000 + i,
+      }))
+      const before = Veng37.indexSignature(docs)
+      docs[3].last_accessed_at = 9_999_999
+      const afterLa = Veng37.indexSignature(docs)
+      docs[5].content = '改过的内容'
+      const afterBody = Veng37.indexSignature(docs)
+      return before === afterLa && afterBody !== afterLa && Veng37.indexSignature(docs) === afterBody
+    })(),
+    'la 不影响、正文影响、稳定后逐位相同')
+  check('OR096 文档在位：INTERNAL 9.235、README 写「签名」、DESIGN 有 ## 231.、PLAN 有 0.6.36',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.235 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('签名') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 231. ') &&
+      /0\.6\.36/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')))
+  const vS36 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS36 = vS36.length === 3 ? vS36[0] * 10000 + vS36[1] * 100 + vS36[2] : 0
+  check('OR096 版本号不低于 0.6.36（后续补丁不必回头改这一条）', vNumS36 >= 636, vS36.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.37] OR097：术语对照桥 ═══════════════
+// 一版能力改动：库里的「口语＝术语」条目既是同义词源（挖对喂扩词，不再靠人手枚举），
+// 也是降权对象（它短、密，吸收整个领域的口语词，会把真答案挤到 2–3 名）。
+// 冷域换说法 hit@1 因此从 0.0% 到 70.0%。这条钉：探针在位、引擎形状、进程内读数、零误伤、文档与版本。
+{
+  const engS37 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const probeS37 = readFileSync(new URL('./tools/probe-terms.mjs', import.meta.url), 'utf8')
+  check('OR097 探针在位：probe-terms 有 T0–T7 十六条（形状 / 对子解析 / 判定 / 降权与免降权 / 让位 / 净账 / 桥形状 / 基线读数）',
+    ['T0 ', 'T1 ', 'T2 ', 'T3 ', 'T4 ', 'T5 ', 'T6 ', 'T7 '].every((t) => probeS37.includes(t)) &&
+      probeS37.includes('lookupTypeOf') && probeS37.includes('lookupBridge: false'),
+    '16 条齐全')
+  check('OR097 引擎形状：挖对 / 判定 / 降权 / 让位 / 两处打分 / 两件导出',
+    engS37.includes('var LOOKUP_PEN_DEF = 0.25;') &&
+      engS37.includes('function lookupPairsOf(text) {') &&
+      engS37.includes('function buildLookupBridge(docs, n, opts) {') &&
+      engS37.includes('if (cooc instanceof Map && !(ownBridge !== void 0 && ownBridge.length > 0)) {') &&
+      engS37.includes('lookupSyn: lookup === null ? null : lookup.syn,') &&
+      engS37.includes('lookupPen: lookup === null ? null : lookup.pen,') &&
+      engS37.includes('buildLookupBridge,'),
+    '四项齐全')
+  check('OR097 进程内：五域 60 条判出 5 条对照条目、18 对；真库一条都不降权',
+    (() => {
+      const fx = JSON.parse(readFileSync(new URL('./tools/fixtures/domains.json', import.meta.url), 'utf8'))
+      const t = Veng37.lookupTypeOf(fx.domains.flatMap((d) => d.docs))
+      const real = [...JSON.parse(readFileSync(new URL('./tools/fixtures/gold-recall.json', import.meta.url), 'utf8')).docs ?? [],
+        ...JSON.parse(readFileSync(new URL('./tools/fixtures/gold-wide.json', import.meta.url), 'utf8')).documents ?? []]
+      const tr = Veng37.lookupTypeOf(real)
+      return t.demoted === 5 && t.pairs === 18 && tr.demoted === 0
+    })(),
+    '5 条 / 18 对 / 真库 0 降权')
+  check('OR097 进程内：关掉对照桥，冷域换说法 hit@1 从七成塌到零（可归因）',
+    (() => {
+      const fx = JSON.parse(readFileSync(new URL('./tools/fixtures/domains.json', import.meta.url), 'utf8'))
+      const flat = fx.domains.flatMap((d) => d.docs)
+      const qs = fx.domains.flatMap((d) => d.queries.filter((q) => q.kind === 'para'))
+      const hit1 = (opts) => {
+        let hit = 0
+        for (const q of qs) {
+          const ids = Veng37.searchAdaptive(q.q, flat, { k: 5, ...opts }).map((h) => String(h.id))
+          if (String(ids[0]) === String(q.want[0])) hit += 1
+        }
+        return hit / qs.length
+      }
+      const on = hit1({})
+      const off = hit1({ lookupBridge: false })
+      return on >= 0.65 && off <= 0.1
+    })(),
+    '开 70% / 关 0%')
+  check('OR097 文档在位：INTERNAL 9.236、README 写「术语对照桥」、DESIGN 有 ## 232.、PLAN 有 0.6.37',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.236 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('术语对照桥') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 232. ') &&
+      /0\.6\.37/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')))
+  const vS37 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS37 = vS37.length === 3 ? vS37[0] * 10000 + vS37[1] * 100 + vS37[2] : 0
+  check('OR097 版本号不低于 0.6.37（后续补丁不必回头改这一条）', vNumS37 >= 637, vS37.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

@@ -13579,3 +13579,82 @@ rawkTopPrev = top;
 3. **`db.bumpHit` 在 `memory_search` 里（`:6513`），不在 `search` 里**。量入口层收益必须把入口的副作用抄全，否则读数虚高（无 bump 1.92 vs 有 bump 2.07 只差 8%，但「数组复用」这一刀的价值全在它存不存在）。
 4. **`indexSignatureStats.hashed` 是「每次调用都 hashed++」**，复用的只是条级哈希，不是「跳过该条」；文档里不能把它说成命中率。
 5. **改动落盘前先备份**：`D:\备份\20261124-200500-0635-docid\`（`index.js.0634` = `git show v0.6.34:vendor/meow-memory/lib/index.js`、`check-all.mjs.0634`、`probe-docid.mjs.new`）；还原用 `git checkout v0.6.34 -- vendor/meow-memory/lib/index.js`。**注意**：这次是先改后备份，顺序反了——以后一律先拷再动。
+
+### 9.235 0.6.36：签名只认版本章
+
+**病根**
+
+0.6.35 把文档对象与数组的身份钉住之后（`stableDocFor` / `stableDocsOf` / `DOCS_LAST`），`indexSignature` 仍是「拿 10,000 条逐条比八个字段、再逐条混一遍 FNV」，每问重跑。剖面（`E:\Temp\cmp\p36`，10,000 条 / 3,000 问 / `CHURN=1`，`perQuery 2.0542ms`）：`indexSignature:3281` self **3,020ms = 1.00ms/问**，`stableDocFor:5390` self 2,272.8ms = 0.76ms/问，`search:3991` self 2,447ms。
+
+`indexSignature` 的成本与「内容变没变」**无关**：内容一字未变也照样整表走一遍。而 `db.bumpHit`（`MemoryDb.bumpHit`，`:789`，`UPDATE … SET hit_count = hit_count + 1, last_accessed_at = ?`）每问都会改命中那几条的 `last_accessed_at`，**它不在 `sigDocOf` 的字段表里**——也就是说绝大多数问里签名一行都没变，只是没人记得住。
+
+**两条不许走的路**
+
+1. **指针快照**（`seal.refs[i] === docs[i]` 作快路判据）：`bumpHit` 抬 `last_accessed_at` → `docStepOf` 十字段指纹不等 → 每问重造那几条对象 → 指针必然失配，快路永远 miss。第一版实测 `S1/S2/S3` 三红（`首趟 命中0/重算1 · 次趟 命中0/重算2`）。
+2. **逐格哈希账**（`SIG_CELL`：指针没换就抄上一趟的条级哈希）：技术上成立，但会打掉 `tools/probe-sigrow.mjs` 的 R1——它就地改同一只对象的 `content` 并要求签名必须变（0.6.20 起钉住的契约），指针账看不见。**性能不能偷偷撤契约**。
+
+顺带否掉「优化 `indexSignature` 自己的循环」：它是纯内存受限逐字段读（39ns/行 vs 离线 9ns/行），能省的只有「别走这一趟」。
+
+**处方（行号为改后）**
+
+1. `docStepOf(r)`（`:5445` 起，`stableDocFor` 退成一行包装 `:5486`）：先算 `uSame / cSame / tSame / kwSame` 四个布尔 → 九字段全等则 `reuse++`、`DOC_STEP.sig = false`；否则 `DOC_STEP.sig = !(uSame && cSame && tSame && kwSame)`，再造新对象、写缓存、按 `DOC_OBJ_CACHE_MAX = 20000` 裁；缓存空（首次见）→ `sig = true`。**`sig` 只认签名那四个字段**，la 变导致重造不算内容变。
+2. `sealOf(arr)` / `sealBump(arr)`（`:5512` 起）：`DOCS_SEAL = new WeakMap()`（arr → `{ n, ver, sigVer, sig }`）；`sealBump` 做 `ver += 1` 与 `sigSealStats.verBump += 1`，未盖章的裸数组直接 return。
+3. `stableDocsOf(rows)`（`:5543` 起）：一趟 map + 就地换格 + 收 `DOC_STEP.sig`；首趟 `arrFresh++` 并 `sealOf(a)`，非首趟 `changed === 0 → arrReuse++` 否则 `arrPatch++ / patchSlots += changed`；循环后 `if (a.length !== n) { a.length = n; sigChanged = true }`；末尾 `if (sigChanged) { docIdStats.sigBump += 1; sealBump(a); }`。生产入口 `:6585` 由 `stableDocs(filtered.map(docFor))` 改成 `stableDocsOf(filtered)`。
+4. `stableDocs(list)`（`:5488` 起）保留老语义（`probe-docid` D1/D6 用），但**保守盖章**：换格就 `sealOf(a); sealBump(a);`——这条路上看不出换掉的对象哪个字段变了，多算一次换「绝不抄旧签名」。
+5. `indexSignature`（`:3281`）加开头快路：`seal = DOCS_SEAL.get(docs)`；`seal.n === n && seal.sig !== '' && seal.sigVer === seal.ver` → `sigSealStats.hit += 1; return seal.sig`；否则 `sigSealStats.miss += 1` 走原整表算（`sigRowFor` / `sigDocOfRow` 两路**原样保留**，`probe-sigrow` R0 与 `verify.mjs` OR080 有源码形状断言），算完 `seal.n = n; seal.sig = out; seal.sigVer = seal.ver`。
+6. `sigSealInfo()`、`docObjCacheInfo()` 多三栏 `sigHit / sigMiss / sigBump`；`resetDocObjCache()` 换新 `DOCS_SEAL`、清三个计数、`DOCS_LAST = null`。导出加 `stableDocsOf, docStepOf,`（`probe-sigseal` 要用）。
+
+**正确性**
+
+1. **只有盖过章的数组走快路**：`stableDocsOf` / `stableDocs` 是唯二盖章处；探针、`verify.mjs`、`rankForSearch` 历史提升池传的都是裸数组 → 整表算，与 0.6.35 逐位相同。`probe-sigrow` R1（就地改）走裸数组，照样绿。
+2. **章只在签名字段真变时 +1**：la / importance / status / level / created_at 改了不算（与 `sigDocOf` 字段表一字对齐），所以「不盖章」时抄旧签名是**正确答案**，不是赌。
+3. **长度变了必定盖章**（签名第一位是 `n`）。
+4. **唯一约定**：别就地改 `stableDocsOf` 产出的文档对象字段。引擎 0 处就地赋值（`docs[...].x =` / `d.x =` 计数 0），`probe-sigseal` S6 每轮 `JSON.stringify(docs)` 前后比一遍。
+
+**读数**
+
+- 生产口径 A/B（`E:\Temp\cmp\prodab36.mjs`，10,000 条 / 600 问 / k=5 / `CHURN=1` / 跨进程交替三轮，同一个 `eng0636.mjs` 换 `MODE`）：0.6.34 12.9894 / 11.9219；0.6.35 2.1769 / 2.0555 / 2.0656（中位 **2.0656**）；0.6.36 1.4457 / 1.5046 / 1.5263（中位 **1.5046**）→ **−27.2%（1.37×）**，对 0.6.34 8.28×。`idDigest 16499:16200` 三路逐字相同。
+- 缓存账：0.6.35 路 `sigMiss 600 / sigHit 300 / sigBump 599`（600 个测量问全重算）；0.6.36 路 `sigMiss 1 / sigHit 899 / sigBump 1`（只有首问重算，整轮不盖章）。对象/数组账两路一致：`fresh 12,995 / reuse 8,987,005`、`arrReuse 300 / arrPatch 599 / patchSlots 2,995`。
+- 引擎级（`warmab36.mjs`，10,000 / 300 问 × 9 轮）：cold 130.57 → 129.60ms；warm 1.198 → 1.318ms 是**槽位偏置**（对调 `warmab36swapped.mjs` 后 new 槽照样慢 1.278 vs 1.174；同进程交替 `benchsearch36.mjs` 1.195 vs 1.2095，+1.2% 噪声）。裸数组这条路两版等同。
+- 探针 S6（2,000 / 400 问，含 `bumpHit`）：0.5326 → **0.3624ms**（1.47×）。
+
+**等价性**
+
+`mk36.mjs` → `node_modules\.tmp-diff\eng0636.mjs`（618,154 B，十只 `__*Probe`）。`colddiff36` 462 / `tokdiff36` 15,810 / `searchdiff36` 2,462 / `fastdiff36` 3,868（`edgeCount 0`、`digFired 900`）——**全部 0 不符**。
+
+**判据**
+
+`tools/probe-sigseal.mjs` 7 条（S0 形状 / S1 la-only churn 次趟命中 / S2 六种签名字段变必盖章 / S3 无关字段不重算 / S4 换格不比指针 / S5 长度变化必盖章 / S6 生产口径 ≥ 1.25× + 命中串逐字 + 对象未被就地改），挂进 `check-all`。旧形状判据改「新旧都认」：`probe-docid` D0 与 `verify.mjs` OR095 的接法断言改成 `stableDocsOf(filtered)` 或 `stableDocs(filtered.map(docFor))` 二者认一。
+
+**踩坑**
+
+1. `docStepOf` 首版把「la 变 → 重造对象」当「内容变」，每问盖章、快路永不命中（S1/S2/S3 红）。`sig` 只认签名四字段。
+2. 想用指针账省「比字段」，等于偷偷撤掉「就地改能被看见」（`probe-sigrow` R1 红）。撞上既有判据时先问「这条判据钉的是什么」。
+3. `probe-sigseal` 首版把「首趟 `sigBump === 0`」写进判据——首趟缓存全冷，按设计必盖章。判据写相对量。
+4. `warmab` 系列**有槽位偏置**（后 import 的引擎慢 ≈9%），必须跑对调槽位的对照。
+5. 别用离线原型量入口层：`poc36.mjs` 的 `acc += sig` 是 O(n²)，跑 5 分钟 `ratio 1.03` 纯噪声。
+
+### 9.236 0.6.37：术语对照桥
+
+**症状**：`probe-adapt` 冷域尺子（五域 × 12 条 + 每域 2 条换说法问）在 0.6.36 上是 hit@1 **0.0%** / hit@3 80.0% / MRR 0.342；15 条换说法问里 **13 条的第一名都是 xx12**——每个域末尾那张「口语对照」条目（`口语对照：发白＝过曝；小尾巴＝拖线；…`）。它把整个领域的口语词收在一行里，短、密、覆盖率天然最高，真答案被挤到第 2、3 名。
+
+**病根**：①引擎全文零处出现 `＝`，不认「等价声明」这种结构，对照条目只是普通正文；②BM25 长度归一奖励短条目 + 口语词全集中在它身上，覆盖率接近 1；③`SYN_GROUPS` 是手写 18 组，冷域与问句零交集（`probe-adapt` A0 钉着），靠人手枚举永远追不上。
+
+**处方六点**：
+
+1. `LOOKUP_PEN_DEF = 0.25` / `LOOKUP_TYPE_RATIO = 0.35` / `LOOKUP_ASK_RE` / `LOOKUP_PAIR_RE`（`var` 常量，放在 `KW_TF_W` 之后、`hintWordsOf` 之前）。
+2. `lookupPairsOf(text)`（`:3268` 一带，纯函数）：`lastIndex = 0` 后 `exec` 循环，两侧 2–10 字、`m[1] !== m[2]` 才收。
+3. `buildLookupBridge(docs, n, opts)`：`pen = new Float64Array(n).fill(1)`；每条 `title + ' ' + content` 扫对 → `addBridge(syn, a, b)` / `addBridge(syn, b, a)`，两侧碎片也登记（`for (const f of tokenize(a)) if (f !== a && f.length >= 2) addBridge(syn, f, b)`）；`got.length >= 2 && chars / body >= LOOKUP_TYPE_RATIO` → `pen[i] = penW`。
+4. `synExpandOf(qTerms, df, n, cooc, forms, extra)`：新增第六参。`const ownBridge = extra instanceof Map ? extra.get(t) : void 0;`，共现条件改成 `if (cooc instanceof Map && !(ownBridge !== void 0 && ownBridge.length > 0)) {`——**明确声明优先于统计共现**。`extra` 分支放在手工表与共现投完之后，整词过 `usable` 就 push、再 push 碎片，`SYN_MAX_PER_TERM` 上限照旧。
+5. `buildSearchIndex` 返回 `lookupSyn` / `lookupPen`（`opts.lookupBridge === false` 时两件都是 `null`），`__opts` 串尾部加一位（三处同步）。
+6. 打分与融合：`scanDoc` 与 `scoreCandSet` 在同一位置同一算式乘 `lookupPen[di]`（`probe-cand` 对拍要求两处逐位一致）；`searchAdaptive` 在 RRF 之后按 `penMapOf(idx, docs)` 再乘一次，并在末尾硬保第一遍的第一名（`merged` 里把 `first[0]` 挪回 0 位）。
+
+**正确性四条**：①同词池一处不动（100% → 100%）；②真库零误伤（`lookupTypeOf` 146 条 = 48 对 / 26 条含对 / 降权 0 条；`probe-rigor` 0.9565 / 0.9855 / 0.9686 与 0.6.36 逐位相同）；③问术语免降权（`LOOKUP_ASK_RE` 命中就整条不乘）；④`lookupBridge: false` 退回 0.6.36 口径（换说法 hit@1 立刻回 0.0%）。
+
+**读数**：冷域换说法 hit@1 **0.0% → 70.0%**、hit@3 **80.0% → 90.0%**、MRR **0.342 → 0.800**；同词 100% 不动；混库（206 条）90% 关桥 60%；消融 默认 70/90 · 关共现 70/90（让位）· 关对照桥 0/80 · 关全部扩词 30/30。
+
+**等价性**：`probe-gold` ALL PASS（G10 换说法 0.929 未动）；`probe-rigor` 7/7 逐位相同；`probe-adapt` 14/14；新探针 `tools/probe-terms.mjs` 16/16。
+
+**判据**：`probe-terms` T0–T7 十六条；`probe-adapt` A2/A4/A5 按新口径重写（四档消融、两遍不许倒退、噪声里关桥掉 ≥2 题）；`verify.mjs` OR097 五条。
+
+**踩坑五条**：①`verify.mjs` 的引擎句柄 `V1` 是块内绑定，新段里要用自己的 `await import`（`Veng37`）；②OR096 的「la 不影响签名」断言第一版把 `===` 写成 `!==`；③`syntax` 形状断言（`as:` / `HB2`）要按「新旧都认」放宽（第六参 + 可选 `, lookupSyn`）；④让位规则会让「关共现」在冷域上读数不变，别当成回归；⑤`LOOKUP_TYPE_RATIO` 不许往低走（0.20 会把真库「阈值＝0.85」判成对照型，冷域一分不涨）。

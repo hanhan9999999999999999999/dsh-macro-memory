@@ -34,13 +34,16 @@ function check(label, ok, extra) {
 const ENGINE = readFileSync(join(root, 'vendor/meow-memory/lib/index.js'), 'utf8')
 
 // ── D0 形状在位：这一段真的接在生产入口上（不是只导出了两个没人用的函数）
+// 0.6.36 起生产入口改成合并版 `stableDocsOf(filtered)`（一趟 map+换格+盖章），旧写法 `stableDocs(filtered.map(docFor))`
+// 只作历史形状保留在注释与老版本里——这里「新旧都认」，判的是「接上了」，不是「必须长成哪一句」。
 {
   const has = (s) => ENGINE.includes(s)
   const ok = has('function stableDocFor(r) {') &&
     has('function stableDocs(list) {') &&
     has('const docFor = stableDocFor;') &&
-    has('const docs = stableDocs(filtered.map(docFor));') &&
-    has('  stableDocFor,\n  stableDocs,\n  docObjCacheInfo,\n  resetDocObjCache,')
+    (has('const docs = stableDocsOf(filtered);') || has('const docs = stableDocs(filtered.map(docFor));')) &&
+    has('  stableDocFor,\n  stableDocs,') &&
+    has('docObjCacheInfo,') && has('resetDocObjCache,')
   check('D0 身份层接在 memory_search 上，且四个入口都导出', ok)
 }
 

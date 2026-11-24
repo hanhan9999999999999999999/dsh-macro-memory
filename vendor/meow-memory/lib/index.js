@@ -2495,7 +2495,7 @@ function synMapOf() {
 // [macro-fusion 0.4.0 · P5] 两个来源合流：手工表是种子（管「人已经确定的等价说法」），
 // 共现表是自学习（管「新领域、新术语、新缩写——从来没人告诉过我它们是一回事」）。
 // 第四参 cooc 缺省 null 时，行为与 0.3.0 一字不差：老探针和外部脚本调三个参数照样跑。
-function synExpandOf(qTerms, df, n, cooc, forms) {
+function synExpandOf(qTerms, df, n, cooc, forms, extra) {
   const map = synMapOf();
   const cap = Number.isFinite(n) && n > 0 ? Math.max(1, Math.floor(n * SYN_MAX_DF_RATIO)) : Infinity;
   const out = /* @__PURE__ */ new Map();
@@ -2521,7 +2521,11 @@ function synExpandOf(qTerms, df, n, cooc, forms) {
   for (const t of qTerms) {
     const use = [];
     for (const a of map.get(t) ?? []) push(use, a);
-    if (cooc instanceof Map) {
+    // [macro-fusion 0.6.37 · P1] 明确声明的对照（`A＝B`）比统计共现更可信：这个词在对照表里有对端时，
+    // 共现层让位。两层叠着投会把同域里词汇最全的条目抬到真答案前面——实测纯池换说法 hit@1
+    // 60% 而「关共现」70%，差的那 1 题就是被共现顶上来的（天文「照片一放大就发白」tw08 压 tw03）。
+    const ownBridge = extra instanceof Map ? extra.get(t) : void 0;
+    if (cooc instanceof Map && !(ownBridge !== void 0 && ownBridge.length > 0)) {
       for (const a of cooc.get(t) ?? []) push(use, a);
       // 问句里的碎片先落回整词，再查那个整词的邻居：降糖 → 降糖药 → 二甲双胍。
       if (forms instanceof Map) {
@@ -2532,6 +2536,31 @@ function synExpandOf(qTerms, df, n, cooc, forms) {
       }
     }
     if (use.length > 0) out.set(t, use.slice(0, SYN_MAX_PER_TERM));
+  }
+  // [macro-fusion 0.6.37 · P1] 第六参是「术语对照桥」：库里的 `口语＝术语` 对。这一层不管 fragOk——
+  // 表里存的是整词（二甲双胍），而打分坐标系是碎片（二甲/甲双/双胍），不切碎就一个也命中不了。
+  // 放在最后投，名额（SYN_MAX_PER_TERM）已被手工表与共现表占多少算多少：桥要窄，这层只是补位。
+  if (extra instanceof Map) {
+    for (const t of qTerms) {
+      const use = out.get(t);
+      const list = use === void 0 ? [] : use;
+      let grew = false;
+      for (const a of extra.get(t) ?? []) {
+        if (typeof a !== "string" || a.length === 0) continue;
+        if (list.length >= SYN_MAX_PER_TERM) break;
+        if (usable(a, list)) {
+          list.push(a);
+          grew = true;
+        }
+        for (const f of tokenize(a)) {
+          if (list.length >= SYN_MAX_PER_TERM) break;
+          if (f.length < 2 || f === a || !usable(f, list)) continue;
+          list.push(f);
+          grew = true;
+        }
+      }
+      if (grew && use === void 0) out.set(t, list);
+    }
   }
   return out.size > 0 ? out : null;
 }
@@ -2544,6 +2573,77 @@ var FORM_MERGE_W = 0.5;
 var FORM_RRF_K = 60;
 var KW_TF_W = 0.35;
 var FIELD_KW_W_DEF = 0.6;
+// ═══════════ [macro-fusion 0.6.37 · P1] 术语对照桥：把「口语＝术语」型条目从抢位者改回桥 ═══════════
+// 记忆库里天然长着这种条目：`口语对照：发白＝过曝；小尾巴＝拖线；跟踪跑偏＝极轴误差`。它有两种身份——
+// ①是**桥**：里面有用户嘴里说得出、正文里却写不出的说法，该拿去扩词；②是**答案**：只有在真问
+// 「这词啥意思」时才是。0.6.36 之前引擎只认第二种，于是这类条目一边吸收掉问句里的全部口语词、
+// 一边因为「短而密」拿到最高分，把真答案挤到 2–3 名：`probe-adapt` 冷域换说法 15 问里 13 问的
+// 第一名就是同域的对照条目，hit@1 **0.0%**（hit@3 却有 80%——说明桥通、排序不通）。
+// 挖表不靠人手工枚举（`SYN_GROUPS` 那 18 组是 0.4.0 的老账）：直接扫库里的 `A＝B` / `A=B`，
+// 两侧都短、都真在库里出现才算一对；一条里对表占了正文三成以上的，判「对照型」并降权。
+// 开关：opts.lookupBridge === false 关掉这一层（关掉后与 0.6.36 逐位相同）。
+// 降权系数是量出来的，不是拍的（冷域换说法 10 问，`E:\Temp\cmp\sweep37.mjs`）：
+// 1.0（不降）0% → 0.55 10% → 0.45 20% → 0.35 30% → 0.25 **50%** → 0.15 50% → 0.05 50%。
+// 0.25 之后不再涨，说明剩下的 miss 不是对照条目造成的（是同域词面干扰，留给下一版）；
+// 同词池（15 问）与 `probe-gold` 的照抄/锚点池在整个扫档里一处不动。
+var LOOKUP_PEN_DEF = 0.25;
+var LOOKUP_TYPE_RATIO = 0.35;
+// 问句自己在问「这词等于什么」时不降权：这时候对照条目就是标准答案。
+var LOOKUP_ASK_RE = /(对照|术语|别名|又叫|怎么称呼|叫什么|等于什么|是什么意思|指的是什么|啥意思)/;
+var LOOKUP_PAIR_RE = /([^\s；;，,、。：:（）()＝=]{2,10})[＝=]([^\s；;，,、。：:（）()＝=]{2,10})/g;
+function lookupPairsOf(text) {
+  const out = [];
+  LOOKUP_PAIR_RE.lastIndex = 0;
+  let m;
+  while ((m = LOOKUP_PAIR_RE.exec(text)) !== null) {
+    if (m[1] !== m[2]) out.push([m[1], m[2]]);
+  }
+  return out;
+}
+// 一趟过全库：出「词 → 对端词」的双向桥表，以及「这条是不是对照型」的权重表。
+// 权重表用 Float64Array（热路一次元素读），1 = 不降权。桥表只在扩词侧用，不进覆盖度、不进候选。
+function addBridge(map, key, val) {
+  const cur = map.get(key);
+  if (cur === void 0) map.set(key, [val]);
+  else if (cur.length < 6 && !cur.includes(val)) cur.push(val);
+}
+function buildLookupBridge(docs, n, opts) {
+  const penW = Number.isFinite(opts.lookupPen) && opts.lookupPen >= 0 && opts.lookupPen <= 1 ? opts.lookupPen : LOOKUP_PEN_DEF;
+  const syn = /* @__PURE__ */ new Map();
+  const pen = new Float64Array(n).fill(1);
+  let pairs = 0;
+  let hitDocs = 0;
+  for (let i = 0; i < n; i++) {
+    const d = docs[i];
+    const text = String(d?.title ?? "") + " " + String(d?.content ?? "");
+    const got = lookupPairsOf(text);
+    if (got.length === 0) continue;
+    hitDocs += 1;
+    let chars = 0;
+    for (let k = 0; k < got.length; k++) {
+      const a = got[k][0];
+      const b = got[k][1];
+      chars += a.length + b.length;
+      pairs += 1;
+      // 名额按「一条对照表里一个词最多几个对端」算：对端给六个够宽了，再多只是噪声。
+      addBridge(syn, a, b);
+      addBridge(syn, b, a);
+      // 问句进 `synExpandOf` 时是碎片坐标系（降糖/糖药），表里却是整词（降糖药）：碎片也得登记，
+      // 否则这张对表永远查不到。碎片只指向对端，不指向自己那一侧。
+      for (const f of tokenize(a)) if (f !== a && f.length >= 2) addBridge(syn, f, b);
+      for (const f of tokenize(b)) if (f !== b && f.length >= 2) addBridge(syn, f, a);
+    }
+    const body = text.replace(/\s+/g, "").length;
+    if (got.length >= 2 && body > 0 && chars / body >= LOOKUP_TYPE_RATIO) pen[i] = penW;
+  }
+  return { syn: syn.size > 0 ? syn : null, pen, pairs, docs: hitDocs };
+}
+function lookupTypeOf(docs) {
+  const got = buildLookupBridge(docs, docs.length, {});
+  let demoted = 0;
+  for (let i = 0; i < got.pen.length; i++) if (got.pen[i] < 1) demoted += 1;
+  return { pairs: got.pairs, docs: got.docs, demoted, penW: LOOKUP_PEN_DEF };
+}
 function hintWordsOf(hit, query) {
   const raw = hit && hit.keywords;
   let list = [];
@@ -3281,6 +3381,17 @@ function sigDocOfRow(row, i, d) {
 function indexSignature(docs) {
   sigStats.calls++;
   const n = docs.length;
+  // [macro-fusion 0.6.36] 盖章快路：稳定数组的签名版本这一趟没动过，就说明 10,000 格的内容一格都没变，
+  // 上一趟算出来的签名逐字有效，直接还回去——不比字段，也不混一遍哈希（1.0ms/问 → 一次查表）。
+  let seal = null;
+  if (Array.isArray(docs)) {
+    seal = DOCS_SEAL.get(docs);
+    if (seal !== void 0 && seal.n === n && seal.sig !== '' && seal.sigVer === seal.ver) {
+      sigSealStats.hit += 1;
+      return seal.sig;
+    }
+    sigSealStats.miss += 1;
+  }
   let h = 2166136261 >>> 0;
   h ^= n;
   h = Math.imul(h, 16777619) >>> 0;
@@ -3290,7 +3401,10 @@ function indexSignature(docs) {
       h ^= row === null ? sigDocOf(docs[i]) : sigDocOfRow(row, i, docs[i]);
       h = Math.imul(h, 16777619) >>> 0;
     }
-    return `${n}:${h >>> 0}`;
+    const out = `${n}:${h >>> 0}`;
+    // 算完把章续上：签名版本记成「算的时候看到的那个版本」，下一趟没内容变化就地命中。
+    if (seal !== void 0) { seal.n = n; seal.sig = out; seal.sigVer = seal.ver; }
+    return out;
   }
   for (const d of docs) {
     h ^= sigDocOf(d);
@@ -3708,6 +3822,9 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts);
   // [macro-fusion 0.5.0 · P1] 碎片 → 整词的桥（opts.coocForms === false 可单独关掉，用来量这一层值多少分）。
   const coocForms = opts.coocForms === false ? null : buildCoocForms(docs, coocSyn);
+  // [macro-fusion 0.6.37 · P1] 术语对照桥与索引同寿命：它只由 docs 决定，库一变签名就变、这张表跟着重建。
+  // 关掉（opts.lookupBridge === false）时两张都是 null，热路一个字节都不多读。
+  const lookup = opts.lookupBridge === false ? null : buildLookupBridge(docs, n, opts);
   // [macro-fusion 0.6.11] 原样匹配的 haystack：懒建、随索引缓存（账在 `verbStats` 上方）。
   // 只在「问句里有标识符」时才被碰到；没碰过的条目一个字节都不占。
   const hayArr = new Array(n);
@@ -3726,8 +3843,12 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   return {
     __n: n,
     __sig: sig ?? indexSignature(docs),
-    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`,
+    __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}${opts.lookupBridge === false ? 0 : 1}`,
     plainToks, docToks, tokLen, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn, coocForms,
+    // [macro-fusion 0.6.37 · P1] 对照桥的两张表：`lookupSyn` 只在扩词侧用，`lookupPen` 是「这条是不是
+    // 对照型」的权重（1 = 不是，<1 要乘进分数）。关掉时两张都是 null。
+    lookupSyn: lookup === null ? null : lookup.syn,
+    lookupPen: lookup === null ? null : lookup.pen,
     hayAt
   };
 }
@@ -3744,7 +3865,7 @@ const searchIndexCache = new Map();
 // 签名是 docs 的纯函数（条级哈希走 SIG_DOC_CACHE，同样的 d 必得同样的数），所以算一遍传进来
 // 与算两遍逐位相同——判据 `probe-sig` 的 S3 就钉这一条：两处签名必须是同一份。
 function indexPathKey(docs, opts, sig) {
-  return `${sig === void 0 ? indexSignature(docs) : sig}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`;
+  return `${sig === void 0 ? indexSignature(docs) : sig}|${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.inverted === false ? 0 : 1}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}${opts.lookupBridge === false ? 0 : 1}`;
 }
 
 // 调用方也可以直接传 opts.index（自己缓存那张表）；签名或口径对不上就自己重建——
@@ -3754,7 +3875,7 @@ function searchIndexOf(docs, opts) {
   const key = indexPathKey(docs, opts, sig);
   const given = opts.index;
   if (given && given.__n === docs.length && given.__sig === sig &&
-      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`) {
+      given.__opts === `${opts.fieldBoost === false ? 0 : 1}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}${opts.lookupBridge === false ? 0 : 1}`) {
     return given;
   }
   if (opts.cache === false) return buildSearchIndex(docs, opts, key);
@@ -4014,6 +4135,11 @@ function search(query, docs, opts = {}) {
   const { hayOf, rawVerbatim, subjRatio } = verbatimInputs(query, docs, opts, null, index.hayAt, idents);
   const verbOn = hayOf !== null;
   const { docToks, tokLen, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
+  // [macro-fusion 0.6.37 · P1] 术语对照桥：桥表进扩词，权重表进打分。问句自己在问「这词等于什么」
+  // 时整张权重表作废——那种问法下对照条目就是标准答案，压它等于答错。
+  const lookupSyn = index.lookupSyn ?? null;
+  const lookupPenOn = index.lookupPen != null && !LOOKUP_ASK_RE.test(String(query));
+  const lookupPen = lookupPenOn ? index.lookupPen : null;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
   // [macro-fusion 0.6.29] 打分内层每条 posting 都要按字段标志位把权重加成重算一遍（两次位与 + 两次加法）。
@@ -4127,7 +4253,7 @@ function search(query, docs, opts = {}) {
   // 这里就干净地退回只有手工表的老行为。
   // [macro-fusion 0.5.0 · P1] 第五参是「碎片 → 整词」的桥：问句里的碎片先落回整词，再去查共现表。
   // 少了这一层，表里存的降糖药/二甲双胍与索引里的 降糖/糖药 根本碰不到一起。
-  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn, opts.synFormBridge === true ? coocForms : null);
+  const synOf = opts.synBridge === false ? null : synExpandOf(qKept, df, n, coocSyn, opts.synFormBridge === true ? coocForms : null, lookupSyn);
   const synW = Number.isFinite(opts.synW) && opts.synW >= 0 ? opts.synW : SYN_W;
   // [macro-fusion 0.2.153] 打分只碰「问句里那几个词真的出现过」的条目。
   const coverLenRelief = Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF;
@@ -4180,6 +4306,11 @@ function search(query, docs, opts = {}) {
       }
     }
     if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
+    // [macro-fusion 0.6.37 · P1] 对照型条目降权：它的分来自「口语词它全都有」，不是「它答得上这一问」。
+    if (lookupPen !== null) {
+      const lp = lookupPen[di];
+      if (lp < 1) s *= lp;
+    }
     if (entSets) {
       let hit = 0;
       for (const t of entToks) if (entSets[di].has(t)) hit++;
@@ -4304,6 +4435,11 @@ function search(query, docs, opts = {}) {
         }
       }
       if (cvr > 0) s *= coordKeep + COORD_W * cvr;
+      // [macro-fusion 0.6.37 · P1] 与 `scanDoc` 同一位置、同一算式：两条路对拍必须逐位一致（probe-cand）。
+      if (lookupPen !== null) {
+        const lp = lookupPen[di];
+        if (lp < 1) s *= lp;
+      }
       if (entSets) {
         let hit = 0;
         const es = entSets[di];
@@ -5002,6 +5138,16 @@ function searchAdaptive(query, docs, opts = {}) {
   };
   add(first, 1);
   add(alt, w);
+  // [macro-fusion 0.6.37 · P1] 降权必须在这层也认：RRF 只吃名次，而第二遍（碎片桥）会把对照型
+  // 条目按碎片重新排到第一——只看名次，第一遍把它压下去的劣势就白压了（A4「两遍不许改判第一名」
+  // 就是这么红的：园艺「阳台的花一直不开怎么办」一遍 yy07、两遍 yy12）。按同一张权重表再乘一次。
+  const penById = LOOKUP_ASK_RE.test(String(query)) ? null : penMapOf(idx, docs);
+  if (penById !== null) {
+    for (const [id, v] of score) {
+      const p = penById.get(id);
+      if (p !== void 0) score.set(id, v * p);
+    }
+  }
   const ordered = [...keep.keys()].sort((a, b) => {
     const d = score.get(b) - score.get(a);
     if (Math.abs(d) > 1e-12) return d;
@@ -5015,7 +5161,33 @@ function searchAdaptive(query, docs, opts = {}) {
   const merged = ordered.slice(0, Number.isFinite(k) && k > 0 ? k : ordered.length).map((id) => keep.get(id));
   const sameOrder = merged.length === first.length && merged.every((h, i) => String(h.id) === String(first[i].id));
   if (sameOrder) return first;
+  // [macro-fusion 0.6.37 · P1] 硬保首位：第二遍只许补位、不许翻盘。降权把第一遍的首名在 RRF 里
+  // 分薄之后，第二名靠「名次和」翻过去是可能的（园艺「叶子发黄是不是缺肥」一遍 yy12、两遍 yy04）。
+  // 「只补位」的字面语义就是「第一遍说了算的头名不许被桥换掉」——要换，得第一遍自己换。
+  if (merged.length > 1 && String(merged[0].id) !== String(first[0].id)) {
+    const at = merged.findIndex((h) => String(h.id) === String(first[0].id));
+    if (at > 0) {
+      const head = merged[at];
+      for (let i = at; i > 0; i--) merged[i] = merged[i - 1];
+      merged[0] = head;
+    }
+  }
   return merged;
+}
+// [macro-fusion 0.6.37 · P1] 融合阶段要按 id 查降权：一张「被降权的 id → 系数」的小表，
+// 惰性建在索引对象上（索引与库同寿命，建一次就够；10,000 条也只在真有降权条目时才分配）。
+function penMapOf(idx, docs) {
+  if (idx === null || idx.lookupPen == null) return null;
+  if (idx.__penById !== void 0) return idx.__penById;
+  let map = null;
+  const pen = idx.lookupPen;
+  for (let i = 0; i < pen.length; i++) {
+    if (pen[i] >= 1) continue;
+    if (map === null) map = /* @__PURE__ */ new Map();
+    map.set(String(docs[i]?.id), pen[i]);
+  }
+  idx.__penById = map;
+  return map;
 }
 function q0ToksOf(query) {
   const out = [];
@@ -5359,14 +5531,42 @@ function toDocs(rows) {
 // 逐条校验兜着——这一层只是「别把没变的又造一遍」，它认不出来最多退回老路，不会把旧值当成新值。
 const DOC_OBJ_CACHE = new Map();
 const DOC_OBJ_CACHE_MAX = 20000;
-const docIdStats = { reuse: 0, fresh: 0, trimmed: 0, arrReuse: 0, arrFresh: 0, arrPatch: 0, patchSlots: 0 };
+const docIdStats = { reuse: 0, fresh: 0, trimmed: 0, arrReuse: 0, arrFresh: 0, arrPatch: 0, patchSlots: 0, sigBump: 0 };
 let DOCS_LAST = null;
+// ═══════════ [macro-fusion 0.6.36] 签名只认版本章：稳定数组自己记得「我的内容变没变」 ═══════════
+// 0.6.35 之后每问还剩 1.0ms 花在 `indexSignature` 上（剖面 `E:\Temp\cmp\p36`，10,000 条 / 3,000 问，
+// self 3,020ms）：对象与数组的身份都钉住了、行缓存也在位，但那仍然是「10,000 条逐条比一遍字段
+// 再混一遍哈希」，每问白跑一遍。处方：让数组自己带一枚章。
+// `stableDocsOf` 每一趟本来就要逐条过 `docStepOf`（十字段指纹），比的时候顺手就知道「签名字段变没变」
+// （`DOC_STEP.sig`），于是给数组盖一个版本号；`indexSignature` 见「上次算签名时看到的版本」等于当前版本，
+// 就把上次那串签名原样还回去——不比字段，也不混一遍哈希。
+// 四条边界（缺一条就会把旧签名当新库答出去）：
+//   ① 只有 `stableDocsOf` / `stableDocs` 盖过章的数组才走快路（`DOCS_SEAL.get` 拿不到就整表算）。
+//      探针与 verify 传进来的裸数组永远没有章，行为与 0.6.35 一模一样——`probe-sigrow` R1 里
+//      「就地改同一只对象必须被看见」那条照样成立（那条路不走章）。
+//   ② 章只在「签名字段真变了」时 +1：`last_accessed_at`（每问必变，`db.bumpHit` 抬的）、`importance`、
+//      `status`、`level`、`created_at` 都不在 `sigDocOf` 的字段表里，改了不算变。这正是本版要的。
+//   ③ 数组长度变了必定盖章（签名第一位就是 n）。
+//   ④ 唯一约定：**别就地改由 `stableDocsOf` 产出的文档对象的字段**（那样章不会动、快路会抄旧签名）。
+//      引擎自己一处都没改（全文件 `docs[...].x =` / `d.x =` 计数都是 0），`probe-sigseal` S6 每轮复验。
+let DOCS_SEAL = new WeakMap();
+const sigSealStats = { hit: 0, miss: 0, verBump: 0 };
+// `docStepOf` 一趟的副产物：这只文档 + 它相对上一次缓存值的**签名相关**字段是否变了。
+const DOC_STEP = { doc: null, sig: false };
+function sigSealInfo() {
+  return { hit: sigSealStats.hit, miss: sigSealStats.miss, verBump: sigSealStats.verBump };
+}
 function docObjCacheInfo() {
-  return { size: DOC_OBJ_CACHE.size, max: DOC_OBJ_CACHE_MAX, ...docIdStats };
+  return { size: DOC_OBJ_CACHE.size, max: DOC_OBJ_CACHE_MAX, ...docIdStats,
+    sigHit: sigSealStats.hit, sigMiss: sigSealStats.miss, sigBump: sigSealStats.verBump };
 }
 function resetDocObjCache() {
   DOC_OBJ_CACHE.clear();
+  DOCS_SEAL = new WeakMap();
   DOCS_LAST = null;
+  sigSealStats.hit = 0;
+  sigSealStats.miss = 0;
+  sigSealStats.verBump = 0;
   docIdStats.reuse = 0;
   docIdStats.fresh = 0;
   docIdStats.trimmed = 0;
@@ -5374,6 +5574,7 @@ function resetDocObjCache() {
   docIdStats.arrFresh = 0;
   docIdStats.arrPatch = 0;
   docIdStats.patchSlots = 0;
+  docIdStats.sigBump = 0;
 }
 // keywords 可能是数组、逗号串、null（老库三种都见过）：数组逐元素比，其余按值比。
 function docKwSame(a, b) {
@@ -5387,14 +5588,37 @@ function docFromRow(r) {
     importance: r.importance, created_at: r.created_at, updated_at: r.updated_at,
     last_accessed_at: r.last_accessed_at, status: r.status };
 }
-function stableDocFor(r) {
+// [macro-fusion 0.6.36] 这一趟顺带回答一个问题：这只文档的**签名字段**变了吗？
+// `sigDocOf` 只看 id / updated_at / updatedAt / content / title / source_session / project / keywords；
+// `docFromRow` 出来的文档里 updatedAt / source_session / project 恒为 undefined、id 就是缓存键，
+// 所以「变没变」只取决于 updated_at / content / title / keywords 四项——而关键词已经在复用的
+// 判定条件里逐元素比过了（`docKwSame(hit.kw, r.keywords)`），能的只有前三项。
+// `last_accessed_at`（每问被 `bumpHit` 抬起）、importance、status、level、created_at 都不进签名，
+// 改了也不算变——这正是 0.6.36 要的：「每问都变的那个字段」不该让签名重算。
+function docStepOf(r) {
   const hit = DOC_OBJ_CACHE.get(r.id);
-  if (hit !== void 0 &&
-      hit.u === r.updated_at && hit.la === r.last_accessed_at && hit.c === r.content &&
-      hit.t === r.title && hit.lv === r.level && hit.st === r.status && hit.im === r.importance &&
-      hit.ca === r.created_at && docKwSame(hit.kw, r.keywords)) {
-    docIdStats.reuse += 1;
-    return hit.doc;
+  if (hit !== void 0) {
+    // 签名是否变了：只看 `sigDocOf` 覆盖的那几项。`docFromRow` 出来的文档里 updatedAt /
+    // source_session / project 恒为 undefined、id 就是缓存键，所以真正能变的只有
+    // updated_at / content / title / keywords —— 而 `last_accessed_at`（每问被 `bumpHit` 抬起）、
+    // importance、status、level、created_at 都不进签名，改了也不算「变」。
+    const uSame = hit.u === r.updated_at;
+    const cSame = hit.c === r.content;
+    const tSame = hit.t === r.title;
+    const kwSame = docKwSame(hit.kw, r.keywords);
+    if (uSame && cSame && tSame && kwSame &&
+        hit.la === r.last_accessed_at && hit.lv === r.level && hit.st === r.status &&
+        hit.im === r.importance && hit.ca === r.created_at) {
+      docIdStats.reuse += 1;
+      DOC_STEP.doc = hit.doc;
+      DOC_STEP.sig = false;
+      return;
+    }
+    // 只有 la / importance / status / level / created_at 变了：对象得重造（文档就是要带新值），
+    // 但签名没变 —— 这一格不必重新混哈希，`SIG_CELL` 的指针账会看出来它换过、只给它算一格。
+    DOC_STEP.sig = !(uSame && cSame && tSame && kwSame);
+  } else {
+    DOC_STEP.sig = true;
   }
   const doc = docFromRow(r);
   DOC_OBJ_CACHE.set(r.id, { u: r.updated_at, la: r.last_accessed_at, c: r.content, t: r.title,
@@ -5405,7 +5629,11 @@ function stableDocFor(r) {
     DOC_OBJ_CACHE.delete(DOC_OBJ_CACHE.keys().next().value);
     docIdStats.trimmed += 1;
   }
-  return doc;
+  DOC_STEP.doc = doc;
+}
+function stableDocFor(r) {
+  docStepOf(r);
+  return DOC_STEP.doc;
 }
 // 整表逐引用比一遍（10,000 次指针比较 ≈ 0.1ms，比重新算签名便宜两个量级）：
 // 一模一样就把上一只数组还回去，引擎的行缓存才按「同一个数组第 2 次进来」生效。
@@ -5415,10 +5643,27 @@ function stableDocFor(r) {
 // 整表作废，等于每问重算整库签名；就地换格则只让那几格重算。行缓存的判鲜字段里有 `id / updated_at /
 // content / title / source_session / project / keywords`，**没有 `last_accessed_at`**——被 bump 的那几条
 // 连哈希都不用重算。长度变了也走同一只数组（`length` 一起改），仍不会把行缓存打掉。
+function sealOf(arr) {
+  let s = DOCS_SEAL.get(arr);
+  if (s === void 0) {
+    s = { n: arr.length, ver: 0, sigVer: -1, sig: '' };
+    DOCS_SEAL.set(arr, s);
+  }
+  return s;
+}
+// 内容（签名字段）真变了：版本 +1，下一趟 `indexSignature` 必然重算。
+// 没盖过章的裸数组不在此列——它们的正确性由 `indexSignature` 整表逐条比字段兜着。
+function sealBump(arr) {
+  const s = DOCS_SEAL.get(arr);
+  if (s === void 0) return;
+  s.ver += 1;
+  sigSealStats.verBump += 1;
+}
 function stableDocs(list) {
   const a = DOCS_LAST;
   if (a === null) {
     DOCS_LAST = list;
+    sealOf(list);
     docIdStats.arrFresh += 1;
     return list;
   }
@@ -5428,7 +5673,7 @@ function stableDocs(list) {
     for (let i = 0; i < n; i++) {
       if (a[i] !== list[i]) { same = false; break; }
     }
-    if (same) { docIdStats.arrReuse += 1; return a; }
+    if (same) { docIdStats.arrReuse += 1; sealOf(a); return a; }
   }
   if (a.length !== n) a.length = n;
   let slots = 0;
@@ -5437,6 +5682,47 @@ function stableDocs(list) {
   }
   docIdStats.arrPatch += 1;
   docIdStats.patchSlots += slots;
+  // 保守：这条路上看不出「换掉的对象到底哪个字段变了」（可能是 la，也可能真是 content），
+  // 于是只要有格子换过就盖章。多算一次的代价（1.0ms）换来「绝不抄旧签名」，这笔买卖值。
+  sealOf(a);
+  sealBump(a);
+  return a;
+}
+// [macro-fusion 0.6.36] 生产入口的合并版：一趟同时做完三件事——
+// ① 每条过 `docStepOf`（对象该复用复用、该新造新造）；② 把结果就地换进同一只数组（身份永不换）；
+// ③ 数一数这一趟有几条**签名字段**真变了（`sigBump`），变了就盖章——判谁该重算的就是这枚章。
+// 0.6.35 是 `filtered.map(docFor)` 再 `stableDocs(list)`：两趟 + 一只 10,000 格的中间数组。
+// 现在省掉中间数组，也不再从对象反推「字段变没变」——`docStepOf` 比的时候就已经知道了。
+function stableDocsOf(rows) {
+  const n = rows.length;
+  let a = DOCS_LAST;
+  let changed = 0;
+  let sigChanged = false;
+  if (a === null) {
+    a = new Array(n);
+    DOCS_LAST = a;
+    for (let i = 0; i < n; i++) {
+      docStepOf(rows[i]);
+      a[i] = DOC_STEP.doc;
+      if (DOC_STEP.sig) sigChanged = true;
+    }
+    docIdStats.arrFresh += 1;
+    sealOf(a);
+  } else {
+    for (let i = 0; i < n; i++) {
+      docStepOf(rows[i]);
+      const d = DOC_STEP.doc;
+      if (a[i] !== d) { a[i] = d; changed += 1; }
+      if (DOC_STEP.sig) sigChanged = true;
+    }
+    if (a.length !== n) { a.length = n; sigChanged = true; }
+    if (changed === 0) docIdStats.arrReuse += 1;
+    else { docIdStats.arrPatch += 1; docIdStats.patchSlots += changed; }
+  }
+  if (sigChanged) {
+    docIdStats.sigBump += 1;
+    sealBump(a);
+  }
   return a;
 }
 function buildInjectionBody(db, o) {
@@ -6471,7 +6757,9 @@ function searchTool(dir) {
       }
       const filtered = filterSearchable(rows, { project, status, days });
       const byId = new Map(filtered.map((r) => [r.id, r]));
-      const docs = stableDocs(filtered.map(docFor));
+      // [macro-fusion 0.6.36] 一趟做完「行 → 文档对象 → 就地换格 → 盖签名版本章」（`stableDocsOf`）：
+      // 不再有 `filtered.map(docFor)` 那只中间数组，也不再让 `indexSignature` 回头逐条比字段。
+      const docs = stableDocsOf(filtered);
       // [macro-fusion 0.2.154] 稠密能上就上：模型 / 依赖缺一个立刻退回词法，
       // 答案与 0.2.153 逐位相同（这条由 probe-cost 的 C5 快照守着）。
       // [macro-fusion 0.2.167] band_keep：默认按置信档收口（0.2.165 的刀），
@@ -11735,6 +12023,10 @@ export {
   // 也要能在同一进程里把账归零（不然上一支用例的复用数会漏进下一支）。
   stableDocFor,
   stableDocs,
+  // [macro-fusion 0.6.36] 合并版与签名版本章也开放：`probe-sigseal` 要量「哪一趟走了快路、哪一趟整表重算」，
+  // 还要能在同一进程里把章丢掉（`resetDocObjCache` 会一起清掉 seal）。
+  stableDocsOf,
+  docStepOf,
   docObjCacheInfo,
   resetDocObjCache,
   keywordHitScore,
@@ -11771,6 +12063,10 @@ export {
   COOC_MIN_RATIO,
   COOC_TOP_PER_TERM,
   buildCoocSyn,
+  // [macro-fusion 0.6.37 · P1] 术语对照桥：`lookupTypeOf(docs)` 是对外读数，`buildLookupBridge` 给探针做对拍。
+  buildLookupBridge,
+  lookupTypeOf,
+  lookupPairsOf,
   identsOf,
   timeAnchorOf,
   TIME_ANCHOR_RE,

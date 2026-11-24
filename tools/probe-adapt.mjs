@@ -127,20 +127,36 @@ ok('A1 陌生领域同词召回：问句里的词就在正文里，第一条必�
   `${pct(sameH1)} · ${per.map((x) => x.name + ' ' + pct(x.same.hit1)).join(' / ')}`)
 console.log(`MEASURE 冷域换说法基线：hit@1 ${pct(paraH1)} · hit@3 ${pct(sum(paraAll, 'hit3'))} · MRR ${sum(paraAll, 'mrr').toFixed(3)}`)
 
-// ── A2 消融：关共现 / 关手工表 ───────────────────────────────────────────────
-// 判据看 hit@3 而不是 hit@1：0.5.0 的桥是「补位」性质的（第一名按设计不动），命中率提升
-// 全发生在第 2、第 3 位；拿 hit@1 判消融，桥关掉也不掉分，等于没判。
+// ── A2 消融：三层扩词各自的账（0.6.37 起改成四档，旧的两条口径已失效） ─────────────
+// 判据看 hit@3 还是 hit@1：0.5.0 时桥只做「补位」，提升全落在第 2、3 位，所以只看 hit@3。
+// 0.6.37 的术语对照桥改的是**排序**（它把「口语词全都有」的对照条目降权），hit@1 真的会动，
+// 所以这一版起 hit@1 与 hit@3 一起看。
+// 档位说明（别把「关共现不掉」当成回归）：
+//   · 关共现（coocLearn:false）：0.6.37 让「对照表里有对端」的词不再吃共现邻居（见 synExpandOf
+//     里的 ownBridge 让位），而冷域问句的口语词恰好全在对照表里 → 这一档在冷域上等于默认。
+//     共现层的价值由`probe-gold` G21/G22 与宽池守住（那些池没有对照条目）。
+//   · 关对照桥（lookupBridge:false）：退回 0.6.36 的口径，hit@1 必须整体塌掉——这是本版的主账。
+//   · 关扩词（synBridge:false）：三层全关，必须是最差的一档。
 {
+  const paraH1 = sum(paraAll, 'hit1')
   const paraH3 = sum(paraAll, 'hit3')
-  const off = doms.map((d) => measure(d.docs, d.queries.filter((q) => q.kind === 'para'), { coocLearn: false }))
+  const para = (d) => d.queries.filter((q) => q.kind === 'para')
+  const off = doms.map((d) => measure(d.docs, para(d), { coocLearn: false }))
+  const noLook = doms.map((d) => measure(d.docs, para(d), { lookupBridge: false }))
+  const noLearned = doms.map((d) => measure(d.docs, para(d), { synBridge: false }))
+  const offH1 = sum(off, 'hit1')
   const offH3 = sum(off, 'hit3')
-  const noLearned = doms.map((d) => measure(d.docs, d.queries.filter((q) => q.kind === 'para'), { synBridge: false }))
+  const noLookH1 = sum(noLook, 'hit1')
+  const noLookH3 = sum(noLook, 'hit3')
+  const noBridgeH1 = sum(noLearned, 'hit1')
   const noBridgeH3 = sum(noLearned, 'hit3')
-  console.log(`MEASURE 消融（hit@3）：默认 ${pct(paraH3)} / 关共现 ${pct(offH3)} / 关扩词 ${pct(noBridgeH3)}`)
-  ok('A2 关掉共现自学习，冷域换说法必须变差（证明高分是学出来的，不是碰巧）', offH3 < paraH3 - 0.15,
-    `${pct(paraH3)} → ${pct(offH3)}`)
-  ok('A2 冷域里手工表本就无词可用：关扩词与「只关共现」读数一致（差异 ≤1 题）',
-    Math.abs(noBridgeH3 - offH3) <= 0.11, `${pct(noBridgeH3)} vs ${pct(offH3)}`)
+  console.log(`MEASURE 消融（换说法）：默认 h1 ${pct(paraH1)}/h3 ${pct(paraH3)} · 关共现 ${pct(offH1)}/${pct(offH3)} · 关对照桥 ${pct(noLookH1)}/${pct(noLookH3)} · 关扩词 ${pct(noBridgeH1)}/${pct(noBridgeH3)}`)
+  ok('A2 关掉术语对照桥，冷域换说法 hit@1 必须塌（本版的账在这儿）', noLookH1 <= paraH1 - 0.5,
+    `${pct(paraH1)} → ${pct(noLookH1)}`)
+  ok('A2 关掉全部扩词，必须是最差的一档（三层不许有一层白吃饭）', noBridgeH3 < paraH3 - 0.2 && noBridgeH1 <= Math.min(paraH1, noLookH1) + 0.31,
+    `h3 ${pct(paraH3)} → ${pct(noBridgeH3)}；h1 ${pct(noBridgeH1)}`)
+  ok('A2 关共现允许不掉（对照表让位是设计后果），但不许比默认更好', offH1 <= paraH1 + 1e-9 && offH3 <= paraH3 + 1e-9,
+    `${pct(paraH1)}/${pct(paraH3)} vs ${pct(offH1)}/${pct(offH3)}`)
 }
 
 // ── A3 混库不污染：5 个领域拼成一个库，别域的词不许把本域问句带歪 ──────────────
@@ -171,7 +187,8 @@ console.log(`MEASURE 冷域换说法基线：hit@1 ${pct(paraH1)} · hit@3 ${pct
   }
   console.log(`MEASURE 一遍 vs 两遍：hit@3 ${pct(plainH3)} → ${pct(paraH3)}（第一名改判 ${flipped.length} 题）`)
   ok('A4 两遍只补位：第二名以后可以变，第一名必须与只跑一遍逐位相同', flipped.length === 0, flipped.join(' | ') || '第一名全同')
-  ok('A4 两遍确实捞回了桥：冷域换说法 hit@3 至少涨 2 题', paraH3 >= plainH3 + 0.2, `${pct(plainH3)} → ${pct(paraH3)}`)
+  ok('A4 两遍不许倒退：hit@3 不低于只跑一遍（0.6.37 起排序修正主要吃在 hit@1，h3 已近天花板）',
+    paraH3 >= plainH3 - 1e-9, `${pct(plainH3)} → ${pct(paraH3)}`)
 }
 
 // ── A5 真实噪声：库里混进 146 条真记忆（不是夹具里的干净词表），桥还找得到吗 ──────────
@@ -197,10 +214,13 @@ console.log(`MEASURE 冷域换说法基线：hit@1 ${pct(paraH1)} · hit@3 ${pct
   const clean = measure(doms.flatMap((d) => d.docs), allPara)
   const mixed = measure(noisy, allPara)
   const mixedOff = measure(noisy, allPara, { coocLearn: false })
-  console.log(`MEASURE 真实噪声（${noisy.length} 条 = 60 夹具 + ${real.length} 真记忆）：换说法 hit@3 ${pct(mixed.hit3)}（纯池 ${pct(clean.hit3)}）· 关共现 ${pct(mixedOff.hit3)}`)
+  const mixedNoLook = measure(noisy, allPara, { lookupBridge: false })
+  console.log(`MEASURE 真实噪声（${noisy.length} 条 = 60 夹具 + ${real.length} 真记忆）：换说法 hit@3 ${pct(mixed.hit3)}（纯池 ${pct(clean.hit3)}）· 关共现 ${pct(mixedOff.hit3)} · 关对照桥 ${pct(mixedNoLook.hit3)}`)
   ok('A5 混进 146 条真记忆当干扰，换说法 hit@3 不许塌（≥50%）', mixed.hit3 >= 0.5, `${pct(mixed.hit3)}（纯池 ${pct(clean.hit3)}）`)
-  ok('A5 噪声里桥仍然可归因：关掉共现自学习，换说法 hit@3 至少掉 2 题', mixedOff.hit3 <= mixed.hit3 - 0.2,
-    `${pct(mixed.hit3)} → ${pct(mixedOff.hit3)}`)
+  ok('A5 噪声里对照桥仍可归因：关掉它换说法 hit@3 至少掉 2 题', mixedNoLook.hit3 <= mixed.hit3 - 0.2,
+    `${pct(mixed.hit3)} → ${pct(mixedNoLook.hit3)}`)
+  ok('A5 噪声里关共现允许不掉（对照表让位），但不许比默认更好', mixedOff.hit3 <= mixed.hit3 + 1e-9,
+    `${pct(mixed.hit3)} vs ${pct(mixedOff.hit3)}`)
 }
 
 // ── A6 边界：拉丁语料上这座桥不生效（有意为之，别当成 bug 去「修」） ──────────────
