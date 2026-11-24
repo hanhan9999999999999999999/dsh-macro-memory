@@ -68,7 +68,8 @@ const LEX = load(ENGINE);
     tokWrapper: /function tokenize\(text\) \{\s*return finishToks\(tokenizeSegs\(text\)\);/.test(tokOne),
     singlePass: body.includes("const ts = tokenizeSegs(String(d.title ?? ''));") && body.includes("const cs = tokenizeSegs(String(d.content ?? ''));"),
     bodyInPlace: body.includes('const body = finishToks(cs);') && body.includes('bodyLen[i] = body.length > 0 ? body.length : 1;'),
-    plainInPlace: body.includes('plainToks[i] = kwSep') && body.includes('finishToks(ts.concat(cs))'),
+    // [0.6.25] 标题那份词表原地接上正文（老写法是 `ts.concat(cs)`，每条多造一只数组）
+    plainInPlace: body.includes('plainToks[i] = finishToks(ts);') && body.includes('for (let k = 0; k < cs.length; k++) ts.push(cs[k]);'),
     titleSetInPlace: body.includes('titleSets[i] = new Set(finishToks(ts));'),
     // keywords 只「成词」一趟（`kwFlatArr` 里那一次）；kwSeparate:false 那条支路用的是分段版
     // `tokenizeSegs`，与它互斥，不额外付成词的钱。
@@ -322,7 +323,7 @@ const DOCS = [
     noArrayFrom: code.includes('Array.from(') === false,
     normalizeInPlace: code.includes('const s = text.normalize("NFKC");'),
     cpWidth: code.includes('const w0 = s.codePointAt(i) > 65535 ? 2 : 1;'),
-    bigramBySlice: code.includes('out.push(prev + cur);'),
+    bigramBySlice: code.includes('out.push(s.slice(ps, k + w));') && code.includes('out.push(prev + cur);') === false,
   };
   const miss = Object.keys(shape).filter((k) => !shape[k]);
   ok(
@@ -361,6 +362,48 @@ const DOCS = [
     'C7 df 摊出来：df 恒等于倒排长度、与关掉倒排那条支路逐位相同（键序同），且每条只回查一次倒排（f/t 与 d 对齐）',
     miss.length === 0 && bad === 0 && invisible === 0 && sameDf && misalign === 0,
     `df ${idx.df.size} 词 · 倒排 ${idx.postings.size} 词 · 不等 ${bad} · 缺键 ${invisible} · 关倒排同名同值 ${sameDf} · 错位 ${misalign}${miss.length === 0 ? '' : ` · 形状缺 ${miss.join(',')}`}`,
+  );
+}
+
+// ── C8 成词那一趟不再付正则 / 不再拼临时的二元组 ────────────────────────────
+{
+  const begin = ENGINE.indexOf('function isLatinToken(t) {');
+  const body = begin < 0 ? '' : ENGINE.slice(begin, ENGINE.indexOf('function tokenizeSegs(text) {', begin));
+  const code = body.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n');
+  const shape = {
+    latinByCode: code.includes('if (c < 97 || c > 122) return false;'),
+    noLatinRegex: code.includes('/^[a-z]+$/') === false,
+    newlineStrict: code.includes('const end = t.charCodeAt') === false && code.includes('for (let i = 0; i < len; i++) {'),
+    earlyExit: code.includes('if (latin * 2 >= ln) return true;'),
+  };
+  // 行为：与老判据（正则版 + 整表扫完）逐例同值
+  const refMostly = (tokens) => {
+    if (tokens.length === 0) return false;
+    let latin = 0;
+    for (const t of tokens) if (/^[a-z]+$/.test(t)) latin += 1;
+    return latin * 2 >= tokens.length;
+  };
+  const ALPHA = ['a', 'z', 'abc', 'keyword', 'A', 'aA', 'a1', '', '中文', 'ab\n', '\n', 'a\n', 'ab\nc', 'x'.repeat(5), 'İ', 'ﬀ'];
+  const CASES = [];
+  for (let i = 0; i < ALPHA.length; i++) {
+    for (let j = 0; j < ALPHA.length; j++) CASES.push([ALPHA[i], ALPHA[j], ALPHA[(i + j) % ALPHA.length]]);
+  }
+  CASES.push([], ['a'], ['中文'], ['a', '中文'], ['abc', 'def', 'ghi']);
+  let bad = 0;
+  let first = '';
+  for (const toks of CASES) {
+    const want = refMostly(toks);
+    const got = LEX.isMostlyLatin(toks);
+    if (want !== got) {
+      bad += 1;
+      if (first === '') first = `${JSON.stringify(toks)} want ${want} got ${got}`;
+    }
+  }
+  const miss = Object.keys(shape).filter((k) => !shape[k]);
+  ok(
+    'C8 成词那一趟：拉丁词按码点判（97–122）不再逐词跑正则、过半即早退，判据与正则版逐例同值',
+    LEX !== null && miss.length === 0 && bad === 0,
+    LEX === null ? '词法段没切出来' : `${CASES.length} 例 · 0 不一致${miss.length === 0 ? '' : ` · 形状缺 ${miss.join(',')}`}${bad === 0 ? '' : ` · 首例 ${first}`}`,
   );
 }
 

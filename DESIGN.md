@@ -7958,3 +7958,73 @@ function tokenizeSegs(text) {
 
 - **形状判据得先剥注释**。注释里明写着「不再 `Array.from(...)`」，`includes('Array.from(')` 直接红；C6/C7 都先滤掉 `//` 开头的行再看代码。同理 `postings.get(t)` 的计数也被注释里的提及污染过。
 - **孤立代理项不能当两宽**。`'\ud800'.codePointAt(0)` 返回 `0xD800`（不是组合码点），宽度必须按 `> 65535` 判、不能按 `>= 0xD800` 判；这一条被 `tokdiff24` 的 `'\uD800\uDFFF\uD800a'` 用例钉住。
+
+## 220. 共现内层不再回表、成词不再拼临时串也不再付正则（0.6.25）
+
+**症状**（0.6.24 之后，冷建专项 `--cpu-prof`：10,000 条、三轮清缓存重建 + 一趟预热，总采样 741.7ms）。建索引主循环那一刀（0.6.24）落完之后，账面上还剩三块「同一件事付两次钱」：
+
+| 位置 | 自证 | 每次建索引折算 | 干什么 |
+| --- | --- | --- | --- |
+| `vendor/meow-memory/lib/index.js:3307` | 43.5ms | 10.9ms | `bumpIn` 内层 `cur.set(b, (cur.get(b) ?? 0) + w)` 累加共现权重 |
+| `vendor/meow-memory/lib/index.js:3309` | — | — | `pairUp` 每写一个 (a,b) 都先 `pairs.get(a)` 回表一次 |
+| `vendor/meow-memory/lib/index.js:1686` | 30.5ms | 7.6ms | 切词 `text.normalize("NFKC")`（这一行留着，见下） |
+| `RegExp: ^[a-z]+$` | 8.8ms | 2.2ms | 每个词判一次「纯小写拉丁」 |
+| `isMostlyLatin` | 8.3ms | 2.1ms | 每条把词表数完一遍才判 |
+
+**病根三条**：
+
+1. **同一行被回表两次**。`pairUp` 内层对每个 (a,b) 都 `bumpIn(pairs, a, b, ww)`——而 `bumpIn` 第一句就是 `pairs.get(a)`。一个 a 有 k 个邻居，这一行就被取 k 次。项目层（0.6.23）早把「a 那一行」提到 b 循环外了，这一层当时漏了；更里一层 `cur.get(b)` 才是真正的钱，但那是「一次写入一次哈希」，省不掉。
+2. **二元组是拼出来的**。汉字段的二元组写法是「上一段 + 这一段」：每个二元组造三只短字符串（`prev`、`cur`、拼接结果），而它其实就是**连续切片的相邻两码点那一段**——`s.slice(ps, k + w)`。一万条正文 × 三十字上下，白造两万只字符串，全变 GC 账。
+3. **成词那一趟在跑正则**。`/^[a-z]+$/` 对每个词建一只 RegExp 匹配上下文；`isMostlyLatin` 还把词表整个数完才判，其实过半就够了。
+
+**处方四条**：
+
+- **共现内层提行**：一个 a 只取一次行，行在「第一次真要写」时才建（键插入序与老写法逐位相同）。
+
+```js
+  const a = list[i];
+  let rowA = pairs.get(a);
+  for (let j = i + 1; j < ln; j++) {
+    const b = list[j];
+    if (a === b) continue;
+    const ww = shareHan(a, b) ? Math.min(COOC_W_SAME, COOC_SHARE_HAN_W) : COOC_W_SAME;
+    if (rowA === void 0) { rowA = /* @__PURE__ */ new Map([[b, ww]]); pairs.set(a, rowA); }
+    else rowA.set(b, (rowA.get(b) ?? 0) + ww);
+    bumpIn(pairs, b, a, ww);
+  }
+```
+
+- **二元组按连续切片**：`let ps = i; let k = i + w0; while (k < j) { const w = s.codePointAt(k) > 65535 ? 2 : 1; out.push(s.slice(ps, k + w)); ps = k; k += w; }`——相邻子串拼接恒等于连续切片，逐位同串，省掉 `prev` / `cur` 与拼接。
+- **拉丁判据走码点**：`function isLatinToken(t)` 一个 `charCodeAt` 区间判（97–122），替掉 `/^[a-z]+$/`；`isMostlyLatin` 过半即 `return true`（并列过半算拉丁，见下表）。
+- **标题集合先取、词表就地接上正文**：`titleSets[i] = new Set(finishToks(ts))` 提到拼接之前（取的是「还没接正文」的那份），`ts.push(cs[k])` 就地接，不再 `finishToks(ts.concat(cs))` 每条造一只新数组。
+
+**读数（本机同一脚本，15 轮交替，10,000 条 / 300 问）**：
+
+| 量 | 0.6.24 | 0.6.25 | 变化 |
+| --- | --- | --- | --- |
+| 冷建中位 | 154.38ms | **139.32ms** | −9.8% |
+| 冷建三趟采样（专项脚本） | 149.4 / 145.9 / 142.4 | 151.0 / 145.9 / 142.4 | 噪声内 |
+| 冷建 `--cpu-prof` 总采样 | 741.7ms | **726.6ms** | −2.0% |
+| `bumpIn` 函数自证 | 58.1ms | 43.8ms | −14.3ms |
+| `RegExp ^[a-z]+$` | 8.8ms | 0（不见了） | −8.8ms |
+| 热查（单问） | 2.122ms | 1.894ms | 噪声内（改的不是热路） |
+
+`--cpu-prof` 还剩的贵处（下一版候选）：`buildSearchIndex` 177.1ms、`buildCoocSyn` 87.9ms、GC 78.6ms、`tokenizeSegs` 73.5ms、`sessionTopicTerms` 63.2ms、`shareHan` 31.6ms、`sigDocHash` 19.0ms；行级 `bumpIn:3324` 35.7ms、`buildCoocSyn:3384` 31.9ms、`buildSearchIndex:3542` 20.5ms（字段命中位两趟 `Set.has`）、`tokenizeSegs:1703` 24.5ms（`normalize("NFKC")`）。
+
+**等价性怎么证**：
+
+- `colddiff25`：同一批 10,000 条 + 12 组构造夹具，0.6.24 与 0.6.25 两份引擎的 `docToks` / `df` / `tf` / `postings` / `titleSets` / `kwSets` / `coocSyn` 逐位对比，**462 项 0 不一致**。
+- `tokdiff25`：15,810 条构造文本逐 token 对比切词结果（含星外字、孤立代理项、全角合字、`kwSeparate` 两路），**0 不一致**。
+- `probe-cooc` K8a/K8b：形状六件 + 40 组随机夹具（长表 / 共享汉字 / 多项目 / 去重后关键词）跟朴素尺子逐键逐值逐序相同。
+- `probe-cold` C8：`isLatinToken` 与 `/^[a-z]+$/` 逐例对拍 261 例，`isMostlyLatin` 早退与「数完再比」逐例同值。
+
+**不许省的三条**：
+
+- **建行时机不许动**。`rowA` 只能在「第一次真要写这一行」时建：提前 `pairs.set(a, new Map())` 会让空行也进键序，`coocSyn` 的键序与并列先后会变（K8b 就是钉这个）。
+- **对称侧照旧回表**。`bumpIn(pairs, b, a, ww)` 不能跟着提行——b 那一行每轮都不一样，提出来等于错位写入。
+- **`$` 是严格串尾**。JS 的 `/^[a-z]+$/` 不比 Python 松：`"ab\n"` 判 false。给 `isLatinToken` 加「末尾换行折掉」的兼容会让 C8 立刻红（`["a","ab\n","ab\n"] want false got true`）——兼容是错的，删除。
+
+**踩坑两条**：
+
+- **形状判据得先剥注释**。0.6.25 的注释里正写着「老写法 `ts.concat(cs)`」「`pairs.get(a)` 每个词对回表一次」「不再逐词跑 `/^[a-z]+$`」，`includes` 直接撞上；C0/C6/C8、OR085 都先滤 `//` 行再看代码，`^[a-z]+$` 的计数也只数代码行。
+- **朴素尺子要跟引擎同口径**。K8b 的随机夹具一开始每条关键词带重复（如 `重复重复` 出现两次），尺子按「按位置写两遍」算、引擎按「同一条去重后写一遍」算，40 组里 39 组只差同分并列的先后——看着像提行改坏了，其实尺子口径没对齐。夹具去重后 40 组全同。

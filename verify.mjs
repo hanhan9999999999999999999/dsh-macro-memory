@@ -9138,13 +9138,13 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       !meowSrc121.includes('const lang = getPromptLang().toLowerCase().split(/[-_]/)[0];'),
   )
   check(
-    '检索自答: 判据取「多数」（latin*2 >= tokens），夹一个 RRF 不该触发 Porter；CJK 二元组不动',
-    meowSrc121.includes('latin * 2 >= tokens.length') &&
-      meowSrc121.includes('/^[a-z]+$/.test(t)') &&
-      // [0.6.24] 切词改按下标走之后，二元组那句从 `out.push(run[k] + run[k + 1]);` 变成
-      // 「上一字 + 这一字」两个游标（`out.push(prev + cur);` + `prev = cur;`）——串相同，守的是同一件事。
-      meowSrc121.includes('out.push(prev + cur);') &&
-      meowSrc121.includes('prev = cur;'),
+    '检索自答: 判据取「多数」（latin*2 >= ln），夹一个 RRF 不该触发 Porter；CJK 二元组不动',
+    meowSrc121.includes('if (latin * 2 >= ln) return true;') &&
+      meowSrc121.includes('if (c < 97 || c > 122) return false;') &&
+      // [0.6.25] 汉字段二元组不再拼 `prev + cur`，改成按相邻两码点直接切片——
+      // 相邻子串拼接恒等于连续切片，串相同，守的是同一件事。
+      meowSrc121.includes('out.push(s.slice(ps, k + w));') &&
+      meowSrc121.includes('ps = k;'),
   )
   check(
     '检索自答: 元数据透传是「有才带」（老调用方没这些字段时不许硬塞 undefined）',
@@ -12723,8 +12723,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'WZ2 kwSeparate 默认开：正文 BM25 只吃 title + content（opts.kwSeparate === false 才回退）',
     MWz.includes('const kwSep = opts.kwSeparate !== false;') &&
-      MWz.includes('plainToks[i] = kwSep') &&
-      MWz.includes(': finishToks(ts.concat(cs, kwList(d).flatMap((w) => tokenizeSegs(String(w ?? \'\')))));'),
+      MWz.includes('if (kwSep) {') &&
+      MWz.includes("const extra = kwList(d).flatMap((w) => tokenizeSegs(String(w ?? '')));") &&
+      MWz.includes('plainToks[i] = finishToks(ts);'),
   )
   // [0.6.24] 首见判据统一到 `const cur = m.get(t)` 之后，这条写入变成「首见写 kwTfW / 再见累加 cur」
   // 两句——守的仍是「关键词按 kwTfW 打折、且进的是同一张 m（进而同一张 df），候选资格不掉」。
@@ -14010,7 +14011,7 @@ dt063: {
     tokenize仍是包装: tokC.includes('return finishToks(tokenizeSegs(text));'),
     单趟三张表: buildC.includes("const ts = tokenizeSegs(String(d.title ?? ''));") && buildC.includes("const cs = tokenizeSegs(String(d.content ?? ''));"),
     bodyLen就地: buildC.includes('const body = finishToks(cs);') && buildC.includes('bodyLen[i] = body.length > 0 ? body.length : 1;'),
-    plainToks就地: buildC.includes('plainToks[i] = kwSep') && buildC.includes('finishToks(ts.concat(cs))'),
+    plainToks就地: buildC.includes('plainToks[i] = finishToks(ts);') && buildC.includes('for (let k = 0; k < cs.length; k++) ts.push(cs[k]);'),
     标题集合就地: buildC.includes('titleSets[i] = new Set(finishToks(ts));'),
     关键词只成词一趟: (buildC.match(/tokenize\(/g) ?? []).length === 1 && buildC.includes('const kwSets = useField ? kwFlatArr.map((t) => new Set(t)) : null;'),
     不再配seen: buildC.includes('const seen = new Set();') === false && buildC.includes('seen.has(') === false,
@@ -14223,7 +14224,7 @@ dt063: {
     df由倒排长度摊出来: iCode.includes('if (postings !== null) for (const [t, p] of postings) df.set(t, p.d.length);') &&
       (iCode.match(/df\.set\(t, \(df\.get\(t\) \?\? 0\) \+ 1\)/g) ?? []).length === 2,
     切词不再造字符数组: segCode.includes('Array.from(') === false && segCode.includes('const s = text.normalize("NFKC");') &&
-      segCode.includes('const w0 = s.codePointAt(i) > 65535 ? 2 : 1;') && segCode.includes('out.push(prev + cur);'),
+      segCode.includes('const w0 = s.codePointAt(i) > 65535 ? 2 : 1;') && segCode.includes('out.push(s.slice(ps, k + w));'),
     会话主题借tf判重: sessCode.includes('const tf = /* @__PURE__ */ new Map();') && sessCode.includes('const c = tf.get(t);') &&
       sessCode.includes('if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);') && sessCode.includes('stamp') === false,
   }
@@ -14324,6 +14325,136 @@ dt063: {
   const vS15 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS15 = vS15.length === 3 ? vS15[0] * 10000 + vS15[1] * 100 + vS15[2] : 0
   check('OR084 版本号不低于 0.6.24（后续补丁不必回头改这一条）', vNumS15 >= 624, vS15.join('.'))
+}
+
+// 0.6.25：共现内层不再「每个词对回表两次」，成词那一趟不再拼临时串、不再付正则（见 INTERNAL 9.224 / DESIGN 220）。
+{
+  const MvF = await import('./vendor/meow-memory/lib/index.js')
+  const ENGF = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const PROBE_COOC_F = readFileSync(new URL('./tools/probe-cooc.mjs', import.meta.url), 'utf8')
+  const PROBE_COLD_F = readFileSync(new URL('./tools/probe-cold.mjs', import.meta.url), 'utf8')
+  const CHECK_ALL_F = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8')
+  const fLabels = PROBE_COOC_F.includes('K8a ') && PROBE_COOC_F.includes('K8b ') && PROBE_COLD_F.includes('C8 成词那一趟')
+  check(
+    'OR085 探针在位：probe-cooc 的 K8（提行后与朴素尺子逐键逐值逐序相同）/ probe-cold 的 C8（成词不再付正则），各自同支同挂线',
+    fLabels && CHECK_ALL_F.includes("'tools/probe-cooc.mjs'") && CHECK_ALL_F.includes("'tools/probe-cold.mjs'"),
+    `标签 ${fLabels}`,
+  )
+
+  const subF = (from, to) => {
+    const a = ENGF.indexOf(from)
+    return a < 0 ? '' : ENGF.slice(a, ENGF.indexOf(to, a))
+  }
+  // 形状判据先剥注释：几处解释里正写着「老写法 `ts.concat(cs)`」「`pairs.get(a)` 每个词对回表一次」，
+  // 不剥就会拿「注释里提过老写法」当成「代码里还是老写法」。
+  const stripF = (s) => s.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+  const pairCodeF = stripF(subF('const pairUp = (list, w) => {', 'const pickFrom'))
+  const tsegCodeF = stripF(subF('function tokenizeSegs(text) {', 'function finishToks(out) {'))
+  const lookCodeF = stripF(subF('function isLatinToken(t) {', 'function tokenizeSegs(text) {'))
+  const manyCodeF = stripF(subF('function isMostlyLatin(tokens) {', 'function normalizeEn('))
+  const iBodyF = stripF(subF('function buildSearchIndex(docs, opts = {}, sig = null) {', '\n}\n'))
+  const iTitleAt = iBodyF.indexOf('if (titleSets !== null) titleSets[i] = new Set(finishToks(ts));')
+  const iPushAt = iBodyF.indexOf('for (let k = 0; k < cs.length; k++) ts.push(cs[k]);')
+  const partsF = {
+    共现内层提行: pairCodeF.includes('let rowA = pairs.get(a);') &&
+      pairCodeF.includes('} else rowA.set(b, (rowA.get(b) ?? 0) + ww);') &&
+      pairCodeF.includes('bumpIn(pairs, a, b, ww)') === false && pairCodeF.includes('bumpIn(pairs, b, a, ww);'),
+    二元组连续切片: tsegCodeF.includes('out.push(s.slice(ps, k + w));') && tsegCodeF.includes('out.push(prev + cur);') === false,
+    拉丁判据按码点: lookCodeF.includes('if (c < 97 || c > 122) return false;') &&
+      (stripF(ENGF).match(/\^\[a-z\]\+\$/g) ?? []).length === 0 &&
+      ENGF.includes('out.push(isLatinToken(t) ? stemEn(t) : t);'),
+    过半即早退: manyCodeF.includes('if (latin * 2 >= ln) return true;') && manyCodeF.includes('latin += 1;') &&
+      manyCodeF.includes('if (ln === 0) return false;'),
+    标题集先取再并正文: iTitleAt >= 0 && iPushAt > iTitleAt && iBodyF.includes('finishToks(ts.concat(cs))') === false,
+    词表就地接上正文: iBodyF.includes('plainToks[i] = finishToks(ts);') && iBodyF.includes('for (let k = 0; k < extra.length; k++) ts.push(extra[k]);'),
+  }
+  const missF = Object.keys(partsF).filter((k) => !partsF[k])
+  check(
+    'OR085 引擎里共现内层提行、二元组按连续切片成词、拉丁判据走码点、标题集先取再并正文、词表就地接上正文',
+    missF.length === 0,
+    missF.length === 0 ? `${Object.keys(partsF).length} 件在位` : `缺 ${missF.join(' / ')}`,
+  )
+
+  // 进程内：按码点判的拉丁词与老正则逐例相同——含「末尾换行」这一档（JS 的 `$` 是严格串尾，不许手软）
+  let latinOkF = false
+  let latinDetailF = ''
+  try {
+    const isLatin = new Function(`${lookCodeF}\nreturn isLatinToken;`)()
+    const refLatin = (t) => /^[a-z]+$/.test(t)
+    const cases = ['', 'a', 'z', 'abc', 'ABC', 'a1', '1a', 'ab\n', 'ab\r\n', ' ab', 'ab ', '中文', '𠀀', 'é', 'a中', 'a-b']
+    const badCase = cases.filter((c) => isLatin(c) !== refLatin(c))
+    latinOkF = badCase.length === 0
+    latinDetailF = badCase.length === 0 ? `${cases.length} 例全同（末行换行按严格串尾判 false）` : `不一致 ${JSON.stringify(badCase)}`
+  } catch (e) {
+    latinDetailF = String(e && e.message)
+  }
+  check('OR085 进程内：按码点判的拉丁词与 /^[a-z]+$/ 逐例相同（空串、大写、数字、星外字、末尾换行都不许含糊）', latinOkF, latinDetailF)
+
+  // 进程内：大半是拉丁词那条判据「过半即早退」与老口径（数完再比）逐例相同
+  let mostlyOkF = false
+  let mostlyDetailF = ''
+  try {
+    const LEXF = new Function(`${lookCodeF}${manyCodeF}\nreturn isMostlyLatin;`)()
+    const refMostly = (tokens) => {
+      const ln = tokens.length
+      if (ln === 0) return false
+      return tokens.filter((t) => /^[a-z]+$/.test(t)).length * 2 >= ln
+    }
+    const setsF = [[], ['a'], ['a', 'B'], ['中'], ['a', '中'], ['a', 'b', '中'], ['a', 'b', 'c', '中'], ['中', '中', 'a'], ['ab\n'], ['𠀀', 'a']]
+    const badSet = setsF.filter((s) => LEXF(s) !== refMostly(s))
+    mostlyOkF = badSet.length === 0
+    mostlyDetailF = badSet.length === 0 ? `${setsF.length} 组全同（并列过半算拉丁）` : `不一致 ${JSON.stringify(badSet)}`
+  } catch (e) {
+    mostlyDetailF = String(e && e.message)
+  }
+  check('OR085 进程内：过半即早退与「数完再比」逐例相同（并列过半算拉丁、空表不算）', mostlyOkF, mostlyDetailF)
+
+  // 进程内：标题集合必须是「还没接正文」的那一份；keywords 在哪一路由 kwSeparate 决定，两路都不许混
+  let tokOkF = false
+  let tokDetailF = ''
+  try {
+    const fdoc = (id, title, content, keywords) => ({
+      id, project: 'pf', title, content, keywords, level: 'fact', importance: 2,
+      created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+      last_accessed_at: '2026-11-20T00:00:00Z', status: 'active', source_session: 'sf',
+    })
+    const fds = [
+      fdoc('f1', 'Testing the Runners', '中文 正文 里 也 提到 收敛', ['基线', '海浪']),
+      fdoc('f2', '', '', []),
+      fdoc('f3', 'KvNet probe', 'kvnet 自检 基线', '逗号,分隔'),
+    ]
+    MvF.clearSearchIndexCache()
+    const onF = MvF.searchIndexOf(fds, {})
+    MvF.clearSearchIndexCache()
+    const offF = MvF.searchIndexOf(fds, { kwSeparate: false })
+    const titleWant = new Set(MvF.tokenize('Testing the Runners'))
+    const titleGot = onF.titleSets === null ? null : onF.titleSets[0]
+    const sameTitle = titleGot !== null && titleGot.size === titleWant.size && [...titleWant].every((t) => titleGot.has(t))
+    const bodyWant = MvF.tokenize('中文 正文 里 也 提到 收敛')
+    const plain0 = onF.plainToks[0] ?? []
+    const bodyIn = bodyWant.every((t) => plain0.includes(t))
+    const kwWant = ['基线', '海浪'].flatMap((w) => MvF.tokenize(w))
+    const kwOutOfBody = kwWant.every((t) => plain0.includes(t) === false) && onF.kwSets !== null &&
+      kwWant.every((t) => onF.kwSets[0].has(t))
+    const joined0 = offF.plainToks[0] ?? []
+    const kwJoined = kwWant.every((t) => joined0.includes(t)) && offF.kwToks === null
+    tokOkF = sameTitle && bodyIn && kwOutOfBody && kwJoined
+    tokDetailF = `标题集 ${titleGot ? titleGot.size : '空'} 词 / 正文在 ${bodyIn} / 默认分开 ${kwOutOfBody} / 合起来 ${kwJoined}`
+  } catch (e) {
+    tokDetailF = String(e && e.message)
+  }
+  check('OR085 进程内：标题集合取的是「还没接正文」的那份；keywords 默认另走 kwSets、关掉 kwSeparate 时就地并进词表（两路口径不混）', tokOkF, tokDetailF)
+
+  check(
+    'OR085 文档在位：INTERNAL 9.224 写了「共现内层不再回表」，README 写了「共现内层不再回表」，DESIGN 有 ## 220.，PLAN 有 0.6.25',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.224 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('共现内层不再回表') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 220. ') &&
+      /0\.6\.25/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS16 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS16 = vS16.length === 3 ? vS16[0] * 10000 + vS16[1] * 100 + vS16[2] : 0
+  check('OR085 版本号不低于 0.6.25（后续补丁不必回头改这一条）', vNumS16 >= 625, vS16.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

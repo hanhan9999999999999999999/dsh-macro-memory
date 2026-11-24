@@ -19,6 +19,7 @@
  * 只读、毫秒级、零 LLM。真库不进这条探针：真库的 keywords 每天都在变，读数不可复现。
  */
 import { root } from './_root.mjs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -358,6 +359,52 @@ const show = (m) => (m ? [...m].map(([k, v]) => k + '→' + v.join('/')).join(' 
     extra[0].length > 0 && same, `sa：${JSON.stringify(extra[0])} / sa2：${JSON.stringify(extra[1])}`)
   ok('K7c 不足 3 条的会话一条都不追加（门槛还在）',
     extra[3].length === 0, `sb：${JSON.stringify(extra[3])}`)
+
+  // ── K8 pairUp 内层提行（0.6.25）───────────────────────────────────────────────
+  // 0.6.25 把「a 那一行」提到 b 循环外：老写法每写一个 (a,b) 都要 `pairs.get(a)` 回表一次，
+  // 现在一个 a 只取一次。K8a 钉形状，K8b 用随机夹具（长关键词表 + 重复词 + 共享汉字簇 +
+  // 多项目）跟朴素尺子逐键逐值逐序对比——提行最容易改坏的就是「行什么时候建」和「键的插入序」。
+  {
+    const src = readFileSync(new URL('../vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const begin = src.indexOf('const pairUp = (list, w) => {')
+    const body = begin < 0 ? '' : src.slice(begin, src.indexOf('const pickFrom', begin))
+    const code = body.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+    const shape = {
+      hoisted: code.includes('let rowA = pairs.get(a);'),
+      rowReuse: code.includes('} else rowA.set(b, (rowA.get(b) ?? 0) + ww);'),
+      createOnFirstWrite: code.includes('rowA = /* @__PURE__ */ new Map([[b, ww]]);') && code.includes('pairs.set(a, rowA);'),
+      forwardNoReLookup: code.includes('bumpIn(pairs, a, b, ww)') === false,
+      backwardKept: code.includes('bumpIn(pairs, b, a, ww);'),
+      lenHoisted: code.includes('const ln = list.length;'),
+    }
+    const miss = Object.keys(shape).filter((k) => !shape[k])
+
+    let seed = 0x5eed25
+    const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296 }
+    const POOL = ['自测', '自检', '切片', '片段', '基线', '苹果', '香蕉', '云朵', '海浪', '重复重复', '冷门甲', '甲乙']
+    const rdiff = []
+    for (let t = 0; t < 40; t++) {
+      const nd = 1 + Math.floor(rnd() * 6)
+      const projs = ['pa', 'pb', 'pc', 'solo']
+      const docs = []
+      for (let i = 0; i < nd; i++) {
+        const nw = Math.floor(rnd() * 15)
+        const ws = []
+        for (let j = 0; j < nw; j++) {
+          const w = POOL[Math.floor(rnd() * POOL.length)]
+          if (ws.includes(w) === false) ws.push(w)
+        }
+        docs.push(mk(`k8r${t}_${i}`, projs[Math.floor(rnd() * projs.length)], '', ws))
+      }
+      const a = dump(V.buildCoocSyn(docs, docs.length))
+      const b = dump(naiveCooc(docs))
+      if (a !== b) rdiff.push(`夹具 ${t}: 引擎 ${a} / 尺子 ${b}`)
+    }
+    ok('K8a 共现内层把 a 那一行提到 b 循环外（一个 a 只回表一次，建行时机与对称写入都没动）',
+      miss.length === 0, miss.length === 0 ? '六处形状全在' : `缺 ${miss.join(',')}`)
+    ok('K8b 提行之后共现表仍与朴素尺子逐键逐值逐序相同（40 组随机夹具：长表 / 重复词 / 共享汉字 / 多项目）',
+      rdiff.length === 0, rdiff.length ? rdiff[0].slice(0, 300) : '40 组全同')
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

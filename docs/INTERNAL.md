@@ -12823,3 +12823,66 @@ if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);
 - **字段命中位那两趟 `Set.has`**（0.6.24 之后 `:3510` 仍有 18.7ms）：标题集与关键词集都只有两三个词，却要对这一条的每个词各查两个 `Set`；可先把两个小集并成一张「词 → 位」的小表，落盘时每词只查一次。
 - **`bumpIn :3307` 45.9ms**（共现权重累加）与 `shareHan :3297` 22.0ms：已经是「一对词一次」的口径，下一步只能动数据结构（例如按项目批量把 `Map` 换成扁平数组再合并）。
 - **`sigDocHash` 20.4ms**：每次建索引对每条算一次 FNV 九段，签名比对已在 0.6.19–0.6.20 收过；若继续压，得考虑「内容没变就沿用上一条的哈希」。
+
+## 9.224 0.6.25：共现内层不再回表、成词不再拼临时串也不付正则
+
+### 9.224.1 症状
+
+- 读数来源：冷建专项 `--cpu-prof`（10,000 条、三轮清缓存重建 + 一趟预热，约 4 次建索引，总采样 **741.7ms**，0.6.24 口径）。
+- 函数级：`buildSearchIndex` **190.0ms**、`buildCoocSyn` **88.5ms**、GC **76.6ms**、`tokenizeSegs` **73.9ms**、`sessionTopicTerms` **64.9ms**、`bumpIn` **58.1ms**、`shareHan` 30.4ms、`sigDocHash` 20.3ms。
+- 行级（`vendor/meow-memory/lib/index.js`）：`bumpIn:3307` **43.5ms**（`cur.set(b, (cur.get(b) ?? 0) + w)`）、`tokenizeSegs:1686` **30.5ms**（`text.normalize("NFKC")`）、`buildSearchIndex:3518` **18.3ms**（字段命中位两趟 `Set.has`）、`sessionTopicTerms:2008` 35.6ms、`RegExp: ^[a-z]+$` 8.8ms、`isMostlyLatin` 8.3ms。
+
+### 9.224.2 病根
+
+1. **同一行被回表两次**：`pairUp` 内层每写一个 (a,b) 都走 `bumpIn(pairs, a, b, ww)`，而 `bumpIn` 第一句就是 `pairs.get(a)`——a 有 k 个邻居就取 k 次。项目层（0.6.23）早把「a 那一行」提到 b 循环外，这一层漏了。
+2. **二元组是拼出来的**：汉字段写 `prev + cur`，每个二元组造 `prev` / `cur` / 拼接结果三只短串；而它等于「相邻两码点那一段连续切片」。
+3. **成词那一趟在跑正则**：`/^[a-z]+$/` 每词建一次匹配上下文；`isMostlyLatin` 还要把词表数完才判。
+4. **每条多造一只数组**：`finishToks(ts.concat(cs))` 与「先取标题集合再拼」两处各自多一只数组/一次拼接。
+
+### 9.224.3 处方
+
+- **共现内层提行**：`let rowA = pairs.get(a);` 提到 b 循环外，行在第一次真要写时才建；对称侧 `bumpIn(pairs, b, a, ww)` 照旧。
+
+```js
+const a = list[i];
+let rowA = pairs.get(a);
+for (let j = i + 1; j < ln; j++) {
+  const b = list[j];
+  if (a === b) continue;
+  const ww = shareHan(a, b) ? Math.min(COOC_W_SAME, COOC_SHARE_HAN_W) : COOC_W_SAME;
+  if (rowA === void 0) { rowA = /* @__PURE__ */ new Map([[b, ww]]); pairs.set(a, rowA); }
+  else rowA.set(b, (rowA.get(b) ?? 0) + ww);
+  bumpIn(pairs, b, a, ww);
+}
+```
+
+- **二元组按连续切片**：`let ps = i; let k = i + w0; while (k < j) { const w = s.codePointAt(k) > 65535 ? 2 : 1; out.push(s.slice(ps, k + w)); ps = k; k += w; }`。
+- **拉丁判据走码点**：`function isLatinToken(t) { const len = t.length; if (len === 0) return false; for (let i = 0; i < len; i++) { const c = t.charCodeAt(i); if (c < 97 || c > 122) return false; } return true; }`；`isMostlyLatin` 过半即早退；`normalizeEn` 里也改用 `isLatinToken(t) ? stemEn(t) : t`。
+- **标题集先取、词表就地接**：`if (titleSets !== null) titleSets[i] = new Set(finishToks(ts));` 放在 `ts.push(cs[k])` 之前；`plainToks[i] = finishToks(ts);`。
+
+### 9.224.4 读数
+
+- 冷建（`warmab25`，15 轮交替，10,000 条 / 300 问）：0.6.24 中位 **154.38ms** → 0.6.25 中位 **139.32ms**（**−9.8%**）。
+- 冷建 `--cpu-prof` 总采样：**741.7ms → 726.6ms**；`bumpIn` **58.1 → 43.8ms**；`pairUp` 提行后独立成函数 2.1ms；`RegExp ^[a-z]+$` 从 8.8ms 消失；`buildSearchIndex` **190.0 → 177.1ms**。
+- 热查（单问）：2.122 → 1.894ms，噪声内（改的不是热路）。
+
+### 9.224.5 判据
+
+- `probe-cold` **9/9**：C0 改钉「就地接」「标题集先取」，C6 改钉「连续切片成词」（`out.push(s.slice(ps, k + w))` 在、`out.push(prev + cur)` 不在），新增 **C8**（`latinByCode` / `noLatinRegex` / `newlineStrict` / `earlyExit` 四件形状 + 261 例逐例对拍）。
+- `probe-cooc` **24/24**：新增 **K8a**（提行六件形状：`let rowA = pairs.get(a);`、`} else rowA.set(b, (rowA.get(b) ?? 0) + ww);`、首写才建行、正向不再 `bumpIn`、对称侧仍在、`const ln = list.length;`）与 **K8b**（40 组 seeded 随机夹具对朴素尺子逐键逐值逐序相同）。
+- `verify.mjs` **OR085 七条**：探针在位 + 引擎六件形状 + 进程内 `isLatinToken` 与正则 16 例逐例同值 + `isMostlyLatin` 早退与「数完再比」10 组同值 + 进程内标题集/关键词两路口径 + 文档在位 + 版本号 ≥ 0.6.25。
+- `colddiff25` **462 项 0 不一致**、`tokdiff25` **15,810 项 0 不一致**。
+
+### 9.224.6 复盘
+
+- **建行时机不许动**：`rowA` 只能在第一次真要写时建；提前建会让空行占键序，`coocSyn` 的并列先后会变。
+- **对称侧不许跟着提行**：b 每轮都不同，提出来就是错位写入。
+- **`$` 是严格串尾**：`"ab\n"` 判 false；加「末尾换行折掉」的兼容会被 C8 抓住（`want false got true`）——兼容本身是错的。
+- **尺子要跟引擎同口径**：K8b 夹具带重复关键词时，尺子与两个引擎都在 39/40 组上不同（只差同分并列先后），三方对拍（`eng0624` / `eng0625` / 尺子）证明新旧引擎逐位相同（`oldNewDiff 0`），是尺子的口径缺口；夹具去重后全同。
+
+### 9.224.7 下一版候选
+
+- **`sessionTopicTerms` 63.2ms**：先按会话聚 `tf` + `sessDf`、再排一遍 `Math.log` 与 `sort`，两趟可合一（键序要钉）；行长 `:2025` 21.4ms、`:2050` 15.0ms、`:2054` 9.6ms。
+- **`shareHan` 31.6ms**（`buildCoocSyn` 87.9ms 里的大头）：每词对两次正则 `[\u4e00-\u9fff]`，可换码点区间判——与 0.6.25 的 `isLatinToken` 同一个道理。
+- **字段命中位两趟 `Set.has`**（`buildSearchIndex:3542` 20.5ms）：标题集与关键词集各只有两三个词，先把两个小集并成「词 → 位」的小表，落盘每词只查一次。
+- **`tokenizeSegs:1703` 24.5ms** 是 `text.normalize("NFKC")`，只在「确实含全角/合字」时才需要——可先扫一遍码点，没有可疑区间就跳过归一化。

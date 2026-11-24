@@ -1668,11 +1668,28 @@ function classify(cp) {
 // BM25 各算各的 idf，两条本该互相命中的记忆彼此看不见（LoCoMo 实测：问「What did Caroline
 // research?」，记忆里写的是 Researching adoption agencies，零词交集，直接不进候选）。
 // 语言该由这段文本自己说，不是由谁在问：拉丁字母占多数的文本照样归一，中日韩二元组原样保留。
+// [macro-fusion 0.6.25] 「这个词是不是纯小写拉丁字母」不再逐词跑 `/^[a-z]+$/`：一万条正文 ×
+// 三个字段 × 三四趟，光是这条正则就在 --cpu-prof 里占 8.8ms。改成按码点判（97–122），
+// 判据与那条正则逐例同值（`$` 在 JS 里是严格串尾，换行不算例外——probe-cold C8 钉这一条）。
+function isLatinToken(t) {
+  const len = t.length;
+  if (len === 0) return false;
+  for (let i = 0; i < len; i++) {
+    const c = t.charCodeAt(i);
+    if (c < 97 || c > 122) return false;
+  }
+  return true;
+}
 function isMostlyLatin(tokens) {
-  if (tokens.length === 0) return false;
+  const ln = tokens.length;
+  if (ln === 0) return false;
   let latin = 0;
-  for (const t of tokens) if (/^[a-z]+$/.test(t)) latin += 1;
-  return latin * 2 >= tokens.length;
+  for (let i = 0; i < ln; i++) {
+    if (isLatinToken(tokens[i])) latin += 1;
+    // 拉丁词只增不减，过半就是定局——纯英文库这一趟只走一半
+    if (latin * 2 >= ln) return true;
+  }
+  return false;
 }
 // [macro-fusion 0.6.22] 切词拆成两段：「分段」只看本串（纯函数、逐码点），「英文化」那一趟
 // （isMostlyLatin → normalizeEn）看的是整张词表的成分比例。分开之后建索引时一个字段只分段一遍，
@@ -1699,16 +1716,16 @@ function tokenizeSegs(text) {
       j += s.codePointAt(j) > 65535 ? 2 : 1;
     }
     if (cls === CLS_CJK) {
-      // 汉字段按码点两两成词（与老写法的 run[k] + run[k + 1] 同序同串）
-      let k = i;
-      let w = s.codePointAt(k) > 65535 ? 2 : 1;
-      let prev = s.slice(k, k + w);
-      k += w;
+      // [macro-fusion 0.6.25] 汉字段按码点两两成词，直接切「相邻两个码点」这一段连续子串：
+      // 老写法先把前一个码点切出来（`s.slice(k, k + w)`）再 `prev + cur` 拼回去，每个二元组
+      // 要造三只字符串（两只切片 + 一次拼接），而相邻子串的拼接本身就等于这一段连续切片——
+      // 逐位同串（probe-lex L1 / colddiff 钉这一条），少掉两只临时对象。
+      let ps = i;
+      let k = i + w0;
       while (k < j) {
-        w = s.codePointAt(k) > 65535 ? 2 : 1;
-        const cur = s.slice(k, k + w);
-        out.push(prev + cur);
-        prev = cur;
+        const w = s.codePointAt(k) > 65535 ? 2 : 1;
+        out.push(s.slice(ps, k + w));
+        ps = k;
         k += w;
       }
     } else {
@@ -1866,7 +1883,7 @@ function normalizeEn(tokens) {
   const out = [];
   for (const t of tokens) {
     if (EN_STOPWORDS.has(t)) continue;
-    out.push(/^[a-z]+$/.test(t) ? stemEn(t) : t);
+    out.push(isLatinToken(t) ? stemEn(t) : t);
   }
   return out;
 }
@@ -3307,13 +3324,21 @@ function buildCoocSyn(docs, n, opts) {
     else cur.set(b, (cur.get(b) ?? 0) + w);
   };
   const pairUp = (list, w) => {
-    for (let i = 0; i < list.length; i++) {
-      for (let j = i + 1; j < list.length; j++) {
-        const a = list[i];
+    const ln = list.length;
+    for (let i = 0; i < ln; i++) {
+      const a = list[i];
+      // [macro-fusion 0.6.25] a 这一行在这个内层循环里要被写 ln-1 次，回表取行只该取一次
+      // （与 0.6.23 项目层内层提行同一个道理，只是这一层当时漏了）。建行时机不变——
+      // 第一次真要写这一行时才建，所以键的插入序与老写法逐位相同。
+      let rowA = pairs.get(a);
+      for (let j = i + 1; j < ln; j++) {
         const b = list[j];
         if (a === b) continue;
         const ww = shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w;
-        bumpIn(pairs, a, b, ww);
+        if (rowA === void 0) {
+          rowA = /* @__PURE__ */ new Map([[b, ww]]);
+          pairs.set(a, rowA);
+        } else rowA.set(b, (rowA.get(b) ?? 0) + ww);
         bumpIn(pairs, b, a, ww);
       }
     }
@@ -3421,10 +3446,17 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
     const cs = tokenizeSegs(String(d.content ?? ''));
     const body = finishToks(cs);
     bodyLen[i] = body.length > 0 ? body.length : 1;
-    plainToks[i] = kwSep
-      ? finishToks(ts.concat(cs))
-      : finishToks(ts.concat(cs, kwList(d).flatMap((w) => tokenizeSegs(String(w ?? '')))));
+    // [macro-fusion 0.6.25] 标题那份词表就在这儿原地接上正文（老写法 `ts.concat(cs)` 每条多造
+    // 一只数组）。标题集合必须先取——取的是「还没接正文」的那一份，与老口径同序同元素。
     if (titleSets !== null) titleSets[i] = new Set(finishToks(ts));
+    if (kwSep) {
+      for (let k = 0; k < cs.length; k++) ts.push(cs[k]);
+    } else {
+      const extra = kwList(d).flatMap((w) => tokenizeSegs(String(w ?? '')));
+      for (let k = 0; k < cs.length; k++) ts.push(cs[k]);
+      for (let k = 0; k < extra.length; k++) ts.push(extra[k]);
+    }
+    plainToks[i] = finishToks(ts);
   }
   const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
   const docToks = sessTopics ? docs.map((d, i) => {
