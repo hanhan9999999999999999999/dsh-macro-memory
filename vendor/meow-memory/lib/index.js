@@ -1261,8 +1261,9 @@ var CONFIG_DEFAULTS = {
   titleMax: 40,
   injectMaxChars: 0,
   // [macro-fusion 0.6.40] 命中闸门：低于此分的命中不注入（0 = 关，逐位等同旧行为）。
-  // 这里写死 0.45 而不是引 INJECT_FLOOR_DEF：本对象在模块求值时先于那一行执行。
-  injectFloor: 0.45,
+  // [macro-fusion 0.6.45] 0.45 → 0.35，标定见 INJECT_FLOOR_DEF 那一段（真库读数逐位相同、gold 召回 +2.9 点）。
+  // 这里写死字面值而不是引 INJECT_FLOOR_DEF：本对象在模块求值时先于那一行执行。
+  injectFloor: 0.35,
   // [macro-fusion 0.6.41] 单条正文上限（0 = 不限，逐位等同 0.6.40 的整条注入）。
   // 同样写死字面值：本对象求值早于 INJECT_BODY_MAX_DEF 那一行。
   injectBodyMax: 240,
@@ -5661,7 +5662,13 @@ function topicDrift(turnText, topics) {
 // 真库 824 条 active 条目自命中（每条拿自己前 3 个关键词当问句）分数 p1 = 2.046，
 // 0.45 这条线保住 823/824 = 99.9%；12 条纯操作问句（跑一下测试 / 继续 / 帮我看看这个文件 …）
 // 的最高分是 0.42，全部被挡在门外。设 0 就是关闸，逐位回到 0.6.39 的「有命中就注入」。
-var INJECT_FLOOR_DEF = 0.45;
+// [macro-fusion 0.6.45] 0.45 → 0.35：0.6.40 只量了「挡掉多少噪声」，没量「挡掉多少答案」。
+// 补量两处：①真库 824 条 + 16 条记忆问句 / 16 条操作问句，0.35 与 0.40/0.45 的读数**逐位相同**
+// （记忆问句 7/16 有注入、1,478 字；操作问句 5/16、965 字 @hitTopK=1）——省的一分不少；
+// ②gold 146 条池（40 张样张 + 106 条宽池）69 问，0.45 把 21 条正确答案里 2 条挡在 0.40–0.45 带，
+// hit@1 从 58.0% 掉到 55.1%（k=2）；0.35 那带不切任何条目，回到 58.0%。同样的节省、更好的召回。
+// 再往下（0.30）真库操作问句从 5/16 涨到 8/16，是明确的拐点，所以停在 0.35。
+var INJECT_FLOOR_DEF = 0.35;
 // [macro-fusion 0.6.41] 单条正文上限的默认值：0 = 不限（逐位回到 0.6.40）。
 // 它和 injectMaxChars 是两层账：injectMaxChars 管「这一次注入总共多少字」，
 // injectBodyMax 管「其中一条记忆自己最多占多少字」——后者才是长条目（topic / project 全景）
@@ -6568,13 +6575,39 @@ function hitQuery(db, workspace, sessionId, userText, o, dir) {
   });
 }
 /**
+ * [macro-fusion 0.6.45] `dream-debug.log` 的写入口：**写之前先量体积，超了轮转一份 `.old`**。
+ * 病根：这个日志每轮至少写一到两行（pre-step / hit-chain / hit-skip），从 0.6.44 起又多了四种
+ * `hit-skip` 出口，而它跟 `perf.log` 不一样——`sweepHomeLogs` 只清 home 目录下的日志，
+ * 项目目录里的 `dream-debug.log` 从来没人管，用久了能长到几 MB，没人会去翻。
+ * 策略与 `perf.log` 一致：超 `DREAM_LOG_ROTATE_BYTES` 就 rename 成 `dream-debug.log.old`
+ * （先删上一代再 rename——Windows 上 rename 到已存在的目标会抛；最多留两代），紧接着照写——
+ * 轮转失败也照写，不能在写日志这一步抛。
+ */
+var DREAM_LOG_ROTATE_BYTES = 2 * 1024 * 1024;
+function appendDreamLog(workspace, dir, line) {
+  const file = join9(workspace, dir, "dream-debug.log");
+  try {
+    if (statSync3(file).size > DREAM_LOG_ROTATE_BYTES) {
+      const oldFile = join9(workspace, dir, "dream-debug.log.old");
+      // Windows 上 rename 到已存在的目标会抛，先把上一代删掉——只留两代，别攒成目录。
+      try {
+        unlinkSync(oldFile);
+      } catch {
+      }
+      renameSync6(file, oldFile);
+    }
+  } catch {
+  }
+  appendFileSync2(file, line);
+}
+/**
  * [macro-fusion 0.6.44] 「这一轮为什么没注入」写进 dream-debug.log。
  * 节奏闸的价值全在「省掉了什么」——不记一行，用户只会看到「有时候没有记忆注入」，
  * 没法判断是闸在工作还是坏了。写盘失败一律不影响这一轮。
  */
 function logHitSkip(workspace, dir, reason, extra = "") {
   try {
-    appendFileSync2(join9(workspace, dir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-skip reason=${reason}${extra}
+    appendDreamLog(workspace, dir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-skip reason=${reason}${extra}
 `);
   } catch {
   }
@@ -8182,7 +8215,7 @@ function shortSessionId(sid) {
 }
 function dreamLog(ws, dir, msg) {
   try {
-    appendFileSync(join7(ws, dir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
+    appendDreamLog(ws, dir, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `);
   } catch {
   }
@@ -11417,7 +11450,7 @@ ${e.stack ?? ""}` : String(e)}
           if (errCode === "TRANSPORT" || contextWindowExceeded || /transport|network|connection|ECONN/i.test(errMsg)) {
             try {
               getDb(cwd, resolved.projectDir).releaseDream(sid);
-              appendFileSync2(join9(cwd, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] dream ${contextWindowExceeded ? "context-window-fail" : "transport-fail"} sid=${shortSessionId(sid)} -> released (not counted, #106/#110)
+              appendDreamLog(cwd, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] dream ${contextWindowExceeded ? "context-window-fail" : "transport-fail"} sid=${shortSessionId(sid)} -> released (not counted, #106/#110)
 `);
             } catch {
             }
@@ -11508,7 +11541,7 @@ ${e.stack ?? ""}` : String(e)}
       }
       if (ws) {
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] pre-step first pid=${process.pid} sid=${shortSessionId(sid)} priorUser=${priorUser} userMsgs=${userMsgs.length}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] pre-step first pid=${process.pid} sid=${shortSessionId(sid)} priorUser=${priorUser} userMsgs=${userMsgs.length}
 `);
         } catch {
         }
@@ -11578,7 +11611,7 @@ ${e.stack ?? ""}` : String(e)}
           injectRepeatSim: resolved.injectRepeatSim
         }, resolved.projectDir);
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }
@@ -11631,7 +11664,7 @@ ${e.stack ?? ""}` : String(e)}
     const wsTs = workspaceOfAgent(agent);
     if (wsTs) {
       try {
-        appendFileSync2(join9(wsTs, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] turn-stopping pid=${process.pid} sid=${shortSessionId(sidTs)} reason=${endReason ?? "none"} wasDream=${dreamTurn}
+        appendDreamLog(wsTs, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] turn-stopping pid=${process.pid} sid=${shortSessionId(sidTs)} reason=${endReason ?? "none"} wasDream=${dreamTurn}
 `);
       } catch {
       }
@@ -11681,7 +11714,7 @@ ${e.stack ?? ""}` : String(e)}
     const SETTLED = settleReflect(ws, resolved.projectDir, turnInfo.memoryWrites);
     if (SETTLED && SETTLED.ok === false) {
       try {
-        appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] reflect no-followup kinds="${(SETTLED.kinds ?? []).join(",")}"
+        appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] reflect no-followup kinds="${(SETTLED.kinds ?? []).join(",")}"
 `);
       } catch {
       }
@@ -11703,7 +11736,7 @@ ${e.stack ?? ""}` : String(e)}
       }
       if (INC.level >= 2) {
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] reflect incident="${INC.kinds.join(",")}" errors=${INC.toolErrors} memoryErrors=${INC.memoryErrors} worst=${INC.worstTool ?? "-"}\u00d7${INC.worstFail} sid=${shortSessionId(sidTs)}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] reflect incident="${INC.kinds.join(",")}" errors=${INC.toolErrors} memoryErrors=${INC.memoryErrors} worst=${INC.worstTool ?? "-"}\u00d7${INC.worstFail} sid=${shortSessionId(sidTs)}
 `);
         } catch {
         }

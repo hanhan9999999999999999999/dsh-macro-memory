@@ -16,7 +16,7 @@
  *  ⑤ 五个配置面（默认值 / schema / 校验 / resolveConfig / 热生效白名单）+ 面板字段表
  *     一处不漏，不然「用户调了没反应」。
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -221,6 +221,39 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
   ok('R5 产物 bundle 里真的有这两组文案（重建过，不是只改了补丁）',
     client.includes('injectSessionBudget') && client.includes('injectRepeatSim') &&
       /injectRepeatSim\.hint/.test(client))
+}
+
+// ── R6 日志轮转：项目目录的 dream-debug.log 不许无限长 ──────────────────────
+{
+  const logPath = join(wsRoot, '.dsh-meow', 'dream-debug.log')
+  ok('R6 轮转阈值是个常量（2MB，和 perf.log 同一套思路）',
+    (src.match(/var DREAM_LOG_ROTATE_BYTES = 2 \* 1024 \* 1024;/g) ?? []).length === 1)
+  ok('R6 写入口只有一个（appendDreamLog），没有裸写 dream-debug.log 的地方',
+    src.includes('function appendDreamLog(workspace, dir, line) {') &&
+      (src.match(/appendFileSync2\(\s*join9\([^)]*dream-debug\.log/g) ?? []).length === 0)
+  const calls = (src.match(/appendDreamLog\(/g) ?? []).length
+  ok('R6 全部写入口都走 appendDreamLog（pre-step / hit-chain / hit-skip / dream / turn 都算）',
+    calls >= 9, `${calls} 处`)
+  // 行为：真造一个 2MB 文件，再触发一次「这一轮没注入」的写 → 必须轮转出 .old
+  writeFileSync(logPath, 'x'.repeat(2 * 1024 * 1024 + 1024), 'utf8')
+  const sid = 'sess-r6-rotate'
+  seed(sid, { injectChars: 100000 })
+  const r = run(Q_SAME, { ...baseOpts, injectSessionBudget: 100 }, sid)
+  ok('R6 预置 2MB 日志后这一轮的判定照旧（轮转不许影响注入逻辑）', r === null, String(r))
+  const oldPath = `${logPath}.old`
+  const oldSize = existsSync(oldPath) ? statSync(oldPath).size : -1
+  const newSize = existsSync(logPath) ? statSync(logPath).size : -1
+  ok('R6 超阈后旧日志改名成 .old（不是删掉，留一份给排查）', oldSize > 2 * 1024 * 1024, `old ${oldSize} B`)
+  ok('R6 轮转后新日志只装这一轮的行（不继承旧体积）', newSize >= 0 && newSize < 4096, `new ${newSize} B`)
+  // 第二代：再写满一次，.old 必须被覆盖而不是攒成 .old.1
+  writeFileSync(logPath, 'y'.repeat(2 * 1024 * 1024 + 2048), 'utf8')
+  const sid2 = 'sess-r6-rotate2'
+  seed(sid2, { injectChars: 100000 })
+  run(Q_SAME, { ...baseOpts, injectSessionBudget: 100 }, sid2)
+  const oldSize2 = existsSync(oldPath) ? statSync(oldPath).size : -1
+  const siblings = readdirSync(join(wsRoot, '.dsh-meow')).filter((f) => f.startsWith('dream-debug.log.'))
+  ok('R6 第二次轮转覆盖上一代（只留两代，不攒 .old.1 / .old.2）',
+    oldSize2 > 2 * 1024 * 1024 && siblings.length === 1, `${oldSize2} B / ${siblings.join('|')}`)
 }
 
 rmSync(wsRoot, { recursive: true, force: true })

@@ -45,7 +45,7 @@ const TEXT = {
     ['settings.field.injectFloor.label', 'Hit relevance gate'],
     [
       'settings.field.injectFloor.hint',
-      'Keyword hits scoring below this are not injected (0–1; 0 = gate off). 0.45 is the measured default: strong hits still come through, fragments that only share one word stay out.',
+      'Keyword hits scoring below this are not injected (0–1; 0 = gate off). 0.35 is the measured default: strong hits still come through, fragments that only share one word stay out.',
     ],
     ['settings.field.injectBodyMax.label', 'Per-entry body limit'],
     [
@@ -84,7 +84,7 @@ const TEXT = {
     ['settings.field.injectFloor.label', '命中相关度闸'],
     [
       'settings.field.injectFloor.hint',
-      '关键词命中分数低于它的不注入（0–1，0＝关闸）。0.45 是实测默认值：强命中照旧进来，只沾一个词的碎片被挡在外面。',
+      '关键词命中分数低于它的不注入（0–1，0＝关闸）。0.35 是实测默认值：强命中照旧进来，只沾一个词的碎片被挡在外面。',
     ],
     ['settings.field.injectBodyMax.label', '单条正文上限'],
     [
@@ -121,7 +121,7 @@ const TEXT = {
     ['settings.field.injectFloor.label', 'Limiar de relevância dos acertos'],
     [
       'settings.field.injectFloor.hint',
-      'Acertos por palavra-chave abaixo deste valor não são injetados (0–1; 0 = desligado). 0,45 é o padrão medido: acertos fortes continuam passando, fragmentos que só compartilham uma palavra ficam de fora.',
+      'Acertos por palavra-chave abaixo deste valor não são injetados (0–1; 0 = desligado). 0,35 é o padrão medido: acertos fortes continuam passando, fragmentos que só compartilham uma palavra ficam de fora.',
     ],
     ['settings.field.injectBodyMax.label', 'Limite de corpo por entrada'],
     [
@@ -159,8 +159,8 @@ const TEXT = {
 }
 
 /** 出厂值：必须与引擎 / 融合层的默认值逐个相等（探针盯着）。 */
-const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎默认（0.45 / 240 字），「恢复默认」写回它们。 */
-  injectFloor: 0.45,
+const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎默认（0.35 / 240 字），「恢复默认」写回它们（0.6.45 把闸门从 0.45 降到 0.35）。 */
+  injectFloor: 0.35,
   injectBodyMax: 240,
   /** 0.6.44：注入节奏两个旋钮的出厂值＝引擎默认（0＝会话累计不限；0.25＝同话题抑制生效）。 */
   injectSessionBudget: 0,

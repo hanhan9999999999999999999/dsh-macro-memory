@@ -6,7 +6,7 @@
  * 「继续」「帮我看看这个文件」这类问句也会把 0.30~0.42 分的条目正文搬进上下文，
  * 而每条被注入的正文都会留在历史里，之后每轮重新计费。
  *
- * 0.6.40 加一道闸门 `injectFloor`（默认 0.45，0 = 关）：分数不到线的命中不注入。
+ * 0.6.40 加一道闸门 `injectFloor`（默认 0.45；0.6.45 下调到 0.35，0 = 关）：分数不到线的命中不注入。
  * 这一支守的是五条底线：
  *  ① 闸门只拦注入、不拦检索——被挡的条目不许被记成「已注入」（不写 seen、不加 hit_count），
  *     下一轮真问到它时还能进来；模型要它也可以自己 memory_search。
@@ -87,10 +87,10 @@ function seenOf(sid) {
 
 // ── F1 形状：常量 / 默认值 / 配置面五处 / 观测字段 ────────────────────────────
 {
-  ok('F1 默认分线常量在位（0.45）', src.includes('var INJECT_FLOOR_DEF = 0.45;'))
+  ok('F1 默认分线常量在位（0.35，0.6.45 起）', src.includes('var INJECT_FLOOR_DEF = 0.35;'))
   ok('F1 DEFAULT_OPTS 带上闸门（0.6.44 起还带注入节奏两项：会话预算 0 / 同话题 0.6）',
     /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF \};/.test(src))
-  ok('F1 CONFIG_DEFAULTS 里是字面 0.45（模块求值早于常量赋值）', /injectFloor: 0\.45,/.test(src))
+  ok('F1 CONFIG_DEFAULTS 里是字面 0.35（模块求值早于常量赋值）', /injectFloor: 0\.35,/.test(src))
   ok('F1 zod schema 默认跟常量走', src.includes('injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),'))
   ok('F1 设置页校验会挡坏值', src.includes('reqNum("injectFloor");'))
   ok('F1 resolveConfig 落成非负小数并回默认', src.includes('injectFloor: Number.isFinite(c.injectFloor) ? Math.max(0, c.injectFloor) : INJECT_FLOOR_DEF,'))
@@ -100,14 +100,14 @@ function seenOf(sid) {
   ok('F1 闸门判断只有一处（分数比较不许散落）', (src.match(/h\.score < floor/g) ?? []).length === 1)
 }
 
-// ── F2 默认 0.45：该挡的挡、该留的留 ────────────────────────────────────────
+// ── F2 默认 0.35：该挡的挡、该留的留 ────────────────────────────────────────
 {
   const r = run(Q_MIX, {})
   ok('F2 默认线下：强命中照旧注入', r !== null && r.injectedIds.length === 1 && r.injectedIds[0] === 'gate0001',
     r === null ? 'null' : r.injectedIds.join(','))
   ok('F2 默认线下：弱命中被挡，且挡了几条写在回执里', r !== null && r.gated === 1, 'gated ' + (r?.gated ?? '—'))
   ok('F2 默认线下：回执里带 floor 与 gated（观测面不许空）',
-    r !== null && r.budget.floor === 0.45 && r.budget.gated === 1)
+    r !== null && r.budget.floor === 0.35 && r.budget.gated === 1)
   const rs = run(Q_STRONG, {})
   ok('F2 另一条强命中（星图断边）也照旧注入', rs !== null && rs.injectedIds[0] === 'gate0003' && rs.gated === 0)
   ok('F2 完全无关的问句不注入（连空壳都不发）', run(Q_OFF, {}) === null)
@@ -167,10 +167,10 @@ function seenOf(sid) {
 {
   const bad1 = run(Q_MIX, { injectFloor: Number.NaN })
   const bad2 = run(Q_MIX, { injectFloor: '0.9' })
-  ok('F6 非数字（NaN / 字符串）按默认 0.45 走：弱命中仍被挡',
+  ok('F6 非数字（NaN / 字符串）按默认 0.35 走：弱命中仍被挡',
     [bad1, bad2].every((r) => r !== null && r.gated === 1),
     [bad1, bad2].map((r) => (r === null ? 'null' : `g${r.gated}`)).join('/'))
-  ok('F6 非数字时回执里的 floor 仍是有效数字 0.45', [bad1, bad2].every((r) => r !== null && r.budget.floor === 0.45))
+  ok('F6 非数字时回执里的 floor 仍是有效数字 0.35', [bad1, bad2].every((r) => r !== null && r.budget.floor === 0.35))
   const neg = run(Q_MIX, { injectFloor: -1 })
   ok('F6 负数夹成 0＝显式关闸：两条都进、且回执里的 floor 是 0',
     neg !== null && neg.injectedIds.length === 2 && neg.gated === 0 && neg.budget.floor === 0,
