@@ -13985,3 +13985,46 @@ function appendNeighborLog(workspace, dir, kind, rest) {
 **回退性**：不传 workspace 时一行不写（N12 第一条）；旧日志（无 `neighbor-` 行）面板输出逐字不变（I8.6）；`neighbor.js` 的注入内容一个字节都没动——这一版**只加读口，不改行为**。
 
 **踩坑留四条**：①**`stats()` 不是读数**——它活在闭包里，重启归零；要回答「昨天为什么没注入」只能落盘。②**引擎的 `appendDreamLog` 没有导出**（`vendor/meow-memory/lib/index.js:6604` 是模块内函数），邻域这边要么照它的格式自己写、要么为了写一行账去改引擎签名；选前者：同文件、同格式、失败静默，轮转仍由引擎负责。③**PowerShell 会先吃美元加大括号**：把 `deduped=${block.skipped.length}` 写进 `node -e "…"` 时，那段插值在传给 node 之前就被 shell 展开成空串，替换脚本「成功」了却什么都没改，直到探针报 `deduped=undefined` 才露馅——改代码一律写 `.mjs` 文件再 `node` 跑。④**探针别把 `.old` 一起算**：I8.6 第一版断言 `字数：合计 100 字`，但同一工作区里还有初始夹具的 `.old`（300 字），面板照旧读两代日志 → 合计 400，断言红得莫名其妙；旧日志的判据要避开跨文件合计。
+
+### 9.250 0.6.51：一轮合计（命中注入与邻域配回同一轮）
+
+**症状三问**：①0.6.50 之后面板同时念命中注入与星图邻域，可两者被摆成两段、各自算自己的字数——同一轮「命中注入 240 字 + 邻域 320 字 = 560 字」的上下文开销，两段里谁都读不出来；②用户问「这一轮到底被塞了多少字」，面板只能给两个半句；③若把两段字数直接相加，又会把「只有命中」或「只有邻域」的轮一起算进去，平均被拉偏。
+
+**处方（`lib/macro/injectledger.js` 一处）**
+
+1. 新增 `pairRounds(hits, chains)`：口径照 0.6.44 的 skip 配轮——同 `sid`、两秒内、每条只用一次，取时间最近的那条；只返回配上的轮。
+
+```js
+function pairRounds(hits, chains) {
+  const used = new Set()
+  const out = []
+  for (const h of hits) {
+    if (h.hit !== 'yes') continue
+    let best = -1
+    let bestGap = Infinity
+    for (let i = 0; i < chains.length; i += 1) {
+      if (used.has(i)) continue
+      const c = chains[i]
+      if (h.sid !== '' && c.sid !== '' && h.sid !== c.sid) continue
+      const gap = Math.abs((h.at ?? 0) - (c.at ?? 0))
+      if (gap > 2000) continue
+      if (gap < bestGap) { best = i; bestGap = gap }
+    }
+    if (best < 0) continue
+    used.add(best)
+    out.push({ hit: h, chain: chains[best] })
+  }
+  return out
+}
+```
+
+2. 面板多一行：`一轮合计：命中与邻域都有账的 N 轮里，一起花 X 字（平均 A 字 / 最多 M 字；其中邻域 Y 字，占 P%）`——只在 `roundPairs.length > 0` 时出行。
+3. 明细并一行：命中行追加 `· 邻域 N 条 K 字（合计 Z 字）`，被并掉的那条 `neighbor-chain` 行不再单独出现；配不上的邻域行照旧单列。
+
+**读数（探针夹具，`probe-injectlog` I9）**：两轮配对（240+320、300+100）→ 合计 960 字 / 平均 480 / 最多 560 / 邻域 420 字占 44%；只有命中的 s2 轮与只有邻域的 s3 轮都不进合计；把日志换成只有命中的旧格式后，「一轮合计」这一行整行不出现。
+
+**判据**：`node tools/probe-injectlog.mjs` 51 → **56 条 ALL PASS**（I9.1 合计读数逐位、I9.2 明细并行、I9.3 被并掉的邻域行不重复出现、I9.4 两种单边轮都不进合计、I9.5 无邻域行时不出这一行）。全量 `node tools/check-all.mjs` 61 支 / **4,319 断言**。
+
+**回退性**：这一版只动读侧（面板文案与配轮），不写日志、不改任何注入行为——把 `injectledger.js` 换回 0.6.50 那份，面板立刻回到两段分开念，账本一个字节都不受影响。
+
+**踩坑**：①「相加」必须先配对再相加——把 `hits` 与 `chains` 的长度直接相乘或求和，都会把单边轮算进去，读数看着合理但口径错了；②配轮窗口不能放大：`neighbor-chain` 是 pre-step 里异步写的，同一轮可能晚到几百毫秒，两秒够用；放大到分钟级会把相邻两轮配错；③明细去重要按对象而不是按时间戳——同一毫秒里两条 `neighbor-chain` 内容不同，按时间戳删会多删一条。

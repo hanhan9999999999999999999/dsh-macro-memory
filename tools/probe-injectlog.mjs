@@ -240,6 +240,38 @@ const body = panel.body
   ok('I8.6 一行邻域账都没有时不出邻域段（旧日志照旧读，不伪造 0）',
     !/邻域注入：/.test(oldBody) && /注入 100 字/.test(oldBody), oldBody.split('\n').length + ' 行')
 }
+// ── I9 一轮合计：命中与邻域在同一轮里要合账（0.6.51）──────────────────────────
+// 病根：0.6.50 把两段分开念之后，「这一轮上下文到底被塞了多少字」谁也答不出。
+// 这一块守：只有两边都配上的轮才合计（单边轮不硬凑）、明细里并成一行、
+// 配不上的邻域行照旧单列、没有邻域行时不出这一行。
+{
+  const lines = [
+    '[2026-11-25T03:20:00.000Z] hit-chain pid=1 sid=s1 textLen=240 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=240/∞',
+    '[2026-11-25T03:20:01.000Z] neighbor-chain pid=1 sid=s1 ids=3 chars=320 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35',
+    '[2026-11-25T03:25:00.000Z] hit-chain pid=1 sid=s1 textLen=300 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=540/∞',
+    '[2026-11-25T03:25:02.000Z] neighbor-chain pid=1 sid=s1 ids=1 chars=100 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35',
+    '[2026-11-25T03:30:00.000Z] hit-chain pid=1 sid=s2 textLen=120 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=120/∞',
+    '[2026-11-25T03:35:00.000Z] neighbor-chain pid=1 sid=s3 ids=1 chars=60 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35',
+  ]
+  writeFileSync(LOG, lines.join('\n') + '\n', 'utf8')
+  const body = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', limit: 20, config: {} }).body
+  ok('I9.1 单列一行「一轮合计」：轮数 / 合计字数 / 平均 / 最多 / 邻域占比（960 = 240+320+300+100）',
+    /一轮合计：命中与邻域都有账的 2 轮里，一起花 960 字（平均 480 字 \/ 最多 560 字；其中邻域 420 字，占 44%）/.test(body),
+    (body.match(/一轮合计：[^\n]*/) ?? [''])[0])
+  ok('I9.2 明细里同一轮并成一行（命中字数 + 邻域条数字数 + 合计）',
+    /注入 240 字 · 邻域 3 条 320 字（合计 560 字）/.test(body), (body.match(/- [^\n]*合计 560 字[^\n]*/) ?? [''])[0])
+  ok('I9.3 并进合计的那条邻域行不再重复出现（邻域行只剩配不上的那条）',
+    (body.match(/· 邻域 \d+ 条/g) ?? []).length === 2 && /邻域 1 条 · 60 字/.test(body),
+    (body.match(/· 邻域 \d+ 条/g) ?? []).length + ' 处')
+  ok('I9.4 单边轮不硬凑（s2 只有命中、s3 只有邻域，都不进合计）',
+    !/合计 1,080 字/.test(body) && !/合计 1,020 字/.test(body) && !/平均 360 字/.test(body), '单边轮')
+  // 只有命中行的日志：不许凭空造一行「一轮合计：0 轮」
+  writeFileSync(LOG, '[2026-11-25T03:40:00.000Z] hit-chain pid=1 sid=s1 textLen=100 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=100/∞\n', 'utf8')
+  const onlyHit = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', config: {} }).body
+  ok('I9.5 没有邻域行时不出「一轮合计」（没数据就说没数据，不写 0 轮）',
+    !/一轮合计/.test(onlyHit) && /注入 100 字/.test(onlyHit), onlyHit.split('\n').length + ' 行')
+}
+
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)
