@@ -765,5 +765,107 @@ const plain = [
   );
 }
 
+// ── H23 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.33] 定档猜位从「数值线性刻度」换成「位级对数刻度」。
+//
+// 症状：锚链是 `v < IMP_BAND * anchor`（0.85）压出来的**几何级数**，相邻锚点比值恒 ≥ 1.176，
+// 而 0.6.32 的猜位是 `(v - a0v) / (aLv - a0v) * (m - 1)`——按数值线性插值，在几何链上必然猜偏。
+// 实测（`E:\Temp\cmp\bguess33.mjs` + 插桩引擎，3000 问 / 10,000 条）：**猜位直接命中只有 0.5%、
+// 每条约 3.63 趟二分**，两条「猜位命中即收口」的新分支纯属加价（A/B 无收益）。
+//
+// 处方：`rawkBucketOf` 是数值的高 16 位（符号 1 + 阶码 11 + 尾数 4），对非负数**单调**、分辨率
+// 1/16 个八度（0.0625 < 0.32 个八度一个锚点）——正好是一把「以 2 为底的对数刻度尺」，且只花一个
+// 位运算。猜位仍只是猜位：落点靠「前一位严格小 / 后一位不小于」两条收口校验，猜偏就退回窄窗二分，
+// 所以档号**逐位等于** lowerBound（`probe-band` / `probe-order` 与四把尺子共同兜底）。
+//
+// 这里钉三件事：形状在位（老线性刻度已撤）／与老后处理逐位同档／档号仍单调同分同档。
+{
+  const want = [
+    'const g0 = rawkBucketOf(a0v);',
+    'const gL = rawkBucketOf(aLv);',
+    'const posScale = gL > g0 ? (m - 1) / (gL - g0) : 0;',
+    'let est = ((rawkBucketOf(v) - g0) * posScale) | 0;',
+    'if (est === 0 || anchors[est - 1] < v) loI = est;',
+    'if (anchors[loI] >= v) hiI = loI;',
+  ];
+  const missing = want.filter((s) => !ENGINE.includes(s));
+  // 老线性刻度只剩冷路 `setBandsByThreshold` 那一份（它仍被 `bandize` 用着，不改）；
+  // 热路这一段（从 `const g0 = …` 到选前 k 之前）里必须已经没有它。
+  const hotStart = ENGINE.indexOf('const g0 = rawkBucketOf(a0v);');
+  const hotEnd = ENGINE.indexOf('// ⑥ 选前 k：有界堆');
+  const hotBlock = hotStart >= 0 && hotEnd > hotStart ? ENGINE.slice(hotStart, hotEnd) : '';
+  const linearGone = hotBlock !== '' && !hotBlock.includes('let est = ((v - a0v) * posScale) | 0;');
+  ok(
+    'H23a 定档猜位改位级对数刻度：形状在位、热路的老线性刻度已撤',
+    missing.length === 0 && linearGone,
+    `缺=${missing.length} 热路段=${hotBlock.length}B 线性旧写法已撤=${linearGone}`,
+  );
+}
+{
+  // ② 语料：同分重复 / 跨量级 / 只有两条 / 大杂烩——全是「锚点正好落在某条分值上」的边界。
+  const base = (i, content, importance, days) => ({
+    id: '0mb' + String(i).padStart(6, '0'),
+    level: i % 6 === 0 ? 'rules' : 'fact',
+    title: ['alpha', 'beta', 'gamma'][i % 3],
+    content,
+    importance,
+    updated_at: NOW - days * 86400000,
+    last_accessed_at: NOW - days * 3600000,
+    keywords: [['alpha'], ['beta'], ['gamma'], null][i % 4],
+    project: 'p',
+  });
+  const corpora = {
+    dup: Array.from({ length: 24 }, (_, i) => base(i, 'alpha beta gamma delta 星图', 2, 3)),
+    scale: Array.from({ length: 40 }, (_, i) =>
+      base(i, `${'alpha '.repeat(1 + (i % 4))}${'beta '.repeat(1 + (i % 3))}记忆 ${i}`,
+        1 + (i % 4), i * (i % 5 === 0 ? 30 : 1))),
+    tiny: [base(0, 'alpha beta 记忆', 1, 1), base(1, 'alpha gamma 星图', 4, 40)],
+    mixed: Array.from({ length: 120 }, (_, i) =>
+      base(i, `${['alpha', 'beta', 'gamma', 'delta', '一律'][i % 5]} ${['记忆', '星图', '索引'][i % 3]} 第 ${i} 条`,
+        1 + ((i * 7) % 4), (i * 13) % 200)),
+  };
+  const Q = 'alpha beta gamma 记忆 星图';
+  const bands = (rs) => rs.map((h) => `${h.id}@${h._band ?? 'x'}`).join(',');
+  const detail = [];
+  let sameAll = true;
+  for (const [name, docs] of Object.entries(corpora)) {
+    const lean = search(Q, docs, { k: docs.length, now: NOW });
+    const told = search(Q, docs, { k: docs.length, now: NOW, explain: true });
+    const same = bands(lean) === bands(told);
+    if (!same) sameAll = false;
+    detail.push(`${name}=${same ? '同' : '不同'}(${lean.length})`);
+  }
+  ok('H23b 对数刻度猜位不换算术：快路与老后处理逐位同档', sameAll, detail.join(' '));
+}
+{
+  // ③ 档号的两条硬性质：随 raw 单调不增（v 大 ⇒ 档号小）／同分必同档
+  const docs = Array.from({ length: 90 }, (_, i) => ({
+    id: '0mc' + String(i).padStart(6, '0'),
+    level: 'fact',
+    title: 't',
+    content: `${['alpha', 'beta', 'gamma'][i % 3]} ${['记忆', '星图'][i % 2]} 第 ${i % 17} 条`,
+    importance: 1 + ((i * 5) % 4),
+    updated_at: NOW - ((i * 37) % 300) * 86400000,
+    keywords: ['alpha'],
+    project: 'p',
+  }));
+  const rs = search('alpha beta gamma 记忆 星图', docs, { k: docs.length, now: NOW, explain: true });
+  let mono = true;
+  let sameScoreSameBand = true;
+  for (let i = 0; i < rs.length; i++) {
+    for (let j = 0; j < rs.length; j++) {
+      const a = rs[i];
+      const b = rs[j];
+      if (a._raw > b._raw && !(a._band <= b._band)) mono = false;
+      if (a._raw === b._raw && a._band !== b._band) sameScoreSameBand = false;
+    }
+  }
+  ok(
+    'H23c 档号仍单调、同分同档：raw 大则档号不增，等分必等档',
+    rs.length >= 2 && mono && sameScoreSameBand,
+    `条数=${rs.length} 单调=${mono} 同分同档=${sameScoreSameBand}`,
+  );
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'}  probe-hotpath：${pass}/${pass + fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

@@ -13492,3 +13492,23 @@ rawkTopPrev = top;
 **判据**：`tools/probe-hotpath.mjs` H20–H22（快路形状 / k 边界 / 复用不串味，22/22 ALL PASS）；`verify.mjs` OR092 七条；老判据 `VW5` 同义放宽为「`unitScore` ≥ 2 处且 `keywordHitScore` 里必须有」。
 
 **踩坑**：`codeOf` 剔整行注释 → 拿注释当锚点必取到 `-1`（改用 `bandize` 夹在守卫与 `trimByBand` 之间判）；`HIT_BUF.busy` 只在 `hitBufDone` 里，`hitBufOf` 里是 `if (s.busy) return null;`；`k = 0` 与负数走「`want = 全量`」不是空数组（判据错，不是引擎错）；A/B 必须一引擎一进程。
+
+## 9.232 0.6.33：定档猜位改位级对数刻度
+
+**病根**：锚链是 `v < IMP_BAND * anchor`（0.85）压出来的**几何级数**（相邻比值 ≥ 1.176，实测 1.25 起），而 0.6.30 的猜位是数值线性插值 `((v - a0v) * posScale) | 0`——把 `[a0v, aLv]` 当均匀刻度切 16 份。插桩实测（3000 问 / 10,000 条，`anchorsM 16`、`bandedDocs 26,374,630`）：**`iterPerDoc 3.633`、猜位直接命中 0.5%**，两条「命中即收口」的新分支纯属加价（A/B：old 1.388 / new 1.41）。顺带证伪了这一版的另一个候选：`indexSignature` 每问 1.041 次 × 10,000 条、28.38 ns/条，五级梯子（hoist / 内联 / 去计数 / 内联关键词比较）最好只值 5%——访存主导（每条约 4–6 条 cache line），不动。
+
+**处方**：
+
+1. 阈值同源换成对数量纲：`const g0 = rawkBucketOf(a0v);` / `const gL = rawkBucketOf(aLv);` / `const posScale = gL > g0 ? (m - 1) / (gL - g0) : 0;`（`rawkBucketOf` 取数值高 16 位 = 符号 + 阶码 + 4 位尾数，对非负数单调、分辨率 1/16 个八度 < 一个锚点的 0.32 八度）。
+2. 猜位：`let est = ((rawkBucketOf(v) - g0) * posScale) | 0;`，夹到 `[0, m-1]`。
+3. 两条收口（`[macro-fusion 0.6.33]`）：`if (anchors[est] >= v) { loI = 0; hiI = est; if (est === 0 || anchors[est - 1] < v) loI = est; } else { loI = est + 1; hiI = m - 1; if (anchors[loI] >= v) hiI = loI; }`，`while (loI < hiI)` 老二分原样保留作兜底。冷路 `setBandsByThreshold` 一字未改（`explain` / `keepBand` 仍走老刻度）。
+
+**正确性**：不变式「解必落在 `[loI, hiI]`」由 `anchors[est] >= v` 一次比较直接给出（命中 ⇒ 下界 ∈ `[0, est]`；否则 ⇒ ∈ `[est+1, m-1]`，因 `anchors[m-1] = aLv >= v`），收口只往前顶一格，顶不动交给二分。猜得准不准只影响快慢，不影响结果。
+
+**读数**：单引擎进程交替三轮（10,000 条 / 3,000 问 / k=5）**1.2981 → 1.1925 ms/问（−8.1%）**，逐对 −8.1 / −8.1 / −9.3%；插桩 `iterPerDoc 3.633 → 0.086`、早退命中 **0.5% → 97.4%**；新剖面 `E:\Temp\cmp\wfix33\CPU.20261124.181808.17132.0.001.cpuprofile`（4,722.9ms / 1.2036 ms/问）`search:3981` self 2,153.1 → **1,777**，二分那几行（旧 `L4719`/`L4721`/`L4722`/`L4728`、`L4707`）已从行级榜消失。
+
+**等价性**：四把尺子 `colddiff33` **462** / `tokdiff33` **15,810** / `searchdiff33` **2,462** / `fastdiff33` **3,868**（`edgeCount 0`）全 **0 不符**；进程内快路 vs `explain: true` 在 8 种分布 × 6 问 = **48 对**上档号逐位相同；`GOLD33` 与 0.6.29–0.6.32 同一串。
+
+**判据**：`tools/probe-hotpath.mjs` H23a–H23c（25/25 ALL PASS）；`verify.mjs` OR093 七条；`probe-band` 7/7、`probe-order` 10/10 不动。
+
+**踩坑**：①「老写法不在」不能整篇判——冷路 `setBandsByThreshold` 还留着线性写法，必须切成热路段（`const g0 = rawkBucketOf(a0v);` → `// ⑥ 选前 k：有界堆`）；②离线基准只值方向（`bandbench33` 预示 −39% 定档内部、整机 3–4%，实测 −8.1%），幅度一律以 A/B 为准；③`.cjs` 里不能写 `import`（报 `Cannot use import statement outside a module`），改写 `require`。

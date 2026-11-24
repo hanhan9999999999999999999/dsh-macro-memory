@@ -15351,6 +15351,143 @@ dt063: {
   check('OR092 版本号不低于 0.6.32（后续补丁不必回头改这一条）', vNumS32 >= 632, vS32.join('.'))
 }
 
+// ═══════════════ [macro-fusion 0.6.33] OR093：定档猜位改位级对数刻度 ═══════════════
+// 症状：锚链是 `v < IMP_BAND * anchor`（0.85）压出来的几何级数（相邻比值 ≥ 1.176），
+// 0.6.32 的猜位却是**数值线性插值**——实测猜位直接命中只有 0.5%、每条约 3.63 趟二分，
+// 两条「命中即收口」的新分支纯属加价（插桩引擎 `E:\Temp\cmp\bguess33.mjs`，3000 问 / 10,000 条）。
+// 处方：`rawkBucketOf`（数值高 16 位 = 符号 + 阶码 + 4 位尾数）对非负数单调、分辨率 1/16 个八度，
+// 正好当以 2 为底的对数刻度尺；猜位只负责缩小窗口，落点靠「前一位严格小 / 后一位不小于」两条
+// 收口校验 + 窄窗二分兜底，所以档号逐位等于 lowerBound。
+{
+  const readS33 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const eng33 = readS33('./vendor/meow-memory/lib/index.js')
+  const searchStart33 = eng33.indexOf('function search(query, docs, opts = {}) {')
+  const searchEnd33 = eng33.indexOf('\nfunction ', searchStart33 + 10)
+  const searchC33 = eng33.slice(searchStart33, searchEnd33)
+  // ① 探针在位
+  const probe33 = readS33('./tools/probe-hotpath.mjs')
+  check('OR093 探针在位：probe-hotpath 有 H23a–H23c 三条（对数刻度形状 / 快路与老路同档 / 档号单调同分同档）',
+    probe33.includes('H23a 定档猜位改位级对数刻度') &&
+      probe33.includes('H23b 对数刻度猜位不换算术') &&
+      probe33.includes('H23c 档号仍单调、同分同档') &&
+      readS33('./tools/check-all.mjs').includes('probe-hotpath.mjs'),
+    `H23a=${probe33.includes('H23a 定档猜位改位级对数刻度')} 挂载=${readS33('./tools/check-all.mjs').includes('probe-hotpath.mjs')}`)
+  // ② 引擎形状：对数刻度猜位 + 两条收口 + 热路段里没有老线性写法；刻度的单调性来自 `rawkBucketOf`
+  const hotStart33 = searchC33.indexOf('const g0 = rawkBucketOf(a0v);')
+  const hotEnd33 = searchC33.indexOf('// ⑥ 选前 k：有界堆')
+  const hotBlock33 = hotStart33 >= 0 && hotEnd33 > hotStart33 ? searchC33.slice(hotStart33, hotEnd33) : ''
+  const guessOk33 = hotBlock33.length > 0 &&
+    !hotBlock33.includes('let est = ((v - a0v) * posScale) | 0;') &&
+    hotBlock33.includes('const gL = rawkBucketOf(aLv);') &&
+    hotBlock33.includes('const posScale = gL > g0 ? (m - 1) / (gL - g0) : 0;') &&
+    hotBlock33.includes('let est = ((rawkBucketOf(v) - g0) * posScale) | 0;') &&
+    hotBlock33.includes('if (est === 0 || anchors[est - 1] < v) loI = est;') &&
+    hotBlock33.includes('if (anchors[loI] >= v) hiI = loI;') &&
+    hotBlock33.includes('while (loI < hiI) {') &&
+    hotBlock33.includes('lo = loI;')
+  const bucketOk33 = eng33.includes('function rawkBucketOf(v) {') &&
+    eng33.includes('rawkBits[0] = v;') &&
+    eng33.includes('return rawkBitsU[1] >>> RAWK_SHIFT;')
+  check('OR093 引擎形状：热路改位级对数刻度猜位、两条收口校验在位、老线性刻度只剩冷路那一份',
+    guessOk33 && bucketOk33 && hotBlock33.length > 800,
+    `猜位=${guessOk33} 桶号=${bucketOk33} 热路段=${hotBlock33.length}B`)
+  // ③ 进程内：快路（默认）与老后处理（explain:true 走 `if (!fastDone)`）逐位同档，八种分布
+  const Mv33 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const NOW33 = 1795470000000
+  const lcg33 = (seed0) => {
+    let s = seed0
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648
+      return s / 2147483648
+    }
+  }
+  const mkCorp33 = (kind, n, seed) => {
+    const r = lcg33(seed)
+    const words = ['alpha', 'beta', 'gamma', 'delta', '一律', '必须', '记忆', '星图', '索引', '锚点']
+    return Array.from({ length: n }, (_, i) => {
+      const dup = kind === 'dup'
+      const spread = kind === 'scale' ? i * (1 + (i % 7 === 0 ? 40 : 0)) : i
+      const ws = dup ? ['alpha', 'beta', 'gamma', '记忆'] : Array.from({ length: 1 + ((r() * 6) | 0) }, () => words[(r() * words.length) | 0])
+      return {
+        id: '0md' + String(i).padStart(6, '0'),
+        level: ['fact', 'lesson', 'rules', 'topic'][kind === 'level' ? (i % 4) : ((r() * 4) | 0)],
+        title: ws[0],
+        content: `${ws.join(' ')} 第 ${dup ? 0 : i} 条`,
+        importance: kind === 'flat' ? 2 : 1 + ((r() * 4) | 0),
+        updated_at: NOW33 - spread * 3600000,
+        last_accessed_at: NOW33 - spread * 600000,
+        keywords: r() < 0.2 ? null : [words[(r() * words.length) | 0]],
+        project: 'p',
+      }
+    })
+  }
+  const kinds33 = [['mix', 80], ['dup', 30], ['scale', 60], ['flat', 50], ['level', 40], ['tiny', 3], ['pair', 2], ['wide', 150]]
+  const bandsOf33 = (rs) => rs.map((h) => `${h.id}@${h._band ?? 'x'}`).join(',')
+  const qs33 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta 锚点 索引', 'alpha gamma 记忆', 'rules 是什么']
+  let sameAll33 = true
+  let pairs33 = 0
+  const bad33 = []
+  for (const [kind, n] of kinds33) {
+    const corp = mkCorp33(kind, n, 11 + n)
+    for (const q of qs33) {
+      const lean = bandsOf33(Mv33.search(q, corp, { k: n, now: NOW33 }))
+      const told = bandsOf33(Mv33.search(q, corp, { k: n, now: NOW33, explain: true }))
+      pairs33 += 1
+      if (lean !== told) { sameAll33 = false; if (bad33.length < 3) bad33.push(`${kind}/${q}`) }
+    }
+  }
+  check('OR093 进程内：对数刻度猜位不换算术——快路档号与老后处理逐位相同（八种分布 × 六问）',
+    sameAll33 && pairs33 === 48,
+    `对拍=${pairs33} 不同=${bad33.length === 0 ? '无' : bad33.join(' ')}`)
+  // ④ 进程内：档号两条硬性质（raw 大 ⇒ 档号不增；等分 ⇒ 等档），且猜位偏了也靠兜底救回来
+  const corpMono33 = mkCorp33('mix', 90, 4242)
+  const rsMono33 = Mv33.search('alpha beta gamma 记忆 星图', corpMono33, { k: 90, now: NOW33, explain: true })
+  let mono33 = true
+  let tie33 = true
+  for (const a of rsMono33) {
+    for (const b of rsMono33) {
+      if (a._raw > b._raw && !(a._band <= b._band)) mono33 = false
+      if (a._raw === b._raw && a._band !== b._band) tie33 = false
+    }
+  }
+  check('OR093 进程内：档号随 raw 单调不增、同分必同档（猜位只是缩小窗口，落点仍由收口校验钉死）',
+    rsMono33.length >= 2 && mono33 && tie33,
+    `条数=${rsMono33.length} 单调=${mono33} 同分同档=${tie33}`)
+  // ⑤ 进程内：回执指纹与 0.6.29–0.6.32 逐位相同（只换猜位刻度，分数与顺序一位不动）
+  const r33 = lcg33(97)
+  const w33 = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图']
+  const corpG33 = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((r33() * 5) | 0)
+    const ws = Array.from({ length: n }, () => w33[(r33() * w33.length) | 0])
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(r33() * 4) | 0],
+      title: ws[0],
+      content: ws.join(' '),
+      importance: 1 + ((r33() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: r33() < 0.2 ? null : [w33[(r33() * w33.length) | 0]],
+      project: 'p',
+    }
+  })
+  const qsG33 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha']
+  const digestG33 = qsG33.map((q) => Mv33.search(q, corpG33, { k: 8, now: NOW33 })
+    .map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|')
+  const GOLD33 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025'
+  check('OR093 进程内：回执指纹与 0.6.29 / 0.6.30 / 0.6.31 / 0.6.32 逐位相同（只换猜位刻度，不碰分数与顺序）',
+    digestG33 === GOLD33, digestG33 === GOLD33 ? '指纹同' : '指纹不同')
+  // ⑥ 文档在位 + ⑦ 版本
+  check('OR093 文档在位：INTERNAL 9.232、README 写「对数刻度」、DESIGN 有 ## 228.、PLAN 有 0.6.33',
+    readS33('./docs/INTERNAL.md').includes('## 9.232 ') &&
+      readS33('./README.md').includes('对数刻度') &&
+      readS33('./DESIGN.md').includes('## 228. ') &&
+      /0\.6\.33/.test(readS33('./docs/PLAN-0.6.md')))
+  const vS33 = (readS33('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS33 = vS33.length === 3 ? vS33[0] * 10000 + vS33[1] * 100 + vS33[2] : 0
+  check('OR093 版本号不低于 0.6.33（后续补丁不必回头改这一条）', vNumS33 >= 633, vS33.join('.'))
+}
+
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
 
 {

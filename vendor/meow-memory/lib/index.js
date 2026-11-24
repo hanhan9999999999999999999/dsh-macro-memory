@@ -4689,8 +4689,14 @@ function search(query, docs, opts = {}) {
           const m = anchors.length;
           const a0v = anchors[0];
           const aLv = anchors[m - 1];
-          const spanV = aLv - a0v;
-          const posScale = spanV > 0 ? (m - 1) / spanV : 0;
+          // [macro-fusion 0.6.33] 猜位改看**对数刻度**：锚链是 `v < IMP_BAND * anchor` 压出来的，
+          // 相邻锚点比值恒 ≥ 1/0.85 = 1.176（实测 1.25 起），也就是几何级数——按数值线性插值必然把
+          // 八成条目猜偏（0.6.32 剖面里 `iterPerDoc 3.633`、猜位直接命中只有 0.5%）。
+          // `rawkBucketOf` 是数值的高 16 位（符号 1 + 阶码 11 + 尾数 4），对非负数单调、分辨率 1/16 个
+          // 八度（0.0625 < 0.32 个八度一个锚点）——正好当「以 2 为底的对数刻度尺」用，且一个浮点位运算就够。
+          const g0 = rawkBucketOf(a0v);
+          const gL = rawkBucketOf(aLv);
+          const posScale = gL > g0 ? (m - 1) / (gL - g0) : 0;
           let lastV = -1;
           let lastBand = 0;
           for (let q = 0; q < cnt; q++) {
@@ -4704,7 +4710,7 @@ function search(query, docs, opts = {}) {
             if (!(v > a0v)) lo = 0;
             else if (v > aLv) lo = m;
             else {
-              let est = ((v - a0v) * posScale) | 0;
+              let est = ((rawkBucketOf(v) - g0) * posScale) | 0;
               if (est > m - 1) est = m - 1;
               else if (est < 0) est = 0;
               let loI;
@@ -4712,9 +4718,14 @@ function search(query, docs, opts = {}) {
               if (anchors[est] >= v) {
                 loI = 0;
                 hiI = est;
+                // [macro-fusion 0.6.33] 猜位就是落点时直接收口：前一位严格小 ⇒ est 就是下界，
+                // 不必再从 [0, est] 二分。判据与二分同一把梯子（`anchors[lo] >= v && (lo === 0 || anchors[lo-1] < v)`）。
+                if (est === 0 || anchors[est - 1] < v) loI = est;
               } else {
                 loI = est + 1;
                 hiI = m - 1;
+                // 同理：右边这一格就是落点时直接收口（`est + 1 <= m - 1` 由上面 `est <= m - 1` 保证）。
+                if (anchors[loI] >= v) hiI = loI;
               }
               while (loI < hiI) {
                 const mid = (loI + hiI) >> 1;
