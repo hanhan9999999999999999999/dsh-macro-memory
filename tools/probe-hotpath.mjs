@@ -481,5 +481,160 @@ const plain = [
   if (d !== GOLDEN) console.log('DIGEST ' + d);
 }
 
+// ── H17 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.31] 定档前的两趟合成一趟 + 桶表只清上一趟碰过的段 + 时间衰减阈值提出循环外。
+// 这条只管形状：老写法必须真的不在、新写法必须真的在。语义等价由 H18（定档链逐位）与 H19（回执指纹）管。
+{
+  // 切函数体 + 剔掉整行注释再判：引擎注释里为说明「老写法是什么」会把老写法原样写进注释，
+  // 直接用 includes 去全文件找会自己撞自己（0.6.30 的 H16 就踩过）。
+  const codeOf = (name) => {
+    const at = ENGINE.indexOf(`function ${name}(`);
+    if (at < 0) return '';
+    const next = ENGINE.indexOf('\nfunction ', at + 1);
+    const body = next < 0 ? ENGINE.slice(at) : ENGINE.slice(at, next);
+    return body.split('\n').filter((ln) => !ln.trimStart().startsWith('//')).join('\n');
+  };
+  const band = codeOf('setBandsByThreshold');
+  const chain = codeOf('anchorChainOf');
+  const firstPass =
+    band.includes('if (rawkVals.length < total) rawkVals = new Float64Array(total);') &&
+    band.includes('vals[plain++] = r;') &&
+    !band.includes('idx[plain] = i;') &&
+    band.includes('if (typeof r !== "number" || !Number.isFinite(r) || r < 0) return false;') &&
+    !band.includes('if (rawkVals.length < plain)') &&
+    !band.includes('vals[j++] = h[rawKey];');
+  const histPass =
+    chain.includes('rawkHist.fill(0, 0, rawkTopPrev + 1);') &&
+    chain.includes('for (let b = 0; b <= top; b++)') &&
+    chain.includes('rawkTopPrev = top;') &&
+    !chain.includes('rawkHist.fill(0);') &&
+    !chain.includes('for (let b = 0; b < RAWK_NB; b++)');
+  const emitPass =
+    ENGINE.includes('const impBandMax = IMP_BAND * maxRaw;') &&
+    !ENGINE.includes('!(raw[di] >= IMP_BAND * maxRaw)') &&
+    ENGINE.includes('!(raw[di] >= impBandMax)');
+  ok(
+    'H17 定档合成一趟 / 桶表单段清理 / 衰减阈值提循环外：形状在位，老写法不在',
+    firstPass && histPass && emitPass,
+    `合成一趟=${firstPass} 单段清理=${histPass} 阈值提出=${emitPass}`,
+  );
+}
+
+// ── H18 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.31] 桶表（65,536 格）不再每问整表 `fill(0)`、前缀和也不再走满 65,536 格，
+// 改成「上一趟碰过 0..top 这一段清掉、前缀和只走到这一趟的 top」。这条探针把 `anchorChainOf`
+// 连同桶表一起从引擎原文抠出来，故意让相邻两趟的 top 一高一低（先巨跨后紧凑、先紧凑后巨跨），
+// 每一趟都跟「纯排序 + 阈值链」的参考实现逐位比：桶表漏清必定在这里露馅。
+{
+  const iA = ENGINE.indexOf('const RAWK_SHIFT = 16;');
+  const iC = ENGINE.indexOf('function setBandsBySort(hits, rawKey) {');
+  const src = iA >= 0 && iC > iA ? ENGINE.slice(iA, iC) : '';
+  let sand = null;
+  try {
+    sand = src === ''
+      ? null
+      : new Function(`var IMP_BAND = 0.85;\n${src}\nreturn { anchorChainOf, anchorChainSorted };`)();
+  } catch {
+    sand = null;
+  }
+  const lcg = (seed0) => {
+    let s = seed0;
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648;
+      return s / 2147483648;
+    };
+  };
+  const refOf = (vals, n) => {
+    const c = Float64Array.from(vals.subarray(0, n));
+    c.sort();
+    return sand.anchorChainSorted(c, n);
+  };
+  const shapes = [
+    (r, i) => r(),                       // 均匀 0..1
+    (r, i) => r() * 1e12,                // 巨跨（桶号拉满）
+    (r, i) => Math.round(r() * 4) / 4,   // 同分很多
+    (r, i) => 1e15 + i,                  // 微跨
+    (r, i) => (i % 3 === 0 ? 0 : r()),   // 含零
+    (r, i) => Math.exp(-r() * 6),        // 偏斜
+  ];
+  const sizes = [0, 1, 2, 5, 37, 200, 1500, 4000];
+  const r = lcg(2031);
+  let checks = 0;
+  let bad = 0;
+  const firstBad = [];
+  // 顺序刻意「高 top 与低 top 交替」：桶表只在下一趟开头清上一趟那段，
+  // 只要清少了或者前缀和走短了，紧接着那一趟就会读到上一趟的残值。
+  for (let s = 0; s < shapes.length; s++) {
+    for (let t = 0; t < sizes.length; t++) {
+      const n = sizes[t];
+      const arr = new Float64Array(Math.max(n, 1));
+      for (let i = 0; i < n; i++) arr[i] = shapes[s](r, i);
+      if (n === 0) continue;
+      const got = sand.anchorChainOf(arr, n);
+      const exp = refOf(arr, n);
+      checks += 1;
+      const same = JSON.stringify(got) === JSON.stringify(exp);
+      if (!same) {
+        bad += 1;
+        if (firstBad.length < 3) firstBad.push(`shape${s}/n${n}: ${JSON.stringify(got)} != ${JSON.stringify(exp)}`);
+      }
+      // 同一向量连跑两次：第二条必须还是同一个答案（读的是自己的残值就会被抓出来）
+      const twice = sand.anchorChainOf(arr, n);
+      checks += 1;
+      if (JSON.stringify(twice) !== JSON.stringify(exp)) {
+        bad += 1;
+        if (firstBad.length < 3) firstBad.push(`shape${s}/n${n} 第二趟: ${JSON.stringify(twice)}`);
+      }
+    }
+  }
+  ok(
+    'H18 桶表只清上一趟那段、前缀和只走到 top：六种分布 × 八种长度逐位与「排序 + 阈值链」相同',
+    sand !== null && checks > 0 && bad === 0,
+    sand === null ? '抠不出 anchorChainOf' : `${checks} 项 · 不符 ${bad}${firstBad.length ? ' · ' + firstBad.join(' ; ') : ''}`,
+  );
+}
+
+// ── H19 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.31] 三笔改动都是「换写法不换算术」，所以整条回执必须与 0.6.30 逐位相同——
+// 而 0.6.30 的指纹已经钉在 H16 的 GOLDEN 里（那份又与 0.6.29 对过）。这里复用同一串：
+// 两个版本之间只要有一位分数动了，这条就红。
+{
+  const lcg = (seed0) => {
+    let s = seed0;
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648;
+      return s / 2147483648;
+    };
+  };
+  const r = lcg(97);
+  const w = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图'];
+  const corpus = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((r() * 5) | 0);
+    const words = Array.from({ length: n }, () => w[(r() * w.length) | 0]);
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(r() * 4) | 0],
+      title: words[0],
+      content: words.join(' '),
+      importance: 1 + ((r() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: r() < 0.2 ? null : [w[(r() * w.length) | 0]],
+      project: 'p',
+    };
+  });
+  const qs = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha'];
+  const runs = qs.map((q) => search(q, corpus, { k: 8, now: NOW }));
+  const digestOf = (rs) => rs.map((x) => x.map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|');
+  const d = digestOf(runs);
+  const GOLDEN31 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025';
+  ok(
+    'H19 三笔改动不换算术：回执指纹与 0.6.29 / 0.6.30 逐位相同',
+    d === GOLDEN31,
+    `指纹 ${d === GOLDEN31 ? '同' : '不同'}`,
+  );
+  if (d !== GOLDEN31) console.log('DIGEST31 ' + d);
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'}  probe-hotpath：${pass}/${pass + fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

@@ -12647,7 +12647,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VY4 两处新鲜度都用同一个 85% 带（IMP_BAND）而不是各自写死 0.85',
-    (MY.match(/raw\[di\] >= IMP_BAND \* maxRaw/g) || []).length === 2,
+    // 0.6.31：阈值提到循环外之后是 `const impBandMax = IMP_BAND * maxRaw;` 两处；
+    // 注释里也会提到这个名字，判之前先剔整行注释（否则必自撞）。
+    (MY.replace(/^\s*\/\/.*$/gm, '').match(/IMP_BAND \* maxRaw/g) || []).length === 2,
   )
   check(
     'VY5 两处新鲜度都有下限（Math.max(RECENCY_FLOOR, recencyWeight(...))）',
@@ -13750,7 +13752,8 @@ dt063: {
   const bBody = bBodyStart >= 0 && bBodyEnd > bBodyStart ? ENGINE_B.slice(bBodyStart, bBodyEnd) : ''
   const parts = {
     桶常量: bSeg.includes('const RAWK_SHIFT = 16;') && bSeg.includes('const RAWK_NB = 1 << (32 - RAWK_SHIFT);'),
-    计数: bSeg.includes('rawkHist.fill(0);') && bSeg.includes('rawkHist[b] += 1;'),
+    计数: (bSeg.includes('rawkHist.fill(0, 0, rawkTopPrev + 1);') || bSeg.includes('rawkHist.fill(0);')) &&
+      bSeg.includes('rawkHist[b] += 1;'),
     攒段: bSeg.includes('out[rawkHist[rawkBucketOf(v)]++] = v;'),
     阈值: bSeg.includes('const t = anchor < 0 ? Infinity : IMP_BAND * anchor;'),
     桶0: bSeg.includes('if (b === 0) {') && bSeg.includes('seg.sort();'),
@@ -15033,6 +15036,169 @@ dt063: {
   const vS30 = (readS30('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS30 = vS30.length === 3 ? vS30[0] * 10000 + vS30[1] * 100 + vS30[2] : 0
   check('OR090 版本号不低于 0.6.30（后续补丁不必回头改这一条）', vNumS30 >= 630, vS30.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.31] OR091：定档合成一趟 + 桶表单段清理 + 阈值提循环外 ═══════════════
+{
+  const readS31 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const rawS31 = readS31('./vendor/meow-memory/lib/index.js')
+  const stripS31 = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  // 判「老写法不在」必须切函数体 + 剔注释行：引擎注释里为说明老写法是什么，会把老写法原样写进注释（0.6.30 踩过）。
+  const bodyOf31 = (name) => {
+    const at = rawS31.indexOf(`function ${name}(`)
+    if (at < 0) return ''
+    const next = rawS31.indexOf('\nfunction ', at + 1)
+    const body = next < 0 ? rawS31.slice(at) : rawS31.slice(at, next)
+    return stripS31(body)
+  }
+  const hotS31 = readS31('./tools/probe-hotpath.mjs')
+  const allS31 = readS31('./tools/check-all.mjs')
+  check('OR091 探针在位：probe-hotpath 有 H17–H19 三条（形状 / 桶表逐位 / 跨版本指纹），check-all 挂了它',
+    ['H17 ', 'H18 ', 'H19 '].every((t) => hotS31.includes(t)) &&
+      allS31.includes('probe-hotpath') &&
+      rawS31.includes('const RAWK_SHIFT = 16;'))
+  const bandC31 = bodyOf31('setBandsByThreshold')
+  const chainC31 = bodyOf31('anchorChainOf')
+  const engC31 = stripS31(rawS31)
+  const firstOk31 = bandC31.includes('if (rawkVals.length < total) rawkVals = new Float64Array(total);') &&
+    bandC31.includes('vals[plain++] = r;') &&
+    bandC31.includes('if (rawkVals.length < plain)') === false &&
+    bandC31.includes('vals[j++] = h[rawKey];') === false
+  const histOk31 = chainC31.includes('rawkHist.fill(0, 0, rawkTopPrev + 1);') &&
+    chainC31.includes('rawkTopPrev = -1;') &&
+    chainC31.includes('for (let b = 0; b <= top; b++)') &&
+    chainC31.includes('rawkTopPrev = top;') &&
+    chainC31.includes('rawkHist.fill(0);') === false &&
+    chainC31.includes('b < RAWK_NB') === false
+  const emitOk31 = (engC31.split('const impBandMax = IMP_BAND * maxRaw;').length - 1) === 2 &&
+    engC31.includes('!(raw[di] >= impBandMax)') &&
+    engC31.includes('!(raw[di] >= IMP_BAND * maxRaw)') === false
+  check('OR091 引擎形状：定档校验与抄值合成一趟、桶表只清上一趟那段、衰减阈值两条路都提到循环外',
+    firstOk31 && histOk31 && emitOk31,
+    `合成一趟=${firstOk31} 单段清理=${histOk31} 阈值提出=${emitOk31}`)
+  // 两处进程内等价：① 定档（桶表 + 猜位定档）与「每条从头二分」逐位同档；
+  // ② 桶表在多趟之间 top 一高一低时，与「排序 + 阈值链」的纯参考实现逐位相同（漏清必然露馅）。
+  const iA31 = rawS31.indexOf('const RAWK_SHIFT = 16;')
+  const iC31 = rawS31.indexOf('function setBandsBySort(hits, rawKey) {')
+  let sand31 = null
+  try {
+    sand31 = iA31 >= 0 && iC31 > iA31
+      ? new Function(`var IMP_BAND = 0.85;\n${rawS31.slice(iA31, iC31)}\nreturn { setBandsByThreshold, anchorChainOf, anchorChainSorted };`)()
+      : null
+  } catch {
+    sand31 = null
+  }
+  const lcg31 = (seed0) => {
+    let s = seed0
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648
+      return s / 2147483648
+    }
+  }
+  const r1 = lcg31(7), r2 = lcg31(11), r3 = lcg31(13), r4 = lcg31(17), r5 = lcg31(19), r6 = lcg31(23)
+  const dist31 = [
+    Array.from({ length: 300 }, () => r1()),
+    Array.from({ length: 300 }, () => Math.round(r2() * 20) / 20),
+    Array.from({ length: 300 }, () => Math.exp(-r3() * 8) * 1000),
+    Array.from({ length: 300 }, () => (r4() < 0.5 ? 1 : 2)),
+    new Array(300).fill(5),
+    Array.from({ length: 300 }, () => r5() * 1e12),
+    Array.from({ length: 300 }, (_, i) => 1e15 + i),
+    Array.from({ length: 300 }, () => (r6() < 0.3 ? 0 : r6())),
+  ]
+  const refBand31 = (anchors, m, v) => {
+    let lo = 0
+    let hi = m
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (anchors[mid] >= v) hi = mid
+      else lo = mid + 1
+    }
+    return m - 1 - lo
+  }
+  let bandBad31 = 0
+  let bandRows31 = 0
+  if (sand31 !== null) {
+    for (const vals of dist31) {
+      const hits = vals.map((v) => ({ _raw: v }))
+      hits.push({ _raw: 3, _ident: true }, { _raw: 4, _subj: 1 })
+      if (sand31.setBandsByThreshold(hits, '_raw') !== true) bandBad31 += 1
+      const anchors = sand31.anchorChainOf(Float64Array.from(vals), vals.length)
+      const m = anchors.length
+      for (let i = 0; i < vals.length; i++) {
+        bandRows31 += 1
+        if (!Object.is(hits[i]._bandTmp, refBand31(anchors, m, vals[i]))) bandBad31 += 1
+      }
+      if (hits[vals.length]._bandTmp !== -1 || hits[vals.length + 1]._bandTmp !== -1) bandBad31 += 1
+    }
+  }
+  check('OR091 进程内：合成一趟的定档仍与「每条从头二分」逐位同档（八种分布 2,400 条，指认 / 主语项仍 -1）',
+    sand31 !== null && bandBad31 === 0 && bandRows31 === 2400,
+    `对档 ${bandRows31} 条 · 不符 ${bandBad31}`)
+  const shapes31 = [
+    (r) => r(),
+    (r) => r() * 1e12,
+    (r) => Math.round(r() * 4) / 4,
+    (r, i) => 1e15 + i,
+    (r, i) => (i % 3 === 0 ? 0 : r()),
+    (r) => Math.exp(-r() * 6),
+  ]
+  const sizes31 = [1, 2, 5, 37, 200, 1500, 4000]
+  const rC = lcg31(2031)
+  let chainChecks31 = 0
+  let chainBad31 = 0
+  if (sand31 !== null) {
+    for (const shape of shapes31) {
+      for (const n of sizes31) {
+        const arr = new Float64Array(n)
+        for (let i = 0; i < n; i++) arr[i] = shape(rC, i)
+        const sorted = Float64Array.from(arr)
+        sorted.sort()
+        const exp = sand31.anchorChainSorted(sorted, n)
+        chainChecks31 += 1
+        if (JSON.stringify(sand31.anchorChainOf(arr, n)) !== JSON.stringify(exp)) chainBad31 += 1
+        chainChecks31 += 1
+        if (JSON.stringify(sand31.anchorChainOf(arr, n)) !== JSON.stringify(exp)) chainBad31 += 1
+      }
+    }
+  }
+  check('OR091 进程内：桶表只清上一趟那段 + 前缀和只走到 top，六种分布 × 七种长度与「排序 + 阈值链」逐位相同',
+    sand31 !== null && chainChecks31 === 84 && chainBad31 === 0,
+    `对档 ${chainChecks31} 项 · 不符 ${chainBad31}`)
+  // 跨版本指纹：0.6.29 / 0.6.30 / 0.6.31 三个引擎在这份固定语料上必须一位分数都不差。
+  const Mv31 = await import('./vendor/meow-memory/lib/index.js')
+  const NOW31 = 1795470000000
+  const lcgG31 = lcg31(97)
+  const wordsG31 = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图']
+  const corpusG31 = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((lcgG31() * 5) | 0)
+    const ws = Array.from({ length: n }, () => wordsG31[(lcgG31() * wordsG31.length) | 0])
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(lcgG31() * 4) | 0],
+      title: ws[0],
+      content: ws.join(' '),
+      importance: 1 + ((lcgG31() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: lcgG31() < 0.2 ? null : [wordsG31[(lcgG31() * wordsG31.length) | 0]],
+      project: 'p',
+    }
+  })
+  const qsG31 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha']
+  const digestG31 = qsG31.map((q) => Mv31.search(q, corpusG31, { k: 8, now: NOW31 })
+    .map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|')
+  const GOLD31 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025'
+  check('OR091 进程内：回执指纹与 0.6.29 / 0.6.30 逐位相同（三笔改动都是换写法不换算术）',
+    digestG31 === GOLD31, digestG31 === GOLD31 ? '指纹同' : '指纹不同')
+  check('OR091 文档在位：INTERNAL 9.230、README 写「定档合成一趟」、DESIGN 有 ## 226.、PLAN 有 0.6.31',
+    readS31('./docs/INTERNAL.md').includes('## 9.230 ') &&
+      readS31('./README.md').includes('定档合成一趟') &&
+      readS31('./DESIGN.md').includes('## 226. ') &&
+      /0\.6\.31/.test(readS31('./docs/PLAN-0.6.md')))
+  const vS31 = (readS31('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS31 = vS31.length === 3 ? vS31[0] * 10000 + vS31[1] * 100 + vS31[2] : 0
+  check('OR091 版本号不低于 0.6.31（后续补丁不必回头改这一条）', vNumS31 >= 631, vS31.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

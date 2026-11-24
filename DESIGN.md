@@ -8574,3 +8574,147 @@ else {
 3. `scoreCandSet:4209` / `:4224` 合计 321.8ms：`raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]))` 是 BM25 本体，只剩「`fw` 已查表、`k1p1` 已提常量」这一步，进一步要动公式本身（不许）。
 4. `liveDocs:2021` 93.9ms：每问对整库做一遍 `typeof` 校验。用 WeakSet 记忆化会破「就地改数组」可见性（S5 判据），不动。
 5. `setBandsByThreshold:2882` 145.6ms（区间内二分本体）：真要再压只能把定档换成「按桶直接给档」（桶号本身就是位置），但档号语义是「不同值链上的名次」，改成桶号会改 band 数值——属于行为变更，不在此列。
+## 226. 定档阶段的三笔「换写法不换算术」（0.6.31）
+
+0.6.30 把定档（`setBandsByThreshold`）从「全量排序」换成「桶计数 + 猜位半区间」之后，它自己成了第二个大头：剖面里 `setBandsByThreshold` 832.7ms / 13.7%，`anchorChainOf` 296.9ms / 4.9%。这一版不动任何算术，只动**写法**：三笔改动都保证逐位等价（三把尺子 0 不一致、跨版本指纹一位不差），把「同一批数被走两遍」「整张 65,536 格表每趟清两遍」「循环内反复算同一个常量」这三类纯开销摘掉。
+
+### 226.1 选材：行级采样先定位，再动手
+
+剖面 `E:\Temp\cmp\wfix30b\CPU.20261124.160545.9092.0.001.cpuprofile`（6,079.1ms / 3,000 问 / 10,000 条；带剖面开销，与 A/B 的 1.5472 ms/问 不是同一口径，只看相对权重），按函数聚合：
+
+| 位置 | 采样 | 占比 | 说明 |
+| --- | --- | --- | --- |
+| `indexSignature:3271` | 1,559.8ms | 25.6% | 已两轮证伪，不动 |
+| `search:3939` | 1,324.0ms | 21.8% | 遍历与 emit 自身 |
+| `setBandsByThreshold:2816` | 832.7ms | 13.7% | 本版主战场 |
+| `scoreCandSet:4189` | 680.6ms | 11.2% | 打分 |
+| `anchorChainOf:2756` | 296.9ms | 4.9% | 桶表 |
+| `bandize:2914` | 150.8ms | 2.5% | 档内排序 |
+
+行级（只列本版动到的）：
+
+| 行 | 采样 | 那一行在干什么 |
+| --- | --- | --- |
+| `setBandsByThreshold:2882` | 145.6ms | 二分里 `if (anchors[mid] >= v)` |
+| `:2880` | 71.7ms | 区间内二分 `mid` |
+| `:2883` | 65.4ms | `else lo = mid + 1` |
+| `:2889` | 85.5ms | 写 `h._bandTmp` |
+| `:2858` | 59.1ms | **第二趟重判 `_ident` / `_subj`** |
+| `:2835` | 53.8ms | **第二趟重读 `h[rawKey]` 抄进 `vals`** |
+| `:2868` | 55.9ms | 猜位 `est` |
+| `anchorChainOf:2761` | 31.7ms | **整表 `rawkHist.fill(0)`** |
+| `anchorChainOf:2778` | 36.9ms | **前缀和走满 65,536 格** |
+| `anchorChainOf:2774` | 55.9ms | 直方图计数 |
+
+一眼能看出三块「纯开销」：定档要两趟扫同一批 hit（先校验再抄值），桶表每趟清整张 65,536 格再走满格前缀和（实际只用到 `top+1` 格），以及 emit 循环里每候选重算 `IMP_BAND * maxRaw`。
+
+### 226.2 病根三条
+
+1. **同一批 hit 走两趟。** 第一趟只做校验（`typeof` / 有限 / `>= 0`）并数出 `plain`，第二趟再按 `plain` 备缓冲、把 `h[rawKey]` 重新读一遍抄进 `vals`。两趟都要重判 `_ident === true || _subj === 1`，也都要重新摸一次字段。
+2. **桶表按上限清、按上限扫。** `rawkHist` 是模块级复用缓冲（`RAWK_NB = 1 << (32 - RAWK_SHIFT)` = 65,536 格）。每趟不管实际落在多少格上，都先 `fill(0)` 整张表，前缀和也走满 `RAWK_NB`。而直方图只可能落在 `[0, top]`（`top` 是本趟最大桶号），`top` 之上那一段本来就是 0。
+3. **常量在循环里重算。** emit 循环里每个候选都算一遍 `IMP_BAND * maxRaw`（`maxRaw` 在整个 `search` 调用内不变）。
+
+### 226.3 处方三笔
+
+**A. 校验与抄值合成一趟**（`setBandsByThreshold`，`:2826` 起）：
+
+```js
+// [macro-fusion 0.6.31] 校验与抄值合成一趟：vals 按 total 备（不是按 plain 备），
+// 半截 vals 只在 return true 之后才有人读；_ident/_subj 项直接写 -1 跳过。
+if (rawkVals.length < total) rawkVals = new Float64Array(total);
+const vals = rawkVals;
+let plain = 0;
+for (let i = 0; i < total; i++) {
+  const h = hits[i];
+  if (h._ident === true || h._subj === 1) { h._bandTmp = -1; continue; }
+  const r = h[rawKey];
+  if (typeof r !== "number" || !Number.isFinite(r) || r < 0) return false;
+  vals[plain++] = r;
+}
+```
+
+老的第二趟（`if (rawkVals.length < plain) ...` 备缓冲 + `vals[j++] = h[rawKey];` 重读）整体删掉。等价性：`vals[0..plain)` 的内容与顺序完全一致（同一批 hit、同一个前置判据、同一个字段），`vals` 尾部多出来的旧值是脏的，但 `plain` 之后没有任何读者；`return false` 时更没人读。
+
+**B. 桶表只清上一趟用到的那段**（`anchorChainOf`，`:2758` 起 + 模块级 `let rawkTopPrev = -1;`）：
+
+```js
+if (rawkTopPrev >= 0) { rawkHist.fill(0, 0, rawkTopPrev + 1); rawkTopPrev = -1; }
+...
+for (let b = 0; b < total; b++) { const bk = rawkBucketOf(v); rawkHist[bk] += 1; if (bk > top) top = bk; }
+for (let b = 0; b <= top; b++) { ...前缀和累加... }
+...
+rawkTopPrev = top;
+```
+
+等价性：`top` 之上那一段在上一趟结束时是 0 吗——不是「从来没人写」，而是「上一趟只可能写 `[0, rawkTopPrev]`，本趟直方图只写 `[0, top]`」，所以清 `[0, max(上一趟 top, 本趟 top))` 里上一趟 top 那段就够；本趟新增的高位段在 scatter 之后不会被读到（scatter 只走 `[0, top]`）。前缀和只需 `[0, top]`。
+
+**C. 衰减阈值提到 emit 循环外**（`search` 两处：`:4432` 与 `:4758`）：
+
+```js
+// [macro-fusion 0.6.31] 每个候选都要比一次的常量，提到循环外（maxRaw 在本次 search 内不变）
+const impBandMax = IMP_BAND * maxRaw;
+...
+if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= impBandMax)) { ... }
+```
+
+等价性：`maxRaw` 在 `search` 内是惰性求值后不变的量（`let maxRaw = 0` 只在本函数开头若干处赋值后冻结使用），提出来与原地重算取值完全相同。
+
+### 226.4 读数
+
+单引擎进程交替（`warmprof28.mjs`，10,000 条 / 3,000 问 / k=5），三轮 × 两版：
+
+| 轮 | 0.6.30 | 0.6.31 | 差 |
+| --- | --- | --- | --- |
+| 1 | 1.5657 | 1.4928 | −4.7% |
+| 2 | 1.5472 | 1.4836 | −4.1% |
+| 3 | 1.5443 | 1.4750 | −4.5% |
+| **中位** | **1.5472** | **1.4836** | **−4.1%** |
+
+新剖面 `E:\Temp\cmp\wfix31b\CPU.20261124.164809.1952.0.001.cpuprofile`（5,826.4ms / 3,000 问 / 1.4992 ms/问）：
+
+| 位置 | 0.6.30 | 0.6.31 | 变化 |
+| --- | --- | --- | --- |
+| `setBandsByThreshold` | 832.7 (13.7%) | 810.2 (13.9%) | 两趟合一趟后只剩一趟扫 |
+| `anchorChainOf` | 296.9 (4.9%) | **207.1 (3.6%)** | −30.2%（清表 + 满格前缀和摘掉） |
+| `bandize` | 150.8 | 159.1 | 噪声 |
+| `indexSignature` | 1,559.8 (25.6%) | 1,458.2 (25.0%) | 不动 |
+| `search` | 1,324.0 (21.8%) | 1,339.7 (23.0%) | 常量提出后被摊薄 |
+| GC | 162.2 | 155.9 | 噪声 |
+
+行级（0.6.31 同剖面）：`setBandsByThreshold` 里 `:2892` 124.9（二分 `if`）、`:2899` 79.0（写 `_bandTmp`）、`:2890` 76.9（while 条件）、`:2838` 71.5（指认判）、`:2893` 71.5（else 支）——**第二趟那两行（`:2858` 59.1 / `:2835` 53.8）已经不在了**；`anchorChainOf` 里最大的一行降到 `:2815` 22.4，`:2793` 20.3 / `:2813` 19.2 / `:2787` 19.2（scatter 写）/ `:2783` 18.1（前缀和累加）。
+
+冷建（`warmab31.mjs` 15 轮，300 问）：118.82 → 118.56ms，噪声内——这三笔都在热查路径上。
+
+### 226.5 三把尺子与跨版本指纹
+
+| 尺子 | 项数 | 不一致 |
+| --- | --- | --- |
+| `colddiff31`（冷建全量：条目、星图、统计） | 462 | **0** |
+| `tokdiff31`（分词 / 归一 / 关键词抽取逐串） | 15,810 | **0** |
+| `searchdiff31`（检索回执：id 序列 + 分数 12 位） | 2,462 | **0** |
+
+跨版本指纹（LCG seed 97 的 120 条固定语料 × 八个问句，`id@score.toFixed(12)` 串）在 0.6.29 / 0.6.30 / 0.6.31 三个引擎上完全相同——这条串同时硬编码在 `tools/probe-hotpath.mjs` 的 `GOLDEN31`（H19）与 `verify.mjs` 的 `GOLD31`（OR091）里，任何一个版本改动了打分就会被两条断言同时抓住。
+
+另有两处「点对点」对拍：定档合成一趟之后仍与「每条从头二分」（`refBand31`）在八种分布 × 300 条 = 2,400 条上逐位同档；桶表单段清理之后仍与「排序 + 阈值链」（`anchorChainSorted`）在六种分布 × 七种长度 × 2 趟 = 84 项上逐位相同——第二趟专门抓残值（先跑大 `top` 再跑小 `top`，漏清必露馅）。
+
+### 226.6 判据（OR091 七条 + 探针 H17–H19）
+
+1. `tools\probe-hotpath.mjs` 里 H17（形状）/ H18（桶表逐位）/ H19（跨版本指纹）在位，`check-all` 挂着它，引擎仍有 `const RAWK_SHIFT = 16;`。
+2. 引擎形状三组：`firstOk31`（合成一趟：`vals[plain++] = r;` 在、`if (rawkVals.length < plain)` 与 `vals[j++] = h[rawKey];` 都不在）、`histOk31`（`rawkHist.fill(0, 0, rawkTopPrev + 1);` / `rawkTopPrev = -1;` / `for (let b = 0; b <= top; b++)` / `rawkTopPrev = top;` 在，`rawkHist.fill(0);` 与 `b < RAWK_NB` 都不在）、`emitOk31`（`const impBandMax = IMP_BAND * maxRaw;` 出现 2 次、`!(raw[di] >= impBandMax)` 在、`!(raw[di] >= IMP_BAND * maxRaw)` 不在）。
+3. 进程内 2,400 条定档逐位同档（指认 / 主语项仍 -1）。
+4. 进程内 84 项桶表逐位相同（含残值趟）。
+5. 进程内指纹与 0.6.29 / 0.6.30 逐位相同。
+6. 文档在位（INTERNAL 9.230 / README「定档合成一趟」/ DESIGN 226 / PLAN 有 0.6.31）。
+7. 版本号 ≥ 0.6.31（地板式，后续补丁不用回头改）。
+
+### 226.7 踩坑
+
+1. **双引擎同进程会把改动效益遮蔽掉。** `warmab31.mjs` 在同一进程里交替跑两个引擎：15 轮 300 问只读出 −0.3%（1.565 → 1.560），7 轮 Q=3000 甚至反向（−1.0%）。原因是不管跑哪个引擎，`indexSignature` / V8 的 IC、内联缓存、GC 压力都被两版共享的语料与热点预热抹平，单版收益混进共同成本。**判读一律用单引擎进程交替（每版各起一个进程、交替三轮取中位）**，同进程只用来抓「改动会不会把别的路径拖慢」。
+2. **判「老写法不在」仍然必须切函数体 + 剔注释。** 0.6.30 的注释块里为了说明老写法，把 `rawkHist.fill(0);`、`b < RAWK_NB` 原样写进了注释（`// [macro-fusion 0.6.31]` 附近尤其危险），全局 `includes` 必然自撞。`bodyOf31(name)` 先按 `\nfunction ` 切到下个函数头，再剔 `/* */` 与整行 `//`。
+3. **想省掉「重判 `_ident` / `_subj` + 重读字段」的第四笔（下标表 `rawkIdx`）是负收益。** 加一张 `Int32Array(total)` 记 `rawkIdx[plain] = i`，band 段改成 `hits[rawkIdx[p]]`，理论上省掉 `:2858` 59.1 + `:2869` 17.9，实测 1.4951 → 1.4778，而不加时同样测法也是这个量级——多一次数组间接寻址（且 `Int32Array` 读要过一层 bounds check）把省下的字段读补了回去。已整体回退，`idx[plain] = i;` 现在必须不在。
+
+### 226.8 候选
+
+1. **`indexSignature:3281` 1,458.2ms / 25.0%**——已经两轮证伪（0.6.26 把签名摊平成数值、0.6.28 试过按长度分组），剩下的开销是「每问 × 每条」摸一遍字段，除非换数据结构（预建倒排），否则不会降。预建倒排要走增量维护，风险大于本版收益，暂缓。
+2. **`search:3949` 1,339.7ms / 23.0%**——遍历与 emit 自身，其中 `hits.push` 与 `candAt` 是主要行；要降只能换「候选集枚举方式」，与 1 号候选是同一件事的两半。
+3. **`setBandsByThreshold` 剩 810.2ms**——现在里面最大的是二分三行（124.9 + 79.0 + 76.9），要再降只能改档数（`m` 变小）或改「每命中也定档」为「只对前 limit 定档」，后者会改语义，需要单独一轮验证。

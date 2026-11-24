@@ -109,7 +109,10 @@ const same = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b
 {
   const hasShift = ENGINE.includes('const RAWK_SHIFT = 16;');
   const hasNb = ENGINE.includes('const RAWK_NB = 1 << (32 - RAWK_SHIFT);');
-  const hasCount = SEG.includes('rawkHist.fill(0);') && SEG.includes('rawkHist[b] += 1;');
+  // 0.6.31：桶表改成「只清上一趟用到的那段」，整表 `fill(0)` 退场；两种写法都算在位。
+  const hasCount =
+    (SEG.includes('rawkHist.fill(0, 0, rawkTopPrev + 1);') || SEG.includes('rawkHist.fill(0);')) &&
+    SEG.includes('rawkHist[b] += 1;');
   const hasScatter = SEG.includes('out[rawkHist[rawkBucketOf(v)]++] = v;');
   const hasWalk = SEG.includes('const t = anchor < 0 ? Infinity : IMP_BAND * anchor;');
   const hasTail = SEG.includes('seg.sort()') && SEG.includes('if (b === 0) {');

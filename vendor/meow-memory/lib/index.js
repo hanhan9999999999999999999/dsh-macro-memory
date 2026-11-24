@@ -2730,6 +2730,8 @@ const rawkBitsU = new Uint32Array(rawkBits.buffer);
 let rawkOut = new Float64Array(0);
 let rawkTail = new Float64Array(0);
 let rawkVals = new Float64Array(0);
+// [macro-fusion 0.6.31] 上一趟碰过的最大的桶号：`rawkHist` 只清这一段（见 `anchorChainOf`）。
+let rawkTopPrev = -1;
 
 /** 值的桶号（高 32 位右移 16 位 → 16 位桶号，桶内最坏相差 6.25%）。 */
 function rawkBucketOf(v) {
@@ -2758,7 +2760,14 @@ function anchorChainOf(vals, n) {
     vals.subarray(0, n).sort(); // 只排前 n 个：rawkVals 是复用缓冲，尾巴上是上一轮的残值
     return anchorChainSorted(vals, n);
   }
-  rawkHist.fill(0);
+  // [macro-fusion 0.6.31] 桶表只清「上一趟真碰过的那段」：`rawkHist` 是 65,536 格，
+  // 老写法每问都整表 `fill(0)`（31.7ms / 3,000 问）再把 65,536 格累加成前缀和（26.4ms）——
+  // 而一趟只碰 `0..top` 这么多桶（top 是这一趟最大的桶号），其余格子本来就是 0。
+  // 清掉上一趟的 `0..rawkTopPrev` 之后，桶表回到「上一趟之前」的全零状态，前缀和也只需走到 `top`。
+  if (rawkTopPrev >= 0) {
+    rawkHist.fill(0, 0, rawkTopPrev + 1);
+    rawkTopPrev = -1;
+  }
   if (rawkOut.length < n) rawkOut = new Float64Array(n);
   const out = rawkOut;
   let top = -1;
@@ -2768,7 +2777,7 @@ function anchorChainOf(vals, n) {
     if (b > top) top = b;
   }
   let sum = 0;
-  for (let b = 0; b < RAWK_NB; b++) {
+  for (let b = 0; b <= top; b++) {
     const c = rawkHist[b];
     rawkHist[b] = sum;
     sum += c;
@@ -2809,12 +2818,20 @@ function anchorChainOf(vals, n) {
     desc.push(best);
     anchor = best;
   }
+  rawkTopPrev = top;
   desc.reverse();
   return desc;
 }
 
 function setBandsByThreshold(hits, rawKey) {
   const total = hits.length;
+  // [macro-fusion 0.6.31] 校验与抄值合成一趟：老写法先整表校一遍（`_ident` / `_subj` / raw 三读），
+  // 再整表抄一遍（又三读）——同一批刚分配好的命中对象要过两次手，第二次全在等内存。
+  // 现在边校验边往 `vals` 里抄，校验失败直接 `return false`（这条路上 `vals` 写得半截也无妨：
+  // 只有 `return true` 之后才有人读它，而 `anchorChainOf` 只认前 `plain` 格）。
+  // 缓冲按 `total` 备而不是按 `plain` 备：`plain === total` 是常态，按 total 备就永远不用二次扩容。
+  if (rawkVals.length < total) rawkVals = new Float64Array(total);
+  const vals = rawkVals;
   let plain = 0;
   for (let i = 0; i < total; i++) {
     const h = hits[i];
@@ -2824,16 +2841,9 @@ function setBandsByThreshold(hits, rawKey) {
     }
     const r = h[rawKey];
     if (typeof r !== "number" || !Number.isFinite(r) || r < 0) return false;
-    plain += 1;
+    vals[plain++] = r;
   }
   if (plain === 0) return true;
-  if (rawkVals.length < plain) rawkVals = new Float64Array(plain);
-  const vals = rawkVals;
-  for (let i = 0, j = 0; i < total; i++) {
-    const h = hits[i];
-    if (h._ident === true || h._subj === 1) continue;
-    vals[j++] = h[rawKey];
-  }
   const anchors = anchorChainOf(vals, plain); // 逐位同「vals.sort() + 阈值链」，见上方 0.6.19 说明
   const m = anchors.length;
   // [macro-fusion 0.6.28] 同分批量：档号是 raw 的纯函数，连着几条 raw 一模一样时只该二分一次。
@@ -4411,6 +4421,9 @@ function search(query, docs, opts = {}) {
   const bandWOn = opts.identBand !== false && identHardOk;
   const subjBandOn = opts.identSubjBand !== false && identHardOk;
   const lvOn = opts.levelIntent !== false;
+  // [macro-fusion 0.6.31] 「够不够格不折时间」的阈值是 `IMP_BAND * maxRaw`，跟候选无关：
+  // 老写法每条候选乘一次（`:4433` 那格），提到循环外只算一次，比较结果逐位相同。
+  const impBandMax = IMP_BAND * maxRaw;
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
     // [macro-fusion 0.6.15] 这一条下面要读十来次同一条记录的字段：`docs[di]` 取一次，别每次重算下标。
@@ -4420,7 +4433,7 @@ function search(query, docs, opts = {}) {
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
     // [macro-fusion 0.2.179] 缘由问句不折：问的是当初为什么那样，旧是自然的（与时间锚同源）。
     const anchored = anchorSel === null ? false : anchorSel(di);
-    if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+    if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= impBandMax)) {
       w = Math.max(RECENCY_FLOOR, recencyWeight(now - (dOf.last_accessed_at ?? dOf.updated_at)));
     }
     // [macro-fusion 0.6.30] `impOf(dOf)` 是每条候选一次的小调用（闭包里做 optional chaining + round +
@@ -4726,6 +4739,8 @@ function keywordHitScore(query, docs, opts = {}) {
   });
   // [macro-fusion 0.2.148] 补分挪到加权之后（同 search 口径：指认不该被重要性稀释）
   const maxRaw = Math.max(...raw);
+  // [macro-fusion 0.6.31] 同 `search`：这条阈值与候选无关，提到循环外。
+  const impBandMax = IMP_BAND * maxRaw;
   const out = [];
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
@@ -4736,7 +4751,7 @@ function keywordHitScore(query, docs, opts = {}) {
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
     const anchored = anchorSel === null ? false : anchorSel(di);
-    if (!anchored && now !== null && docs[di].importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
+    if (!anchored && now !== null && docs[di].importance < 3 && !(raw[di] >= impBandMax)) {
       w = Math.max(RECENCY_FLOOR, recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at)));
     }
     const impW = 1 + (docs[di].importance - 1) * 0.25;
