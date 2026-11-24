@@ -18,11 +18,16 @@
  *  - 配置面（`neighborMinScore`）从 schema 到注入器一路接得上，改设置能真的生效。
  */
 import { root } from './_root.mjs'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const NB = await import(pathToFileURL(join(root, 'lib', 'macro', 'neighbor.js')).href)
+// 0.6.43 起邻域账本会落盘：探针必须把 DSH_HOME 指到临时目录，
+// 否则每跑一次就在主人真库里留一堆 `n-0.xxxx.json`（第一版就是这样，还把 `gv-sess` 喂进了下一轮）。
+const tmpHome = mkdtempSync(join(tmpdir(), 'macro-probe-neighbor-'))
+process.env.DSH_HOME = tmpHome
 const macroSrc = readFileSync(join(root, 'lib', 'index.js'), 'utf8')
 const recallSrc = readFileSync(join(root, 'vendor', 'dsh-memory-nebula', 'lib', 'host', 'recall.js'), 'utf8')
 
@@ -194,8 +199,136 @@ const recall = [
   // 字符上限也一起放开：这一条只验「门槛」，排版上限不许掺进来（默认 420 只装得下 3 条）。
   const loose = await run({ neighborMinScore: 0, neighborChars: 3000 })
   const looseText = loose.out.messages.length === 2 ? loose.out.messages[1].content[0].text : ''
-  ok('N8 门槛调到 0：弱邻居又进注入块（同一份回执，只改一个数）', looseText.includes('0mzzz999'), '')
+  // 0.6.43 起 decide 会带上问句（词面闸），所以「门槛调到 0」不再等于「5 条全带」：
+  // 与问句一个二元组都不沾、强度又不到 0.5 的条目由 NEIGHBOR_OFFTOPIC_KEEP 配额管。
+  // 这里验的是**强度闸确实被门槛放开**——弱邻居不再记 weak（判据最干净的一处）。
+  // 0.6.43 起 decide 会带上问句（词面闸），所以「门槛调到 0」不再等于「5 条全带」：
+  // 强度闸放开之后，零重合的弱条目由词面闸接管（NEIGHBOR_OFFTOPIC_KEEP 配额）。
+  ok('N8 门槛调到 0：强度闸放开后由词面闸接管——0.08 / 0.20 那两条仍不进（不是没人管）',
+    loose.out.messages.length === 2 && !looseText.includes('0myyy888') && !looseText.includes('0mzzz999') &&
+      loose.stats.offtopic >= 2,
+    JSON.stringify(loose.stats))
+  const noQuery = NB.neighborBlockOf(recall, { minScore: 0, max: 5, chars: 3000 })
+  ok('N8 阴性对照：不给 query 时渲染器仍按旧口径全带 5 条（词面闸是可选参数，不是硬编码）',
+    noQuery !== null && noQuery.ids.length === 5 && noQuery.skipped === 0,
+    noQuery === null ? 'null' : `${noQuery.ids.length} 条`)
 }
+
+// ── N9 0.6.43 三刀：词面闸 / 跨层去重 / 账本落盘 ──────────────────────────
+// 守的底线：三道闸各自「该拦的拦、不该拦的放过」，并且都能在端到端链路上真的生效。
+{
+  const STORE = await import(pathToFileURL(join(root, 'lib', 'macro', 'store.js')).href)
+  const q = NB.neighborTokens('星图 mute 怎么用')
+  ok('N9 词面指纹：汉字取二元组、拉丁取整词，单字不参与（否则「的」恒真）',
+    q.has('星图') && q.has('怎么') && q.has('mute') && !q.has('的') && !q.has('星'),
+    [...q].slice(0, 8).join(' '))
+
+  const one = (score, label, id) => ['星图邻域（1 跳，1 条）：', '', `1. [fact] 别的项目     强度 ${score} ${label}`, `  id: ws:${id}`].join('\n')
+  // 强度免检：0.9 但一个词都不沾，仍然要带——换说法不等于无关。
+  const strong = NB.neighborBlockOf(one(0.9, '完全另一个话题', '0mstr001'), { max: 2, chars: 700, query: '星图 mute 怎么用' })
+  ok('N9 强度 ≥ 0.5 的词面零重合条目照带（免检，不误杀换了说法的强邻居）',
+    strong !== null && strong.ids.length === 1 && strong.offtopic === 0,
+    strong === null ? 'null' : `${strong.ids.join(',')} offtopic=${strong.offtopic}`)
+  // 配额：两条「不沾词 + 强度一般」只留一条，另一条记 offtopic。
+  const pair = [
+    '星图邻域（1 跳，2 条）：', '',
+    '1. [fact] 甲项目     强度 0.40 换个说法的弱条目', '  id: ws:0mweak01',
+    '2. [fact] 乙项目     强度 0.42 又一个不沾词的', '  id: ws:0mweak02',
+  ].join('\n')
+  const quota = NB.neighborBlockOf(pair, { max: 4, chars: 700, query: '星图 mute 怎么用' })
+  ok('N9 零重合且强度 < 0.5：只留 1 条（配额），另一条记 offtopic 而不是硬塞',
+    quota !== null && quota.ids.length === 1 && quota.offtopic === 1,
+    quota === null ? 'null' : `${quota.ids.join(',')} offtopic=${quota.offtopic}`)
+
+  // 跨层去重：meow 的命中注入消息里是**长 id**，星图给 8 位，两边要按前缀认成同一条。
+  const hitMsg = {
+    role: 'user',
+    source: { kind: 'plugin:macro-memory' },
+    content: [{ type: 'text', text: '1. [dsh-macro-memory : fact] [0mwq3aa9-429d8a1f2b3c4d5e] 0.2.144 的交付态\n   摘要：…' }],
+  }
+  const ids = NB.injectedIdsOf([hitMsg])
+  ok('N9 从 meow 命中注入里抠出 id（长形式、`[项目 : level]` 头一起认）',
+    ids.has('0mwq3aa9-429d8a1f2b3c4d5e') && !NB.injectedIdsOf([{ role: 'user', source: { kind: 'user' }, content: [] }]).size,
+    [...ids].join(','))
+  ok('N9 普通用户消息里的方括号不算「已注入」（不然随便一句话就把邻域全关了）',
+    NB.injectedIdsOf([{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '看 [0mwq3aa9] 这条' }] }]).size === 0)
+
+  // 账本路径：会话 id 可能带冒号/斜杠，直接当文件名在 Windows 上写不进去。
+  const seenPath = STORE.neighborSeenPath('probe:0643/x y')
+  ok('N9 账本路径：非法字符换成下划线、落在 macroHome()/neighbor-seen/ 下',
+    /neighbor-seen[\\/]probe_0643_x_y\.json$/.test(seenPath) && seenPath.includes('macro-memory'),
+    seenPath)
+
+  // 端到端：先注入一次 → 账本落盘 → 换一个注入器（模拟宿主重启）同会话不再带同一条。
+  const sid = 'probe-0643-' + Math.random().toString(36).slice(2, 8)
+  const file = STORE.neighborSeenPath(sid)
+  const mkInj = () => {
+    const rt = {
+      calls: [],
+      bridge: {
+        tryCall: async (name, args) => {
+          rt.calls.push({ name, args })
+          return { text: recall }
+        },
+      },
+    }
+    const inj = NB.createNeighborInjector({
+      ctx: { on: () => () => {} },
+      bridge: rt.bridge,
+      config: { neighborInject: true },
+      logger: () => {},
+      loadLlm: async () => ({ createUserMessage: ({ content, source }) => ({ content, source }) }),
+    })
+    return { rt, inj }
+  }
+  const user = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '写入节流那个窗口后来怎么定的' }] }
+  const a = mkInj()
+  const outA = await a.inj.decide({ agent: { session: { id: sid } } }, { kind: 'enter', messages: [user] })
+  const textA = outA.messages.length === 2 ? outA.messages[1].content[0].text : ''
+  const onDisk = (() => {
+    try {
+      return JSON.parse(readFileSync(file, 'utf8'))
+    } catch {
+      return null
+    }
+  })()
+  ok('N9 注入成功后账本立刻落盘（宿主重启不会把「带过谁」忘掉）',
+    onDisk !== null && Array.isArray(onDisk.ids) && onDisk.ids.includes('0mwq3aa9') && textA.includes('0mwq3aa9'),
+    onDisk === null ? '没写出文件' : `${onDisk.ids.length} 条`)
+
+  const b = mkInj()
+  const outB = await b.inj.decide({ agent: { session: { id: sid } } }, { kind: 'enter', messages: [user] })
+  ok('N9 新注入器（= 重启）同会话：上轮带过的全被账本挡住 → 这一轮一个字都不注入',
+    outB.messages.length === 1 && b.inj.stats().skipped === 1 && b.inj.stats().injected === 0,
+    JSON.stringify(b.inj.stats()))
+
+  // 只带过一部分的对照：账本里先塞一条，剩下两条必须照带，且 deduped 记一笔（不是全军覆没）。
+  const sid2 = 'probe-0643-' + Math.random().toString(36).slice(2, 8)
+  writeFileSync(STORE.neighborSeenPath(sid2), JSON.stringify({ sid: sid2, ids: ['0mwq3aa9'] }), 'utf8')
+  const e = mkInj()
+  const outE = await e.inj.decide({ agent: { session: { id: sid2 } } }, { kind: 'enter', messages: [user] })
+  const textE = outE.messages.length === 2 ? outE.messages[1].content[0].text : ''
+  ok('N9 账本只记了一部分时：记过的不带、没记过的照带，deduped 记一笔',
+    textE !== '' && !textE.includes('0mwq3aa9') && textE.includes('0mwq2ncq') && e.inj.stats().deduped === 1,
+    JSON.stringify(e.inj.stats()))
+  rmSync(STORE.neighborSeenPath(sid2), { force: true })
+
+  const c = mkInj()
+  const outC = await c.inj.decide({ agent: { session: { id: sid } } }, { kind: 'enter', messages: [hitMsg, user] })
+  const textC = outC.messages.length === 2 ? outC.messages[1].content[0].text : ''
+  ok('N9 跨层去重：命中注入当轮已带的条，邻域这一轮不再带第二遍（也不写进邻域账本当新账）',
+    !textC.includes('0mwq3aa9'),
+    textC === '' ? '（这一轮没注入）' : textC.split('\n').slice(1, 3).join(' | '))
+
+  // 坏账本不能挡路：写一行坏 JSON 进去，注入照常。
+  writeFileSync(file, '{坏掉的 json', 'utf8')
+  const d = mkInj()
+  const outD = await d.inj.decide({ agent: { session: { id: sid } } }, { kind: 'enter', messages: [user] })
+  ok('N9 账本坏了不挡这一轮（读不动就当空账，注入照旧）', outD.messages.length === 2, `messages=${outD.messages.length}`)
+  rmSync(file, { force: true })
+}
+
+rmSync(tmpHome, { recursive: true, force: true })
 
 console.log('')
 if (fail > 0) {

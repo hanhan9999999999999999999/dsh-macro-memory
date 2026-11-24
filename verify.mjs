@@ -14,7 +14,7 @@
  * 用法：node verify.mjs
  */
 import { registerHooks } from 'node:module'
-import { readFileSync, writeFileSync, mkdtempSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, readdirSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -12167,6 +12167,13 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
 
   // 行为：真的追加、真的不挡这一轮、关掉就原样返回、同一会话不重复带
+  // 0.6.43：邻域账本会落盘，这一段必须把 DSH_HOME 指到临时目录。用固定 sid 'gv-sess'
+  // 跑第二遍时，账本里已经有 0mgv0001，那一条会被 skip → 第一条断言必红（假红，不是代码坏了）；
+  // 同时也会把 gv-sess.json 写进主人的真库。
+  const gvOldHome = process.env.DSH_HOME
+  const gvHome = mkdtempSync(join(tmpdir(), 'macro-verify-gv-'))
+  process.env.DSH_HOME = gvHome
+  try {
   const gvMake = (init) => ({ role: 'user', ...init })
   const gvBridge = (text) => ({ tryCall: async () => ({ text }) })
   const gvAgent = { session: { id: 'gv-sess', header: {} } }
@@ -12220,6 +12227,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     loadLlm: async () => ({ createUserMessage: gvMake }),
   })
   check('GV 行为: 星图报错不挡这一轮（原样返回）', (await gvBad.decide({ agent: gvAgent }, gvDec)) === gvDec)
+  } finally {
+    if (gvOldHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = gvOldHome
+    rmSync(gvHome, { recursive: true, force: true })
+  }
 }
 
 // ── GW（0.2.146）：噪声地板 —— 中文没有停用词表，BM25 对「怎么 / 那个 / 一下」照样给分。

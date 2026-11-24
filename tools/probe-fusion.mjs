@@ -7374,7 +7374,7 @@ check(
   )
 
   // ── 决策函数：追加在**后面**，前缀一个字节不动
-  const mkAgent = (origin) => ({ session: { id: 'rv-sess-1', header: { origin } } })
+  const mkAgent = (origin, sid = 'rv-sess-1') => ({ session: { id: sid, header: { origin } } })
   const mkUser = (text) => ({
     role: 'user',
     source: { kind: 'user' },
@@ -7489,13 +7489,15 @@ check(
       throw new Error('宿主里没有 dsh-llm')
     },
   })
-  const out8 = await inj7.decide({ agent: mkAgent('cli') }, base)
+  // 0.6.43 起账本会落盘：RV5 已经用 rv-sess-1 记过这一条，后面的「装配路径」断言得换会话，
+  // 否则新注入器（= 重启）一进来就按账本把这轮挡空，测的就不是装配而是去重了。
+  const out8 = await inj7.decide({ agent: mkAgent('cli', 'rv-sess-8c') }, base)
   check('RV8c 取不到宿主消息工厂时也不抛（原样返回，记一笔 failed）', out8.messages.length === 1 && inj7.stats().failed === 1, '')
 
   // 默认 loadLlm 走真 import：探针里由 registerHooks 指向 stub，能造出消息才说明运行时这条路通
   const rt8 = mkRt(recall)
   const inj8 = nb.createNeighborInjector({ ctx: mkCtx(), bridge: rt8.bridge, config: {}, logger: () => {} })
-  const out9 = await inj8.decide({ agent: mkAgent('cli') }, base)
+  const out9 = await inj8.decide({ agent: mkAgent('cli', 'rv-sess-9') }, base)
   check(
     'RV9 默认懒加载 @deepseek-ai/dsh-llm 能造出真消息（探针 stub 与宿主同形）',
     out9.messages.length === 2 && out9.messages[1].role === 'user' && typeof out9.messages[1].content[0].text === 'string',

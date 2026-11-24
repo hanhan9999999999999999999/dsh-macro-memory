@@ -13766,3 +13766,18 @@ rawkTopPrev = top;
 
 **踩坑三条**：①只锚 `title: "settings.group.reflect",` 会把新组插进旧对象体内部，bundle 语法错误；`check-client-bundle` 只读文本、全程绿着，只有真执行 client.js 的探针能抓到。②`escZh` 之后再 `JSON.stringify` 得到 `\\u661F`（六个字面字符）。③`probe-tools` 的归类扫描不含根目录 `build.mjs`，构建期补丁脚本被判「未归类」。另：`package.json` / `lib/index.js` 的版本号只能用 .NET UTF8 读写，禁 PowerShell `Get-Content`/`Set-Content`（0.6.41 踩过 GBK 事故）。
 
+### 9.242 0.6.43：星图邻域的三道闸
+
+**症状**：邻域注入有三个洞。①`seen` 是内存态 `Map<sid, Set>`，宿主重启/续接会话即清零，同一批邻居再注一遍；②只看自己记过的 id，不看 meow 命中注入**当轮**带了谁，同一条记忆一轮里可能出现两次；③除了强度 0.35 没有别的判据，强度够但词面完全不沾的条目照带，模型无法分辨该不该 `mute`。
+
+**处方**：
+
+1. `lib/macro/store.js` 新增 `neighborSeenPath(sessionId)` → `$DSH_HOME/macro-memory/neighbor-seen/<safe>.json`（`[^A-Za-z0-9_.-]` → `_`，截 96 字符）。
+2. `neighbor.js` 新增 `NEIGHBOR_SCAN_MAX = 400`、`NEIGHBOR_OFFTOPIC_KEEP = 1`、`NEIGHBOR_OFFTOPIC_SCORE = 0.5`；导出 `neighborTokens`（汉字二元组 + 拉丁整词）、`injectedIdsOf`（从历史注入消息抠 id）；`neighborBlockOf` 多收 `query`、返回 `offtopic`/`skipped`；注入器里的 `readSeenFile`/`writeSeenFile` 落盘（失败只打日志）、`decide()` 把 `injectedIdsOf(messages)` 并进 `skip`。
+3. `probe-neighbor` 从 26 条扩到 38 条（新增 N9 十二项：词面指纹、强度免检、配额、跨层抠 id、账本路径/落盘/重启/部分记账/坏账本）。
+
+**读数**：真图 3,561 节点 / 16 问——词面闸开闸前后都是 36 条 / 3,770 字（零重合的 4 条全 ≥0.5 走免检，`offtopic` 0），**这一刀是护栏不是省 token 主项**；跨层同轮重叠 0 条（命中 18 / 邻域 36），价值在「不会发生」；强度曲线 0.35 → 36 条 2,792 字、0.45 → 28 / 2,104、0.50 → 23 / 1,721、0.60 → 15 / 1,119，默认值不动（0.4 那档砍掉的 8 条里有真相关条目）。
+
+**踩坑三条**：①词面闸必须排在强度闸之后，否则配额被 0.2 的弱邻居先吃掉；②旧断言「门槛调到 0 → 弱邻居又进块」在新闸下不可能成立，改成验「强度闸放开后由词面闸接管」并保留「不给 query 仍 5 条全带」的阴性对照；③写盘一开始用 `dirty` 集合绕了一圈、还漏了失败重试，改成直接调 `writeSeenFile`、内部 catch。
+
+
