@@ -10,8 +10,8 @@
 
 | 项 | 读数 | 日期 | 版本 / commit | 复核命令 |
 |---|---|---|---|---|
-| 健康基线 | 50 支 suite / **3,809 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 11:4x | 0.6.22 | `node tools/check-all.mjs` |
-| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 11:4x | 0.6.22 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
+| 健康基线 | 50 支 suite / **3,819 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 12:0x | 0.6.23 | `node tools/check-all.mjs` |
+| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 12:0x | 0.6.23 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
 | 库变大后的照抄召回（新尺子） | 同一批 52 问、真库快照 660 条 active：照抄 **hit@1 0.895 → 0.921**、MRR 0.934 → 0.947；换说法 **0.333 → 0.417**、MRR 0.528 → 0.569；时间锚 0.500 不动；**救回 2 / 误伤 0 / 移位 0**（逐题只有两条 #2→#1）。关掉即回 0.5.0 逐位相同（52/52）。同尺横比 v0.3.0 / v0.4.0 / v0.5.0 三档逐位相同、只有本节双升 | 2026-11-23 22:00 | 0.6.0 · meow 补丁（局部 idf，`adaptiveIdf` 产品路径默认开） | `node tools/probe-idf.mjs`（D1–D12 十四条；读数见 `docs/PLAN-0.6.md` §1） |
 | 换场景适应力（新尺子） | 5 个陌生领域（医学/法律/园艺/天文/财务）× 12 条 + 10 条换说法问句：换说法 **hit@3 0.40 → 0.80**、hit@1 0.00 不动、MRR 0.342；两遍合并**第一名改判 0 题**；关共现自学习 hit@3 掉回 0.30；混库 60 条与单域持平；同词 hit@1 100% | 2026-11-22 22:40 | 0.5.0 · meow 补丁 `[macro-fusion 0.5.0 · P1]` | `node tools/probe-adapt.mjs`（A0–A5 九条） |
 | 版本与接口面 | 0.3.0，接口面冻结 | 2026-11-22 | `2c029b0`（`chore(baselines): 0.3.0 · 24 suites / 3323 assertions`） | `git log --oneline -1` |
@@ -243,3 +243,12 @@ Select-String -Path README.md,docs\*.md -Pattern "71\.95|0\.7195"
   - 其它支**一条未动**：`OR081` 与 `probe-lex` 的 L0 只是把「切段循环」的取址从 `tokenize` 改到 `tokenizeSegs`（条数不变），`WZ2` / `DT066` 两条源码形状断言改成读新的派生链（条数不变），`WZ3` 保留原字面量、连源码都照老写法写回去了。
 - 套件 49 → **50**（`SUITE_FLOOR` 50，`NO_ROOT` 增 `tools/probe-cold.mjs`）。
 - 语义兜底：三条被改写的形状断言（`WZ2` / `DT066`）由 `probe-cold` C3（五张表与老表达式 12 条 × 4 支路逐条相同）与 `colddiff22.mjs`（11 轮 277 项对拍）兜住——**形状跟着源码走，语义一字不动**。
+
+### 关于「3,819」的来路
+
+- 相对 0.6.22 的 3,809：**净 +10**，逐笔对得上，没有别的来路。
+  - `tools/probe-cooc.mjs` **+4**（`K7a` 每条词表只解一遍——`keywords` 写成 getter 数读次数，实测两条记忆读 2 次而老引擎读 4 次 / `K7b` 共现表与「朴素尺子」`naiveCooc()` 逐键逐值逐序相同，四组夹具含共享汉字簇、多项目 + 单条项目、重复关键词、空 keywords 混排 / `K7c` 够 3 条的会话每条追加同一串主题词 / `K7c` 不足 3 条的会话一条都不追加）。
+  - `verify.mjs` 的 `OR083` **+6**（K7 探针在位 + 挂线 + 取根例外 / 引擎七件形状 / 进程内 getter 计次 / 进程内会话主题差分 / 文档四处 / 版本 ≥ 0.6.23）。
+  - 其它支**一条未动**：`WZ2` / `DT066` / `OR081` 这些读源码形状的地方这一版根本没碰；`probe-cold` / `probe-lex` / `probe-sigrow` 全数原条通过。
+- 套件 **50 支不变**（`SUITE_FLOOR` 50，`NO_ROOT` 不加新文件——`tools/probe-cooc.mjs` 早在 0.6.21 就进了线）。
+- 语义兜底：这一版**没有改任何判据的语义**——四条引擎改动（词对记忆 / 词表只解一遍 / 项目层提行 / 会话主题一趟算完）由 `probe-cooc` K7b（共现表与朴素尺子逐键逐值逐序相同）与 `colddiff23.mjs`（20 条合成 doc × 11 组开关 + 1,451 条 LoCoMo 真实 doc × 3 组开关 + `buildCoocSyn` learn 开/关直对拍，共 **462 项 0 mismatch**，`coocSyn` 键序 / `docToks` / `postings` / `tf` / `df` / `titleSets` / `kwSets` / `hayAt` 全等）兜住——**形状跟着源码走，语义一字不动**。

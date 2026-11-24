@@ -200,6 +200,166 @@ const show = (m) => (m ? [...m].map(([k, v]) => k + '→' + v.join('/')).join(' 
   ok('K6 两种口径各占一张表（缓存键含 coocLearn 位，不许互相串）', sizeOff > sizeOn, `${sizeOn} → ${sizeOff}`)
 }
 
+// ── K7 结构提速不改结果（0.6.23）─────────────────────────────────────────────
+// 0.6.23 把共现那一层里三处「白跑一遍」拆掉：共享汉字按词对记忆一次、每条的词表只解一遍、
+// 项目层内层把「a 那一行」提到 b 循环外。这一档量的就是「提速不许改结果」：
+//  K7a 词表只解一遍（keywords 是 getter 数次数：老写法读两遍）
+//  K7b 引擎的共现表与一把「朴素尺子」逐键逐值逐序相同（尺子不记忆、不提行）
+//  K7c 会话主题那一趟依旧按「跨几个会话」算：够 3 条的会话每条都追加同一串，不够的一条都不追加
+{
+  // K7a：keywords 是 getter，数它被读了几次
+  let reads = 0
+  const g1 = mk('k7a1', 'pg', '', [])
+  const g2 = mk('k7a2', 'pg', '', [])
+  for (const [d, ws] of [[g1, ['甲乙', '丙丁']], [g2, ['丙丁', '戊己']]]) {
+    Object.defineProperty(d, 'keywords', {
+      get() { reads++; return ws },
+      enumerable: true, configurable: true,
+    })
+  }
+  V.buildCoocSyn([g1, g2], 2)
+  ok('K7a 每条的词表只解一遍（keywords 只读一次，不是同条层 + 项目层各解一遍）',
+    reads <= 2, `两条记忆一共读了 ${reads} 次`)
+
+  // K7b：朴素尺子——照着「记忆之前的写法」直写一遍：词对判据每次重算、内层每写一次就回表。
+  const shareHan = (a, b) => {
+    if (!/[\u4e00-\u9fff]/.test(a) || !/[\u4e00-\u9fff]/.test(b)) return false
+    for (const ch of a) if (b.includes(ch)) return true
+    return false
+  }
+  const bumpIn = (map, a, b, w) => {
+    const cur = map.get(a)
+    if (cur === undefined) map.set(a, new Map([[b, w]]))
+    else cur.set(b, (cur.get(b) ?? 0) + w)
+  }
+  function naiveCooc(docs) {
+    const pairs = new Map()
+    const projPairs = new Map()
+    const words = docs.map((d) => d.keywords)
+    const kwDf = new Map()
+    for (const ws of words) {
+      if (ws.length === 0) continue
+      for (const w of ws) kwDf.set(w, (kwDf.get(w) ?? 0) + 1)
+      for (let i = 0; i < ws.length; i++) {
+        for (let j = i + 1; j < ws.length; j++) {
+          const a = ws[i]; const b = ws[j]
+          if (a === b) continue
+          const ww = shareHan(a, b) ? Math.min(V.COOC_W_SAME, V.COOC_SHARE_HAN_W) : V.COOC_W_SAME
+          bumpIn(pairs, a, b, ww); bumpIn(pairs, b, a, ww)
+        }
+      }
+    }
+    const byProject = new Map()
+    docs.forEach((d, i) => {
+      const ws = words[i]
+      if (ws.length === 0) return
+      const p = String(d.project ?? '全局')
+      if (!byProject.has(p)) byProject.set(p, [])
+      byProject.get(p).push(ws)
+    })
+    for (const [, list] of byProject) {
+      if (list.length < 2) continue
+      const union = new Set()
+      for (const ws of list) for (const w of ws) union.add(w)
+      const unionArr = [...union]
+      for (const ws of list) {
+        const self = new Set(ws)
+        const others = unionArr.filter((w) => !self.has(w))
+        if (others.length === 0) continue
+        for (const a of ws) {
+          for (const b of others) {
+            const ww = shareHan(a, b) ? Math.min(V.COOC_W_PROJ, V.COOC_SHARE_HAN_W) : V.COOC_W_PROJ
+            bumpIn(projPairs, a, b, ww); bumpIn(projPairs, b, a, ww)
+          }
+        }
+      }
+    }
+    const pickFrom = (map, a, dfa) => {
+      const others = map && map.get(a)
+      if (!others || dfa <= 0) return []
+      const keep = []
+      for (const [b, c] of others) {
+        if (c < V.COOC_MIN_COUNT) continue
+        const ratio = c / dfa
+        if (ratio < V.COOC_MIN_RATIO) continue
+        keep.push([b, ratio])
+      }
+      keep.sort((x, y) => y[1] - x[1])
+      return keep.map(([b]) => b)
+    }
+    const out = new Map()
+    for (const a of new Set([...pairs.keys(), ...projPairs.keys()])) {
+      const dfa = kwDf.get(a) ?? 0
+      if (dfa <= 0) continue
+      const strong = pickFrom(pairs, a, dfa)
+      const weak = pickFrom(projPairs, a, dfa)
+      if (strong.length === 0 && weak.length === 0) continue
+      const seen = new Set()
+      const list = []
+      for (const w of strong.concat(weak)) {
+        if (seen.has(w)) continue
+        seen.add(w); list.push(w)
+      }
+      out.set(a, list.slice(0, V.COOC_TOP_PER_TERM))
+    }
+    return out.size > 0 ? out : null
+  }
+  const dump = (m) => JSON.stringify(m ? [...m].map(([k, v]) => [k, v]) : null)
+  const FIX = [
+    ['共享汉字簇（自测/自检/切片/片段 同条 + 同项目）', [
+      mk('k7b1', 'ph', '', ['自测', '自检', '切片', '片段']),
+      mk('k7b2', 'ph', '', ['自测', '切片']),
+      mk('k7b3', 'ph', '', ['片段', '基線']),
+      mk('k7b4', 'ph', '', ['自测', '基線']),
+    ]],
+    ['多项目 + 单条项目', [
+      mk('k7b5', 'pa', '', ['苹果', '香蕉']),
+      mk('k7b6', 'pa', '', ['香蕉', '云朵']),
+      mk('k7b7', 'pb', '', ['云朵', '海浪']),
+      mk('k7b8', 'solo', '', ['孤零零', '一条']),
+    ]],
+    ['重复关键词 + 冷门词', [
+      mk('k7b9', 'pc', '', ['重复重复', '重复重复', '冷门甲']),
+      mk('k7b10', 'pc', '', ['冷门甲', '冷门乙']),
+    ]],
+    ['空 keywords 混着来', [
+      mk('k7b11', 'pd', '', []),
+      mk('k7b12', 'pd', '', ['甲乙']),
+      mk('k7b13', 'pd', '', ['丙丁', '戊己']),
+    ]],
+  ]
+  const diffFix = []
+  for (const [label, docs] of FIX) {
+    const a = dump(V.buildCoocSyn(docs, docs.length))
+    const b = dump(naiveCooc(docs))
+    if (a !== b) diffFix.push(`${label}: 引擎 ${a} / 尺子 ${b}`)
+  }
+  ok('K7b 共现表与朴素尺子逐键逐值逐序相同（记忆表与提行都不许改结果）',
+    diffFix.length === 0, diffFix.length ? diffFix[0].slice(0, 300) : `${FIX.length} 组夹具全同`)
+
+  // K7c：会话主题仍按「跨几个会话」算——够 3 条的会话里每条都追加同一串，不够的一条都不加
+  const sdoc = (id, sess, content) => ({
+    id, project: 'ps', title: '', content, keywords: [], level: 'fact',
+    importance: 1, created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+    last_accessed_at: '2026-11-20T00:00:00Z', status: 'active', source_session: sess,
+  })
+  const sd = [
+    sdoc('k7c1', 'sa', '自检基线 跑两趟 才收敛'),
+    sdoc('k7c2', 'sa', '自检基线 又跑一趟 收敛了'),
+    sdoc('k7c3', 'sa', '基线 三趟 收敛'),
+    sdoc('k7c4', 'sb', '孤零零 一条 记录'),
+  ]
+  V.clearSearchIndexCache()
+  const on = V.searchIndexOf(sd, {})
+  const off = V.searchIndexOf(sd, { sessionTopic: false })
+  const extra = sd.map((_, i) => (on.docToks[i] ?? []).slice((off.docToks[i] ?? []).length))
+  const same = JSON.stringify(extra[0]) === JSON.stringify(extra[1]) && JSON.stringify(extra[1]) === JSON.stringify(extra[2])
+  ok('K7c 够 3 条的会话里每条都追加同一串主题词（一个 Map 顶掉每会话一个 Set，结果不变）',
+    extra[0].length > 0 && same, `sa：${JSON.stringify(extra[0])} / sa2：${JSON.stringify(extra[1])}`)
+  ok('K7c 不足 3 条的会话一条都不追加（门槛还在）',
+    extra[3].length === 0, `sb：${JSON.stringify(extra[3])}`)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) {
   console.log('失败项：')

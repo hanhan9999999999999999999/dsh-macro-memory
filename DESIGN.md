@@ -7738,3 +7738,104 @@ if (cur === void 0) {
 - `kwFlatArr` 的判空不能写成 `kwSep || useField ? … : null`：`kwSeparate` 与 `fieldBoost` 双关时 `plainToks` 仍要用它，第一次跑就 `TypeError: Cannot read properties of null (reading '0')`。它有三个读者（`kwToks` / `plainToks` / `kwSets`），条件要覆盖三个。
 - `tokenize` 的拆分让 `tools/probe-lex.mjs` 的 L0 取函数体失效（原来从 `function tokenize(text) {` 取，现在只剩一行包装）——改成从 `tokenizeSegs` 取循环体、另取 `wrapperBody` 断言包装仍是一行。
 - 做新旧对拍的临时副本必须放 `node_modules\.tmp-diff\`：引擎有 33 条静态 `import`，只有这个位置的祖先链能找到 `@deepseek-ai/*`；`buildSearchIndex` 未导出，副本末尾补一句 `export { buildSearchIndex as __buildSearchIndexProbe };`。
+
+## 218. 共现表与会话主题不再白跑一遍：词对记忆 + 词表只解一遍 + 内层提行（0.6.23）
+
+**症状**（0.6.22 之后，冷建专项 `--cpu-prof`：10,000 条、三轮清缓存重建 + 一趟预热，总采样 **970.5ms**，约 4 次建索引；`E:\Temp\cmp\prof23cold\CPU.20261124.114408.2028.0.001.cpuprofile`）。上一版把切词那条链收干净之后，剩下的贵处全落在**共现自学习与会话主题**这两段：
+
+| 位置 | 自证 | 每次建索引折算 | 干什么 |
+| --- | --- | --- | --- |
+| `vendor/meow-memory/lib/index.js:3257` | 81.1ms | 20.3ms | `cur.set(b, (cur.get(b) ?? 0) + w)` 共现权重累加 |
+| `vendor/meow-memory/lib/index.js:3255` | 30.9ms | 7.7ms | `const cur = map.get(a)` 回表取行 |
+| `vendor/meow-memory/lib/index.js:3244` | 39.2ms | 9.8ms | `for (const ch of a) if (b.includes(ch))` 共享汉字逐字比 |
+| `vendor/meow-memory/lib/index.js:3243` | 37.1ms | 9.3ms | 两条 `/[\u4e00-\u9fff]/.test` 判中文 |
+| `vendor/meow-memory/lib/index.js:1992` | 38.7ms | 9.7ms | 会话主题：为 `sessDf` 单独走一遍全部 token |
+| `vendor/meow-memory/lib/index.js:2012` | 26.2ms | 6.6ms | 会话主题：`tf.set(t, (tf.get(t) ?? 0) + 1)` |
+| `vendor/meow-memory/lib/index.js:2005` | 24.1ms | 6.0ms | 会话主题：`seen.add(t)` 每会话一个 Set |
+
+函数级：`buildCoocSyn` **85.9ms / 8.9%**、`coocShareHan` **76.4ms / 7.9%**、`bumpIn` **114.2ms / 11.8%**、`sessionTopicTerms` **94.3ms / 9.7%**。三项加起来占冷建的四分之一还多。
+
+**病根三条**：
+
+1. **同一个词对被反复判「共享汉字」**。`coocShareHan(a, b)` 是纯函数、只看这两个词，但项目层里它被调用的次数是「每对（本条文, 项目并集里的别的词）」——真库一个项目几十条、每条十个关键词，同一对词要被重算几十次，每次两条正则加一趟逐字包含。
+2. **每条的词表在同一趟里解了两遍**。同条层 `pairUp(coocWordsOf(d))` 一遍，项目层 `byProject` 又 `coocWordsOf(d)` 一遍；真库里 keywords 是逗号串或 JSON 串时，等于把同一份字符串解析两遍。
+3. **会话主题把同一批 token 走了两趟**。第一趟只为算「这个词跨了几个会话」（`sessDf`，每会话先造一个 `Set` 再去重），第二趟才按会话累词频；两趟读的是同一个 `docToks[i]`。
+
+**处方三条 + 一条**：
+
+1. **共享汉字按词对记忆一次**。`buildCoocSyn` 里加一张两层账，对外的判据函数一个字不改：
+
+```js
+const hanMemo = new Map();
+const shareHan = (a, b) => {
+  let row = hanMemo.get(a);
+  if (row === void 0) { row = new Map(); hanMemo.set(a, row); }
+  let got = row.get(b);
+  if (got === void 0) { got = coocShareHan(a, b); row.set(b, got); }
+  return got;
+};
+```
+
+表里只存**布尔**（是不是共享汉字），降权后的权重仍由调用点给基数——同条层 `Math.min(w, COOC_SHARE_HAN_W)`、项目层 `Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W)`。这一条是刻意的：权重进了记忆表，两层就没法用各自的基数，同条 +2 / 项目 +1 的分级会一起消失。
+
+2. **每条的词表只解一遍**。`const wordsArr = docs.map((d) => coocWordsOf(d));` 提到两个循环之前，同条层与项目层都改下标循环读 `wordsArr[i]`。
+
+3. **项目层内层提行**。`a` 那一行在这一圈里要被写 `others.length` 次（真库几十次），回表取行只该取一次；对称那行（`b`）每次都不同，照旧 `bumpIn`。**建行的时机不变**——第一次真要写这一行时才建 —— 所以键的插入序与老写法逐位相同：
+
+```js
+let rowA = projPairs.get(a);
+for (const b of others) {
+  const ww = shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
+  if (rowA === void 0) { rowA = new Map([[b, ww]]); projPairs.set(a, rowA); }
+  else rowA.set(b, (rowA.get(b) ?? 0) + ww);
+  bumpIn(projPairs, b, a, ww);
+}
+```
+
+4. **会话主题一趟算完**。`sessDf` 与 `tf` 吃同一批 token，合成一趟；判重不再每会话造 `Set`，改成一张带会话序号的戳表——`stamp.get(t) !== ord` 就等于「这个词在这个会话里第一次见」：
+
+```js
+const stamp = new Map();
+let ord = 0;
+for (const [sess, idxs] of bySess) {
+  ord++;
+  const tf = idxs.length < SESS_TOPIC_MIN ? null : new Map();
+  for (const i of idxs) {
+    const toks = docToks[i];
+    for (let k = 0; k < toks.length; k++) {
+      const t = toks[k];
+      if (tf !== null) tf.set(t, (tf.get(t) ?? 0) + 1);
+      if (stamp.get(t) !== ord) { stamp.set(t, ord); sessDf.set(t, (sessDf.get(t) ?? 0) + 1); }
+    }
+  }
+  if (tf !== null) tfBySess.set(sess, tf);
+}
+```
+
+排名那一段一个字没动（`ranked` 表达式仍是 `f * Math.log(1 + total / (sessDf.get(t) ?? 1))`），只是 `tf` 改成从 `tfBySess.get(sess)` 取、取不到就 `continue`。一个 `Map` 顶掉 N 个 `Set`：`sessDf` 的键集合与每个词的会话数都不变。
+
+**为什么逐位不变**（三条，缺一条就对不上）：
+
+- **`coocShareHan` 是纯函数**：只看 `a`、`b` 两个字符串，与顺序、与调用次数都无关，记忆表只是把「同一个问题问第二遍」变成查表。
+- **建行时机 = 键插入序**：`out` 的键序来自 `new Set([...pairs.keys(), ...projPairs.keys()])`，而 `projPairs` 的行内键序来自「第一次写入」，所以提行不能提前建行、也不能延后；`rowA` 在 `b` 循环外只取不清，正是为此。
+- **跨会话判据是「会话数」不是「出现次数」**：`stamp` 用会话序号而不是布尔，一个词在同一个会话里出现 N 次只加 1；`tf` 与它互不干扰（`tf` 只在够 `SESS_TOPIC_MIN` 条的会话里建）。
+
+**读数**：
+
+- 同一份冷建量具（`node --cpu-prof`，三轮重建 + 一趟预热）总采样 **970.5 → 819.6ms（−15.5%）**；函数级 `bumpIn` 114.2 → 53.1、`coocShareHan` 76.4 → 判据搬进闭包后新帧 `shareHan` 26.7、`buildCoocSyn` 85.9 → 71.4、`sessionTopicTerms` 94.3 → 83.9、`buildSearchIndex` 251.5 → 240.6。
+- 同进程新旧交替 7 轮取中位（`node_modules\.tmp-diff\warmab23.mjs`）：冷建 **201.06 → 177.21ms（−11.9%）**、热查 **1.813 → 1.864ms**（噪声内）。
+- 官方表 `coldMs` **204–221ms → 168–175ms**（三次 `E:\Temp\cmp\prof012b.mjs`：175 / 170.35 / 168.05）；`perMs` 当日机器偏慢（2.41–2.66ms vs 上一版 2.00–2.04），热路代码没动，属噪声。
+- 质量一张不差：`E:\Temp\cmp\ab22.mjs` **1,986 题 / 5,882 条 → mismatches 0**；`E:\Temp\cmp\final.mjs` 与 v0.5.0 基线逐行一致（0.921 / 0.417 / 0.500 三档不动）；新旧引擎全字段对拍 `node_modules\.tmp-diff\colddiff23.mjs` **462 项 0 不一致**（20 条合成 + 1,451 条 LoCoMo、11 组开关 + 直接对拍 `buildCoocSyn` 的 learn 开/关，比的是 `coocSyn` 的键序、`docToks`、`postings`、`tf`、`df`、`titleSets`、`kwSets`、`hayAt`）。
+
+**探针**：`tools/probe-cooc.mjs` 加 K7 四档（`18 → 22` 条）——K7a 词表只解一遍（`keywords` 写成 getter 数次数，老写法 4 次、新写法 2 次，两条记忆）；K7b 共现表与一把「朴素尺子」逐键逐值逐序相同（尺子不记忆、不提行，四组夹具：共享汉字簇 / 多项目 + 单条项目 / 重复关键词 / 空 keywords 混排）；K7c 会话主题一趟算完后仍按「跨几个会话」走（够 3 条的会话每条追加同一串、不足 3 条一条都不追加，靠 `sessionTopic:false` 那一趟作差分）。
+
+**不许省的三条**：
+
+- **记忆表只存布尔**。存权重就丢了两层基数（同条 2 / 项目 1），K3 会红。
+- **提行不许改建行时机**。`projPairs.set(a, rowA)` 必须发生在「真要写这一行」那一刻，否则 `out` 的键序变、`coocSyn` 的 JSON 序列化就不等了（`colddiff23` 比的就是这个序）。
+- **会话主题的判据是会话数**。改成布尔 `Set` 或者按出现次数累加，`sessDf` 口径立刻变，主题词会往「同一段里反复出现的词」偏。
+
+**踩坑两条**：
+
+- **PowerShell 生成对拍脚本会把自己坑进去**。`-replace "eng0621.mjs","eng0622.mjs" -replace "eng0622.mjs","eng0623.mjs"` 是链式的——第二跳把刚换好的也换了，`OLD` 与 `NEW` 都指向新引擎，对拍「全绿」但毫无意义；顺手还把中文注释写成 mojibake。改文本一律 `write`/`edit`。
+- **「少读一遍」用眼睛看不出来，得让代码自己报数**。K7a 把 `keywords` 写成 getter 才量到「老写法 4 次 / 新写法 2 次」；否则这条判据只能读源码形状，红不红全靠猜。

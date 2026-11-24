@@ -12653,3 +12653,79 @@ if (cur === void 0) {
 ### 9.221.7 下一版候选
 
 `search` 191.9 / 15.3%、`buildSearchIndex` 135.2 / 10.8%、`indexSignature` 125.2 / 10.0%、`scoreCandSet` 96.6、GC 81.6、`bumpIn` 64.0、`setBandsByThreshold` 62.4、`sessionTopicTerms` 57.2。
+
+## 9.222 0.6.23：共现表与会话主题不再白跑一遍
+
+### 9.222.1 症状
+
+- 读数来源：冷建专项 `E:\Temp\cmp\prof23cold\CPU.20261124.114408.2028.0.001.cpuprofile`（10,000 条、三轮清缓存重建 + 一趟预热，约 4 次建索引，总采样 **970.5ms**）。上一版把切词链收干净之后，贵的全在共现自学习与会话主题。
+- 函数级：`bumpIn` **114.2ms / 11.8%**、`sessionTopicTerms` **94.3ms / 9.7%**、`buildCoocSyn` **85.9ms / 8.9%**、`coocShareHan` **76.4ms / 7.9%**。
+- 行级（`vendor/meow-memory/lib/index.js`）：`:3257` **81.1ms**（`cur.set(b, (cur.get(b) ?? 0) + w)`）、`:3244` **39.2ms**（`for (const ch of a) if (b.includes(ch))`）、`:3243` **37.1ms**（两条 `/[\u4e00-\u9fff]/.test`）、`:1992` **38.7ms**（会话主题的 `sessDf` 那一趟）、`:3255` **30.9ms**（`const cur = map.get(a)`）、`:2012` **26.2ms**（`tf.set`）、`:2005` **24.1ms**（`seen.add`）。
+
+### 9.222.2 病根
+
+1. **同一个词对被反复判「共享汉字」**：`coocShareHan(a, b)` 是纯函数，可在项目层被调用的次数是「每对（本条文, 项目并集里的别的词）」，真库一个项目几十条，同一对词重算几十次，每次两条正则 + 一趟逐字包含。
+2. **每条的词表在同一趟里解两遍**：同条层 `pairUp(coocWordsOf(d))` 一遍，项目层 `byProject` 又 `coocWordsOf(d)` 一遍；keywords 是逗号串 / JSON 串时等于同一份字符串解析两遍。
+3. **会话主题把同一批 token 走两趟**：第一趟只为算 `sessDf`（每会话先造一个 `Set` 再 `add` 去重），第二趟才按会话累 `tf`；两趟读的是同一个 `docToks[i]`。
+
+### 9.222.3 处方
+
+`buildCoocSyn` 里加词对记忆（只存布尔，权重仍由调用点基数给：同条 `COOC_W_SAME`=2、项目 `COOC_W_PROJ`=1）：
+
+```js
+const hanMemo = new Map();
+const shareHan = (a, b) => {
+  let row = hanMemo.get(a);
+  if (row === void 0) { row = new Map(); hanMemo.set(a, row); }
+  let got = row.get(b);
+  if (got === void 0) { got = coocShareHan(a, b); row.set(b, got); }
+  return got;
+};
+```
+
+词表只解一遍：`const wordsArr = docs.map((d) => coocWordsOf(d));`，同条层与项目层都改下标循环读 `wordsArr[i]`。项目层内层提行（`a` 那一行只取一次，建行时机不变 → 键插入序逐位相同）：
+
+```js
+let rowA = projPairs.get(a);
+if (rowA === void 0) { rowA = new Map([[b, ww]]); projPairs.set(a, rowA); }
+else rowA.set(b, (rowA.get(b) ?? 0) + ww);
+```
+
+`sessionTopicTerms` 两趟合一，判重从「每会话一个 `Set`」改成带会话序号的戳表：
+
+```js
+if (tf !== null) tf.set(t, (tf.get(t) ?? 0) + 1);
+if (stamp.get(t) !== ord) { stamp.set(t, ord); sessDf.set(t, (sessDf.get(t) ?? 0) + 1); }
+```
+
+排名循环改成 `const tf = tfBySess.get(sess); if (tf === void 0) continue;`，`ranked` 表达式逐字不变。
+
+### 9.222.4 读数
+
+| 项 | 0.6.22 | 0.6.23 | 变化 |
+| --- | --- | --- | --- |
+| 冷建专项总采样（4 次重建） | 970.5ms | **819.6ms** | **−15.5%** |
+| 冷建（同进程 7 轮中位） | 201.06ms | **177.21ms** | **−11.9%** |
+| 热查（同进程） | 1.813ms | 1.864ms | 噪声内 |
+| 官方表 `coldMs` | 204–221ms | **168–175ms** | −14…−18% |
+| `bumpIn` 自证 | 114.2ms | **53.1ms** | **−53.5%** |
+| `buildCoocSyn` 自证 | 85.9ms | 71.4ms | −17% |
+| `sessionTopicTerms` 自证 | 94.3ms | 83.9ms | −11% |
+| `coocShareHan` 自证 | 76.4ms | 26.7ms（`shareHan`） | −65% |
+
+当日全量 `--cpu-prof`（`E:\Temp\cmp\prof23\CPU.20261124.114723.12540.0.001.cpuprofile`）总采样 1,300.3ms、`perMs` 2.41–2.66ms，机器整体偏慢（上一版同日 1,254.2ms / 2.00–2.04ms），与读数表不可直接横比；`bumpIn` 64.0 → 22.8、`coocShareHan` 已退出榜单。
+
+### 9.222.5 判据
+
+- `tools/probe-cooc.mjs` 加 **K7 四档**（18 → 22 条）：K7a 词表只解一遍（`keywords` 写成 getter 数次数，红取证 `node_modules\.tmp-diff\readcount.mjs` → `old: reads=4 / new: reads=2`）；K7b 共现表与朴素尺子 `naiveCooc()` 逐键逐值逐序相同（4 组夹具）；K7c 会话主题一趟算完后仍按「跨几个会话」走（`sessionTopic:false` 差分）。
+- 等价取证：`node_modules\.tmp-diff\colddiff23.mjs` → `{"docs":20,"realDocs":1451,"checks":462,"mismatches":0}`（含 `coocSyn` 键序、`docToks`、`postings`、`tf`、`df`、`titleSets`、`kwSets`、`hayAt`）；答案侧 `E:\Temp\cmp\ab22.mjs` → `{"samples":10,"docs":5882,"questions":1986,"mismatches":0}`；`final.mjs` 与 v0.5.0 逐行一致。
+- `verify.mjs` 新增 `OR083` 六条（K7 探针在位 / 引擎七件 / 进程内 getter 计次 / 进程内会话主题差分 / 文档四处 / 版本 ≥ 0.6.23）；本版**不加新套件**，`SUITE_FLOOR` 仍 50。
+
+### 9.222.6 账
+
+- 套件 50 支不变；断言 3,809 → **3,819**（净 +10 = `probe-cooc` 18 → 22 的四条 + `OR083` 六条；一条语义都没松，六条全是新结论）。
+- 本版没有删改任何判据的语义；`verify.mjs` 与 `probe-cooc.mjs` 的改动全是新增，老断言一字未动。
+
+### 9.222.7 下一版候选
+
+`search` 227.3 / 17.5%、`buildSearchIndex` 131.0、`indexSignature` 127.3、GC 123.5、`scoreCandSet` 117.8、`setBandsByThreshold` 104.9、`buildCoocSyn` 44.5、`tokenizeSegs` 44.4、`sessionTopicTerms` 40.0。

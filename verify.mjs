@@ -4285,7 +4285,11 @@ function makeHostCtx() {
     'as: 三道门各在位：次数不够丢、条件概率太低丢、共享汉字降权',
     fMeowSrc.includes('if (c < COOC_MIN_COUNT) continue;') &&
       fMeowSrc.includes('if (ratio < COOC_MIN_RATIO) continue;') &&
-      fMeowSrc.includes('coocShareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w'),
+      // [0.6.23] 共享汉字判据按词对记忆一次（hanMemo）：两层都走闭包 shareHan，降权基数各由调用点给
+      fMeowSrc.includes('const hanMemo = new Map();') &&
+      fMeowSrc.includes('got = coocShareHan(a, b);') &&
+      fMeowSrc.includes('shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w') &&
+      fMeowSrc.includes('shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ'),
     'gates',
   )
   check(
@@ -14066,6 +14070,108 @@ dt063: {
   const vS13 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS13 = vS13.length === 3 ? vS13[0] * 10000 + vS13[1] * 100 + vS13[2] : 0
   check('OR082 版本号不低于 0.6.22（后续补丁不必回头改这一条）', vNumS13 >= 622, vS13.join('.'))
+}
+
+// 0.6.23：共现表与会话主题不再白跑一遍（记忆不改结果，省的是重复计算）
+{
+  const Mv = await import('./vendor/meow-memory/lib/index.js')
+  const ENGINE_D = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const PROBE_D = readFileSync(new URL('./tools/probe-cooc.mjs', import.meta.url), 'utf8')
+  const ALL_D = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8')
+  const dWired = ALL_D.includes("'tools/probe-cooc.mjs'")
+  const dExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-cooc.mjs'")
+  const dLabels = PROBE_D.includes('K7a 每条的词表只解一遍') && PROBE_D.includes('K7b 共现表与朴素尺子逐键逐值逐序相同') &&
+    PROBE_D.includes('K7c 够 3 条的会话里每条都追加同一串主题词')
+  check(
+    'OR083 共现探针 K7 在位（词表只解一遍 / 与朴素尺子逐键逐值逐序相同 / 会话主题追加同一串），check-all 挂线且列进取根例外',
+    dLabels && dWired && dExcused,
+    `标签 ${dLabels} / 挂线 ${dWired} / 取根例外 ${dExcused}`,
+  )
+  const coocD = (() => {
+    const a = ENGINE_D.indexOf('function buildCoocSyn(docs, n, opts) {')
+    return a < 0 ? '' : ENGINE_D.slice(a, ENGINE_D.indexOf('\nfunction buildCoocForms', a))
+  })()
+  const sessD = (() => {
+    const a = ENGINE_D.indexOf('function sessionTopicTerms(docs, docToks) {')
+    return a < 0 ? '' : ENGINE_D.slice(a, ENGINE_D.indexOf('\nfunction recencyWeight', a))
+  })()
+  const partsD = {
+    汉字判据按词对记忆: coocD.includes('const hanMemo = new Map();') && coocD.includes('got = coocShareHan(a, b);'),
+    两层走同一闭包: coocD.includes('shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w') &&
+      coocD.includes('shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ'),
+    词表只解一遍: coocD.includes('const wordsArr = docs.map((d) => coocWordsOf(d));') &&
+      (coocD.match(/coocWordsOf\(/g) ?? []).length === 1,
+    项目层提行: coocD.includes('let rowA = projPairs.get(a);') &&
+      coocD.includes('} else rowA.set(b, (rowA.get(b) ?? 0) + ww);') &&
+      coocD.includes('bumpIn(projPairs, b, a, ww);'),
+    会话主题一趟算完: sessD.includes('const tfBySess = /* @__PURE__ */ new Map();') &&
+      sessD.includes('const stamp = /* @__PURE__ */ new Map();') && sessD.includes('if (stamp.get(t) !== ord) {'),
+    每会话不再造Set: sessD.includes('new Set()') === false && sessD.includes('for (const t of seen) sessDf.set') === false,
+    排名口径字面不变: sessD.includes('f * Math.log(1 + total / (sessDf.get(t) ?? 1))'),
+  }
+  const missD = Object.keys(partsD).filter((k) => !partsD[k])
+  check(
+    'OR083 引擎里共现层不再白跑：共享汉字按词对记忆一次、每条的词表只解一遍、项目层内层提行；会话主题的 tf 与跨会话数一趟算完、每会话不再造 Set',
+    missD.length === 0,
+    missD.length === 0 ? `${Object.keys(partsD).length} 件在位` : `缺 ${missD.join(' / ')}`,
+  )
+
+  // 进程内：keywords 是 getter——数它被读了几次（老写法同条层 + 项目层各解一遍）
+  let readsD = 0
+  let readsOk = false
+  let readsDetail = ''
+  try {
+    const gd = []
+    for (const ws of [['甲乙', '丙丁'], ['丙丁', '戊己']]) {
+      const d = { id: 'g' + gd.length, project: 'pg', title: '', content: '', level: 'fact', importance: 1, status: 'active' }
+      Object.defineProperty(d, 'keywords', { get() { readsD += 1; return ws }, enumerable: true, configurable: true })
+      gd.push(d)
+    }
+    Mv.buildCoocSyn(gd, gd.length)
+    readsOk = readsD <= gd.length
+    readsDetail = `两条记忆一共读了 ${readsD} 次`
+  } catch (e) {
+    readsDetail = String(e && e.message)
+  }
+  check('OR083 进程内：每条的词表只解一遍（keywords 只读一次，不是同条层 + 项目层各解一遍）', readsOk, readsDetail)
+
+  // 进程内：会话主题仍按「跨几个会话」算——够 3 条的会话里每条追加同一串，不足 3 条一条都不追加
+  let sessOkD = false
+  let sessDetailD = ''
+  try {
+    const sdoc = (id, sess, content) => ({
+      id, project: 'ps', title: '', content, keywords: [], level: 'fact', importance: 1,
+      created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+      last_accessed_at: '2026-11-20T00:00:00Z', status: 'active', source_session: sess,
+    })
+    const sd = [
+      sdoc('d1', 'sa', '自检基线 跑两趟 才收敛'),
+      sdoc('d2', 'sa', '自检基线 又跑一趟 收敛了'),
+      sdoc('d3', 'sa', '基线 三趟 收敛'),
+      sdoc('d4', 'sb', '孤零零 一条 记录'),
+    ]
+    Mv.clearSearchIndexCache()
+    const onD = Mv.searchIndexOf(sd, {})
+    const offD = Mv.searchIndexOf(sd, { sessionTopic: false })
+    const extra = sd.map((_, i) => (onD.docToks[i] ?? []).slice((offD.docToks[i] ?? []).length))
+    const same = JSON.stringify(extra[0]) === JSON.stringify(extra[1]) && JSON.stringify(extra[1]) === JSON.stringify(extra[2])
+    sessOkD = extra[0].length > 0 && same && extra[3].length === 0
+    sessDetailD = `sa ${JSON.stringify(extra[0])} / sb ${JSON.stringify(extra[3])}`
+  } catch (e) {
+    sessDetailD = String(e && e.message)
+  }
+  check('OR083 进程内：会话主题一趟算完仍按「跨几个会话」走（够 3 条的会话每条同一串，不足 3 条不追加）', sessOkD, sessDetailD)
+
+  check(
+    'OR083 文档在位：INTERNAL 9.222 写了「共现层不再白跑」，README 写了「共现表与会话主题不再白跑」，DESIGN 有 ## 218.，PLAN 有 0.6.23',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.222 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('共现表与会话主题不再白跑') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 218. ') &&
+      /0\.6\.23/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS14 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS14 = vS14.length === 3 ? vS14[0] * 10000 + vS14[1] * 100 + vS14[2] : 0
+  check('OR083 版本号不低于 0.6.23（后续补丁不必回头改这一条）', vNumS14 >= 623, vS14.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

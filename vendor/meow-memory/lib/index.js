@@ -2000,16 +2000,33 @@ function sessionTopicTerms(docs, docToks) {
   if (bySess.size === 0) return null;
   const total = bySess.size;
   const sessDf = /* @__PURE__ */ new Map();
-  for (const [, idxs] of bySess) {
-    const seen = /* @__PURE__ */ new Set();
-    for (const i of idxs) for (const t of docToks[i]) seen.add(t);
-    for (const t of seen) sessDf.set(t, (sessDf.get(t) ?? 0) + 1);
+  const tfBySess = /* @__PURE__ */ new Map();
+  // [macro-fusion 0.6.23] 一趟走完两件事：同一条里的词频（tf）与「这个词跨了几个会话」（sessDf）
+  // 吃的是同一批 token，原来为 sessDf 单独走一遍全部 token、还每个会话造一个 Set。
+  // 判重改用一张带会话序号的戳表：`stamp.get(t) !== ord` 就等于「这个词这个会话第一次见」，
+  // 一个 Map 顶掉 N 个 Set，逐值结果与老写法相同（sessDf 的键集合、每个词的会话数都不变）。
+  const stamp = /* @__PURE__ */ new Map();
+  let ord = 0;
+  for (const [sess, idxs] of bySess) {
+    ord++;
+    const tf = idxs.length < SESS_TOPIC_MIN ? null : /* @__PURE__ */ new Map();
+    for (const i of idxs) {
+      const toks = docToks[i];
+      for (let k = 0; k < toks.length; k++) {
+        const t = toks[k];
+        if (tf !== null) tf.set(t, (tf.get(t) ?? 0) + 1);
+        if (stamp.get(t) !== ord) {
+          stamp.set(t, ord);
+          sessDf.set(t, (sessDf.get(t) ?? 0) + 1);
+        }
+      }
+    }
+    if (tf !== null) tfBySess.set(sess, tf);
   }
   const out = /* @__PURE__ */ new Map();
   for (const [sess, idxs] of bySess) {
-    if (idxs.length < SESS_TOPIC_MIN) continue;
-    const tf = /* @__PURE__ */ new Map();
-    for (const i of idxs) for (const t of docToks[i]) tf.set(t, (tf.get(t) ?? 0) + 1);
+    const tf = tfBySess.get(sess);
+    if (tf === void 0) continue;
     const ranked = [...tf.entries()].filter(([t]) => t.length >= 2 && !EN_STOPWORDS.has(t)).map(([t, f]) => [t, f * Math.log(1 + total / (sessDf.get(t) ?? 1))]).sort((a, b) => b[1] - a[1]).slice(0, SESS_TOPIC_TERMS).map(([t]) => t);
     if (ranked.length > 0) out.set(sess, ranked);
   }
@@ -3251,6 +3268,23 @@ function buildCoocSyn(docs, n, opts) {
   // 混在一张表里按比例排序的话，项目层的词会把同条层的桥词挤出前六——实测宽池换说法因此从
   // 14/14 掉回 13/14（救回来的那一题正是被项目层顶掉的）。
   const projPairs = new Map();
+  // [macro-fusion 0.6.23] 「共享汉字」按词对只算一次：同一个词对在项目层会被访问上万次
+  // （每个同项目文档都要为它重跑两条正则 + 逐字符包含），而它只由 (a, b) 决定、且是对称的。
+  // 记忆表只存布尔，「降权值」仍由调用点的基数决定（同条层 2、项目层 1），所以两层的打分不变。
+  const hanMemo = new Map();
+  const shareHan = (a, b) => {
+    let row = hanMemo.get(a);
+    if (row === void 0) {
+      row = /* @__PURE__ */ new Map();
+      hanMemo.set(a, row);
+    }
+    let got = row.get(b);
+    if (got === void 0) {
+      got = coocShareHan(a, b);
+      row.set(b, got);
+    }
+    return got;
+  };
   const bumpIn = (map, a, b, w) => {
     const cur = map.get(a);
     if (cur === void 0) map.set(a, /* @__PURE__ */ new Map([[b, w]]));
@@ -3262,7 +3296,7 @@ function buildCoocSyn(docs, n, opts) {
         const a = list[i];
         const b = list[j];
         if (a === b) continue;
-        const ww = coocShareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w;
+        const ww = shareHan(a, b) ? Math.min(w, COOC_SHARE_HAN_W) : w;
         bumpIn(pairs, a, b, ww);
         bumpIn(pairs, b, a, ww);
       }
@@ -3270,18 +3304,20 @@ function buildCoocSyn(docs, n, opts) {
   };
   const kwDf = new Map();
   // 表里一律存原词（不切碎）：语义与「每词几个邻居」的名额都靠原词撑住，碎片桥在查表时补（buildCoocForms）。
-  const wordsOf = (d) => coocWordsOf(d);
-  for (const d of docs) {
-    const words = wordsOf(d);
+  // [macro-fusion 0.6.23] 每条的词表只解一遍：原来同条层与项目层各调一次 coocWordsOf，
+  // 真库里 keywords 是逗号串 / JSON 串时等于把同一份字符串解析两遍。
+  const wordsArr = docs.map((d) => coocWordsOf(d));
+  for (let i = 0; i < docs.length; i++) {
+    const words = wordsArr[i];
     if (words.length === 0) continue;
     for (const w of words) kwDf.set(w, (kwDf.get(w) ?? 0) + 1);
     pairUp(words, COOC_W_SAME);
   }
   const byProject = new Map();
-  for (const d of docs) {
-    const words = wordsOf(d);
+  for (let i = 0; i < docs.length; i++) {
+    const words = wordsArr[i];
     if (words.length === 0) continue;
-    const p = String(d.project ?? "全局");
+    const p = String(docs[i].project ?? "全局");
     if (!byProject.has(p)) byProject.set(p, []);
     byProject.get(p).push(words);
   }
@@ -3295,9 +3331,16 @@ function buildCoocSyn(docs, n, opts) {
       const others = unionArr.filter((w) => !self.has(w));
       if (others.length === 0) continue;
       for (const a of ws) {
+        // [macro-fusion 0.6.23] a 这一行在这一圈里要被写 others.length 次（真库几十次），
+        // 回表取行只该取一次；对称的那一行（b）每次都不同，照旧回表。
+        // 建行的时机不变（第一次真要写这一行时才建），所以键的插入序与老写法逐位相同。
+        let rowA = projPairs.get(a);
         for (const b of others) {
-          const ww = coocShareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
-          bumpIn(projPairs, a, b, ww);
+          const ww = shareHan(a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
+          if (rowA === void 0) {
+            rowA = /* @__PURE__ */ new Map([[b, ww]]);
+            projPairs.set(a, rowA);
+          } else rowA.set(b, (rowA.get(b) ?? 0) + ww);
           bumpIn(projPairs, b, a, ww);
         }
       }
