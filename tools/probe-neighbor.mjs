@@ -426,6 +426,88 @@ const recall = [
     /if \(!pruned\) \{\s*pruned = true\s*const r = pruneNeighborSeen\(\)/.test(neighborSrc))
 }
 
+// ── N12 邻域注入落账：花掉的字要在面板上看得见（0.6.50）──────────────────────
+// 病根：0.6.46 给命中注入做了面板，邻域这一层却一行账都不写——同一份上下文里花掉的字，
+// 一半来自邻域，面板上却是 0。这一块守四件事：有真会话才写、每个出口都有 reason、
+// 成功那行记的是「真正进了上下文的那一块」、面板能把两段分开念。
+{
+  const IL = await import(pathToFileURL(join(root, 'lib', 'macro', 'injectledger.js')).href)
+  const ws = join(tmpHome, 'ws-n12')
+  const LOG = join(ws, '.dsh-meow', 'dream-debug.log')
+  const RECALL = [
+    '星图邻域（1 跳，2 条）：',
+    '',
+    '1. [fact] dsh-macro-memory     强度 0.82 0.2.144 的交付态',
+    '  id: ws:0mwq3aa9',
+    '  为什么：经由「写入节流」的cooc关联扩散而来',
+    '  摘要：交付态摘要',
+    '2. [fact] 别的项目     强度 0.08 噪声一条',
+    '  id: 0myyy888',
+    '  id: 0myyy888',
+  ].join('\n')
+  const mkInj = (opts) => NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: RECALL }) },
+    config: opts.config ?? {},
+    meowDir: () => '.dsh-meow',
+    logger: () => {},
+    loadLlm: opts.loadLlm ?? (async () => ({ createUserMessage: (o) => o })),
+    ...(opts.bridge ? { bridge: opts.bridge } : {}),
+  })
+  const user = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '写入节流那个窗口后来怎么定的' }] }
+  const shortUser = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '嗯' }] }
+  const enter = (sid, msgs = [user]) => ({ kind: 'enter', messages: msgs })
+  const payload = (sid, withCwd) => ({ agent: { session: { id: sid, header: withCwd ? { cwd: ws } : {} } } })
+  const logText = () => (existsSync(LOG) ? readFileSync(LOG, 'utf8') : '')
+  const lastLine = () => logText().trim().split('\n').slice(-1)[0] ?? ''
+
+  // ① 没有 workspace（探针 / 单测 / 没开会话）就一个字节都不写：账本不能落到别人的库里
+  const inj0 = mkInj({})
+  await inj0.decide(payload('n12-nows', false), enter('n12-nows'))
+  ok('N12 没有 workspace 时不写账（探针跑完磁盘上一个字节都不多）',
+    !existsSync(LOG), logText().length + ' B')
+
+  // ② 成功一轮：记的是「真正进了上下文的那一块」+ 三道闸各自的读数
+  const inj = mkInj({})
+  await inj.decide(payload('n12-a', true), enter('n12-a'))
+  const chain = lastLine()
+  ok('N12 注入成功写 neighbor-chain：条数 / 字数 / 闸位读数都在（与引擎同一行格式）',
+    /\] neighbor-chain pid=\d+ sid=n12-a ids=1 chars=\d+ weak=\d+ offtopic=\d+ flagged=\d+ deduped=\d+ max=4 cap=420 minScore=0\.35$/.test(chain),
+    chain)
+
+  // ③ 同一个会话再问：已经带过的条目由跨层按 id 挡掉，写 reason=empty
+  await inj.decide(payload('n12-a', true), enter('n12-a'))
+  ok('N12 这一轮没有可带的邻居时写 neighbor-skip reason=empty（不是静默返回）',
+    /\] neighbor-skip pid=\d+ reason=empty sid=n12-a$/.test(lastLine()), lastLine())
+
+  // ④ 短问不猜，也要留一笔
+  await inj.decide(payload('n12-b', true), enter('n12-b', [shortUser]))
+  ok('N12 问句太短写 reason=short（窗口里看得见「为什么这几轮邻域是空的」）',
+    /\] neighbor-skip pid=\d+ reason=short$/.test(lastLine()), lastLine())
+
+  // ⑤ 两条失败路径各有各的 reason，不许都糊成一个 failed
+  const boom = mkInj({ bridge: { tryCall: async () => { throw new Error('nebula down') } } })
+  await boom.decide(payload('n12-c', true), enter('n12-c'))
+  const toolLine = lastLine()
+  const noLlm = mkInj({ loadLlm: async () => ({}) })
+  await noLlm.decide(payload('n12-d', true), enter('n12-d'))
+  const llmLine = lastLine()
+  ok('N12 工具失败与消息工厂取不到分开记（reason=tool / reason=llm）',
+    /reason=tool sid=n12-c$/.test(toolLine) && /reason=llm sid=n12-d$/.test(llmLine), toolLine + ' | ' + llmLine)
+
+  // ⑥ 配置面也记进账：改了 neighborMax / neighborChars，账行要跟着变
+  const tight = mkInj({ config: { neighborMax: 2, neighborChars: 300 } })
+  await tight.decide(payload('n12-e', true), enter('n12-e'))
+  ok('N12 账行带上这一轮生效的 max / cap（调小之后账上还能对回来）',
+    /max=2 cap=300/.test(lastLine()), lastLine())
+
+  // ⑦ 面板念得出这一半：邻域段 + 出口名 + 明细，与命中那段分开算
+  const body = IL.readInjectPanel({ workspace: ws, dir: '.dsh-meow', limit: 20, config: {} }).body
+  ok('N12 memory_admin(inject) 念得出邻域这一段（轮数 / 字数 / 没带的原因 / 明细）',
+    /邻域注入：\d+ 轮里/.test(body) && /没带的原因：/.test(body) && /问句太短/.test(body) &&
+      /邻域 \d+ 条 · \d+ 字/.test(body) && /星图没查成/.test(body),
+    (body.match(/邻域注入：[^\n]*/) ?? [''])[0])
+}
 rmSync(tmpHome, { recursive: true, force: true })
 
 console.log('')

@@ -206,6 +206,40 @@ const body = panel.body
     (body.match(/放回 \d+ 条/) ?? [''])[0])
 }
 
+// ── I8 邻域注入也进这本账：两段分开算，不相加（0.6.50）──────────────────────
+// 病根：邻域注入每轮往上下文里塞一段，账上一行都没有；面板只念命中那一半，
+// 用户看到「注入了 240 字」其实是两条路径合起来的消耗。这一块守：邻域段单独出、
+// 出口名是邻域自己的那套、明细能一条一条对回来、没有邻域行时不出空段。
+{
+  const lines = [
+    '[2026-11-25T03:00:00.000Z] hit-chain pid=1 sid=s1 textLen=240 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=240/∞',
+    '[2026-11-25T03:01:00.000Z] neighbor-chain pid=1 sid=s1 ids=3 chars=812 weak=1 offtopic=1 flagged=1 deduped=2 max=4 cap=420 minScore=0.35',
+    '[2026-11-25T03:02:00.000Z] neighbor-skip pid=1 sid=s1 reason=short',
+    '[2026-11-25T03:03:00.000Z] neighbor-skip pid=1 sid=s1 reason=tool',
+    '[2026-11-25T03:04:00.000Z] neighbor-chain pid=1 sid=s1 ids=2 chars=401 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35',
+  ]
+  writeFileSync(LOG, lines.join('\n') + '\n', 'utf8')
+  const body = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', limit: 20, config: {} }).body
+  ok('I8.1 面板单出一段「邻域注入」：轮数 / 合计字数 / 平均 / 中位 / 条数',
+    /邻域注入：4 轮里 2 轮带进上下文/.test(body) && /合计 1,213 字/.test(body) && /共 5 条/.test(body),
+    (body.match(/邻域注入：[^\n]*/) ?? [''])[0])
+  ok('I8.2 没带的原因用邻域自己的出口名（short / tool 不是命中那四种）',
+    /没带的原因：/.test(body) && /问句太短/.test(body) && /星图没查成/.test(body),
+    (body.match(/- 没带的原因：[^\n]*/) ?? [''])[0])
+  ok('I8.3 去重 / 未沾词 / 强度 / 打标四个读数各占一行（砍掉的条数不是黑箱）',
+    /跨层去重：跳过 2 条/.test(body) && /未沾词：1 条/.test(body) &&
+      /强度不够：1 条/.test(body) && /打标记：1 条/.test(body))
+  ok('I8.4 明细里邻域行与命中行并排，各自说自己那一轮（不相加、不互相顶掉）',
+    /邻域 3 条 · 812 字 · 未沾词 1 · 去重 2 · 打标 1/.test(body) && /邻域没带：问句太短/.test(body) &&
+      /注入 240 字/.test(body))
+  ok('I8.5 抬头写明邻域轮数（与出口轮数分开两个口径）',
+    /邻域 4 轮/.test(L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', config: {} }).scope))
+  // 只有命中行的旧日志：不许凭空生出「邻域注入：0 轮」这种段（没数据就说没数据）
+  writeFileSync(LOG, '[2026-11-25T03:10:00.000Z] hit-chain pid=1 sid=s1 textLen=100 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=100/∞\n', 'utf8')
+  const oldBody = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', config: {} }).body
+  ok('I8.6 一行邻域账都没有时不出邻域段（旧日志照旧读，不伪造 0）',
+    !/邻域注入：/.test(oldBody) && /注入 100 字/.test(oldBody), oldBody.split('\n').length + ' 行')
+}
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)

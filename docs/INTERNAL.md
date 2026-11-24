@@ -13936,3 +13936,52 @@ if (reinjectTurns > 0) {
 **判据（`tools/probe-rhythm.mjs` R9 八条 + `tools/probe-injectlog.mjs` I7 四条）**：五配置面在位；首轮盖章 `round=1`、`at={"rh000001":1,"rh000003":1}`；紧接再问只给没给过的那条；seed `injectRound: 20` + `at: 3` 时「隔 17 轮」放回 2 条（`released=2`）；放回命中后重新盖章 `at=21`；`injectReinjectTurns: 0` 逐位回 0.6.48（`ids=rh000002`、`released=0`）；老账无章仍挡但补章（`at={"rh000001":0,"rh000003":0,"rh000002":1}`）；面板念出「老条目放回：7 条＝hit 2 + skip 5」「隔 12 轮没再给过」「重放 12 轮」。规模 61 支 / 4,289 → **4,301 条**。
 
 **踩坑留三条**：①**先量再动手**——第一版做的是反方向的「会话内 N 轮内不重复」（量出来能省 16.8% 字），写完仿真才发现真管线**早就永久去重**，那 34.4% 重复只是绕过过滤直接调 `renderHitEntries` 的假象；**衡量重复必须走 `buildHitInjection` 全管线**。②**`0` 必须逐位回旧**：`injectReinjectTurns: 0` 时不仅不写新字段，release 块整个不跑，`seen` 文件形状与 0.6.48 一致——这是回退性的唯一判据，也是升级兼容的底线。③**探针不能去日志里找 `reinject=`**：那些行只在 pre-step / `logHitSkip` 里写，探针直接调 `buildHitInjection` 一条都不会产生，断言只能读回执的 `budget.released` / `budget.reinjectTurns`。
+
+### 9.249 0.6.50：邻域注入也落账
+
+**症状（三个问句，一个根因）**。①用户问「这几小时到底注入了多少字」，面板给出合计 X 字——可那一轮上下文里实际多出来的还有邻域那一段（出厂 4 条、整块 420 字以内），**它一个字都没进账**。②用户问「昨天邻域为什么老是不注入」，插件只能答「不知道」：`lib/macro/neighbor.js` 的 `state`（`injected / skipped / deduped / offtopic / flagged`）是闭包里的内存态，DSH 一重启就归零，日志里连一行都没有。③用户问「跨层去重到底省了多少条」，同样无解——`block.skipped` 只是渲染函数里的一个局部计数。
+根因：0.6.46 给命中注入做了读口（`memory_admin(action="inject")`），**只认 `hit-chain` / `hit-skip` 两种行**；而邻域这一层从头到尾没有写口。**只有一半写账的账本，会把「可解释」做成「我读过一半」。**
+
+**处方（三处，只加读口、不改行为）**。
+
+① `lib/macro/neighbor.js`：新增 `appendNeighborLog(workspace, dir, kind, rest)`，与引擎写同一个文件（`<workspace>/<meow.projectDir>/dream-debug.log`）、同一种格式（`[ISO] <kind> pid= … k=v`）。写不进去静默——账本是解释用的，不许打断注入。
+
+```js
+function appendNeighborLog(workspace, dir, kind, rest) {
+  const ws = String(workspace ?? '')
+  if (ws === '') return
+  const file = join(ws, String(dir || '.dsh-meow'), 'dream-debug.log')
+  const line = `[${new Date().toISOString()}] ${kind} pid=${process.pid}${rest === '' ? '' : ` ${rest}`}`
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    appendFileSync(file, `${line}\n`, 'utf8')
+  } catch {
+    // 只影响「面板看不看得见」，不影响这一轮注不注入。
+  }
+}
+```
+
+`decide()` 里每个出口都留一笔（**六种原因分开记，不许糊成一个 failed**）：成功写 `neighbor-chain sid= ids= chars= weak= offtopic= flagged= deduped= max= cap= minScore=`；没带写 `neighbor-skip reason=empty-msg|subagent|short|tool|empty|llm`。落点：`wsOf = agent?.session?.header?.cwd`（与引擎 `workspaceOfAgent` 同口径）、`dirOf = meowDir()`；**没有 workspace 就一个字节都不写**——探针、单测、没开真会话时不该在库里留账。
+
+② `lib/index.js`：融合层本来就有一个现成的 `meowDirReader`（`:182` 定义、`:223` 从 `engineCfg.meow?.projectDir` 现读），直接传给 `createNeighborInjector({ …, meowDir: meowDirReader })`。融合层不知道 workspace，也不需要知道——它只提供目录。
+
+③ `lib/macro/injectledger.js`：`LINE_RE` 多认 `neighbor-chain` / `neighbor-skip` 两种行，解析成 `kind: 'neighbor' | 'nskip'`；面板单出一段：
+
+```
+邻域注入：4 轮里 2 轮带进上下文（合计 1,213 字 / 平均 607 字每轮 / 中位 812 / 最多 812 · 共 5 条）
+- 没带的原因：星图没给出可用的邻居（全被强度 / 词面 / 已带过刷掉） 1 轮 · 问句太短（不到 6 字，不猜） 1 轮
+- 跨层去重：跳过 2 条（别的注入这轮已经带过，邻域不再带第二遍）
+- 未沾词：1 条（强度够但一个词面都不沾，一轮只留一条，其余砍掉）
+- 强度不够：1 条（低于门槛，一条都没带）
+- 打标记：1 条（带了「未沾词」标记，尾部给了 mute 指引）
+```
+
+明细里邻域行与命中行并排（`邻域 3 条 · 812 字 · 未沾词 1 · 去重 2 · 打标 1` / `邻域没带：问句太短`），抬头补「· 邻域 N 轮」。**两段分开算、不相加**：命中那边是「注入了多少字」，邻域这边是「带了几条、砍了几条」；同一条记忆两层都可能带，跨层去重正是邻域让路的证据。
+
+**读数（夹具四轮，2 轮带进 / 2 轮没带）**：合计 1,213 字 / 平均 607 / 中位 812 / 最多 812 / 共 5 条；跨层去重 2 条、未沾词 1 条、强度不够 1 条、打标 1 条——与手算逐位一致。真会话第一次注入的账行：`neighbor-chain pid=… sid=s9 ids=1 chars=256 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35`。
+
+**判据（`tools/probe-neighbor.mjs` N12 七条 + `tools/probe-injectlog.mjs` I8 六条）**：没有 cwd 时磁盘上一个字节都不多（`0 B`）；成功行形状对得上（条数 / 字数 / 闸位读数）；同一会话再问写 `reason=empty`；短问写 `reason=short`；工具失败与消息工厂取不到分开写 `reason=tool` / `reason=llm`；`neighborMax: 2` / `neighborChars: 300` 时账行跟着变 `max=2 cap=300`；面板念得出整段。I8 六条钉住邻域段的每个数字、出口名（`short` / `tool` 不是命中那四种）、四个读数各占一行、明细并排、抬头轮数，以及**只有命中行的旧日志不许凭空生出「邻域注入：0 轮」**。规模 61 支 / 4,301 → **4,314 条**。
+
+**回退性**：不传 workspace 时一行不写（N12 第一条）；旧日志（无 `neighbor-` 行）面板输出逐字不变（I8.6）；`neighbor.js` 的注入内容一个字节都没动——这一版**只加读口，不改行为**。
+
+**踩坑留四条**：①**`stats()` 不是读数**——它活在闭包里，重启归零；要回答「昨天为什么没注入」只能落盘。②**引擎的 `appendDreamLog` 没有导出**（`vendor/meow-memory/lib/index.js:6604` 是模块内函数），邻域这边要么照它的格式自己写、要么为了写一行账去改引擎签名；选前者：同文件、同格式、失败静默，轮转仍由引擎负责。③**PowerShell 会先吃美元加大括号**：把 `deduped=${block.skipped.length}` 写进 `node -e "…"` 时，那段插值在传给 node 之前就被 shell 展开成空串，替换脚本「成功」了却什么都没改，直到探针报 `deduped=undefined` 才露馅——改代码一律写 `.mjs` 文件再 `node` 跑。④**探针别把 `.old` 一起算**：I8.6 第一版断言 `字数：合计 100 字`，但同一工作区里还有初始夹具的 `.old`（300 字），面板照旧读两代日志 → 合计 400，断言红得莫名其妙；旧日志的判据要避开跨文件合计。
