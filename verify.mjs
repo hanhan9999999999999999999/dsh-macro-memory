@@ -37,8 +37,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
 // 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）；
-// 0.6.17 起 = 45（加 probe-hydrate）。
-const SUITE_FLOOR = 45
+// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）。
+const SUITE_FLOOR = 46
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -948,6 +948,7 @@ function makeHostCtx() {
     'tools/probe-cover.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.15），不拼仓内路径',
     'tools/probe-score.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.16），不拼仓内路径',
     'tools/probe-hydrate.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.17），不拼仓内路径',
+    'tools/probe-cand.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.18），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -13590,6 +13591,76 @@ dt063: {
   const vS8 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS8 = vS8.length === 3 ? vS8[0] * 10000 + vS8[1] * 100 + vS8[2] : 0
   check('OR077 版本号不低于 0.6.17（后续补丁不必回头改这一条）', vNumS8 >= 617, vS8.join('.'))
+}
+
+// 0.6.18：候选集不再是 Set——位图去重 + 首见序候选表。首见序 = Set 的插入序，
+// 所以扫描顺序、浮点加法顺序、回执顺序都逐位不变；省的是 1 万次 Set.add 与两份 Set 的分配。
+{
+  const cSrc = readFileSync(new URL('./tools/probe-cand.mjs', import.meta.url), 'utf8')
+  const cLabels = ['C0 ', 'C1 ', 'C2 ', 'C3 ', 'C4 ', 'C5 ']
+  const cMissing = cLabels.filter((t) => !cSrc.includes(`'${t}`))
+  const cWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-cand.mjs'")
+  const cExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-cand.mjs'")
+  check(
+    'OR078 候选账探针 C0–C5 在位（源码七件 / 与 Set 算法对拍 / 倒排开与关两路逐位相同 / 扩词那条路 / 空手问句 / 大库换尺子），check-all 挂线且列进取根例外',
+    cMissing.length === 0 && cWired && cExcused,
+    cMissing.length ? `缺 ${cMissing.join(' ')}` : `挂线 ${cWired ? 'ok' : 'miss'} / 例外 ${cExcused ? 'ok' : 'miss'}`,
+  )
+  const engSrc9 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const dedupeLine = 'if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }'
+  const candStart = engSrc9.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);')
+  const candEnd = candStart < 0 ? -1 : engSrc9.indexOf('const scoreCandSet = () => {', candStart + 1)
+  const candBody = candStart >= 0 && candEnd > candStart ? engSrc9.slice(candStart, candEnd) : ''
+  const bitmapOk = candStart >= 0 && engSrc9.includes('const candList = candAt === null ? null : [];')
+  const dedupeTwice = engSrc9.split(dedupeLine).length - 1 === 2
+  const loopOk = engSrc9.includes('for (let ci = 0; ci < candList.length; ci++) {') && !engSrc9.includes('for (const di of candList)')
+  const nullTwice = engSrc9.split('if (candList === null) {').length - 1 === 2
+  // 候选集那一段里 Set 必须真的退场；引擎别处（比如 forms、图遍历）还在用 Set，全文件查会误判。
+  const noSet = candBody.length > 0 && !candBody.includes('new Set()') && !candBody.includes('set.add(')
+  check(
+    'OR078 引擎里候选集换成位图 + 首见序候选表：两处去重语句、下标循环、两处退路判空，那一段里 Set 已退场',
+    bitmapOk && dedupeTwice && loopOk && nullTwice && noSet,
+    `位图 ${bitmapOk ? 'ok' : 'miss'} / 去重两处 ${dedupeTwice} / 下标循环 ${loopOk ? 'ok' : 'miss'} / 判空两处 ${nullTwice} / Set 退场 ${noSet ? 'ok' : 'miss'}`,
+  )
+  const S4 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  let cdOk = false
+  let cdDetail = 'search 未导出'
+  if (typeof S4.search === 'function') {
+    const docs = [
+      { id: '0mcd1111', content: 'astra', importance: 2, title: 'astra' },
+      { id: '0mcd2222', content: 'astra bravo', importance: 2, title: 'bravo' },
+      { id: '0mcd3333', content: 'astra bravo cygnus dorado', importance: 2, keywords: ['dorado'] },
+    ].map((d) => ({ ...d, level: 'fact', updated_at: '2026-01-01T00:00:00Z', project: 'p' }))
+    const q = 'astra bravo cygnus dorado'
+    const base = { k: 5, explain: true, now: 1795470000000 }
+    const on = JSON.stringify(S4.search(q, docs, base))
+    const off = JSON.stringify(S4.search(q, docs, { ...base, inverted: false }))
+    const fin = S4.search(q, docs, base).every((h) => Number.isFinite(h.score))
+    // 扩词那条路：库要够大才过得了 df 上限（cap = floor(n × 0.35)），
+    // 且被桥接回来的那条分数低、会被截断剪掉——所以判据看 trimmed 的变化与条序，不看分数。
+    const SYN = []
+    for (let i = 0; i < 6; i++) SYN.push({ id: '0msyn' + String(i).padStart(4, '0'), content: 'alpha only text', importance: 2, keywords: ['alpha', 'beta'] })
+    SYN.push({ id: '0msyn09000', content: 'beta only text', importance: 2 })
+    for (let i = 0; i < 32; i++) SYN.push({ id: '0mfll' + String(i).padStart(4, '0'), content: 'filler' + i + ' words here', importance: 2 })
+    const synDocs = SYN.map((d) => ({ ...d, level: 'fact', title: 't', project: 'p', status: 'active', created_at: 1795000000000, updated_at: 1795000000000 }))
+    const bOn = S4.search('alpha', synDocs, { k: 50, explain: true, now: 1795470000000 })
+    const bOff = S4.search('alpha', synDocs, { k: 50, explain: true, now: 1795470000000, synBridge: false })
+    const bridged = bOn.trimmed === 1 && bOff.trimmed === void 0
+    const orderSame = JSON.stringify(bOn.map((h) => h.id)) === JSON.stringify(bOff.map((h) => h.id))
+    cdOk = on === off && fin && bridged && orderSame
+    cdDetail = `倒排开/关一致 ${on === off} / score 有限 ${fin} / 扩词桥多一条 ${bridged} / 条序不变 ${orderSame}`
+  }
+  check('OR078 进程内：位图候选表的回执与逐条扫逐字节相同，扩词那条路也真的进候选表（多一条、条序不变）', cdOk, cdDetail)
+  check(
+    'OR078 文档在位：INTERNAL 9.217 写了「位图 + 首见序候选表」，README 写了「候选集不再用 Set」，DESIGN 有 ## 213.，PLAN 有 0.6.18',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.217 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('候选集不再用 Set') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 213. ') &&
+      /0\.6\.18/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS9 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS9 = vS9.length === 3 ? vS9[0] * 10000 + vS9[1] * 100 + vS9[2] : 0
+  check('OR078 版本号不低于 0.6.18（后续补丁不必回头改这一条）', vNumS9 >= 618, vS9.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

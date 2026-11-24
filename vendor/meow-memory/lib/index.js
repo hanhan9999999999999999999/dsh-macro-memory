@@ -3623,38 +3623,50 @@ function search(query, docs, opts = {}) {
   };
   const raw = new Array(docs.length).fill(0);
   const coverOf = new Array(docs.length).fill(0);
-  const candSet = postings === null || verbOn ? null : (() => {
-    const set = new Set();
+  // [macro-fusion 0.6.18] 候选集不再用 Set：这一趟只是「把几个词的倒排下标并起来」，而 `Set.add`
+  // 每条都要算一次哈希、找到桶、再在桶链上比一遍；后面还要 `for..of` 过迭代器协议。改成
+  // **位图去重 + 按下标攒的候选表**：去重是一次字节读一次字节写，候选表给后面两趟当连续数组遍历。
+  // 首见顺序就是 Set 的插入序，所以 `candArr` 的铺法完全不变（同一个 di 只进一次、进的位置一样），
+  // 于是扫描顺序、浮点加法顺序、回执顺序全都逐位不变（`probe-cand.mjs` 对拍）。
+  // 行级读数（cpu-prof positionTicks，10,000 条 / 300 问，1,808.2ms 总采样）：这个 IIFE 137.4ms/7.6%，
+  // 是 0.6.17 之后热路第五名；同期 `scoreCandSet` 里的 `for (const di of candSet)` 也在付迭代器的钱。
+  const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);
+  const candList = candAt === null ? null : [];
+  if (candList !== null) {
     for (const term of qLoop) {
       const p = postings.get(term);
-      if (p !== void 0) {
-        const pd = p.d;
-        for (let pi = 0; pi < pd.length; pi++) set.add(pd[pi]);
+      if (p === void 0) continue;
+      const pd = p.d;
+      for (let pi = 0; pi < pd.length; pi++) {
+        const di = pd[pi];
+        if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }
       }
     }
     if (synOf !== null) {
       for (const alts of synOf.values()) for (const a of alts) {
         const p = postings.get(a);
-        if (p !== void 0) {
-          const pd = p.d;
-          for (let pi = 0; pi < pd.length; pi++) set.add(pd[pi]);
+        if (p === void 0) continue;
+        const pd = p.d;
+        for (let pi = 0; pi < pd.length; pi++) {
+          const di = pd[pi];
+          if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }
         }
       }
     }
-    return set;
-  })();
+  }
   // [macro-fusion 0.6.16] 打分改成「按词扫倒排」：一次问句的 BM25 只加在「这个词真出现过」的条上，
   // 每条拿到的加数顺序仍是 qLoop 原序，所以浮点和逐位不变。词频与字段权重在建索引时就记在条目里
   // （见 buildSearchIndex），这一趟不再有哈希查找；「这个词这条根本没有」的格子被整个省掉——
   // 0.6.15 之后 scanDoc 的头号热点正是这些空手查找（535.3ms / 300 问）。
-  const kDen = candSet === null ? null : new Float64Array(docs.length);
-  const cvrOf = candSet === null ? null : new Float64Array(docs.length);
-  const candArr = candSet === null ? null : [];
+  const kDen = candList === null ? null : new Float64Array(docs.length);
+  const cvrOf = candList === null ? null : new Float64Array(docs.length);
+  const candArr = candList === null ? null : [];
   const scoreCandSet = () => {
     // 先把每条自己的常数算好（覆盖度、长度惩罚、协调项），再让每个词只碰它真出现过的条。
     // 换尺子那趟会再进来一次，候选表要重铺（不然同一条会被收尾循环算两遍）。
     candArr.length = 0;
-    for (const di of candSet) {
+    for (let ci = 0; ci < candList.length; ci++) {
+      const di = candList[ci];
       let cvr = 0;
       if (qIdfSum > 0) {
         coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);
@@ -3715,7 +3727,7 @@ function search(query, docs, opts = {}) {
       raw[di] = s;
     }
   };
-  if (candSet === null) {
+  if (candList === null) {
     for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
   } else {
     scoreCandSet();
@@ -3762,7 +3774,7 @@ function search(query, docs, opts = {}) {
             buildCoverAcc();
             raw.fill(0);
             coverOf.fill(0);
-            if (candSet === null) {
+            if (candList === null) {
               for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
             } else {
               scoreCandSet();

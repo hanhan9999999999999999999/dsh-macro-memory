@@ -7514,3 +7514,34 @@ hits.push({
 3. **`explain` 与 `keepBand` 两条路照旧走完整字面量**：前者要在对象上就地打补丁（identBonus / subjBonus / levelIntent / tipAssert / statusDigest），后者要把 `_band` 留给 searchHybrid 融合。statusDig 推入的 `{ ...d, _raw, cover, score }` 没有 `_di`，水化时 `if (di === void 0) continue;` 跳过它。
 
 读数（10,000 条 / 300 问，三次取中位）：`search` **8.35 → 3.5 ms（−58%；相对 0.6.12 的 27.377ms 累计 −87%）**、`searchAdaptive` **10.16 → 4.5 ms（−54%）**、总采样 **3,295.9 → 1,808.2ms**；索引热命中 0.688 ms/问、冷建 288–301ms（与 0.6.16 同量级，瘦对象不改建索引）。答案一位没动：真库 52 问与 LoCoMo（1,531 问）全项逐位不变。判据 `probe-hydrate` H0–H5 与 `verify.mjs` OR077，账见 INTERNAL 9.216。
+
+## 213. 候选集不再用 Set：位图 + 首见序候选表（0.6.18）
+
+命中对象先瘦后水化之后，`--cpu-prof` 第六次点名（单次 `search` 3.49ms，总采样 **1,808.2ms**）：前五名里第四位是**候选集那段立即执行函数**（**137.4ms / 7.6%**），紧随其后是 `scoreCandSet` 的 **112.2ms**。两处是同一件事的两个半场：
+
+```js
+const candSet = postings === null || verbOn ? null : (() => {
+  const set = new Set();
+  for (const term of qKept) {
+    const p = postings.get(term);
+    if (p === void 0) continue;
+    for (const di of p.d) set.add(di);
+  }
+  // …扩词那一段同样 set.add(di)
+  return set;
+})();
+// 打分时：
+for (const di of candSet) { … }
+```
+
+`Set.add` 每个下标都要算哈希、找桶、查重；而候选量在 10,000 条的库上本身就是万级。查重这件事，整数下标不需要哈希表——每条 doc 只有「进没进过候选」两种状态。
+
+处方两条 + 一条不动：
+
+1. **位图去重**：`const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);`，去重退化成 `if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }`——一次 TypedArray 读、一次写、一次 push，没有哈希、没有桶。
+2. **候选表保首见序**：`const candList = candAt === null ? null : [];`，按「先问句词、后 `synOf` 扩词」两段依次 push。**首见序就是 Set 的插入序**，所以 `candArr` 的铺法、扫描顺序、浮点加法顺序、回执顺序全部逐位不变；打分循环也从 `for (const di of candSet)`（迭代器）换成 `for (let ci = 0; ci < candList.length; ci++) { const di = candList[ci]; }`（下标）。
+3. **退路一个字没动**：倒排关着（`opts.inverted === false`）或问句带标识符（`verbOn`，走原样匹配）时 `postings === null`，`candAt` / `candList` 都是 `null`，两处 `if (candList === null) {` 照旧逐条扫全库。`kDen` / `cvrOf` / `candArr` 的判空跟着从 `candSet === null` 改成 `candList === null`。
+
+读数（10,000 条 / 300 问，三次取中位）：`search` **3.49 → 3.01 ms（−13.7%；相对 0.6.12 的 27.377ms 累计 −89%）**、总采样 **1,808.2 → 1,678.4ms（−7.2%）**，候选集那段已掉出前 20；索引热命中 0.688 ms/问、冷建 291–308ms。答案一位没动：真库 52 问（`0.6.0 关` 与 v0.5.0 仍逐位相同）与 LoCoMo（1,531 问）全项逐位不变。判据 `probe-cand` C0–C5 与 `verify.mjs` OR078，账见 INTERNAL 9.217。
+
+踩坑：C3「扩词那条路真的被走到」连红两次，两次都不是实现错，而是**信号选错**——①`df` 是含 `keywords` 的文档频次，扩词有 df 上限 `cap = max(1, floor(n × 0.35))`，小库（n=7）里 `df(beta)=3 > cap=1`，扩词被门挡掉；②把库垫到 39 条后扩词生效，但被桥接回来的那条分低、**被 `trimByBand` 剪掉**，回执里永远看不出多一条。最终判据改看 `trimmed` 属性（开桥 1 / 关桥 `undefined`）与回执条序，不看分数——桥会顺带给「keywords 里有该词」的条目加分，那是扩词自己的账，不是这次改动的账。

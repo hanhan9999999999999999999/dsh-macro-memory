@@ -12309,3 +12309,77 @@ return outHits;
 - **`setBandsByThreshold` 243.6ms / 13.5%**：0.6.13 的阈值链 + 二分，已是 `log m` 比较。再往下要合并「求 `m` 个锚点」与「逐条二分」，或者对 `_raw` 相同的条批量定档（重复 raw 在真库里很常见）。
 - **候选集那支 IIFE**（`(anon)@index.js:3626`，137.4ms / 7.6%）：`Set.add` 换 `Uint8Array` 位图。
 - **`buildSearchIndex` 148.5ms / 8.2%**：只在冷建付，暂不动。
+
+## 9.217. 候选集不再用 Set：位图 + 首见序候选表（0.6.18）
+
+### 9.217.1 症状
+
+0.6.17 把命中对象先瘦后水化之后，热检索的单次读数掉到 3.49ms（10,000 条同构语料 / 300 问），`--cpu-prof` 的总采样 1,808.2ms。再按函数摊开，榜首几块都是「每问 × 万条」的固定触碰成本，而候选集那支 IIFE 排在第 5：**137.4ms / 7.6%**（`(anon)@vendor/meow-memory/lib/index.js:3626`），紧随其后的 `scoreCandSet` 还有 **112.2ms / 6.2%**（集合迭代 + 每条再查一遍 Map）。它干的事只有两件：把「问句词（与 `synOf` 扩出来的词）在倒排里命中过的条目」去重、并按首见序攒成一张表。
+
+### 9.217.2 病根
+
+老实现是 `new Set()` + 两轮 `set.add(di)` + `for (const di of candSet)`：
+
+```js
+const candSet = postings === null || verbOn ? null : (() => {
+  const set = new Set();
+  for (const term of qKept) { const p = postings.get(term); if (p === void 0) continue; const pd = p.d; for (let pi = 0; pi < pd.length; pi++) set.add(pd[pi]); }
+  if (synOf !== null) for (const alts of synOf.values()) for (const a of alts) { const p = postings.get(a); if (p === void 0) continue; const pd = p.d; for (let pi = 0; pi < pd.length; pi++) set.add(pd[pi]); }
+  return set;
+})();
+```
+
+两个代价都落在哈希表上：①`Set.add` 每条候选人一次哈希 + 扩容；②`for...of Set` 迭代器 + 每次 `next()` 分配，比按数组下标走慢一个量级。而这里要的语义只是「下标 → 见过没有」和「按首见序攒成数组」。
+
+### 9.217.3 处方两条 + 一条不动
+
+```js
+const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);
+const candList = candAt === null ? null : [];
+if (candList !== null) {
+  // 问句词：首见序与 Set 插入序一致
+  if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }
+  // synOf 扩词：同一句去重
+}
+```
+
+① **去重换成位图**：`Uint8Array(docs.length)`，两处去重逐字为 `if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }`（问句词一段、`synOf` 扩词一段）。
+② **候选表按首见序攒**：`scoreCandSet` 里 `for (const di of candSet)` 改成 `for (let ci = 0; ci < candList.length; ci++) { const di = candList[ci];`；`kDen` / `cvrOf` / `candArr` 与两处「首趟 / 换尺子那趟」的判空一律从 `candSet === null` 改判 `candList === null`。
+③ **退路一个字没动**：`opts.inverted === false` 或 `verbOn`（问句带标识符，要走原样匹配）时 `candAt` 为 `null`，直接走全库扫描 `scanDoc`，阴性对照仍靠它。
+
+**为什么逐位不变**：首见序就是 Set 的插入序——位图只回答「见过没有」，顺序由 `candList.push` 记住，所以 `candArr` 的铺法、扫描顺序、浮点加法顺序、回执顺序全都还是老样子。
+
+### 9.217.4 读数（10,000 条同构语料 / 300 问，三次取中位）
+
+| 指标 | 0.6.17 | 0.6.18 | 变化 |
+| --- | --- | --- | --- |
+| `search` 单次 | 3.49ms | **3.01ms** | −13.7%（相对 0.6.12 的 27.38ms 是 −89%） |
+| `searchAdaptive` 单次 | 4.568ms | **4.54ms** | −0.6%（自适应那趟的候选集本就小） |
+| `--cpu-prof` 总采样 | 1,808.2ms | **1,678.4ms** | −7.2% |
+| 索引热命中 | 0.69ms/问 | 0.69ms/问 | 不变 |
+| 冷建 | ~300ms | ~300ms | 不变（位图只在问句侧开） |
+
+候选集那支 IIFE 已从前 20 名掉出去。新的榜首：`sigDocOf` 263.8 / 15.7%、`setBandsByThreshold` 235.6 / 14.0%、`search` 186.6 / 11.1%、`buildSearchIndex` 138.9 / 8.3%、`scoreCandSet` 116.1 / 6.9%。
+
+质量一个字节没动：`final.mjs` 与 0.6.15 / 0.6.16 / 0.6.17 逐行一致（`0.6.0 关` 与 v0.5.0 逐位相同 `true`，两条 `#2→#1` 位移仍在），LoCoMo 1,531 问 hit@1 0.3932 / hit@5 0.6192 / hit@10 0.6924 / hit@20 0.7511 / MRR 0.4958 / recall@20 0.6322 / 平均取回 17.8 / 空回 0.0000。
+
+### 9.217.5 判据：`tools/probe-cand.mjs` C0–C5 + `OR078` 五条
+
+- **C0 源码七件**：位图、候选表、去重语句恰好 2 处、`for (let ci = 0; ci < candList.length; ci++) {`、`if (candList === null) {` 恰好 2 处、**候选集段内**没有 `new Set()` 与 `set.add(`、没有 `for (const di of candList)`。查找范围要用 `ENGINE.slice(candStart, candEnd)` 切到候选集那一段——引擎别处（星图、台账）仍在使用 `Set`，整文件查会假红。
+- **C1 算法对拍**：位图并集 vs Set 并集，200 组随机倒排（含重复、乱序、空手）→ 不一致 0。
+- **C2 引擎两路**：`search(q, docs, {k:10, explain:true})` vs 同参数 `inverted:false`，6 问逐位相同。
+- **C3 扩词那条路真的被走到**：曾两次假红，机制记在这里——①小库（n=7）里 `df(beta)=3 > cap = floor(3×0.35)=1`，`synExpandOf` 的 `usable` 把 beta 挡掉，扩词整条不生效；②垫到 39 条（cap=13、`df(beta)=7`）后扩词生效，但桥接回来的那条分低、被 `trimByBand` 剪掉，「回执多一条」永远看不到，能看到的只有 `trimmed` 从 `undefined` 变 1；且桥会给「`keywords` 里有该词」的条目加 `synW × sat(f)` 的分，分数本来就该不同。最终断言：`on.trimmed === 1 && off.trimmed === void 0`，两路**条与序**相同（只比 `h.id` 数组）。
+- **C4 空手**：`search('qqqq zzzz')` 两路 0 条、score / cover 有限（0/0 漏出来就是 NaN）。
+- **C5 两路对拍**：300 条 × 30 问（LCG `seed = 20261127`），首趟与 `adaptiveIdf:true, idfScaleGate:10` 换尺子那趟各跑开/关两路 → 不一致 0/0、有回 30。
+- **`OR078` 五条**：①C0–C5 标签在位 + `check-all` 挂线 + `NO_ROOT` 取根例外；②引擎七件（含候选集段切片、去重与判空各 2 处）；③进程内倒排开/关逐字节 + 扩词桥 `trimmed` 0→1 且条序不变；④文档四处（本节的 `## 9.217 `、README 的「候选集不再用 Set」、DESIGN 的 `## 213. `、PLAN 的 `0.6.18`）；⑤版本地板 `vNumS9 >= 618`。
+
+### 9.217.6 账
+
+支数 45 → **46**（新增 `tools/probe-cand.mjs`）；断言 3,750 → **3,761**（`probe-cand` +6、`OR078` +5；`SUITE_FLOOR` 45 → **46**，`NO_ROOT` 补 `tools/probe-cand.mjs`）。条数以 `verify.mjs` 的 `MT068` 实测对账为准（其它支基线合计 1857 + 本支 1903 + 1 = 3,761）。
+
+### 9.217.7 下一版候选（按 1,678.4ms 的榜重排）
+
+- **`sigDocOf` 263.8ms / 15.7%**：已是 0.6.10 的 WeakMap 条级记账，行级读数集中在缓存校验链（`index.js:2916` 104.8ms）、`WeakMap.get`（把每问 1 万条 × 7 字段碰一遍的成本：`:2915` 57.1ms、`:2898` 42.5ms、`:2914` 22.8ms），哈希本身只 22.7ms。动混合函数或减少参与哈希的字符数都有撞签名的风险（`probe-signature` S3–S6 会红）。
+- **`setBandsByThreshold` 235.6ms / 14.0%**：`vals.sort()` 独占 **164.9ms**（`index.js:2584`）。已实测三条路（1 万值，`E:\Temp\cmp\b18.mjs` / `b18b.mjs`）：整排 `Float64Array.sort()` 0.72–0.80ms、阈值多趟全扫 0.40–0.47ms、**指数桶预筛在 `mix` 只剩 0.59ms**——因为锚点几乎全落在同一两个指数桶里，桶内续找要跑 19 趟、等于白扫；`tight` 分布下 0.741 → **0.015ms**（一次都不续找）。要真赚得「按 hi 的位模式细分桶（`valHi >>> 16` 得 1.044 倍区间，每桶最多落一个锚点）+ 计数排序」。这版不动。
+- **候选集之后是 `search` 186.6 / 11.1%**：主要是行级零散，暂不再拆。
+- **`buildSearchIndex` 138.9 / 8.3%**：只在冷建付，暂不动。
