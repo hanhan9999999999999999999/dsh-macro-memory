@@ -96,6 +96,15 @@
    },
    "versions": [
     {
+     "version": "0.6.53",
+     "publishTimestamp": 1795564547,
+     "source": {
+      "type": "git",
+      "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
+      "commit": "1a1fa6de135da4209103af066ce28a71fd59fe75"
+     }
+    },
+    {
      "version": "0.6.52",
      "publishTimestamp": 1795563582,
      "source": {
@@ -591,7 +600,7 @@
      }
     }
    ],
-   "version": "0.6.52",
+   "version": "0.6.53",
    "source": {
     "type": "git",
     "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
