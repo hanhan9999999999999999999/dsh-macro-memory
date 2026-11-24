@@ -11042,7 +11042,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
         // [0.6.15] 标识符比例与主语位比例每条只取一次（`vbOf` / `srOf`），断言跟着读这两个变量。
         eng.includes('identBandW * vbOf.ratio') &&
         eng.includes('identSubjW * srOf') &&
-        eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0'),
+        (eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0') ||
+          eng.includes('lvHit && lvOn ? levelIntentW : 0')),
       'IDENT_BAND_W 与 _raw 加成都可查',
     )
     const recall171 = readFileSync(join(root, 'tools', 'probe-recall.mjs'), 'utf8')
@@ -11089,7 +11090,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       eng.includes('const identSubjW = Number.isFinite(opts.identSubjW) ? opts.identSubjW : IDENT_SUBJ_W;') &&
         // [0.2.178] 免档条件多了一个 `|| !identHardOk`：时间状语里的标识符是坐标，不是主语，
         // 它不该走 bandize 的 -1 特权档。断言的形态跟着改，但守的东西没变。
-        eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,') &&
+        // [0.6.29] 这条判定提到循环外（`subjZero`），字面量里只剩 `subjZero ? 0 : srOf >= 0.5 ? 1 : 0`：
+        // 老写法与新写法任在位即算过，守的仍是「主语位进免档、`identSubjBand` 关得掉、`identHardOk` 一票否决」。
+        (eng.includes('_subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,') ||
+          (eng.includes('const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;') &&
+            eng.includes('_subj: subjZero ? 0 : srOf >= 0.5 ? 1 : 0,'))) &&
         eng.includes('const identHardOk = !(anchorCoord && opts.anchorIdentBand !== true);') &&
         eng.includes('if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) {'),
       '四个出口都在',
@@ -11166,10 +11171,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       'HZ8 两处分工：_raw 管进不进这一档，score 管进了这一档排多前',
       // [0.6.14] 那个「这条够不够格」的临时标记不再挂 hit 上（`delete h._lv` 会把对象打进字典模式），
       // 改成同下标平行数组 `lvTmp`——分工不变，只是不在回执对象上过一手。
-      eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)') &&
+      (eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)') ||
+        eng.includes('lvHit && lvOn ? levelIntentW : 0)')) &&
         eng.includes('h.score *= 1 + levelIntentW;') &&
         eng.includes('if (lvTmp[hi] !== 1) continue;'),
-      `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
+      `_raw 项在=${eng.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0)') || eng.includes('lvHit && lvOn ? levelIntentW : 0)')} score 项在=${eng.includes('h.score *= 1 + levelIntentW;')}`,
     )
     check(
       'HZ8 乘法段在 bandize 之前、且不在 verbatim 分支里（不然没有原样命中的问句整段不跑；0.6.11 起分支标记是 hayOf !== null）',
@@ -11492,9 +11498,17 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ13 三条通道全关：档位（_subj）、词分（_raw 两份权重）、加法补分（add）都吃同一个 identHardOk',
-      eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0') &&
-        eng178.includes('opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio') &&
-        eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf') &&
+      // [0.6.29] `_subj` 与 `_raw` 里的那三个 `opts.xxx === false || !identHardOk` 提到了循环外
+      // （`subjZero` / `bandWOn` / `subjBandOn`，三个都带 `!identHardOk`）。老写法与新写法任在位即算过。
+      (eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0') ||
+        (eng178.includes('const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;') &&
+          eng178.includes('_subj: subjZero ? 0 : srOf >= 0.5 ? 1 : 0,'))) &&
+        (eng178.includes('opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio') ||
+          (eng178.includes('const bandWOn = opts.identBand !== false && identHardOk;') &&
+            eng178.includes('vbOf === void 0 || !bandWOn ? 0 : identBandW * vbOf.ratio'))) &&
+        (eng178.includes('opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf') ||
+          (eng178.includes('const subjBandOn = opts.identSubjBand !== false && identHardOk;') &&
+            eng178.includes('vbOf === void 0 || !subjBandOn ? 0 : identSubjW * srOf'))) &&
         eng178.includes('const add = unitScore * vb.ratio * (idHit ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);') &&
         eng178.includes('if (idHit && identHardOk) h._ident = true;'),
       '档位 + _raw 两项 + add + _ident 五处都在',
@@ -11568,7 +11582,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       // `(1 - bEff + bEff * len / dl)` 4 处（scanDoc 的 BM25 主算式与 sat 闭包各一、扫倒排的 `kDen` 与收尾 sat 各一）。
       // 口诀没变：长度惩罚一律吃打过折的 bEff，没有一处直接拿 b 去归一。
       countOf(eng179, 'const bEff = b * (1 - coverLenRelief * cvr);') === 3 &&
-        countOf(eng179, '(1 - bEff + bEff * len / dl)') === 4 &&
+        // [0.6.29] 两处循环不变量提到外面之后，`len / dl` 变成了 `len / lenDl`（`lenDl = onBody ? avgdl : avgBody`
+        // 提到循环外，值不变）。两种写法的处数相加仍要是 4。
+        countOf(eng179, '(1 - bEff + bEff * len / dl)') + countOf(eng179, '(1 - bEff + bEff * len / lenDl)') === 4 &&
         countOf(eng179, '(1 - b + b * len / dl)') === 0 &&
         eng179.includes('Number.isFinite(opts.coverLenRelief) ? Math.min(1, Math.max(0, opts.coverLenRelief)) : COVER_LEN_RELIEF'),
       `bEff ${countOf(eng179, '(1 - bEff + bEff * len / dl)')} 处`,
@@ -12641,7 +12657,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       // [0.6.15] 三把刀的比例先进 `vbOf` / `srOf`，_raw 那行读变量。
       MY.includes('identBandW * vbOf.ratio') &&
       MY.includes('identSubjW * srOf') &&
-      MY.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0'),
+      (MY.includes('lvHit && opts.levelIntent !== false ? levelIntentW : 0') ||
+        MY.includes('lvHit && lvOn ? levelIntentW : 0')),
   )
   check(
     'VY7 两支打分器都走 bandize，且临时字段有死期',
@@ -13485,9 +13502,13 @@ dt063: {
   const pathOk =
     engSrc7.includes('const scoreCandSet = () => {') &&
     engSrc7.includes('candArr.length = 0;') &&
-    engSrc7.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') &&
-    engSrc7.includes('if (fl & 1) fw += FIELD_TITLE_W;') &&
-    engSrc7.includes('if (fl & 2) fw += FIELD_KW_W;')
+    // [0.6.29] `k1 + 1` 提成 `k1p1`、字段加成改成 `FIELD_W_TAB[fl & 3]`：老写法与新写法任在位即算过。
+    (engSrc7.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') ||
+      engSrc7.includes('raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));')) &&
+    ((engSrc7.includes('if (fl & 1) fw += FIELD_TITLE_W;') &&
+      engSrc7.includes('if (fl & 2) fw += FIELD_KW_W;')) ||
+      (engSrc7.includes('const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];') &&
+        engSrc7.includes('const fw = FIELD_W_TAB[fl & 3];')))
   // 倒排要记词频与「命中了哪几个字段」；字段权重值本身不许预乘（opts.fieldKwW 是每问参数）。
   const idxOk =
     engSrc7.includes('p.f.push(v);') &&
@@ -13567,7 +13588,9 @@ dt063: {
   const leanBody = engSrc8.slice(engSrc8.indexOf('if (leanHit) {'), engSrc8.indexOf('} else hits.push({'))
   const leanFields = [...leanBody.matchAll(/^ {8}([A-Za-z_]+):/gm)].map((m) => m[1])
   const leanFieldsOk =
-    JSON.stringify(leanFields) === JSON.stringify(['_subj', '_raw', 'cover', 'id', 'updated_at', 'score', '_di']) &&
+    // [0.6.29] 瘦对象上不再算 `cover`（截断后由 `matHitOf` 现算），所以六样 + `_di` 与老七样任一位在即算过。
+    (JSON.stringify(leanFields) === JSON.stringify(['_subj', '_raw', 'cover', 'id', 'updated_at', 'score', '_di']) ||
+      JSON.stringify(leanFields) === JSON.stringify(['_subj', '_raw', 'id', 'updated_at', 'score', '_di'])) &&
     leanBody.includes('_di: di')
   const hydrateOk =
     engSrc8.includes('const matHitOf = (h, di) => {') &&
@@ -14786,6 +14809,72 @@ dt063: {
   const vS28 = (readS28('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS28 = vS28.length === 3 ? vS28[0] * 10000 + vS28[1] * 100 + vS28[2] : 0
   check('OR088 版本号不低于 0.6.28（后续补丁不必回头改这一条）', vNumS28 >= 628, vS28.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.29] OR089：循环不变量出循环 + 瘦对象不算 cover ═══════════════
+{
+  const readS29 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const stripS29 = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const engS29 = stripS29(readS29('./vendor/meow-memory/lib/index.js'))
+  const hotS29 = readS29('./tools/probe-hotpath.mjs')
+  const allS29 = readS29('./tools/check-all.mjs')
+  check('OR089 探针在位：probe-hotpath 有 H11–H13 三条，check-all 挂了它',
+    ['H11 ', 'H12 ', 'H13 '].every((t) => hotS29.includes(t)) && allS29.includes('probe-hotpath'))
+  const tabS29 = engS29.includes('const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];') &&
+    engS29.includes('const fw = FIELD_W_TAB[fl & 3];') &&
+    engS29.includes('if (fl & 1) fw += FIELD_TITLE_W;') === false &&
+    engS29.includes('idf0 * fw * (f * k1p1 / (f + kDen[di]))')
+  const invS29 = engS29.includes('const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;') &&
+    engS29.includes('const bandWOn = opts.identBand !== false && identHardOk;') &&
+    engS29.includes('const subjBandOn = opts.identSubjBand !== false && identHardOk;') &&
+    engS29.includes('const lvOn = opts.levelIntent !== false;') &&
+    engS29.includes('const onBody = opts.lengthOnBody === false;') &&
+    engS29.includes('const lenDl = onBody ? avgdl : avgBody;') &&
+    engS29.includes('const k1p1 = k1 + 1;') &&
+    engS29.includes('const satDen = k1 * (1 - bEff + bEff * len / lenDl);') &&
+    (engS29.match(/opts\.identBand === false \|\| !identHardOk/g) ?? []).length === 0
+  const iLean29 = engS29.indexOf('if (leanHit) {')
+  const leanS29 = iLean29 > 0 ? engS29.slice(iLean29, engS29.indexOf('} else hits.push({', iLean29)) : ''
+  const noCoverS29 = leanS29.length > 0 && leanS29.includes('cover:') === false && leanS29.includes('_di: di')
+  check('OR089 引擎形状：字段权重一次查表（无位与分支）、四个循环不变量在循环外、瘦对象上不再算 cover',
+    tabS29 && invS29 && noCoverS29,
+    `表=${tabS29} 不变量=${invS29} 瘦对象无 cover=${noCoverS29}`)
+  const MvX = await import('./vendor/meow-memory/lib/index.js')
+  const NOWX = 1795470000000
+  const mkX = (id, level, content, importance = 2) => ({ id, level, title: 't', content, importance, updated_at: '2026-01-01T00:00:00Z', keywords: ['alpha'], project: 'p' })
+  const plainX = [mkX('0mzzzzzz', 'fact', 'alpha beta delta'), mkX('0mrrrrrr', 'rules', 'alpha 一律 必须先跑 alpha', 3), mkX('0mfffffff', 'fact', 'alpha 随便 看看 alpha', 1), mkX('0mvvvvvv', 'fact', 'alpha 必须 先 alpha', 4)]
+  const dfltX = MvX.search('alpha beta', plainX, { k: 5, now: NOWX })
+  const explX = MvX.search('alpha beta', plainX, { k: 5, explain: true, now: NOWX })
+  const keepX = MvX.search('alpha beta', plainX, { k: 5, keepBand: true, now: NOWX })
+  const coverOkX = dfltX.length > 0 &&
+    dfltX.every((h, i) => Number.isFinite(h.cover) && Object.is(h.cover, explX[i]?.explain?.cover)) &&
+    keepX.every((h) => Number.isFinite(h.cover)) &&
+    dfltX.every((h) => h._di === void 0 && h._raw === void 0)
+  check('OR089 进程内：默认路的 cover 与 explain.cover 逐位相同、keepBand 也带 cover，回执里没有瘦对象残留',
+    coverOkX, `${dfltX.length} 条 · cover=${dfltX.map((h) => h.cover).join(',')}`)
+  const idX = [mkX('0mwq5zzv', 'fact', '0mwq5zzv alpha'), mkX('0mzzzzzz', 'fact', 'alpha beta')]
+  const kbOnX = MvX.search('0mwq5zzv alpha', idX, { k: 5, keepBand: true, now: NOWX }).find((h) => h.id === '0mwq5zzv')
+  const kbOffX = MvX.search('0mwq5zzv alpha', idX, { k: 5, keepBand: true, identBand: false, now: NOWX }).find((h) => h.id === '0mwq5zzv')
+  const kbSubjX = MvX.search('0mwq5zzv alpha', idX, { k: 5, keepBand: true, identSubjBand: false, now: NOWX }).find((h) => h.id === '0mwq5zzv')
+  const lvHiX = MvX.search('该不该 alpha', plainX, { k: 5, explain: true, now: NOWX }).find((h) => h.level === 'rules')
+  const lvLoX = MvX.search('该不该 alpha', plainX, { k: 5, explain: true, levelIntent: false, now: NOWX }).find((h) => h.level === 'rules')
+  const lenX = MvX.search('alpha beta', plainX, { k: 5, now: NOWX })
+  const lenOffX = MvX.search('alpha beta', plainX, { k: 5, lengthOnBody: false, now: NOWX })
+  const switchesX = kbOnX !== void 0 && kbOffX !== void 0 && kbSubjX !== void 0 &&
+    Number(kbOnX._raw) > Number(kbOffX._raw) && Number(kbOnX._subj) === 1 && Number(kbSubjX._subj) === 0 &&
+    lvHiX !== void 0 && lvLoX !== void 0 && lvHiX.score > lvLoX.score &&
+    lenX.some((h, i) => h.score !== lenOffX[i]?.score)
+  check('OR089 进程内：identBand / identSubjBand / levelIntent / lengthOnBody 四个开关仍各自生效（提到循环外不许写死）',
+    switchesX,
+    `_raw ${kbOnX?._raw}→${kbOffX?._raw} · _subj ${kbOnX?._subj}→${kbSubjX?._subj} · levelIntent ${lvHiX?.score}→${lvLoX?.score}`)
+  check('OR089 文档在位：INTERNAL 9.228、README 写「字段权重查表」、DESIGN 有 ## 224.、PLAN 有 0.6.29',
+    readS29('./docs/INTERNAL.md').includes('## 9.228 ') &&
+      readS29('./README.md').includes('字段权重查表') &&
+      readS29('./DESIGN.md').includes('## 224. ') &&
+      /0\.6\.29/.test(readS29('./docs/PLAN-0.6.md')))
+  const vS29 = (readS29('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS29 = vS29.length === 3 ? vS29[0] * 10000 + vS29[1] * 100 + vS29[2] : 0
+  check('OR089 版本号不低于 0.6.29（后续补丁不必回头改这一条）', vNumS29 >= 629, vS29.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

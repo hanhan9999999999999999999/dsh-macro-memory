@@ -53,7 +53,9 @@ const mk = (id, content, importance = 2, extra = {}) => ({
 {
   const hasPath =
     ENGINE.includes('const scoreCandSet = () => {') &&
-    ENGINE.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') &&
+    // [0.6.29] `k1 + 1` 提成循环外的 `k1p1`，两种写法都认。
+    (ENGINE.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') ||
+      ENGINE.includes('raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));')) &&
     ENGINE.includes('candArr.length = 0;');
   const hasIndex =
     ENGINE.includes('p.f.push(v);') &&

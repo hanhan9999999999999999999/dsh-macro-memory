@@ -3933,6 +3933,10 @@ function search(query, docs, opts = {}) {
   const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
+  // [macro-fusion 0.6.29] 打分内层每条 posting 都要按字段标志位把权重加成重算一遍（两次位与 + 两次加法）。
+  // 标志位只有四种组合，四个结果先算好，内层改成一次数组读；加法顺序仍是「`1 + T` 再 `+ K`」，
+  // 所以 `idf0 * fw * (...)` 的浮点结果逐位不变。
+  const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];
   const COORD_W = Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF;
   const COORD_POW = Number.isFinite(opts.coordPow) && opts.coordPow > 0 ? opts.coordPow : COORD_POW_DEF;
   // [macro-fusion 0.6.28] 默认幂是 1，而 `Math.pow(x, 1)` 与 `x` 逐位相同（含 NaN / ±0 / ±Infinity），
@@ -4155,6 +4159,12 @@ function search(query, docs, opts = {}) {
     // 先把每条自己的常数算好（覆盖度、长度惩罚、协调项），再让每个词只碰它真出现过的条。
     // 换尺子那趟会再进来一次，候选表要重铺（不然同一条会被收尾循环算两遍）。
     candArr.length = 0;
+    // [macro-fusion 0.6.29] 这三样跟「具体哪一条候选」无关，提在循环外：`opts.lengthOnBody` 一趟里是同一个值，
+    // 用来选长度与均值的那两个三元分支、以及 `k1 + 1`，原来在候选循环里每条都要重算一遍（`k1 + 1` 在
+    // posting 内层里每条还要再算一次）。值不变，只是不再重复求。
+    const onBody = opts.lengthOnBody === false;
+    const lenDl = onBody ? avgdl : avgBody;
+    const k1p1 = k1 + 1;
     for (let ci = 0; ci < candList.length; ci++) {
       const di = candList[ci];
       let cvr = 0;
@@ -4164,9 +4174,8 @@ function search(query, docs, opts = {}) {
       }
       cvrOf[di] = cvr;
       const bEff = b * (1 - coverLenRelief * cvr);
-      const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
-      const dl = opts.lengthOnBody === false ? avgdl : avgBody;
-      kDen[di] = k1 * (1 - bEff + bEff * len / dl);
+      const len = onBody ? docToks[di].length : bodyLen[di];
+      kDen[di] = k1 * (1 - bEff + bEff * len / lenDl);
       candArr.push(di);
     }
     for (let qi = 0; qi < qLoop.length; qi++) {
@@ -4180,10 +4189,8 @@ function search(query, docs, opts = {}) {
         const di = pd[pi];
         const f = pf[pi];
         const fl = pt[pi];
-        let fw = 1;
-        if (fl & 1) fw += FIELD_TITLE_W;
-        if (fl & 2) fw += FIELD_KW_W;
-        raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));
+        const fw = FIELD_W_TAB[fl & 3];
+        raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));
       }
     }
     for (let ci = 0; ci < candArr.length; ci++) {
@@ -4192,16 +4199,17 @@ function search(query, docs, opts = {}) {
       const cvr = cvrOf[di];
       if (synOf !== null) {
         const tfi = tf[di];
-        const len = opts.lengthOnBody === false ? docToks[di].length : bodyLen[di];
-        const dl = opts.lengthOnBody === false ? avgdl : avgBody;
+        const len = onBody ? docToks[di].length : bodyLen[di];
         const bEff = b * (1 - coverLenRelief * cvr);
-        const sat = (f) => f * (k1 + 1) / (f + k1 * (1 - bEff + bEff * len / dl));
+        // [macro-fusion 0.6.29] 饱和分母只由这条候选自己决定，原来写成 `sat(f)` 闭包，每个替身词
+        // 都要把长度归一那段从头算一遍（还带一次闭包调用）。
+        const satDen = k1 * (1 - bEff + bEff * len / lenDl);
         for (const alts of synOf.values()) {
           let best = 0;
           for (const a of alts) {
             const f = tfi.get(a);
             if (!f) continue;
-            const v = idfAt(a) * sat(f);
+            const v = idfAt(a) * (f * k1p1 / (f + satDen));
             if (v > best) best = v;
           }
           s += synW * best;
@@ -4366,6 +4374,13 @@ function search(query, docs, opts = {}) {
       score: h.score
     };
   };
+  // [macro-fusion 0.6.29] 下面两条 `_subj` / `_raw` 式子里的 `opts.identSubjBand === false` / `opts.identBand === false`
+  // / `opts.levelIntent !== false` 一条候选读一遍就够：它们跟候选无关，提到循环外。逻辑等价——
+  // `vbOf === void 0` 仍排在 `!bandWOn` 前面短路（否则 `0 * Infinity` 会变 NaN），`_subj` / `_raw` 逐位不变。
+  const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;
+  const bandWOn = opts.identBand !== false && identHardOk;
+  const subjBandOn = opts.identSubjBand !== false && identHardOk;
+  const lvOn = opts.levelIntent !== false;
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
     // [macro-fusion 0.6.15] 这一条下面要读十来次同一条记录的字段：`docs[di]` 取一次，别每次重算下标。
@@ -4392,17 +4407,21 @@ function search(query, docs, opts = {}) {
     trTmp.push(trOf);
     if (leanHit) {
       hits.push({
-        _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,
-        _raw: raw[di] * (1 + (vbOf === void 0 || opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
-        cover: Math.round(coverOf[di] * 1e3) / 1e3,
+        _subj: subjZero ? 0 : srOf >= 0.5 ? 1 : 0,
+        _raw: raw[di] * (1 + (vbOf === void 0 || !bandWOn ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || !subjBandOn ? 0 : identSubjW * srOf) + (lvHit && lvOn ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
+        // [macro-fusion 0.6.29] 瘦对象上不再算 `cover`：这条路上（`explain` / `keepBand` 都为假）截断之后
+        // 会把入选的 k 条交给 `matHitOf` 整条重铺，`cover` 在那里按 `coverOf[di]` 现算；而扫描期到定档之间
+        // 没有任何一处读它（`bandize` / `trimByBand` / 三处补分只读 `_raw` / `_subj` / `score` / `id`），
+        // `keepBand` 那条早退走的是下面的完整字面量、不是这里。原来这一句每条候选都要
+        // `Math.round(x * 1e3) / 1e3` 一次，实测 251.7ms / 3.7%。
         id: dOf.id,
         updated_at: dOf.updated_at,
         score: raw[di] * w * impW * stW * foldOf,
         _di: di
       });
     } else hits.push({
-      _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,
-      _raw: raw[di] * (1 + (vbOf === void 0 || opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
+      _subj: subjZero ? 0 : srOf >= 0.5 ? 1 : 0,
+      _raw: raw[di] * (1 + (vbOf === void 0 || !bandWOn ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || !subjBandOn ? 0 : identSubjW * srOf) + (lvHit && lvOn ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
       ...(anchored ? { anchored: true } : {}),
       id: dOf.id,

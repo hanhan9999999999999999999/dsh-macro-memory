@@ -214,5 +214,94 @@ const plain = [
   );
 }
 
+// ── H11 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.29] 字段权重从「两次位与 + 两次加法」改成一次查表。
+// 表的四格必须与老写法的逐位结果相同——含非整值权重时加法顺序一换末位就会动，所以逐对用 Object.is 比。
+{
+  const shape = ENGINE.includes('const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];') &&
+    ENGINE.includes('const fw = FIELD_W_TAB[fl & 3];') &&
+    ENGINE.includes('idf0 * fw * (f * k1p1 / (f + kDen[di]))') &&
+    ENGINE.includes('if (fl & 1) fw += FIELD_TITLE_W;') === false;
+  const oldWay = (fl, T, K) => {
+    let fw = 1;
+    if (fl & 1) fw += T;
+    if (fl & 2) fw += K;
+    return fw;
+  };
+  let bad = 0;
+  for (const [T, K] of [[0.6, 0.6], [0.6, 0.1 + 0.2], [0.30000000000000004, 0.7], [0.6, 1e-9]]) {
+    const tab = [1, 1 + T, 1 + K, 1 + T + K];
+    for (let fl = 0; fl < 4; fl++) if (!Object.is(tab[fl], oldWay(fl, T, K))) bad += 1;
+  }
+  const r = search('alpha beta', plain, { k: 5, fieldKwW: 0.1 + 0.2, now: NOW });
+  ok(
+    'H11 字段权重查表：四格与「逐位加成」逐位相同（含非整值权重），内层不再分支',
+    shape && bad === 0 && r.length > 0,
+    `形状=${shape} 表值不符=${bad}`,
+  );
+}
+
+// ── H12 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.29] 默认路（`explain` / `keepBand` 都为假）的瘦对象上不再算 `cover`：
+// 这条路的回执是截断之后由 `matHitOf` 整条重铺的，`cover` 在那里按 `coverOf[di]` 现算，
+// 扫描期到定档之间没有任何一处读它。三条路的 `cover` 必须逐位相同。
+{
+  // 这三处仍然表示「同一个表达式」：完整字面量里一处、`matHitOf` 里一处、`explain.cover` 里一处。
+  const count = (ENGINE.match(/cover: Math\.round\(coverOf\[di\] \* 1e3\) \/ 1e3,/g) || []).length;
+  const iLean = ENGINE.indexOf('if (leanHit) {');
+  const iLeanEnd = iLean > 0 ? ENGINE.indexOf('});', iLean) : -1;
+  const leanBlock = iLean > 0 && iLeanEnd > iLean ? ENGINE.slice(iLean, iLeanEnd) : '';
+  const shape = count === 3 && leanBlock.length > 0 && leanBlock.includes('cover:') === false &&
+    ENGINE.includes('const matHitOf = (h, di) => {');
+  const r = search('alpha beta', plain, { k: 5, now: NOW });
+  const allCover = r.length > 0 && r.every((h) => typeof h.cover === 'number' && Number.isFinite(h.cover));
+  const kb = search('alpha beta', plain, { k: 5, keepBand: true, now: NOW });
+  const kbCover = kb.length > 0 && kb.every((h) => typeof h.cover === 'number');
+  const ex = search('alpha beta', plain, { k: 5, explain: true, now: NOW });
+  const exSame = ex.length > 0 && ex.every((h, i) => h.explain !== void 0 && Object.is(h.explain.cover, r[i]?.cover));
+  ok(
+    'H12 瘦对象上不算 cover（全引擎只剩完整字面量与 matHitOf 两处），三条路的 cover 仍逐位相同',
+    shape && allCover && kbCover && exSame,
+    `字面量处数=${count} 默认带 cover=${allCover} keepBand 带 cover=${kbCover} explain 同值=${exSame}`,
+  );
+}
+
+// ── H13 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.29] 三处「每条候选重读一遍 opts」的判定与两个循环不变量提到循环外。
+// 提到外面最怕写死成 true，所以逐个开关再关一次，证明它们仍然生效。
+{
+  const shape = ENGINE.includes('const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;') &&
+    ENGINE.includes('const bandWOn = opts.identBand !== false && identHardOk;') &&
+    ENGINE.includes('const subjBandOn = opts.identSubjBand !== false && identHardOk;') &&
+    ENGINE.includes('const lvOn = opts.levelIntent !== false;') &&
+    ENGINE.includes('const onBody = opts.lengthOnBody === false;') &&
+    ENGINE.includes('const lenDl = onBody ? avgdl : avgBody;') &&
+    ENGINE.includes('const k1p1 = k1 + 1;') &&
+    ENGINE.includes('const satDen = k1 * (1 - bEff + bEff * len / lenDl);') &&
+    (ENGINE.match(/opts\.identBand === false \|\| !identHardOk/g) || []).length === 0;
+  // 三个开关各关一次：`identBand` 只影响 `_raw`（原样补分那条走的是 `identHardOk`），
+  // `identSubjBand` 影响 `_subj`，`levelIntent` 影响 rules 条的分数；`lengthOnBody` 选长度与均值。
+  const idDocs = [mk('0mwq5zzv', 'fact', '0mwq5zzv alpha'), mk('0mzzzzzz', 'fact', 'alpha beta')];
+  const kbOn = search('0mwq5zzv alpha', idDocs, { k: 5, keepBand: true, now: NOW });
+  const kbOff = search('0mwq5zzv alpha', idDocs, { k: 5, keepBand: true, identBand: false, now: NOW });
+  const namedOn = kbOn.find((h) => h.id === '0mwq5zzv');
+  const namedOff = kbOff.find((h) => h.id === '0mwq5zzv');
+  const bandWorks = namedOn !== void 0 && namedOff !== void 0 && Number(namedOn._raw) > Number(namedOff._raw);
+  const kbSubj = search('0mwq5zzv alpha', idDocs, { k: 5, keepBand: true, identSubjBand: false, now: NOW });
+  const subjWorks = namedOn !== void 0 && Number(namedOn._subj) === 1 &&
+    Number(kbSubj.find((h) => h.id === '0mwq5zzv')?._subj) === 0;
+  const lvHi = search('该不该 alpha', plain, { k: 5, explain: true, now: NOW }).find((h) => h.level === 'rules');
+  const lvLo = search('该不该 alpha', plain, { k: 5, explain: true, levelIntent: false, now: NOW }).find((h) => h.level === 'rules');
+  const lvWorks = lvHi !== void 0 && lvLo !== void 0 && lvHi.score > lvLo.score;
+  const bodyHi = search('alpha beta', plain, { k: 5, now: NOW });
+  const bodyLo = search('alpha beta', plain, { k: 5, lengthOnBody: false, now: NOW });
+  const bodyWorks = bodyHi.length === bodyLo.length && bodyHi.some((h, i) => h.score !== bodyLo[i]?.score);
+  ok(
+    'H13 循环不变量提出循环外：形状在位，identBand / identSubjBand / levelIntent / lengthOnBody 四个开关仍各自生效',
+    shape && bandWorks && subjWorks && lvWorks && bodyWorks,
+    `形状=${shape} 点名 _raw 仍抬=${bandWorks} 主语开关仍到 _subj=${subjWorks} 层级意图仍抬=${lvWorks} 长度口径仍选=${bodyWorks}`,
+  );
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'}  probe-hotpath：${pass}/${pass + fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

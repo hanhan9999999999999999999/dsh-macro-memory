@@ -13184,3 +13184,108 @@ function hotScratchOf(n) {
 - `sessionTopicTerms:2074`（`tid.get(t)` 串键哈希）：与 `buildSearchIndex` 的词号表共用一份，同一个词在全库只该有一个号。
 - `tokenizeSegs:1717` `normalize("NFKC")` 24.6ms：快速路已否决（`nfb27.mjs`：A=normalize 17.4 / B=跳过 12.2 / C=先扫再决定 17.2，A 与 C 输出 0 差异），不要再试。
 - `setBandsByThreshold` 剩下的是 `anchors[mid] >= v` 与 `lo = mid + 1`（二分本身）：同分批量已经把「重复值」这块吃掉，剩下的要靠「先桶后二分」才有新收益，风险是把档号语义挪出纯函数。
+
+## 9.228 0.6.29：循环不变量出循环、字段权重一次查表、瘦对象不铺 cover
+
+### 9.228.1 症状
+
+热查固定 3,000 问的剖面（`wfix29`，总采样 6,454.0ms；0.6.28 为 6,760.1ms）里，「每条候选重读一遍同一批常量」这类痕迹散布在四处：
+
+| 位置 | 0.6.28 读数 | 说明 |
+| --- | --- | --- |
+| `indexSignature:3228` 八字段比较链 | 631.9ms（9.35%） | 0.6.29 没动，作对照 |
+| 瘦字面量 `cover: Math.round(coverOf[di] * 1e3) / 1e3` | 251.7ms | 算完在默认路上直接丢掉 |
+| 瘦字面量 `hits.push({` | 234.7ms | 对象分配，字段越多越贵 |
+| `scoreCandSet` `raw[di] += …` | 197.5ms | 内层带着 `fw` 的位与分支与 `(k1 + 1)` |
+| `scoreCandSet` `kDen[di] = k1 * (1 - bEff + bEff * len / dl)` | 174.2ms | `dl` 每条重算一次 `opts.lengthOnBody === false` |
+
+### 9.228.2 病根
+
+1. **常量写在循环里**：`fl` 只有 4 种取值，`fw` 却每条候选重算（两次位与 + 最多两次加法）；`opts.lengthOnBody === false`、`k1 + 1`、`len / dl` 同理。
+2. **判定写在字面量里**：`_subj` / `_raw` 各带 `opts.identSubjBand === false || !identHardOk` 一类判定，瘦路与完整路各一遍，每条候选读 4~8 次 `opts` 属性。
+3. **算完就丢**：瘦对象上的 `cover` 在默认路上没有任何读者——截断之后 `matHitOf` 会按 `coverOf[di]` 重铺一遍。
+
+### 9.228.3 处方
+
+**①`FIELD_W_TAB`（`vendor/meow-memory/lib/index.js:3939`）**
+
+```js
+const FIELD_W_TAB = [1, 1 + FIELD_TITLE_W, 1 + FIELD_KW_W, 1 + FIELD_TITLE_W + FIELD_KW_W];
+```
+
+模块级常量。`scoreCandSet` 里（`:4192`）：
+
+```js
+const fw = FIELD_W_TAB[fl & 3];
+raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));
+```
+
+加法顺序是 `1 + T + K`（不是 `1 + (T + K)`），与老写法的逐位结果相同——四组权重逐对 `Object.is` 验过。
+
+**②`scoreCandSet` 的循环不变量（`:4165`–`:4206`）**
+
+```js
+const onBody = opts.lengthOnBody === false;
+const lenDl = onBody ? avgdl : avgBody;
+const k1p1 = k1 + 1;
+// 内层
+kDen[di] = k1 * (1 - bEff + bEff * len / lenDl);
+const satDen = k1 * (1 - bEff + bEff * len / lenDl);
+```
+
+**③`search` 扫描段的四个开关（`:4380`–`:4383`）**
+
+```js
+const subjZero = subjRatio === void 0 || opts.identSubjBand === false || !identHardOk;
+const bandWOn = opts.identBand !== false && identHardOk;
+const subjBandOn = opts.identSubjBand !== false && identHardOk;
+const lvOn = opts.levelIntent !== false;
+```
+
+字面量（瘦路 `:4408` 起、完整路 `:4422` 起）里只剩：
+
+```js
+_subj: subjZero ? 0 : srOf >= 0.5 ? 1 : 0,
+_raw: raw[di] * (1 + (vbOf === void 0 || !bandWOn ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || !subjBandOn ? 0 : identSubjW * srOf) + (lvHit && lvOn ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
+```
+
+`vbOf === void 0` 必须留在最前：`0 * Infinity = NaN`，短路顺序一动就和老写法分叉。
+
+**④瘦路删掉 `cover`（`vendor/meow-memory/lib/index.js:4408`–`:4420`）**
+
+瘦字面量里 `cover: Math.round(coverOf[di] * 1e3) / 1e3,` 整行删除；`matHitOf`（`:4354`，`cover` 在 `:4360`）与完整字面量（`:4425`）、`explain.cover`（`:4446`）三处保留。`keepBand` 早退走完整字面量，所以那条路仍带 `cover`。
+
+### 9.228.4 读数
+
+| 量具 | 0.6.28 | 0.6.29 | 变化 |
+| --- | --- | --- | --- |
+| 固定 3,000 问（两次交替中位） | 1.773 ms/问 | **1.684 ms/问** | **−5.0%** |
+| 单引擎 9 轮中位（`warmone26.mjs`） | 1.740 ms/问 | **1.658 ms/问** | −4.7% |
+| 21 轮交替中位（`warmab29.mjs`） | 1.770 ms/问 | 1.726 ms/问 | −2.5% |
+| 冷建中位（`warmab29.mjs`） | 126.74 ms | 124.33 ms | 噪声（建索引未改） |
+
+行级：瘦字面量 `cover` 那一行 **251.7ms → 消失**；`hits.push` 234.7 → 203.9ms；`raw[di] +=` 197.5 → 177.3ms；`kDen[di] =` 174.2 → 138.0ms。两版总采样不同（6,760.1 vs 6,454.0），毫秒只做同版内定位，跨版对比用上表。
+
+### 9.228.5 判据
+
+- `tools/probe-hotpath.mjs` H11：表四格与逐位加成逐对 `Object.is` 相同（含 `0.1 + 0.2`），内层无 `if (fl & 1) fw +=`。
+- H12：`cover: Math.round(coverOf[di] * 1e3) / 1e3,` 全引擎 3 处（完整字面量 / `matHitOf` / `explain.cover`），瘦字面量切片无 `cover:`；默认 / `keepBand` / `explain` 三路 `cover` 逐位相同。
+- H13：八个常量形状在位；`identBand:false` 让点名条 `_raw` 0.3678 → 0.2044、`identSubjBand:false` 让 `_subj` 1 → 0、`levelIntent:false` 让 rules 条掉分、`lengthOnBody:false` 仍换口径。
+- `verify.mjs` OR089 六条：探针在位 / 引擎形状 / `cover` 三路一致 / 四个开关仍生效 / 文档在位 / 版本 ≥ 0.6.29。
+- 三把尺子：`colddiff29` 462 项、`tokdiff29` 15,810 项、`searchdiff29` 2,462 项，全 **0 不一致**。
+
+### 9.228.6 踩坑
+
+1. **`cover:` 出现 3 次不是 2 次**：`explain: { … cover: Math.round(coverOf[di] * 1e3) / 1e3, }` 也算一处，判据按 `=== 2` 写当场红。要用「处数 + 瘦切片里没有 `cover:`」两条件。
+2. **`identBand:false` 不影响 `score`**：原样补分走 `identHardOk`，`opts.identBand` 只改 `_raw`。第一版 H13 拿 `score` 比 → 假红。
+3. **`identSubjBand:false` 常常只改 `_subj` 不改 `_raw`**：主语项还要 `vbOf !== void 0` 才加法；语料里没有原样命中时 `_raw` 逐位相同。
+4. **两版剖面总采样不等**（6,760.1 vs 6,454.0）：`--cpu-prof` 的顺序效应仍按「后跑那版更慢」出现，毫秒不可跨版直接比。
+5. **`indexSignature` 是证伪的靶子**：微基准（`E:\Temp\cmp\sigbench29.mjs`）A 13.15ns/条 vs 三字段标尺 6.38ns/条，砍字段上限约 3% 且破 S5（就地改 `content` / `keywords` 必须看得见），本版不动。
+
+### 9.228.7 下一版候选
+
+1. `setBandsByThreshold` 二分四行（395.0ms）改桶表定位，须逐位同档。
+2. `search:4323` `candAt` 位图（150.8ms）批量写入。
+3. `search:4132`（147.6ms）与 `:4378` 近分带衰减：三个小函数就地展开。
+4. `weakHitOf` 的 `cover` 取整与 `pct` 只在出结论时算。
+5. `SIG_DOC_CACHE` 键换成「版本号数组 + 一次比较」——只在那张表真的成了瓶颈时才动。
