@@ -12980,3 +12980,105 @@ out.set(wById[a], words);
 - `tokenizeSegs:1703` 31.0ms：`text.normalize("NFKC")`——先扫一遍有没有可疑码点，没有就不归一。
 - `sessionTopicTerms` 58.4ms（`:2050` 21.2、`:2025` 15.9）：两趟合一。
 - `sigDocHash` 22.8ms（`:3056` 20.6）：逐条签名哈希的字段拼装。
+
+## 9.226 0.6.27：按下标分类、签名混算出闭包、会话主题换词号两轮
+
+### 9.226.1 症状
+
+0.6.26 冷建剖面（一万条 / 300 问，总采样 679.1ms）：`buildSearchIndex` 206.4ms（29.4%）、`buildCoocSyn` 98.0ms、GC 70.1ms、`tokenizeSegs` 69.7ms、`sessionTopicTerms` 60.1ms、`sigDocHash` 24.0ms、`bumpIn` 19.7ms。行视图（`buildSearchIndex:3581` 36.9 / `:3530` 27.7 / `:3527` 26.7 / `:3451` 24.6 / `:3525` 18.5 / `:3569` 13.3；`buildCoocSyn:3298` 47.2 / `:3408` 10.3；`sessionTopicTerms:2050` 20.5 / `:2025` 15.4 / `:2054` 10.3；`tokenizeSegs:1703` 22.6 / `:1655` 10.3）。
+
+### 9.226.2 病根
+
+1. **分类要造字符串**：`tokenizeSegs` 内层两处 `clsCode(w0 === 1 ? s[i] : s.slice(i, i + 2))`——`s[i]` 每次都造一只单字符字符串，星外字还要切两只码元；表本来就是按码点数值建的。
+2. **签名要造闭包**：`sigDocHash` 每条现造 `put` / `sep` 两只闭包，content 首尾各 `slice` 一只临时串。一万条 = 两万只闭包 + 两万只临时串。
+3. **计数要串哈希**：`sessionTopicTerms` 每个 token 付 `tf.get` + `tf.set` 两次字符串键哈希；而且第一版把打分与计数放在同一圈，`sdf` 未累完就打分。
+4. **项目层要造副本**：每条 `const self = new Set(ws)` + `unionArr.filter(...)`（两万只临时对象 + 每条一次全并集扫描）。
+
+### 9.226.3 处方
+
+**一、`clsAt(s, i)`（`:1657`，插在 `clsCode` 之前）**
+
+```js
+function clsAt(s, i) {
+  var c = s.charCodeAt(i);
+  if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+    var d = s.charCodeAt(i + 1);
+    if (d >= 0xdc00 && d <= 0xdfff) return clsCode(s.slice(i, i + 2));
+  }
+  var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;
+  return t[c];
+}
+```
+
+`tokenizeSegs` 内层两处换成 `const cls = clsAt(s, i);` 与 `while (j < nS && clsAt(s, j) === cls) { j += s.codePointAt(j) > 65535 ? 2 : 1; }`。只有成对代理项才走码点路径，口径与逐字符版逐位相同。
+
+**二、签名混算三只模块级函数（`:3103`–`:3120`）**
+
+```js
+function sigMixStr(h, s) { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h; }
+function sigMixRange(h, s, from, to) { for (let i = from; i < to; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h; }
+function sigSep(h) { h ^= 0x7c; return Math.imul(h, 16777619) >>> 0; }
+```
+
+`sigDocHash`（`:3122`）改成一路 `h = sigSep(sigMixStr(...))`；content 头 40 `sigMixRange(h, content, 0, min(40, len))`、尾 40 `sigMixRange(h, max(0, len - 40), len)`。
+
+**三、`sessionTopicTerms` 词号两轮（`:2041`）**
+
+```js
+const tid = new Map(); const tById = []; const cnt = []; const sdf = []; const touched = [];
+// 每个 token：let id = tid.get(t); 新词登记 tid.set/tById.push/cnt.push(0)/sdf.push(0)
+if (cnt[id] === 0) { sdf[id] += 1; touched.push(id); }
+cnt[id] += 1;
+// 会话切换：for (let k = 0; k < touched.length; k++) cnt[touched[k]] = 0; touched.length = 0;
+// 够门槛（>= SESS_TOPIC_MIN）的会话：const ids = touched.slice(); 快照 cs
+// 第二轮：cs[k] * Math.log(1 + total / sdf[ids[k]]) 排序取前 12
+```
+
+**踩坑（已修，留档）**：第一版把打分写在计数那一圈里，`sdf` 还没累完全部会话 → `colddiff27` **35 处不一致**（`docToks` 尾巴的会话主题词变了：old `…"文里","词重","复很"` vs new `…"文里","同一","一个"`）。拆成两轮后归零。
+
+**四、项目层去 self Set（`:3456`）**
+
+```js
+let onlySelf = true;
+for (let k = 0; k < unionArr.length; k++) { if (ws.indexOf(unionArr[k]) < 0) { onlySelf = false; break; } }
+if (onlySelf) continue;
+for (const a of ws) { ... for (const b of unionArr) { if (ws.indexOf(b) >= 0) continue; ... } }
+```
+
+并集顺序不变、跳过位置不变、建行时机不变 → 键序逐位相同。
+
+### 9.226.4 读数
+
+| 量的是什么 | 0.6.26 | 0.6.27 |
+| --- | --- | --- |
+| 整趟冷建（21 轮交替中位） | 119.18ms | **114.39ms**（−4.0%） |
+| 剖面总采样（三次中位） | 679.1ms | **669.5ms** |
+| `sigDocHash`（层内 9 轮交替） | 18.49ms | **3.59ms**（−80.6%） |
+| `sessionTopicTerms` | 11.36ms | **8.61ms**（−24.2%） |
+| `buildCoocSyn` | 31.7ms | **30.01ms**（−5.3%） |
+| 切词 30,000 串 | 17.38ms | **14.25ms**（−18.0%） |
+| 热查（单引擎分进程 25 轮 ×4） | 1.827/1.803/1.809/1.828 | 1.852/1.859/1.849/1.844 |
+
+热查 +1.9% 的判读：把 `tokenizeSegs` 换回 0.6.26 写法（其余不动）→ 1.879/1.906，与本版 1.899/1.907 相同，说明不是切词；定点 4 秒热查剖面总采样反而 5,040.5 → 4,994.1ms。判定为噪声带，**不改**，如实记。
+
+量具：`node_modules\.tmp-diff\layers27.mjs`（层内隔离）、`warmab27.mjs`（整建 21 轮交替）、`warmone26.mjs`（`ENG=` 单引擎分进程）、`warmprof27.mjs`（定点热查剖面）。
+
+### 9.226.5 判据
+
+- `tools/probe-cold.mjs` **10/10**：新增 C9（`clsAt` 与 Unicode 正则尺子逐下标同值，15 串 · 245 下标 · 13 码点对拍；另钉 `tokenizeSegs` 里 `s[i]` 与 `clsCode(` 都不再出现）。
+- `tools/probe-cooc.mjs` **28/28**：新增 K10a（五处形状：无 `self` Set、无 `unionArr.filter`、先判 `onlySelf`、按并集序 `indexOf` 跳过、并集构造照旧）+ K10b（五组夹具逐键逐值逐序与朴素尺子相同）。
+- `verify.mjs` OR087 七条：探针在位 / `clsAt` 形状 / 签名混算三件 / 会话主题词号两轮 / 项目层 onlySelf / 进程内签名口径（头尾改字换签名、正中等长改写同签名）/ 进程内会话主题与朴素两轮尺子逐会话逐词逐序相同 / 文档在位 / 版本号 ≥ 0.6.27。
+- 对拍：`colddiff27` 462 项 0 不一致、`tokdiff27` 15,810 项 0 不一致、`layers27` 四项逐位相同。
+- `probe-lex` 6/6 全绿。
+
+### 9.226.6 复盘
+
+四处共同点：省下的都不是算法，而是**为一个小动作造的一只对象**。但代价是这类优化看不出算法层面的错——所以判据必须钉「结果逐位相同」，尤其会话主题那一刀：改成两轮之后才等价，第一版的 35 处不一致正是「打分要等全部数据」这条时序约束被破坏。
+
+### 9.226.7 下一版候选
+
+- **热查 `indexSignature` 19~20%**（961.9 / 5,040.5ms）：每次 search 都把一万条字段值重比一遍。方向：整表级「数组身份 + 长度 + 首尾条签名」快判，命中就不逐条比；或按条惰性失效。
+- `buildSearchIndex:3519` 73.0 / `:3649` 28.6 / `:3598` 24.6 / `:3595` 21.7：正文支路的关键词拼接、`m.set(t, 1)`、`postings.get(t)`、以及 `buildCoocSyn` 的调用点。
+- `buildCoocSyn:3354` 51.3ms（函数头，内联归属）：层内还能少一次「词号 → 词」的换回（`coocShareHan(wById[a], wById[b])` 每对新词对都要两次数组读）。
+- `tokenizeSegs:1717` 24.6ms：`normalize("NFKC")`。**快速路已试过并否决**（`E:\Temp\cmp\nfb27.mjs`：A=normalize 17.4ms / B=跳过 12.2ms / C=先扫再决定 17.2ms，且 A 与 C 输出 0 差异——中文正文带全角标点时必须归一，扫一遍等于白扫）。
+- `sessionTopicTerms:2074` 16.8ms：`tid.get(t)` 仍是串键哈希，可考虑与 `buildSearchIndex` 的词号表共用一份（同一个词在全库只有一个号）。

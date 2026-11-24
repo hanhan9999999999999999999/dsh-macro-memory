@@ -463,6 +463,67 @@ const show = (m) => (m ? [...m].map(([k, v]) => k + '→' + v.join('/')).join(' 
       leaks.length === 0 && gotKeys === wantKeys,
       leaks.length ? leaks[0] : `键 ${table.size} 个 · 与尺子同集 ${gotKeys === wantKeys}`)
   }
+  // ── K10 项目层不再造 self Set / others 数组（0.6.27）─────────────────────────
+  // 老写法每条要造一只 `self = new Set(ws)` 与一只 `others = unionArr.filter(...)`：
+  // 一万条 = 两万只临时对象，而且 filter 每条都要把整个项目并集扫一遍。0.6.27 改成
+  // 先判「自己的词是否覆盖整个并集」（等价于老写法的 `others.length === 0 → continue`），
+  // 再按并集顺序走、用 `ws.indexOf(b) >= 0` 跳掉自己那几个词。
+  // 这一刀的风险全在**键序**上：并集顺序不能变、跳过的位置不能变、行什么时候建也不能变。
+  // 所以 K10a 钉形状，K10b 拿「一个词覆盖整个并集」「两条一模一样的词表」「子集」
+  // 「重复关键词」这些专门踩坑的夹具跟朴素尺子逐键逐值逐序对比。
+  {
+    const src = readFileSync(new URL('../vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+    const begin = src.indexOf('function buildCoocSyn(docs, n, opts) {')
+    const body = begin < 0 ? '' : src.slice(begin, src.indexOf('\nfunction buildCoocForms', begin))
+    const code = body.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+    const shape = {
+      noSelfSet: code.includes('const self = new Set(ws);') === false,
+      noFilter: code.includes('unionArr.filter(') === false && code.includes('const others = unionArr') === false,
+      onlySelfFirst: code.includes('let onlySelf = true;') &&
+        code.includes('if (ws.indexOf(unionArr[k]) < 0) {') &&
+        code.includes('if (onlySelf) continue;'),
+      skipSelfByIndexOf: code.includes('for (const b of unionArr) {') && code.includes('if (ws.indexOf(b) >= 0) continue;'),
+      unionKept: code.includes('const union = new Set();') && code.includes('const unionArr = [...union];'),
+    }
+    const miss = Object.keys(shape).filter((k) => !shape[k])
+
+    const FIXP = [
+      ['一条覆盖整个并集（onlySelf）', [
+        mk('k10a1', 'pz', '', ['甲乙', '丙丁']),
+        mk('k10a2', 'pz', '', ['丙丁', '戊己']),
+      ]],
+      ['先齐全集再退回子集', [
+        mk('k10b1', 'py', '', ['自测', '自检', '切片']),
+        mk('k10b2', 'py', '', ['自测', '自检']),
+        mk('k10b3', 'py', '', ['切片', '片段']),
+      ]],
+      ['两条一模一样的词表', [
+        mk('k10c1', 'px', '', ['苹果', '香蕉', '云朵']),
+        mk('k10c2', 'px', '', ['苹果', '香蕉', '云朵']),
+      ]],
+      ['重复关键词 + 单条项目 + 空词表混杂', [
+        mk('k10d1', 'pw', '', ['重复重复', '重复重复', '冷门甲']),
+        mk('k10d2', 'pw', '', ['冷门甲', '冷门乙']),
+        mk('k10d3', 'solo2', '', ['孤零零', '一条']),
+        mk('k10d4', 'pw', '', []),
+      ]],
+      ['顺序不同但集合相同的两条', [
+        mk('k10e1', 'pv', '', ['甲乙', '丙丁', '戊己']),
+        mk('k10e2', 'pv', '', ['戊己', '甲乙']),
+        mk('k10e3', 'pv', '', ['丙丁', '甲乙']),
+      ]],
+    ]
+    const pdiﬀ = []
+    for (const [label, docs] of FIXP) {
+      const a = dump(V.buildCoocSyn(docs, docs.length))
+      const b = dump(naiveCooc(docs))
+      if (a !== b) pdiﬀ.push(`${label}: 引擎 ${a} / 尺子 ${b}`)
+    }
+    ok('K10a 项目层不再为每条造 self Set 与 others 数组：先判 onlySelf、再按并集序 indexOf 跳自己',
+      miss.length === 0, miss.length === 0 ? '五处形状全在' : `缺 ${miss.join(',')}`)
+    ok('K10b 去掉 self Set 之后共现表仍与朴素尺子逐键逐值逐序相同（覆盖全集 / 子集 / 同词表 / 重复词 / 空表混排）',
+      pdiﬀ.length === 0, pdiﬀ.length ? pdiﬀ[0].slice(0, 300) : `${FIXP.length} 组夹具全同`)
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

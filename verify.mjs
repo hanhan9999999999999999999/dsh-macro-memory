@@ -4278,7 +4278,8 @@ function makeHostCtx() {
   )
   check(
     'as: 同 project 那层只认跨文档（本项目并集减掉自己）：同条内部的词对不重复计',
-    fMeowSrc.includes('const others = unionArr.filter((w) => !self.has(w));'),
+    (fMeowSrc.includes('const others = unionArr.filter((w) => !self.has(w));') ||
+      (fMeowSrc.includes('let onlySelf = true;') && fMeowSrc.includes('if (ws.indexOf(b) >= 0) continue;'))),
     'project-cross-doc',
   )
   check(
@@ -12776,9 +12777,13 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check('XA1 缓存上限是常量（4 张：多工作区够用，又不许无限长内存）', MX.includes('const SEARCH_INDEX_CACHE_MAX = 4;'))
   check(
-    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写；0.6.6 起关键词走 kwList，字符串形态也纳入签名；0.6.10 起折进条级哈希）',
-    MX.includes('put(String(content.length));') && MX.includes('put(content.slice(0, 40));') && MX.includes('put(content.slice(-40));') &&
-      MX.includes('put(String(kw[i] ?? \'\'));') && MX.includes('return h >>> 0;'),
+    'XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」（只看长度会漏掉等长改写；0.6.6 起关键词走 kwList，字符串形态也纳入签名；0.6.10 起折进条级哈希；0.6.27 起不再切临时串，改按区间混）',
+    (MX.includes('put(String(content.length));') || MX.includes('h = sigSep(sigMixStr(h, String(content.length)));')) &&
+      ((MX.includes('put(content.slice(0, 40));') && MX.includes('put(content.slice(-40));')) ||
+        (MX.includes('sigMixRange(h, content, 0, content.length < 40 ? content.length : 40)') &&
+          MX.includes('sigMixRange(h, content, content.length < 40 ? 0 : content.length - 40, content.length)'))) &&
+      (MX.includes('put(String(kw[i] ?? \'\'));') || MX.includes('h = sigMixStr(h, String(kw[i] ?? \'\'));')) &&
+      MX.includes('return h >>> 0;'),
   )
   check('XA3 倒排表能关（阴性对照要有开关，否则证明不了它真在起作用）', MX.includes('const postings = opts.inverted === false ? null : new Map();'))
   check('XA4 缓存能关（opts.cache === false 走现建现用）', MX.includes('if (opts.cache === false) return buildSearchIndex(docs, opts, key);'))
@@ -12971,8 +12976,9 @@ dt063: {
     `kwList ${kwFlatLine.includes('kwList(d)') ? 'ok' : 'miss'} / kwToks ${kwToksLine.includes('kwFlatArr') ? 'ok' : 'miss'} / kwSets ${kwSetsLine.includes('kwFlatArr') ? 'ok' : 'miss'}`,
   )
   check(
-    'DT066 索引签名也走 kwList：字符串词表被改写要让缓存失效，不许拿旧索引答新库（0.6.10 起在 sigDocHash 里逐词 put）',
-    /function sigDocHash\(d, kw\)/.test(eng) && eng.includes("put(String(kw[i] ?? ''));") &&
+    'DT066 索引签名也走 kwList：字符串词表被改写要让缓存失效，不许拿旧索引答新库（0.6.10 起在 sigDocHash 里逐词混算，0.6.27 起改走 sigMixStr）',
+    /function sigDocHash\(d, kw\)/.test(eng) &&
+      (eng.includes("put(String(kw[i] ?? ''));") || eng.includes("h = sigMixStr(h, String(kw[i] ?? ''));")) &&
       /const kw = kwList\(d\);/.test(eng) && !eng.includes("mix(Array.isArray(d?.keywords) ? d.keywords.join('\\u0001') : -1);"),
   )
   check(
@@ -13161,7 +13167,8 @@ dt063: {
   const engineSrc2 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const lazyHay = /const hayArr = new Array\(n\);/.test(engineSrc2) && /const hayAt = \(di\) =>/.test(engineSrc2) && /hayAt\n?/.test(engineSrc2)
   const idxHasHay = /hayAt\s*\n?\s*\};/.test(engineSrc2) || engineSrc2.includes('hayAt\n  };') || /coocForms,\s*\n\s*hayAt/.test(engineSrc2)
-  const projInSig = /put\(String\(d\?\.project \?\? ''\)\); sep\(\);/.test(engineSrc2) && /prev\.p === d\.project/.test(engineSrc2)
+  const projInSig = (/put\(String\(d\?\.project \?\? ''\)\); sep\(\);/.test(engineSrc2) ||
+    /h = sigSep\(sigMixStr\(h, String\(d\?\.project \?\? ''\)\)\);/.test(engineSrc2)) && /prev\.p === d\.project/.test(engineSrc2)
   const lazyStats = /const verbStats = \{ calls: 0, built: 0, reused: 0 \};/.test(engineSrc2)
   check(
     'VV071 引擎里是「懒建 + 随索引缓存 + 签名盯住 project」：hayArr/hayAt 在 buildSearchIndex 里、project 进 sigDocHash 与值比较、verbStats 记账',
@@ -13894,7 +13901,8 @@ dt063: {
     // [0.6.24] 切段循环从「先 Array.from 成码点数组、再按下标比」改成在归一后的字符串上按下标走
     // （`cps[i]` / `clsCode(cps[j]) === cls` 随之消失）。这里守的仍是一件事：**段边界用数值比较推进**，
     // 不是字符串比较、也不是再调 classify；切词那段的具体形状由 OR084 的 `切词不再造字符数组` 兜。
-    切段数值比较: tokBodyL.includes('const cls = clsCode(') && tokBodyL.includes('if (cls === CLS_SKIP) {') &&
+    切段数值比较: (tokBodyL.includes('const cls = clsCode(') || tokBodyL.includes('const cls = clsAt(s, i);')) &&
+      tokBodyL.includes('if (cls === CLS_SKIP) {') &&
       tokBodyL.includes('=== cls)') && tokBodyL.includes('if (cls === CLS_CJK) {'),
     不再走字符串: tokBodyL !== '' && tokBodyL.includes('classify(') === false,
   }
@@ -14117,14 +14125,15 @@ dt063: {
     项目层提行: coocD.includes('let rowA = projPairs.get(a);') &&
       coocD.includes('} else rowA.set(b, (rowA.get(b) ?? 0) + ww);') &&
       coocD.includes('bumpIn(projPairs, b, a, ww);'),
-    会话主题一趟算完: sessD.includes('const tfBySess = /* @__PURE__ */ new Map();') &&
-      sessD.includes('const c = tf.get(t);') && sessD.includes('} else tf.set(t, c + 1);'),
+    会话主题一趟算完: sessD.includes('let id = tid.get(t);') && sessD.includes('if (cnt[id] === 0) {') &&
+      sessD.includes('cnt[id] += 1;') && sessD.includes('for (let k = 0; k < touched.length; k++) cnt[touched[k]] = 0;'),
     每会话不再造Set: sessD.includes('new Set()') === false && sessD.includes('for (const t of seen) sessDf.set') === false,
-    排名口径字面不变: sessD.includes('f * Math.log(1 + total / (sessDf.get(t) ?? 1))'),
+    排名口径字面不变: sessD.includes('cs[k] * Math.log(1 + total / sdf[ids[k]])') &&
+      sessD.includes('if (t.length < 2 || EN_STOPWORDS.has(t)) continue;'),
   }
   const missD = Object.keys(partsD).filter((k) => !partsD[k])
   check(
-    'OR083 引擎里共现层不再白跑：共享汉字按词对记忆一次、每条的词表只解一遍、项目层内层提行；会话主题的 tf 与跨会话数一趟算完、每会话不再造 Set',
+    'OR083 引擎里共现层不再白跑：共享汉字按词对记忆一次、每条的词表只解一遍、项目层内层提行；会话主题的词号计数一趟走完、第二轮才按最终 sdf 定分、每会话不再造 Set',
     missD.length === 0,
     missD.length === 0 ? `${Object.keys(partsD).length} 件在位` : `缺 ${missD.join(' / ')}`,
   )
@@ -14226,8 +14235,8 @@ dt063: {
       (iCode.match(/df\.set\(t, \(df\.get\(t\) \?\? 0\) \+ 1\)/g) ?? []).length === 2,
     切词不再造字符数组: segCode.includes('Array.from(') === false && segCode.includes('const s = text.normalize("NFKC");') &&
       segCode.includes('const w0 = s.codePointAt(i) > 65535 ? 2 : 1;') && segCode.includes('out.push(s.slice(ps, k + w));'),
-    会话主题借tf判重: sessCode.includes('const tf = /* @__PURE__ */ new Map();') && sessCode.includes('const c = tf.get(t);') &&
-      sessCode.includes('if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);') && sessCode.includes('stamp') === false,
+    会话主题借词号判重: sessCode.includes('let id = tid.get(t);') && sessCode.includes('if (cnt[id] === 0) {') &&
+      sessCode.includes('if (idxs.length < SESS_TOPIC_MIN) continue;') && sessCode.includes('stamp') === false,
   }
   const missE = Object.keys(partsE).filter((k) => !partsE[k])
   check(
@@ -14538,6 +14547,184 @@ dt063: {
   const vS17 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS17 = vS17.length === 3 ? vS17[0] * 10000 + vS17[1] * 100 + vS17[2] : 0
   check('OR086 版本号不低于 0.6.26（后续补丁不必回头改这一条）', vNumS17 >= 626, vS17.join('.'))
+}
+
+// [macro-fusion 0.6.27] 建索引固定开销三刀（按下标分类 / 签名混算提成模块级 / 会话主题换词号两轮）
+// + 共现项目层去 self Set。选材与读数见 DESIGN 222、INTERNAL 9.226。
+{
+  const readF27 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const ENGS27 = readF27('./vendor/meow-memory/lib/index.js')
+  const PROBE_COOC_S27 = readF27('./tools/probe-cooc.mjs')
+  const PROBE_COLD_S27 = readF27('./tools/probe-cold.mjs')
+  const CHECK_ALL_S27 = readF27('./tools/check-all.mjs')
+  const labels27 = PROBE_COLD_S27.includes('C9 按下标分类') &&
+    PROBE_COOC_S27.includes('K10a ') && PROBE_COOC_S27.includes('K10b ')
+  check(
+    'OR087 探针在位：probe-cold 的 C9（按下标分类）与 probe-cooc 的 K10（项目层不再造 self Set），两支都挂线',
+    labels27 && CHECK_ALL_S27.includes("'tools/probe-cooc.mjs'") && CHECK_ALL_S27.includes("'tools/probe-cold.mjs'"),
+    `标签 ${labels27}`,
+  )
+
+  const stripS27 = (s) => s.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+  const fn27 = (head) => {
+    const i = ENGS27.indexOf(head)
+    return i < 0 ? '' : stripS27(ENGS27.slice(i, ENGS27.indexOf('\n}\n', i)))
+  }
+  const atCode = fn27('function clsAt(s, i) {')
+  const tokCode = stripS27(ENGS27.slice(ENGS27.indexOf('function tokenizeSegs(text) {'), ENGS27.indexOf('function finishToks(out) {')))
+  const shape27 = {
+    按下标分类: atCode.includes('var c = s.charCodeAt(i);') &&
+      atCode.includes('if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {') &&
+      atCode.includes('if (d >= 0xdc00 && d <= 0xdfff) return clsCode(s.slice(i, i + 2));') &&
+      atCode.includes('return t[c];'),
+    切词不再造单字符: tokCode.includes('const cls = clsAt(s, i);') &&
+      tokCode.includes('while (j < nS && clsAt(s, j) === cls) {') &&
+      tokCode.includes('s[i]') === false && tokCode.includes('clsCode(') === false,
+  }
+  const miss27 = Object.keys(shape27).filter((k) => !shape27[k])
+  check('OR087 引擎里按下标分类：clsAt 只读 charCodeAt 查同一张 BMP 表、只有成对代理项才走码点路径，切词内层两处都用它',
+    miss27.length === 0, miss27.length === 0 ? '两处全在' : `缺 ${miss27.join(',')}`)
+
+  const sigCode = fn27('function sigDocHash(d, kw) {')
+  const shapeSig = {
+    三件提到模块级: ENGS27.includes('function sigMixStr(h, s) {') &&
+      ENGS27.includes('function sigMixRange(h, s, from, to) {') && ENGS27.includes('function sigSep(h) {'),
+    不再现造闭包: sigCode.includes('const put =') === false && sigCode.includes('const sep =') === false,
+    首尾按区间混: sigCode.includes('h = sigSep(sigMixRange(h, content, 0, content.length < 40 ? content.length : 40));') &&
+      sigCode.includes('h = sigSep(sigMixRange(h, content, content.length < 40 ? 0 : content.length - 40, content.length));'),
+    不再切临时串: sigCode.includes('content.slice(') === false,
+  }
+  const missSig = Object.keys(shapeSig).filter((k) => !shapeSig[k])
+  check('OR087 引擎里签名混算：FNV 提成三只模块级纯函数、首尾 40 字按区间直接混（不再每条造两只闭包、不再切两只临时串）',
+    missSig.length === 0, missSig.length === 0 ? '四处全在' : `缺 ${missSig.join(',')}`)
+
+  const sttCode = fn27('function sessionTopicTerms(docs, docToks) {')
+  const iOut = sttCode.indexOf('const out = ')
+  const shapeStt = {
+    词号表: sttCode.includes('const tid = /* @__PURE__ */ new Map();') && sttCode.includes('const tById = [];'),
+    下标数组记数: sttCode.includes('const cnt = [];') && sttCode.includes('const sdf = [];') &&
+      sttCode.includes('if (cnt[id] === 0) {') && sttCode.includes('sdf[id] += 1;') && sttCode.includes('cnt[id] += 1;'),
+    复位只碰用过的: sttCode.includes('for (let k = 0; k < touched.length; k++) cnt[touched[k]] = 0;') &&
+      sttCode.includes('touched.length = 0;'),
+    两轮定分: iOut > 0 && sttCode.indexOf('const ids = touched.slice();') < iOut &&
+      sttCode.indexOf('cs[k] * Math.log(1 + total / sdf[ids[k]])') > iOut,
+    不再每词两次串哈希: sttCode.includes('tf.get(') === false && sttCode.includes('tf.set(') === false,
+  }
+  const missStt = Object.keys(shapeStt).filter((k) => !shapeStt[k])
+  check('OR087 引擎里会话主题：词 → 整数词号只查一次表、计数与跨会话数落在下标数组上、复位只碰上一圈用过的词号、第二轮按最终 sdf 定分',
+    missStt.length === 0, missStt.length === 0 ? '五处全在' : `缺 ${missStt.join(',')}`)
+
+  const ccb = ENGS27.indexOf('function buildCoocSyn(docs, n, opts) {')
+  const coocCode27 = ccb < 0 ? '' : stripS27(ENGS27.slice(ccb, ENGS27.indexOf('\nfunction buildCoocForms', ccb)))
+  const shapeProj = {
+    不再造self集: coocCode27.includes('const self = new Set(ws);') === false,
+    不再filter并集: coocCode27.includes('unionArr.filter(') === false,
+    先判全覆盖: coocCode27.includes('let onlySelf = true;') &&
+      coocCode27.includes('if (ws.indexOf(unionArr[k]) < 0) {') && coocCode27.includes('if (onlySelf) continue;'),
+    按并集序跳自己: coocCode27.includes('for (const b of unionArr) {') && coocCode27.includes('if (ws.indexOf(b) >= 0) continue;'),
+  }
+  const missProj = Object.keys(shapeProj).filter((k) => !shapeProj[k])
+  check('OR087 引擎里项目层：不再为每条造 self Set 与 others 数组，先判 onlySelf 再按并集序 indexOf 跳自己',
+    missProj.length === 0, missProj.length === 0 ? '四处全在' : `缺 ${missProj.join(',')}`)
+
+  // 签名口径不变：头、尾各改一个字都换签名；等长改在正中间仍是同一张库（0.2.153 那版就这样，
+  // 这一版只是把算术搬出闭包，不许顺手把口径也换了）。
+  let sigOk = false
+  let sigDetail = ''
+  try {
+    const Mv27 = (await import('./vendor/meow-memory/lib/index.js'))
+    const mkDoc = (id, content) => ({ id, project: 'pz', title: 't', content, keywords: [], level: 'fact',
+      importance: 1, created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+      last_accessed_at: '2026-11-20T00:00:00Z', status: 'active' })
+    // 正文要长过「头 40 + 尾 40」才谈得上「中间改」——200 个互不相同的汉字，正中间是第 100 位。
+    const long27 = Array.from({ length: 200 }, (_, i) => String.fromCharCode(0x4e00 + i)).join('')
+    const other27 = String.fromCharCode(0x5b00)
+    const sigOf = (docs) => { Mv27.clearSearchIndexCache(); return Mv27.searchIndexOf(docs, {}).__sig }
+    const s0 = sigOf([mkDoc('s1', long27)])
+    const headDiff = sigOf([mkDoc('s1', other27 + long27.slice(1))])
+    const tailDiff = sigOf([mkDoc('s1', long27.slice(0, -1) + other27)])
+    const midSame = sigOf([mkDoc('s1', long27.slice(0, 100) + other27 + long27.slice(101))])
+    sigOk = s0 !== headDiff && s0 !== tailDiff && s0 === midSame && String(s0).length > 2
+    sigDetail = `头改换 ${s0 !== headDiff} · 尾改换 ${s0 !== tailDiff} · 正中等长改写同签名 ${s0 === midSame}`
+  } catch (e) {
+    sigDetail = String(e && e.message)
+  }
+  check('OR087 进程内：签名口径没动——头 40 字与尾 40 字各改一个字都换签名，正中等长的改写仍算同一张库', sigOk, sigDetail)
+
+  // 会话主题两轮：与「先数完全部会话再定分」的朴素尺子逐会话逐词逐序相同。
+  // 夹具里全是中文二元组（没有英文停用词），所以尺子不必再管停用词那一层。
+  let sttOk = false
+  let sttDetail = ''
+  try {
+    const Mv27 = (await import('./vendor/meow-memory/lib/index.js'))
+    const mkS = (id, sess, content) => ({ id, project: 'ps', title: '', content, keywords: [], level: 'fact',
+      importance: 1, created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+      last_accessed_at: '2026-11-20T00:00:00Z', status: 'active', source_session: sess })
+    const docs27 = [
+      mkS('t1', 'sa', '自检 基线 收敛 三趟'),
+      mkS('t2', 'sa', '自检 基线 又跑 收敛 了'),
+      mkS('t3', 'sa', '基线 四趟 收敛 稳定'),
+      mkS('t4', 'sa', '索引 缓存 热 起来'),
+      mkS('t5', 'sb', '锚点 实体 先验 扩展'),
+      mkS('t6', 'sb', '锚点 分档 阈值 噪声'),
+      mkS('t7', 'sb', '噪声 地板 剔词 空回'),
+      mkS('t8', 'sc', '孤零零 一条 记录'),
+    ]
+    Mv27.clearSearchIndexCache()
+    const off27 = Mv27.searchIndexOf(docs27, { sessionTopic: false })
+    Mv27.clearSearchIndexCache()
+    const on27 = Mv27.searchIndexOf(docs27, { sessionTopic: true })
+    const tails = docs27.map((_, i) => (on27.docToks[i] ?? []).slice((off27.docToks[i] ?? []).length))
+    // 尺子：老写法——每个会话一张 tf、跨会话一张 sessDf、够 3 条的会话留整张 Map，最后统一打分
+    const bySess = new Map()
+    docs27.forEach((d, i) => {
+      const s = d.source_session
+      if (!s) return
+      if (!bySess.has(s)) bySess.set(s, [])
+      bySess.get(s).push(i)
+    })
+    const total27 = bySess.size
+    const sessDf = new Map()
+    const kept = new Map()
+    for (const [s, idxs] of bySess) {
+      const tf = new Map()
+      for (const i of idxs) for (const t of off27.docToks[i] ?? []) tf.set(t, (tf.get(t) ?? 0) + 1)
+      for (const [t] of tf) sessDf.set(t, (sessDf.get(t) ?? 0) + 1)
+      if (idxs.length >= 3) kept.set(s, [...tf])
+    }
+    const want27 = new Map()
+    for (const [s, pairs] of kept) {
+      const ranked = pairs.filter(([t]) => t.length >= 2).map(([t, c]) => [t, c * Math.log(1 + total27 / sessDf.get(t))])
+      ranked.sort((a, b) => b[1] - a[1])
+      const words = ranked.slice(0, 12).map(([t]) => t)
+      if (words.length > 0) want27.set(s, words)
+    }
+    const got27 = new Map()
+    for (const [s, idxs] of bySess) {
+      const i0 = idxs[0]
+      if ((tails[i0] ?? []).length > 0) got27.set(s, tails[i0])
+    }
+    const sameSess = JSON.stringify([...want27]) === JSON.stringify([...got27])
+    const consistent = bySess.get('sa').every((i) => JSON.stringify(tails[i]) === JSON.stringify(tails[bySess.get('sa')[0]]))
+    const shortSess = (tails[7] ?? []).length === 0
+    sttOk = sameSess && consistent && shortSess
+    sttDetail = `会话 ${got27.size} 个 · 与尺子逐会话逐词逐序相同 ${sameSess} · 同会话各条一致 ${consistent} · 不足 3 条的会话不加 ${shortSess}`
+  } catch (e) {
+    sttDetail = String(e && e.message)
+  }
+  check('OR087 进程内：会话主题的两轮实现与「先数完全部会话再定分」的朴素尺子逐会话逐词逐序相同（不足 3 条的会话一条都不加）',
+    sttOk, sttDetail)
+
+  check(
+    'OR087 文档在位：INTERNAL 9.226 写了「按下标分类」，README 写了「不再为每个码点造字符串」，DESIGN 有 ## 222.，PLAN 有 0.6.27',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.226 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('不再为每个码点造字符串') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 222. ') &&
+      /0\.6\.27/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS18 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS18 = vS18.length === 3 ? vS18[0] * 10000 + vS18[1] * 100 + vS18[2] : 0
+  check('OR087 版本号不低于 0.6.27（后续补丁不必回头改这一条）', vNumS18 >= 627, vS18.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

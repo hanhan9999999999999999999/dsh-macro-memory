@@ -105,7 +105,8 @@ function segsOf(text, cls) {
     wrapper: /function classify\(cp\) \{\n {2}var k = clsCode\(cp\);/.test(seg),
     // [0.6.24] 切段循环从「先 Array.from 成码点数组、再按下标比」改成在归一后的字符串上按下标走，
     // 形状关键词随之从 `cps[i]` / `nCp` 变成 `s.codePointAt(i)` / `nS`；守的仍是「数值比较、不调 classify」。
-    tokNumeric: tokCode.includes('const cls = clsCode(') && tokCode.includes('if (cls === CLS_SKIP) {') && tokCode.includes('=== cls)') && tokCode.includes('if (cls === CLS_CJK) {'),
+    tokNumeric: (tokCode.includes('const cls = clsCode(') || tokCode.includes('const cls = clsAt(s, i);')) &&
+      tokCode.includes('if (cls === CLS_SKIP) {') && tokCode.includes('=== cls)') && tokCode.includes('if (cls === CLS_CJK) {'),
     tokNoRegex: tokCode.includes('classify(') === false,
     tokWrap: wrapperBody.includes('return finishToks(tokenizeSegs(text));'),
     strIndex: tokCode.includes('const nS = s.length;') && tokCode.includes('Array.from(') === false,

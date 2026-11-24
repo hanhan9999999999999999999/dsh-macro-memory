@@ -10,8 +10,8 @@
 
 | 项 | 读数 | 日期 | 版本 / commit | 复核命令 |
 |---|---|---|---|---|
-| 健康基线 | 50 支 suite / **3,845 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 14:0x | 0.6.26 | `node tools/check-all.mjs` |
-| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 14:0x | 0.6.26 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
+| 健康基线 | 50 支 suite / **3,857 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 14:2x | 0.6.27 | `node tools/check-all.mjs` |
+| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 14:2x | 0.6.27 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
 | 库变大后的照抄召回（新尺子） | 同一批 52 问、真库快照 660 条 active：照抄 **hit@1 0.895 → 0.921**、MRR 0.934 → 0.947；换说法 **0.333 → 0.417**、MRR 0.528 → 0.569；时间锚 0.500 不动；**救回 2 / 误伤 0 / 移位 0**（逐题只有两条 #2→#1）。关掉即回 0.5.0 逐位相同（52/52）。同尺横比 v0.3.0 / v0.4.0 / v0.5.0 三档逐位相同、只有本节双升 | 2026-11-23 22:00 | 0.6.0 · meow 补丁（局部 idf，`adaptiveIdf` 产品路径默认开） | `node tools/probe-idf.mjs`（D1–D12 十四条；读数见 `docs/PLAN-0.6.md` §1） |
 | 换场景适应力（新尺子） | 5 个陌生领域（医学/法律/园艺/天文/财务）× 12 条 + 10 条换说法问句：换说法 **hit@3 0.40 → 0.80**、hit@1 0.00 不动、MRR 0.342；两遍合并**第一名改判 0 题**；关共现自学习 hit@3 掉回 0.30；混库 60 条与单域持平；同词 hit@1 100% | 2026-11-22 22:40 | 0.5.0 · meow 补丁 `[macro-fusion 0.5.0 · P1]` | `node tools/probe-adapt.mjs`（A0–A5 九条） |
 | 版本与接口面 | 0.3.0，接口面冻结 | 2026-11-22 | `2c029b0`（`chore(baselines): 0.3.0 · 24 suites / 3323 assertions`） | `git log --oneline -1` |
@@ -285,3 +285,21 @@ Select-String -Path README.md,docs\*.md -Pattern "71\.95|0\.7195"
 - `词表只解一遍`：`docs.map((d) => coocWordsOf(d))` → `docs.map((d) => coocWordsOf(d).map(idOf))`，`coocWordsOf(` 仍只出现一次。
 
 本版没有新增探针文件，也没有删探针；支数仍是 **50**。质量口径与上一版逐位相同：`colddiff26` 462 项 0 不一致、`tokdiff26` 15,810 项 0 不一致。
+
+### 关于「3,857」的来路
+
+从 0.6.26 的 3,845 到 3,857，净 +12，全部是可执行断言，没有一条是「文档里写了个数」：
+
+- `tools/probe-cold.mjs` **+1**：C9（`clsAt` 按下标分类——与「按码点跑 Unicode 正则」的尺子逐下标同值，15 串 · 245 下标 · 13 码点对拍；另钉切词里 `s[i]` 与内层 `clsCode(` 都不再出现）。
+- `tools/probe-cooc.mjs` **+2**：K10a（项目层五处形状：无 `self` Set、无 `unionArr.filter`、先判 `onlySelf`、按并集序 `indexOf` 跳过、并集构造照旧）、K10b（五组夹具与朴素尺子逐键逐值逐序相同）。
+- `verify.mjs` **+9**：`OR087` 九条——探针在位 / 引擎里按下标分类 / 签名混算三件模块级 / 会话主题词号两轮 / 项目层 onlySelf / 进程内签名口径（头尾改字换签名、正中等长改写同签名）/ 进程内会话主题与朴素两趟尺子逐会话逐词逐序相同 / 文档在位（INTERNAL 9.226、DESIGN 222、README、PLAN）/ 版本号 ≥ 0.6.27。
+
+跟着源码换字面量、条数不变的老判据（换的是形状，不是口径）：
+
+- `XA2 指纹取「长度 + 头 40 + 尾 40 + 标题 + 关键词 + 会话」`：`put(content.slice(0, 40))` / `put(content.slice(-40))` → `sigMixRange(h, content, 0, …)` / `sigMixRange(h, content, … - 40, content.length)`；`put(String(...))` → `h = sigMixStr(h, String(...))`。
+- `DT066 索引签名也走 kwList` 与 `VV071 project 进签名`：同上，两处都改成「老写法或新写法任一在位」。
+- `as: 同 project 那层只认跨文档`：`const others = unionArr.filter((w) => !self.has(w))` → 老写法或 `let onlySelf = true;` + `if (ws.indexOf(b) >= 0) continue;` 任一在位（0.6.27 把「造一份别人」换成「按并集序跳过自己」）。
+- `OR081 切段数值比较` 与 `tools/probe-lex.mjs` 的 `tokNumeric`：`const cls = clsCode(...)` → 老写法或 `const cls = clsAt(s, i);` 任一在位。
+- `OR083 会话主题一趟算完 / 排名口径字面不变` 与 `OR084 会话主题借词号判重`：`tf.get` / `tfBySess` 的形状 → `let id = tid.get(t);` / `if (cnt[id] === 0) {` / `cs[k] * Math.log(1 + total / sdf[ids[k]])`。
+
+本版没有新增探针文件，也没有删探针；支数仍是 **50**。质量口径与上一版逐位相同：`colddiff27` 462 项 0 不一致、`tokdiff27` 15,810 项 0 不一致。

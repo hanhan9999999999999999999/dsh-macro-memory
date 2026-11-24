@@ -1649,6 +1649,20 @@ function buildClsBmp() {
   }
   return t;
 }
+// [macro-fusion 0.6.27] 按下标直接分类，不再为「一个码点」造字符串：
+// `s[i]` 每次调用都会造一只单字符字符串对象，星外字符还要 `s.slice(i, i + 2)`；
+// 一万条正文 × 每条几十个码点 × 每个码点被看一眼，全落成堆上的临时串。
+// 这里只读 `charCodeAt`，BMP 直接查同一张表；只有「高位代理 + 紧跟低位代理」才走
+// 原来的码点路径（`clsCode(s.slice(i, i + 2))`），口径与逐字符版逐位相同。
+function clsAt(s, i) {
+  var c = s.charCodeAt(i);
+  if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+    var d = s.charCodeAt(i + 1);
+    if (d >= 0xdc00 && d <= 0xdfff) return clsCode(s.slice(i, i + 2));
+  }
+  var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;
+  return t[c];
+}
 function clsCode(cp) {
   if (cp.length === 1) {
     var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;
@@ -1705,14 +1719,16 @@ function tokenizeSegs(text) {
   const nS = s.length;
   let i = 0;
   while (i < nS) {
+    // [macro-fusion 0.6.27] 每个位置只算一次码点宽度、分类只按下标取表（见 clsAt）：
+    // 老写法同一个字符要 `codePointAt` 两三遍、分类时还要 `s[i]` / `s.slice(i, i + 2)` 造串。
     const w0 = s.codePointAt(i) > 65535 ? 2 : 1;
-    const cls = clsCode(w0 === 1 ? s[i] : s.slice(i, i + 2));
+    const cls = clsAt(s, i);
     if (cls === CLS_SKIP) {
       i += w0;
       continue;
     }
     let j = i + w0;
-    while (j < nS && clsCode(s.codePointAt(j) > 65535 ? s.slice(j, j + 2) : s[j]) === cls) {
+    while (j < nS && clsAt(s, j) === cls) {
       j += s.codePointAt(j) > 65535 ? 2 : 1;
     }
     if (cls === CLS_CJK) {
@@ -2032,36 +2048,65 @@ function sessionTopicTerms(docs, docToks) {
   }
   if (bySess.size === 0) return null;
   const total = bySess.size;
-  const sessDf = /* @__PURE__ */ new Map();
-  const tfBySess = /* @__PURE__ */ new Map();
-  // [macro-fusion 0.6.23] 一趟走完两件事：同一条里的词频（tf）与「这个词跨了几个会话」（sessDf）
-  // 吃的是同一批 token，原来为 sessDf 单独走一遍全部 token、还每个会话造一个 Set。
-  // 判重改用一张带会话序号的戳表：`stamp.get(t) !== ord` 就等于「这个词这个会话第一次见」，
-  // 一个 Map 顶掉 N 个 Set，逐值结果与老写法相同（sessDf 的键集合、每个词的会话数都不变）。
-  // [macro-fusion 0.6.24] 判重不再另立一张戳表：tf 每跨一个会话就是新的，
-  // `tf.get(t) === void 0` 本身就等于「这个词在这个会话第一次见」——一次查找兼两用，
-  // 每个 token 少付一次哈希。（不足门槛的会话只借 tf 当判重账、不登记进 tfBySess。）
+  // [macro-fusion 0.6.27] 这一趟每个 token 只查一次表：词 → 整数词号（第一次见才登记），
+  // 计数与「跨了几个会话」都落在按词号下标的普通数组上。老写法每个 token 要付
+  // `tf.get` + `tf.set` 两次字符串键哈希（真库里几千个词、十万级 token），现在一次。
+  // 计数那一趟算不出分数：`sdf` 是「这个词一共跨了几个会话」，得等全部会话都走完才定。
+  // 所以够门槛的会话只把「本会话的触碰序 + 计数」拷一份留着（老写法留的是整张 Map，
+  // 拷的规模一样、但更省对象），第二轮再按最终 sdf 打分。
+  // 排名仍按「本会话第一次触碰」的顺序（等于老写法里 tf 的插入序），并列的先后不变。
+  const tid = /* @__PURE__ */ new Map();
+  const tById = [];
+  const cnt = [];
+  const sdf = [];
+  const touched = [];
+  const sessKeys = [];
+  const sessIds = [];
+  const sessCnt = [];
   for (const [sess, idxs] of bySess) {
-    const tf = /* @__PURE__ */ new Map();
+    // 复位只碰上一圈真的用过的那些词号，不扫全表。
+    for (let k = 0; k < touched.length; k++) cnt[touched[k]] = 0;
+    touched.length = 0;
     for (const i of idxs) {
       const toks = docToks[i];
       for (let k = 0; k < toks.length; k++) {
         const t = toks[k];
-        const c = tf.get(t);
-        if (c === void 0) {
-          tf.set(t, 1);
-          sessDf.set(t, (sessDf.get(t) ?? 0) + 1);
-        } else tf.set(t, c + 1);
+        let id = tid.get(t);
+        if (id === void 0) {
+          id = tById.length;
+          tid.set(t, id);
+          tById.push(t);
+          cnt.push(0);
+          sdf.push(0);
+        }
+        if (cnt[id] === 0) {
+          sdf[id] += 1;
+          touched.push(id);
+        }
+        cnt[id] += 1;
       }
     }
-    if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);
+    if (idxs.length < SESS_TOPIC_MIN) continue;
+    const ids = touched.slice();
+    const cs = new Array(ids.length);
+    for (let k = 0; k < ids.length; k++) cs[k] = cnt[ids[k]];
+    sessKeys.push(sess);
+    sessIds.push(ids);
+    sessCnt.push(cs);
   }
   const out = /* @__PURE__ */ new Map();
-  for (const [sess, idxs] of bySess) {
-    const tf = tfBySess.get(sess);
-    if (tf === void 0) continue;
-    const ranked = [...tf.entries()].filter(([t]) => t.length >= 2 && !EN_STOPWORDS.has(t)).map(([t, f]) => [t, f * Math.log(1 + total / (sessDf.get(t) ?? 1))]).sort((a, b) => b[1] - a[1]).slice(0, SESS_TOPIC_TERMS).map(([t]) => t);
-    if (ranked.length > 0) out.set(sess, ranked);
+  for (let si = 0; si < sessKeys.length; si++) {
+    const ids = sessIds[si];
+    const cs = sessCnt[si];
+    const ranked = [];
+    for (let k = 0; k < ids.length; k++) {
+      const t = tById[ids[k]];
+      if (t.length < 2 || EN_STOPWORDS.has(t)) continue;
+      ranked.push([t, cs[k] * Math.log(1 + total / sdf[ids[k]])]);
+    }
+    ranked.sort((a, b) => b[1] - a[1]);
+    const words = ranked.slice(0, SESS_TOPIC_TERMS).map(([t]) => t);
+    if (words.length > 0) out.set(sessKeys[si], words);
   }
   return out.size > 0 ? out : null;
 }
@@ -3052,41 +3097,52 @@ function sigPrim(v) {
   const t = typeof v;
   return v === null || v === undefined || t === 'string' || t === 'number' || t === 'boolean';
 }
+// [macro-fusion 0.6.27] 混算提成模块级纯函数、首尾各 40 字按区间直接混：
+// 老写法每条都要现造两只闭包（put / sep），content 的首尾还要各 `slice` 出一只临时串。
+// 一万条 = 两万只闭包 + 两万只临时串，全落在 GC 账上。算术一位没动（FNV 同乘同异或）。
+function sigMixStr(h, s) {
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
+function sigMixRange(h, s, from, to) {
+  for (let i = from; i < to; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
+function sigSep(h) {
+  h ^= 0x7c;
+  return Math.imul(h, 16777619) >>> 0;
+}
 // 条级哈希：字段、顺序、分隔符与 0.2.153 那版逐字相同（探针拿参考实现横比），只是不再共享滚动值。
 function sigDocHash(d, kw) {
   let h = 2166136261 >>> 0;
-  const put = (s) => {
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-  };
-  const sep = () => {
-    h ^= 0x7c;
-    h = Math.imul(h, 16777619) >>> 0;
-  };
   // 只看长度会把「同一秒内等长改写」当成同一张库：字数一样、头尾一动就漏。
   // 取「长度 + 头 40 + 尾 40 + 标题全文 + 关键词全文 + 会话」——比全量哈希便宜一个量级，
   // 又把「等长改写」压到几乎不可能（真要撞上，得同时保住字数、首尾 80 字与标题关键词）。
-  put(String(d?.id ?? '')); sep();
-  put(String(d?.updated_at ?? d?.updatedAt ?? '')); sep();
+  h = sigSep(sigMixStr(h, String(d?.id ?? '')));
+  h = sigSep(sigMixStr(h, String(d?.updated_at ?? d?.updatedAt ?? '')));
   const content = String(d?.content ?? '');
-  put(String(content.length)); sep();
-  put(content.slice(0, 40)); sep();
-  put(content.slice(-40)); sep();
-  put(String(d?.title ?? '')); sep();
+  h = sigSep(sigMixStr(h, String(content.length)));
+  h = sigSep(sigMixRange(h, content, 0, content.length < 40 ? content.length : 40));
+  h = sigSep(sigMixRange(h, content, content.length < 40 ? 0 : content.length - 40, content.length));
+  h = sigSep(sigMixStr(h, String(d?.title ?? '')));
   // [macro-fusion 0.6.6] 关键词也走 kwList：字符串形态的词表换了内容同样是「另一张库」，
   // 只认数组会让「逗号串被改写」漏过签名、拿旧索引答新库。
   for (let i = 0; i < kw.length; i++) {
-    if (i > 0) put('\u0001');
-    put(String(kw[i] ?? ''));
+    if (i > 0) h = sigMixStr(h, '\u0001');
+    h = sigMixStr(h, String(kw[i] ?? ''));
   }
-  sep();
-  put(String(d?.source_session ?? '')); sep();
+  h = sigSep(h);
+  h = sigSep(sigMixStr(h, String(d?.source_session ?? '')));
   // [macro-fusion 0.6.11] project 也进签名：它不进切词表，但进「原样匹配」那份 haystack。
   // 索引里存了 haystack 之后，project 一改而签名不变，就等于拿旧 haystack 答新库
   // （探针 `probe-verbatim` V4 就是拿这一条当红样本：去掉这行立刻红）。
-  put(String(d?.project ?? '')); sep();
+  h = sigSep(sigMixStr(h, String(d?.project ?? '')));
   return h >>> 0;
 }
 function sigKwSame(raw, store) {
@@ -3391,16 +3447,28 @@ function buildCoocSyn(docs, n, opts) {
     for (const ws of list) for (const w of ws) union.add(w);
     const unionArr = [...union];
     for (const ws of list) {
-      const self = new Set(ws);
-      const others = unionArr.filter((w) => !self.has(w));
-      if (others.length === 0) continue;
+      // [macro-fusion 0.6.27] 不再为每条造一只 `self` Set 与一只 `others` 数组：
+      // 老写法 10000 条就是 20000 只临时对象，而且 `unionArr.filter(...)` 每条都要把整个
+      // 并集扫一遍（真库里同一项目几百个词，扫一万遍就是几百万次空跑）。
+      // 现在直接按并集的顺序走、用 `ws.indexOf(b)` 跳掉自己那几个词——并集顺序不变，
+      // 跳过的位置也不变，所以写进表里的键序与老写法逐位相同。
+      // 顺带把「自己那几个词恰好覆盖整个并集」这一种情况先判掉，与老写法的 `continue` 同义。
+      let onlySelf = true;
+      for (let k = 0; k < unionArr.length; k++) {
+        if (ws.indexOf(unionArr[k]) < 0) {
+          onlySelf = false;
+          break;
+        }
+      }
+      if (onlySelf) continue;
       for (const a of ws) {
-        // [macro-fusion 0.6.23] a 这一行在这一圈里要被写 others.length 次（真库几十次），
+        // [macro-fusion 0.6.23] a 这一行在这一圈里要被写 unionArr.length 次（真库几十次），
         // 回表取行只该取一次；对称的那一行（b）每次都不同，照旧回表。
         // 建行的时机不变（第一次真要写这一行时才建），所以键的插入序与老写法逐位相同。
         let rowA = projPairs.get(a);
         const rowH = hanRow(a);
-        for (const b of others) {
+        for (const b of unionArr) {
+          if (ws.indexOf(b) >= 0) continue;
           const ww = hanHas(rowH, a, b) ? Math.min(COOC_W_PROJ, COOC_SHARE_HAN_W) : COOC_W_PROJ;
           if (rowA === void 0) {
             rowA = /* @__PURE__ */ new Map([[b, ww]]);

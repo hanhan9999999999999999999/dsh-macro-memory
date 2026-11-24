@@ -51,7 +51,7 @@ const segOf = (src) => {
 const load = (src) => {
   const seg = segOf(src);
   if (seg === '') return null;
-  return new Function(`${seg}\nreturn { classify, clsCode, tokenizeSegs, finishToks, tokenize, isMostlyLatin, kwList };`)();
+  return new Function(`${seg}\nreturn { classify, clsCode, clsAt, tokenizeSegs, finishToks, tokenize, isMostlyLatin, kwList };`)();
 };
 const LEX = load(ENGINE);
 
@@ -404,6 +404,65 @@ const DOCS = [
     'C8 成词那一趟：拉丁词按码点判（97–122）不再逐词跑正则、过半即早退，判据与正则版逐例同值',
     LEX !== null && miss.length === 0 && bad === 0,
     LEX === null ? '词法段没切出来' : `${CASES.length} 例 · 0 不一致${miss.length === 0 ? '' : ` · 形状缺 ${miss.join(',')}`}${bad === 0 ? '' : ` · 首例 ${first}`}`,
+  );
+}
+
+// ── C9 按下标分类：不为「一个码点」造字符串 ──────────────────────────────────
+{
+  const begin = ENGINE.indexOf('function clsAt(s, i) {');
+  const atBody = begin < 0 ? '' : ENGINE.slice(begin, ENGINE.indexOf('\n}\n', begin));
+  const atCode = atBody.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n');
+  const tokBody = ENGINE.slice(ENGINE.indexOf('function tokenizeSegs(text) {'), ENGINE.indexOf('function finishToks(out) {'));
+  const tokCode = tokBody.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n');
+  const shape = {
+    atExists: begin >= 0 && atCode.includes('var c = s.charCodeAt(i);'),
+    surrogatePair: atCode.includes('if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {') && atCode.includes('if (d >= 0xdc00 && d <= 0xdfff) return clsCode(s.slice(i, i + 2));'),
+    bmpTable: atCode.includes('var t = clsBmp === null ? (clsBmp = buildClsBmp()) : clsBmp;') && atCode.includes('return t[c];'),
+    // 内层两处都走 clsAt；老写法（`s[i]` 单字符串 / 星外 `s.slice(j, j + 2)`）不再出现
+    tokUsesAt: tokCode.includes('const cls = clsAt(s, i);') && tokCode.includes('while (j < nS && clsAt(s, j) === cls) {'),
+    noCharIndex: tokCode.includes('s[i]') === false,
+    noInnerSlice: tokCode.includes('clsCode(') === false,
+  };
+  // 行为：每个下标按「该下标的码点」独立核对——分类以 Unicode 属性正则为尺子
+  // （`classify` 就是那两条正则本体，不经 BMP 表；它给的是 cjk/word/skip 三个词，
+  // 这里折回 1/2/0 与 `clsAt` 的数值口径对齐），星外字、孤立代理项、全角、合字都过一遍。
+  const NUM = { cjk: 1, word: 2, skip: 0 };
+  const CASES = [
+    '中文分词测试', 'the quick brown fox', '𠀀𪚥𠀋𠮷 astral', '😀🎉 emoji 混排', '\ud800 孤立高位 \udfff 孤立低位',
+    'ＡＢＣ１２３ 全角', 'ﬁne ﬀ 合字', 'İstanbul ıI', '日本語テキスト カタカナ ひらがな', '한국어 텍스트',
+    'αβγ Ωμέγα', '中英混 mixed 123', '㍿㌔㌀ 半角ｶﾀｶﾅ', '零宽\u200b字符\u200d', 'x'.repeat(64) + '中文'.repeat(8),
+  ];
+  let bad = 0;
+  let first = '';
+  let seen = 0;
+  for (const raw of CASES) {
+    const s = raw.normalize('NFKC');
+    for (let i = 0; i < s.length; i += 1) {
+      const cp = s.codePointAt(i);
+      const want = NUM[LEX.classify(String.fromCodePoint(cp))];
+      const got = LEX.clsAt(s, i);
+      seen += 1;
+      if (want !== got) {
+        bad += 1;
+        if (first === '') first = `${JSON.stringify(s.slice(Math.max(0, i - 4), i + 4))} @${i} U+${cp.toString(16)} want ${want} got ${got}`;
+      }
+    }
+  }
+  // 惰性表的第二只口子：先问过一次之后 clsCode 与 clsAt 必须同值（表建好前后不许有差）
+  const SAME = ['a', 'Z', '中', 'ア', '6', ' ', '，', '𠀀', '😀', '\ud800', '\u200b', 'Ａ', 'ν'];
+  for (const ch of SAME) {
+    const a = LEX.clsCode(ch);
+    const b = LEX.clsAt(ch, 0);
+    if (a !== b) {
+      bad += 1;
+      if (first === '') first = `clsCode≠clsAt ${JSON.stringify(ch)} ${a}/${b}`;
+    }
+  }
+  const miss = Object.keys(shape).filter((k) => !shape[k]);
+  ok(
+    'C9 按下标分类：tokenizeSegs 内层只读 charCodeAt 查表（不再造单字符/星外切片串），分类结果与正则尺子逐下标同值',
+    LEX !== null && miss.length === 0 && bad === 0,
+    LEX === null ? '词法段没切出来' : `${CASES.length} 串 · ${seen} 下标 · ${SAME.length} 码点对拍 · 0 不一致${miss.length === 0 ? '' : ` · 形状缺 ${miss.join(',')}`}${bad === 0 ? '' : ` · 首例 ${first}`}`,
   );
 }
 
