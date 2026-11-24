@@ -1259,6 +1259,7 @@ var CONFIG_DEFAULTS = {
   projectDir: ".dsh-meow",
   hitTopK: 2,
   titleMax: 40,
+  injectMaxChars: 0,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -5386,7 +5387,7 @@ function topicDrift(turnText, topics) {
 }
 
 // src/inject.ts
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40 };
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0 };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -5757,7 +5758,9 @@ function buildInjectionBody(db, o) {
   if (lines.length <= 2) return null;
   lines.push(lbl3("inject.end"));
   lines.push(lbl3("inject.boundary"));
-  return { body: lines.join("\n").trimEnd(), injectedIds: injected };
+  // 0.6.38：快照注入也吃预算（默认 0 = 不限，逐位等同旧行为）。
+  const fitted = budgetText(lines.join("\n").trimEnd(), o.injectMaxChars ?? 0, "长期记忆");
+  return { body: fitted.text, injectedIds: injected };
 }
 function buildInjection(db, workspace, sessionId, _firstUserText = "", opts = {}, dir = ".dsh-meow") {
   const o = { ...DEFAULT_OPTS, ...opts };
@@ -5777,7 +5780,7 @@ function fmtProjectRow(r) {
   return `[${projectLabel(r.project)} : ${r.level}] [${r.id}] ${abs} [${relativeTime(r.updated_at)}]
 ${r.content}`;
 }
-function buildProjectSection(db, workspace, project, dir) {
+function buildProjectSection(db, workspace, project, dir, opts = {}) {
   const rows = db.list("project").filter((r) => projectList(r.project).includes(project));
   const ids = [];
   const render = (list) => {
@@ -5843,7 +5846,9 @@ ${render(list)}`);
     "\uFF08\u5E93\u5185\u7ED3\u6784\uFF1A\u4E03\u5C42\u8868 soul/user/project/fact/lesson/topic/rules\uFF0C\u5B57\u6BB5\u542B id/title/content/importance/keywords/status/corrected/project/subcategory/goal/source_session/created_at/updated_at\uFF08\u8BB0\u5FC6\u65F6\u95F4\u6233=\u6700\u540E\u66F4\u65B0\u65F6\u95F4\uFF09/last_accessed_at\uFF1B\u53E6\u6709 dream_log \u6574\u7406\u7559\u75D5\u8868\u3001windows \u7A97\u53E3\u65F6\u95F4\u8868\uFF1B\u4E5F\u53EF\u6309 id \u7528 memory_read \u770B\u5355\u6761\u5B8C\u6574\u5143\u6570\u636E\uFF09",
     `\u5982\u679C\u4F60\u60F3\u4E86\u89E3\u672A\u88AB\u8BB0\u5F55\u7684\u66F4\u591A\u7EC6\u8282\uFF0C\u53EF\u4EE5\u76F4\u63A5\u53BB\u641C\u4F1A\u8BDD\u5386\u53F2\u76EE\u5F55\uFF08dsh \u7684 session \u65E5\u5FD7\uFF0C\u4F4D\u7F6E\u7531 DSH_HOME \u51B3\u5B9A\uFF0C\u9ED8\u8BA4 ~/.dsh/sessions\uFF0C\u55B5\u7248\u4E3A dsh-home/sessions\uFF09\uFF0C\u6309\u4F1A\u8BDD id \u67E5\u539F\u59CB\u8BB0\u5F55\u3002`
   ].join("\n");
-  return { text, ids };
+  // 0.6.38：项目全景最容易撑爆上下文（六子类全量），也吃预算。
+  const cap = Number.isFinite(opts.injectMaxChars) ? opts.injectMaxChars : 0;
+  return { text: budgetText(text, cap, project).text, ids };
 }
 function buildProjectSectionText(db, workspace, project, dir = ".dsh-meow") {
   return buildProjectSection(db, workspace, project, dir)?.text ?? null;
@@ -5877,7 +5882,7 @@ function buildReinjection(db, workspace, sessionId, projects, opts = {}, dir = "
   const projectTexts = [];
   const projectIds = /* @__PURE__ */ new Set();
   for (const project of projects) {
-    const built = buildProjectSection(db, workspace, project, dir);
+    const built = buildProjectSection(db, workspace, project, dir, o);
     if (built !== null) {
       projectTexts.push(built.text);
       for (const id of built.ids) projectIds.add(id);
@@ -5904,11 +5909,204 @@ function buildReinjection(db, workspace, sessionId, projects, opts = {}, dir = "
     lines.push("");
   }
   lines.push(lbl2("inject.boundary"));
-  const text = lines.join("\n").trimEnd();
+  const text = budgetText(lines.join("\n").trimEnd(), o.injectMaxChars ?? 0, "重放注入").text;
   const replayedIds = [...snapshot?.injectedIds ?? [], ...written?.ids ?? []];
   if (replayedIds.length > 0) markInjected(workspace, sessionId, replayedIds, dir);
   return { text, injectedIds: replayedIds };
 }
+// ── 注入预算（0.6.38）────────────────────────────────────────────────────────
+//
+// 主人 2026-11-24 的原话：「这个插件的长期记忆长度应该在设置里面加一个 user 可以自己调配的限制
+// （我是说每次长期记忆注入的时候要有的限制 当然默认可以是没有限制）……想办法优化他大文本量的
+// 注入情况 不要削弱能力 能节省就节省」。
+//
+// 三条边界：
+//   1. **默认 0 = 不限，逐位等同旧行为**：所有压缩代码都在 `cap > 0` 之后才跑，老路径一个字节不动
+//      （探针 B1 对拍逐位相同）。
+//   2. **只压正文，不压身份**：条目头（[项目 : level] [id] 时间）一条不丢——模型永远知道
+//      「有这么一条」，要全文用 memory_read(id) 取。砍掉身份等于把记忆从「可查」降级成「不存在」，
+//      那不是省 token，是丢能力。
+//   3. **砍了必须自己说出来**：尾巴自述压了几条、只留头几条、没列出几条。静默变短会让模型
+//      以为库里就这么多——比多花几百 token 更贵。
+var INJECT_BODY_MIN = 60;
+var INJECT_BODY_CAP = 240;
+var INJECT_NOTE_RESERVE = 120;
+var INJECT_SENT_SPLIT = /(?<=[。！？；!?;\n])/;
+var INJECT_WORD_RE = /[\u4e00-\u9fa5A-Za-z0-9_]{2,}/g;
+
+/** 从一句话里取打分用的词：中文整段不切（句子级重合足够），英文/数字按下划线词。 */
+function injectTermsOf(text) {
+  const out = []
+  const s = String(text ?? '')
+  const m = s.match(INJECT_WORD_RE)
+  if (m !== null) for (const w of m) out.push(w)
+  return out
+}
+
+/** 句切分：中文句末标点与换行都算句子边界；空句丢掉。 */
+function splitSentsOf(body) {
+  const s = String(body ?? '')
+  if (s.length === 0) return []
+  const parts = s.split(INJECT_SENT_SPLIT)
+  const out = []
+  for (const p of parts) {
+    const t = p.trim()
+    if (t.length > 0) out.push(t)
+  }
+  return out
+}
+
+/** 句子与这一轮问句的重合分：命中词按长度加权（长词更值钱）。 */
+function sentScoreOf(sent, terms) {
+  if (terms.length === 0) return 0
+  let score = 0
+  for (const w of terms) if (sent.includes(w)) score += w.length
+  return score
+}
+
+/** 按字切（找不到句边界时的兜底）：切点尽量落在标点后，切完带省略号。 */
+function clipChars(text, cap) {
+  const s = String(text ?? '')
+  if (cap <= 0) return ''
+  if (s.length <= cap) return s
+  const cut = s.slice(0, Math.max(0, cap - 1))
+  return `${cut}…`
+}
+
+/**
+ * 一条正文的预算内形态。
+ * mode: full=原样 / squeeze=首句+最相关句 / head=只有首句（找不到更相关的）/ clip=硬切
+ * cap <= 0 表示「这条不给预算」（调用方已判定预算耗尽），只返回空正文。
+ */
+function squeezeBody(body, cap, qTerms) {
+  const text = String(body ?? '')
+  if (text.length === 0) return { text: '', mode: 'full' }
+  if (!(cap > 0)) return { text: '', mode: 'head' }
+  if (text.length <= cap) return { text, mode: 'full' }
+  const sents = splitSentsOf(text)
+  if (sents.length <= 1) return { text: clipChars(text, cap), mode: 'clip' }
+  const keep = [sents[0]]
+  let best = -1
+  let bestScore = 0
+  for (let i = 1; i < sents.length; i += 1) {
+    const sc = sentScoreOf(sents[i], qTerms)
+    if (sc > bestScore) {
+      bestScore = sc
+      best = i
+    }
+  }
+  if (best > 0) keep.push(sents[best])
+  let out = keep.join(' ')
+  if (out.length > cap) out = clipChars(out, cap)
+  return { text: out, mode: keep.length > 1 ? 'squeeze' : 'head' }
+}
+
+/**
+ * 通用预算：把一整段文本按 `\n\n` 分段，保住头段与尾段（标题 / 说明 / 边界句），
+ * 中间从尾部开始丢。用于 project 全景、重放注入这类「结构块」文本。
+ *
+ * 为什么保住尾段：尾段是「去哪看全文 / 这些只是参考」的指路句，丢了它，
+ * 模型会把截断后的注入当成全部事实。
+ */
+function budgetText(text, cap, label = '') {
+  const s = String(text ?? '')
+  if (!(cap > 0) || s.length <= cap) return { text: s, dropped: 0, clipped: false }
+  const blocks = s.split(/\n{2,}/)
+  if (blocks.length <= 1) {
+    const out = clipChars(s, cap)
+    return { text: out, dropped: 0, clipped: true }
+  }
+  const head = blocks[0]
+  const tailBlocks = blocks.length >= 3 ? blocks.slice(-2) : blocks.slice(-1)
+  const mid = blocks.slice(1, blocks.length - tailBlocks.length)
+  const tailCost = tailBlocks.reduce((a, b) => a + b.length + 2, 0)
+  let rest = cap - head.length - tailCost - 2
+  const kept = []
+  for (const b of mid) {
+    if (rest - b.length - 2 < 0) break
+    kept.push(b)
+    rest -= b.length + 2
+  }
+  const dropped = mid.length - kept.length
+  const note = lbl2('inject.budgetNote', { label: label === '' ? '' : `「${label}」`, dropped, cap })
+  return {
+    text: [head, ...kept, ...tailBlocks, note].join('\n\n'),
+    dropped,
+    clipped: true
+  }
+}
+
+/**
+ * 命中注入的渲染器（0.6.38）：预算内拼装。`cap <= 0` 时逐位走旧拼法。
+ * @returns {{text: string, modes: string[], dropped: number, squeezed: number, heads: number}}
+ */
+function renderHitEntries(entries, o, query) {
+  const cap = Number.isFinite(o.injectMaxChars) ? o.injectMaxChars : 0
+  const header = keyedValue('labels', 'inject.hitHeader')
+  const boundary = lbl2('inject.boundary')
+  const headLines = []
+  for (const e of entries) {
+    const proj = projectLabel(e.project)
+    const time = e.updated_at ? ` ${new Date(e.updated_at).toISOString().slice(0, 16).replace('T', ' ')} [${relativeTime(e.updated_at)}]` : ''
+    headLines.push(`[${proj} : ${e.level}] [${e.id}]${time}`)
+  }
+  if (!(cap > 0)) {
+    const lines = [header]
+    for (let i = 0; i < entries.length; i += 1) {
+      lines.push(headLines[i])
+      lines.push(String(entries[i].content ?? ''))
+      lines.push('')
+    }
+    lines.push(boundary)
+    return { text: lines.join('\n').trimEnd(), modes: entries.map(() => 'full'), dropped: 0, squeezed: 0, heads: 0 }
+  }
+  const qTerms = injectTermsOf(query)
+  const fixed = header.length + boundary.length + 4
+  // 上限小到连「头 + 边界句 + 一句自述」都放不下：只给骨架，绝不假装注入完整。
+  if (cap <= fixed + 40) {
+    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, tooSmall: true }
+  }
+  // 自述尾巴也算在上限里：先扣掉，宁可正文少留一句，也不许「说好 300 实际 420」。
+  let rest = cap - fixed - INJECT_NOTE_RESERVE
+  const blocks = []
+  const modes = []
+  let dropped = 0
+  if (rest <= 0) {
+    // 连「头 + 边界句 + 自述」都排不下：只给骨架，绝不假装注入完整。
+    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, tooSmall: true }
+  }
+  // 单条正文上限：既要防「一条超长条目吃掉全部预算」，又不能在上限本身很宽时
+  // 把每条都按 240 字硬压（那样用户调大上限也换不回正文）。所以取「上限的一半」
+  // 与 240 的较大者——预算越宽，单条越能整条呈现。
+  const bodyCap = Math.max(INJECT_BODY_CAP, Math.floor(cap * 0.5))
+  for (let i = 0; i < entries.length; i += 1) {
+    const head = headLines[i]
+    const left = entries[i]
+    const per = Math.min(bodyCap, rest - head.length - 1)
+    // 放不下「头 + 一句像样的正文」就整条不列——只留一个 id 的占位条目对模型几乎无用，
+    // 不如把预算留给前面几条完整呈现，并把「还有 N 条」说在尾巴上。
+    if (per < INJECT_BODY_MIN) {
+      dropped = entries.length - i
+      break
+    }
+    rest -= head.length + 1
+    const sq = squeezeBody(left.content, per, qTerms)
+    modes.push(sq.mode)
+    blocks.push(head)
+    if (sq.text !== '') blocks.push(sq.text)
+    blocks.push('')
+    rest -= sq.text.length + 1
+    if (rest < 0) rest = 0
+  }
+  const squeezed = modes.filter((m) => m === 'squeeze' || m === 'clip').length
+  const heads = modes.filter((m) => m === 'head').length
+  const firstId = entries.find((e, i) => modes[i] === 'squeeze' || modes[i] === 'clip' || modes[i] === 'head')?.id
+  const lines = [header, ...blocks, boundary]
+  if (squeezed + heads > 0) lines.push(lbl2('inject.budgetTail', { cap, squeezed, heads, dropped, id: String(firstId ?? '') }))
+  else if (dropped > 0) lines.push(lbl2('inject.budgetTailDropOnly', { cap, dropped }))
+  return { text: lines.join('\n').trimEnd(), modes, dropped, squeezed, heads }
+}
+
 function hitQuery(db, workspace, sessionId, userText, o, dir) {
   const seenState = readSeenFile(workspace, sessionId, dir);
   const currentProject = seenState.currentProject;
@@ -5940,20 +6138,12 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   const o = { ...DEFAULT_OPTS, ...opts };
   const fresh = hitQuery(db, workspace, sessionId, userText, o, dir);
   if (fresh.length === 0) return null;
-  const lines = [keyedValue("labels", "inject.hitHeader")];
-  for (const h of fresh) {
-    const proj = projectLabel(h.project);
-    const time = h.updated_at ? ` ${new Date(h.updated_at).toISOString().slice(0, 16).replace("T", " ")} [${relativeTime(h.updated_at)}]` : "";
-    lines.push(`[${proj} : ${h.level}] [${h.id}]${time}`);
-    lines.push(h.content);
-    lines.push("");
-  }
-  lines.push(lbl2("inject.boundary"));
-  const text = lines.join("\n").trimEnd();
+  const rendered = renderHitEntries(fresh, o, userText);
+  const text = rendered.text;
   const ids = fresh.map((h) => h.id);
   markInjected(workspace, sessionId, ids, dir);
   for (const h of fresh) db.bumpHit(h.level, h.id);
-  return { text, injectedIds: ids };
+  return { text, injectedIds: ids, budget: { cap: o.injectMaxChars ?? 0, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped } };
 }
 
 // src/tools.ts
@@ -9885,6 +10075,11 @@ var config = z.object({
   homeDirPresets: z.dict(z.string()).default(homeDirPresetsDefault()),
   /** 关键词命中条数上限（fact/lesson/rules/topic 短条目，每条用户消息命中注入）。 */
   hitTopK: z.number().min(0).max(10).default(2),
+  /** 每次长期记忆注入的总字符上限。0（默认）= 不限，逐位等同旧行为。
+   *  设了以后只压正文：超长条目按「首句 + 与这一轮最相关的句子」保留，条目头
+   *  （[项目 : level] [id] 时间）一条不丢，模型仍可 memory_read(id) 取全文。
+   *  压缩会在尾巴上自述压了几条、砍了几条——不许静默变短。 */
+  injectMaxChars: z.number().min(0).default(0),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
@@ -9956,6 +10151,7 @@ function validateConfigUserLayer(value) {
   reqStr("homeDir");
   reqNum("hitTopK");
   reqNum("titleMax");
+  reqNum("injectMaxChars");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -10037,6 +10233,7 @@ function resolveConfig(config2) {
     homeDir: typeof c.homeDir === "string" ? c.homeDir : void 0,
     hitTopK: c.hitTopK ?? 2,
     titleMax: c.titleMax ?? 40,
+    injectMaxChars: Number.isFinite(c.injectMaxChars) ? Math.max(0, Math.floor(c.injectMaxChars)) : 0,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -10194,7 +10391,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -10741,7 +10938,8 @@ ${e.stack ?? ""}` : String(e)}
       const db = getDb(ws, resolved.projectDir);
       const reinj = buildReinjection(db, ws, sid, readProjectQueried(ws, sid, resolved.projectDir), {
         hitTopK: resolved.hitTopK,
-        titleMax: resolved.titleMax
+        titleMax: resolved.titleMax,
+        injectMaxChars: resolved.injectMaxChars
       }, resolved.projectDir);
       clearReinjectPending(ws, sid, resolved.projectDir);
       if (reinj !== null) {
@@ -10777,7 +10975,8 @@ ${e.stack ?? ""}` : String(e)}
           const firstText = firstUser.content.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text ?? "").join(" ");
           const injected = buildInjection(db, ws, sid, firstText, {
             hitTopK: resolved.hitTopK,
-            titleMax: resolved.titleMax
+            titleMax: resolved.titleMax,
+            injectMaxChars: resolved.injectMaxChars
           }, resolved.projectDir);
           if (injected) {
             const rewritten = [...decision.messages];
@@ -10822,7 +11021,8 @@ ${e.stack ?? ""}` : String(e)}
         const db = getDb(ws, resolved.projectDir);
         const hit = buildHitInjection(db, ws, sid, text, {
           hitTopK: resolved.hitTopK,
-          titleMax: resolved.titleMax
+          titleMax: resolved.titleMax,
+          injectMaxChars: resolved.injectMaxChars
         }, resolved.projectDir);
         try {
           appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"}
@@ -11902,6 +12102,13 @@ export {
   backupMemoryDb,
   buildDreamMessage,
   buildHitInjection,
+  budgetText,
+  injectTermsOf,
+  renderHitEntries,
+  splitSentsOf,
+  squeezeBody,
+  INJECT_BODY_CAP,
+  INJECT_BODY_MIN,
   buildInjection,
   buildProjectSectionText,
   buildReflectMessage,

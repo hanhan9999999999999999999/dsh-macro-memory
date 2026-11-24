@@ -7419,11 +7419,13 @@ check(
     JSON.stringify(out1.messages[1].source ?? {}),
   )
   check(
-    'RV4c 查星图只带 query / limit=max+2 / hops=1',
+    // 0.6.38 起多要 4 条（原来是 max+2）：强度过滤会刷掉一部分，回执只按 limit 裁剪，
+    // 不多要就只能拿到「过滤后不足 max 条」。这条断言钉的是「多要」这个决定本身。
+    'RV4c 查星图只带 query / limit=max+4（给强度过滤留余量）/ hops=1',
     rt1.calls.length === 1 &&
       rt1.calls[0].name === 'nebula_recall' &&
       rt1.calls[0].args.hops === 1 &&
-      rt1.calls[0].args.limit === 6 &&
+      rt1.calls[0].args.limit === nb.NEIGHBOR_DEFAULT_MAX + 4 &&
       typeof rt1.calls[0].args.query === 'string',
     JSON.stringify(rt1.calls[0]?.args ?? {}),
   )

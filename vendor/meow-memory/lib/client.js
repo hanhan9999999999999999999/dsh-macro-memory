@@ -119,6 +119,8 @@ var en = {
   "settings.field.hitTopK.hint": "Upper bound on keyword-hit entries injected per message (fact/lesson/rules/topic)",
   "settings.field.titleMax.label": "Guide title truncation length",
   "settings.field.titleMax.hint": "Truncation length (characters) of the project list in the memory guide",
+  "settings.field.injectMaxChars.label": "Injection length limit",
+  "settings.field.injectMaxChars.hint": "Character budget for each long-term-memory injection (guide / project section / replay / keyword hits). 0 = no limit. Bodies are reduced by sentence relevance and every reduction is stated in the block.",
   "settings.field.reflect.label": "Automatic reflection",
   "settings.field.reflect.hint": "Review memory automatically after a task ends",
   "settings.field.reflectTurns.label": "Reflection trigger turns",
@@ -225,6 +227,8 @@ var zh = {
   "settings.field.hitTopK.hint": "\u5173\u952E\u8BCD\u547D\u4E2D\u6CE8\u5165\u7684\u6761\u76EE\u4E0A\u9650\uFF08fact/lesson/rules/topic\uFF09",
   "settings.field.titleMax.label": "\u5BFC\u5F15\u6807\u9898\u622A\u65AD\u957F\u5EA6",
   "settings.field.titleMax.hint": "\u8BB0\u5FC6\u5BFC\u5F15\u91CC\u9879\u76EE\u5217\u8868\u7684\u622A\u65AD\u957F\u5EA6\uFF08\u5B57\u7B26\uFF09",
+  "settings.field.injectMaxChars.label": "\u6CE8\u5165\u957F\u5EA6\u4E0A\u9650",
+  "settings.field.injectMaxChars.hint": "\u6BCF\u6B21\u957F\u671F\u8BB0\u5FC6\u6CE8\u5165\u7684\u5B57\u7B26\u9884\u7B97\uFF08\u957F\u671F\u8BB0\u5FC6 / \u9879\u76EE\u6BB5 / \u91CD\u653E / \u547D\u4E2D\u6761\u76EE\uFF09\u30020\uFF1D\u4E0D\u9650\uFF1B\u538B\u7F29\u6309\u53E5\u5B50\u76F8\u5173\u5EA6\u4FDD\u7559\uFF0C\u538B\u7F29\u4E86\u4E00\u5B9A\u4F1A\u81EA\u8FF0\u3002",
   "settings.field.reflect.label": "\u81EA\u52A8\u53CD\u601D",
   "settings.field.reflect.hint": "\u4EFB\u52A1\u7ED3\u675F\u540E\u81EA\u52A8\u56DE\u987E\u8BB0\u5FC6",
   "settings.field.reflectTurns.label": "\u53CD\u601D\u89E6\u53D1\u8F6E\u6570",
@@ -331,6 +335,8 @@ var ptBr = {
   "settings.field.hitTopK.hint": "Limite de entradas por acerto de palavra-chave injetadas a cada mensagem (fact/lesson/rules/topic)",
   "settings.field.titleMax.label": "Comprimento de corte do t\xEDtulo",
   "settings.field.titleMax.hint": "Comprimento (em caracteres) do corte da lista de projetos no guia de mem\xF3ria",
+  "settings.field.injectMaxChars.label": "Limite de comprimento da inje\xE7\xE3o",
+  "settings.field.injectMaxChars.hint": "Or\xE7amento em caracteres por inje\xE7\xE3o de mem\xF3ria de longo prazo (guia / se\xE7\xE3o de projeto / replay / acertos). 0 = sem limite. Os corpos s\xE3o reduzidos por relev\xE2ncia de frase e toda redu\xE7\xE3o \xE9 declarada no bloco.",
   "settings.field.reflect.label": "Reflex\xE3o autom\xE1tica",
   "settings.field.reflect.hint": "Revisa a mem\xF3ria automaticamente quando a tarefa termina",
   "settings.field.reflectTurns.label": "Rodadas para disparar a reflex\xE3o",
@@ -653,6 +659,8 @@ var UI_KEYS = [
   "settings.field.hitTopK.hint",
   "settings.field.titleMax.label",
   "settings.field.titleMax.hint",
+  "settings.field.injectMaxChars.label",
+  "settings.field.injectMaxChars.hint",
   "settings.field.reflect.label",
   "settings.field.reflect.hint",
   "settings.field.reflectTurns.label",
@@ -1954,6 +1962,7 @@ var CONFIG_DEFAULTS = {
   projectDir: ".dsh-meow",
   hitTopK: 2,
   titleMax: 40,
+  injectMaxChars: 0,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -2055,7 +2064,8 @@ var FIELDS = [
     title: "settings.group.inject",
     fields: [
       { key: "hitTopK", label: "settings.field.hitTopK.label", type: "num", hint: "settings.field.hitTopK.hint" },
-      { key: "titleMax", label: "settings.field.titleMax.label", type: "num", hint: "settings.field.titleMax.hint" }
+      { key: "titleMax", label: "settings.field.titleMax.label", type: "num", hint: "settings.field.titleMax.hint" },
+      { key: "injectMaxChars", label: "settings.field.injectMaxChars.label", type: "num", hint: "settings.field.injectMaxChars.hint" }
     ]
   },
   {

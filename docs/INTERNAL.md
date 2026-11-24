@@ -13658,3 +13658,26 @@ rawkTopPrev = top;
 **判据**：`probe-terms` T0–T7 十六条；`probe-adapt` A2/A4/A5 按新口径重写（四档消融、两遍不许倒退、噪声里关桥掉 ≥2 题）；`verify.mjs` OR097 五条。
 
 **踩坑五条**：①`verify.mjs` 的引擎句柄 `V1` 是块内绑定，新段里要用自己的 `await import`（`Veng37`）；②OR096 的「la 不影响签名」断言第一版把 `===` 写成 `!==`；③`syntax` 形状断言（`as:` / `HB2`）要按「新旧都认」放宽（第六参 + 可选 `, lookupSyn`）；④让位规则会让「关共现」在冷域上读数不变，别当成回归；⑤`LOOKUP_TYPE_RATIO` 不许往低走（0.20 会把真库「阈值＝0.85」判成对照型，冷域一分不涨）。
+
+### 9.237 0.6.38：注入预算与邻域纠错
+
+**症状**：两处都没有闸门。①**注入只有条数上限**——`hitTopK` 只管「注几条」、`titleMax` 只管标题，**正文一个字都不裁**，条目多长就塞多长；`buildProjectSection`（项目六子类全量）与 `buildReinjection`（压缩后重放）更是连条数都不管，每一轮都在付这份 token，多数时候对当前任务无用。②**邻居错了没法纠正**——`neighborBlockOf` 的 `why` 只写「经由「xxx」的共现关联扩散而来」，**不带来源 id**；模型看见一条明显无关的邻居，既不知道是哪一跳带过来的，也没法只断那一跳，尾部那句「别把上面的摘要当原文引用」只是安慰。
+
+**病根**：注入侧从来没有「预算」这个概念——每处拼装都是 `lines.join('\n')` 直接返回，条数由 `hitTopK` 兜、长度无人兜；而 `memory_search` 的真实条目平均 202 字（7 条 1,415 字），`hitTopK: 2` 时命中注入本身就 700–800 字，项目全景六子类一次 1,498 字，逐轮累积就是几千 token 的噪声。邻域侧的病根是**回执信息不足**：`recall.js` 里 `why` 只给了来源标签（`clip(label, 18)`），`mute` 虽然即时生效（`nebula.js:1739` → `#applyCurated('drop', …)`，重建也不再连），但模型手里没有 id 可指，纠错这条路走不通。
+
+**处方六点**：
+
+1. 配置面：`CONFIG_DEFAULTS` 加 `injectMaxChars: 0`（0 = 不限，老行为逐位不变）、`DEFAULT_OPTS` 加同名键、`resolveConfig` 用 `Math.max(0, Math.floor(c.injectMaxChars))`、schema `z.number().min(0).default(0)`、`validateConfigUserLayer` 加 `reqNum("injectMaxChars")`、`LIVE_CONFIG_KEYS` 加 `"injectMaxChars"`（热生效）；三处调用点（`buildReinjection` / `buildInjection` / `buildHitInjection`）把 `resolved.injectMaxChars` 传进 `opts`。设置页在 `settings.group.inject` 组加 `{ key: "injectMaxChars", type: "num" }`，三语 label + UI key 白名单同步（宏记忆层 `lib/client.js` 与子插件层 `vendor/meow-memory/lib/client.js` 两处）。
+2. 常量与句子工具：`INJECT_BODY_MIN = 60` / `INJECT_BODY_CAP = 240` / `INJECT_NOTE_RESERVE = 120` / `INJECT_SENT_SPLIT = /(?<=[。！？；!?;\n])/` / `INJECT_WORD_RE = /[\u4e00-\u9fa5A-Za-z0-9_]{2,}/g`；`injectTermsOf(text)` / `splitSentsOf(body)` / `sentScoreOf(sent, terms)`（按命中词长度加权）/ `clipChars(text, cap)`（切完带 `…`）。
+3. `squeezeBody(body, cap, qTerms)` → `{ text, mode }`，`mode ∈ full | squeeze | head | clip`：`cap <= 0` 或正文本来就够短走 `full`；否则按句打分取高分的几句、**首句必留**，装不下再 `clipChars`。
+4. `budgetText(text, cap, label)` 给快照与重放做**段级**预算：按 `\n\n` 切段、保头段 + 尾两段、中间从尾往前丢，尾巴追加 `inject.budgetNote`（「按上限 N 字压缩，丢了 M 段…」）；`cap <= 0` 原样返回。
+5. `renderHitEntries(entries, o, query)` 给命中注入做**条目级**预算：`fixed = header + boundary + 4`；`cap <= fixed + 40` 只返回骨架并标 `tooSmall`；否则 `rest = cap - fixed - INJECT_NOTE_RESERVE`，逐条 `per = Math.min(Math.max(INJECT_BODY_CAP, Math.floor(cap * 0.5)), rest - head.length - 1)`，`per < INJECT_BODY_MIN` 就**整条不列**并把剩余计入 `dropped`（只留 id 的占位对模型几乎无用），尾巴按 `squeezed + heads > 0` 印 `inject.budgetTail`（带首个被压 id）、否则 `dropped > 0` 印 `inject.budgetTailDropOnly`；`cap <= 0` 逐位走旧拼法（`lines.push(headLines[i]); lines.push(String(content ?? '')); lines.push('')`）。`buildHitInjection` 返回额外带 `budget: { cap, chars, squeezed, heads, dropped }`。
+6. 邻域纠错：`lib/macro/neighbor.js` 新增导出 `NEIGHBOR_MIN_SCORE = 0.35`（只对带 `score` 的回执生效）、`NEIGHBOR_TAIL_RESERVE = 150`；`neighborBlockOf(recallText, opts)` 支持 `opts.minScore`，弱邻居计入 `weak` 并跳过、全弱返回 `null`；`bodyCap = chars <= NEIGHBOR_TAIL_RESERVE + 100 ? chars : chars - NEIGHBOR_TAIL_RESERVE`（上限过小时先保条目）；尾部改成可执行路径——`nebula_link(action="path", a="<它 why 里的来源 id>", b="<首条>")` 看路径、错的那一跳 `action="mute"` 断掉（mute 即时摘边、重建不再连，注入侧无需再过滤）；`bridge.tryCall` 的 `limit` 从 `max + 2` 改成 `max + 4`（给强度过滤留余量）。`vendor/dsh-memory-nebula/lib/host/recall.js` 的 `why` 补来源短 id：`经由「${clip(label,18)}」(${String(nodes[link.from].id||'').split(':').pop().slice(0,8)})的${link.type}关联扩散而来`。宏记忆层 `MACRO_DEFAULTS.neighborMinScore` / `MACRO_KEYS` / schema 三处接线。
+
+**正确性四条**：①`injectMaxChars: 0` 时命中注入与旧拼法**逐位相同**（716 vs 716），九档上限逐一断言「结果总长 ≤ cap」；②条目头（id + 标题）100% 保留、尾部自述必在位，压缩**不许静默**；③强度过滤只刷掉「有 score 且低于门槛」的邻居，老回执（无 score）行为不变，`minScore = 0` 时弱邻居全部回来（阴性对照）；④`probe-gold` ALL PASS、`probe-terms` 16/16、`probe-rigor` 7/7（0.9778 · 0.9286 · 0.9000）与 0.6.37 逐位相同。
+
+**读数**（7 条从真 `memory_search` 取回的条目、合计 1,415 字、平均 202 字）：不限 **1,815 字**；2000 / 3000 档 1,815（0%，7 条全 `full`）；1500 → **1,384（省 23.7%，留 5/7）**、1200 → **1,164（35.9%，4/7）**、900 → **862（52.5%，3/7）**、600 → **561（69.1%，2/7）**、400 → **360（80.2%，1/7）**、300 → **260（85.7%，1/7）**。项目全景段级（1,498 字）：1200 → **1,230（17.9%）**、800 → **778（48.1%）**、600 → **535（64.3%）**，头尾恒在。
+
+**判据**：新探针 `tools/probe-budget.mjs`（B0–B9 共 34 条：形状 / 默认逐位 / 九档 ≤ cap / 前缀保留 / 压缩留查询句 / 首句必留 + 铺垫句可丢 / 自述在位 / 极小上限只给骨架 / 段级保头尾 / 两档省 55%–65% 钉基线）与 `tools/probe-neighbor.mjs`（N0–N8 共 26 条：常量 / 弱邻居不注入且强邻居一条不少 / 全弱回 null / `minScore=0` 阴性对照 / 尾部含 path→mute 指引与首条 id / 三档字数 / `max=0` 与 `skip` 后改指第二条 / 配置面接线 / 端到端三档），挂 `tools/check-all.mjs`（suite 53 → **55 支**）；`probe-fusion` 的 RV4c 断言从硬编码 `6` 改成 `NEIGHBOR_DEFAULT_MAX + 4`（理由写进注释：强度过滤会刷掉一部分，不多要就凑不满 max）。
+
+**踩坑五条**：①单条正文上限第一版写死 `INJECT_BODY_CAP`，cap 2000 时也照压（宽预算被误伤成 7 条全 `squeeze`、省 0%），改成 `Math.max(INJECT_BODY_CAP, floor(cap * 0.5))` 后宽档恢复全 `full`；②尾部预留会抢条目预算，`chars <= NEIGHBOR_TAIL_RESERVE + 100` 时必须先保条目；③`why` 不带来源 id 时 mute 无从下手——**纠错指引必须指名到 id**，否则那句话只是安慰；④探针自身断言三次写错（600 档放不下 3 条、`full` 条目里也有铺垫句、95 档走骨架分支没有 dropOnly 尾巴）——**先看分支再写断言**；⑤用 `Add-Content -Encoding UTF8` 往 `DESIGN.md` 追加会带进 CRLF，大文件一律用 `write`/`edit` 工具改。

@@ -96,6 +96,8 @@ const STEPS = [
   ['tools/check-market.mjs', '市场索引：宿主校验器真读一遍 + commit 是真提交'],
   ['tools/probe-load.mjs', 'DSH 自己的加载器判据说能不能加载（含装配后的条目）'],
   ['tools/probe-nebula.mjs', '星图面板层：引力换算、局部图 N 跳、标签淡出与面板接线'],
+  ['tools/probe-budget.mjs', '注入预算账：默认不限与旧拼法逐位相同、设上限后九档一律不超、压缩留查询句与首句、条目头不丢、压了必自述、极小上限只给骨架、段级预算保头尾、两档省 55%/65% 钉基线'],
+  ['tools/probe-neighbor.mjs', '邻域纠错账：弱邻居（<0.35）不注入也不硬凑、强邻居与卡门槛的一条不少、尾部教 nebula_link(path→mute) 断错边、尾部不挤掉条目、minScore 调 0 弱邻居回来（阴性对照）、配置面 schema/白名单/注入器一路接上'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 

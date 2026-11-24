@@ -488,7 +488,9 @@ export function recall(graph, query, opts = {}) {
             ? '直接命中查询词（跨工作区）'
             : '直接命中查询词'
           : link
-            ? `经由「${clip(nodes[link.from].label || nodes[link.from].title, 18)}」的${link.type}关联${across ? '跨工作区' : ''}扩散而来`
+            ? // 0.6.38：扩散来的那条要带**来源 id**——注入块里要教模型「觉得这条不该连」时
+              // 用 nebula_link(action="path"/"mute") 按 id 断掉，只有 label 是断不了的。
+              `经由「${clip(nodes[link.from].label || nodes[link.from].title, 18)}」(${String(nodes[link.from].id || '').split(':').pop().slice(0, 8)})的${link.type}关联扩散而来${across ? '跨工作区' : ''}`
             : '关联扩散',
       across,
       chain,
