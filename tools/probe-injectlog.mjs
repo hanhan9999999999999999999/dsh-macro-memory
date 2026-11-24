@@ -303,6 +303,39 @@ const body = panel.body
   ok('I10.4 没有 sid 的账不进这一行（空括号不写；.old 里带 sid 的账照旧念）', !/本场会话（）：/.test(noSid) && /本场会话（zzzz）：/.test(noSid), (noSid.match(/本场会话[^\n]*/) ?? [''])[0])
 }
 
+// ── I11 其他场次：同一份账里不止一场会话（0.6.53）────────────────────────────
+// 病根：0.6.52 只念最近一场，多窗口 / 多工作目录并发时别的场次花掉的字完全看不见。
+// 这一块守：新的在前、最多 3 场、零字的场次不列、多出来的说清还有几场、只有一场时不出这一行。
+{
+  const lines = [
+    '[2026-11-25T04:00:00.000Z] hit-chain pid=1 sid=sa textLen=100 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=100/∞',
+    '[2026-11-25T04:10:00.000Z] hit-chain pid=1 sid=sb textLen=200 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=200/∞',
+    '[2026-11-25T04:20:00.000Z] hit-chain pid=1 sid=sc textLen=300 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=300/∞',
+    '[2026-11-25T04:25:00.000Z] hit-chain pid=1 sid=se textLen=50 hit=null floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=0/∞',
+    '[2026-11-25T04:30:00.000Z] neighbor-chain pid=1 sid=sd ids=2 chars=400 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35',
+  ]
+  writeFileSync(LOG, lines.join('\n') + '\n', 'utf8')
+  const body = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', limit: 20, config: {} }).body
+  const line = (body.match(/其他场次：[^\n]*/) ?? [''])[0]
+  ok('I11.1 其他场次新的在前、每场给合计与两轮数（sc 300 · sb 200 · sa 100）',
+    /其他场次：sc 300 字（命中 1 轮 \/ 邻域 0 轮） · sb 200 字（命中 1 轮 \/ 邻域 0 轮） · sa 100 字（命中 1 轮 \/ 邻域 0 轮）/.test(line),
+    line)
+  ok('I11.2 最近一场（sd）只在本场会话那一行出现，不在其他场次里重复',
+    /本场会话（sd）：命中注入 0 轮 \/ 0 字，邻域 1 轮 \/ 400 字/.test(body) && !/其他场次：[^\n]*sd/.test(line), line)
+  ok('I11.3 零字的场次不列（se 记的是挡下，不是注入）', !/其他场次：[^\n]*se/.test(line), line)
+  ok('I11.4 超过 3 场时把「还有几场」说出来（spare 来自 .old 的 zzzz）',
+    /另有 1 场未列/.test(line), line)
+  // 只有一场会话：这一行根本不出现
+  const oneWs = join(root, '.probe-injectlog-one')
+  mkdirSync(join(oneWs, '.dsh-meow'), { recursive: true })
+  writeFileSync(join(oneWs, '.dsh-meow', 'dream-debug.log'),
+    '[2026-11-25T05:00:00.000Z] hit-chain pid=1 sid=solo textLen=90 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=90/∞\n', 'utf8')
+  const oneBody = L.readInjectPanel({ workspace: oneWs, dir: '.dsh-meow', config: {} }).body
+  ok('I11.5 只有一场会话时不出「其他场次」（不写空行、不写 0 场）',
+    /本场会话（solo）/.test(oneBody) && !/其他场次/.test(oneBody), oneBody.split('\n').length + ' 行')
+  rmSync(oneWs, { recursive: true, force: true })
+}
+
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)
