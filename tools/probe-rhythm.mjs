@@ -361,7 +361,7 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
   ok('R9 注入成功时给这一轮盖章（轮次 1 + 每条都盖上「给过的那一轮」）',
     first !== null && after1 !== null && after1.injectRound === 1 &&
       first.injectedIds.every((id) => after1.injectSeenAt?.[id] === 1),
-    first === null ? 'null' : `round=${after1?.injectRound} at=${JSON.stringify(after1?.injectSeenAt)}`)
+    first === null ? 'null' : `round=${after1?.injectRound} stamp=${JSON.stringify(after1?.injectSeenAt)}`)
 
   const again = run(Q_PREV, { ...baseOpts, injectRepeatSim: 0 }, sid)
   ok('R9 刚给过的条目不再进候选（同一问句紧接着再问，回执里没有它们）',
@@ -380,7 +380,7 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
   const seen2 = readSeen(sid2)
   ok('R9 放回之后重新盖章（新轮次 21，不是留着旧章 3）',
     seen2 !== null && seen2.injectSeenAt?.rh000001 === 21,
-    `at=${JSON.stringify(seen2?.injectSeenAt)}`)
+    `stamp=${JSON.stringify(seen2?.injectSeenAt)}`)
 
   const sid3 = 'sess-r9-off'
   seed(sid3, { injected: ['rh000001', 'rh000003'], injectRound: 20, injectSeenAt: { rh000001: 3, rh000003: 3 } })
@@ -396,7 +396,7 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
   ok('R9 升级前的老账（没盖轮次章）这一轮仍然挡，但要补章——不是永久拉黑',
     (legacy === null || !legacy.injectedIds.includes('rh000001')) &&
       seen4 !== null && Number.isFinite(seen4.injectSeenAt?.rh000001),
-    `ids=${legacy === null ? 'null' : legacy.injectedIds.join(',')} at=${JSON.stringify(seen4?.injectSeenAt)}`)
+    `ids=${legacy === null ? 'null' : legacy.injectedIds.join(',')} stamp=${JSON.stringify(seen4?.injectSeenAt)}`)
 }
 
 rmSync(wsRoot, { recursive: true, force: true })
