@@ -12461,9 +12461,15 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   const iTmpEnd = MW.indexOf("bandize(hits, '_raw', k)")
   const searchHot = iTmp > 0 && iTmpEnd > iTmp ? MW.slice(iTmp, iTmpEnd) : ''
   check('VW4 临时字段有死期：主路不再用 delete 摘（平行数组 → 对象不进字典模式）', iTmp > 0 && !searchHot.includes('delete h._vb;') && !searchHot.includes('delete h._sr;') && !searchHot.includes('delete h._lv;') && !searchHot.includes('delete h._tr;'))
+  // [0.6.32] 快路自己也要算一次「单位分」（缓冲上没有对象可挂），所以 search 里现在有两份；
+  // 判据的意思没变：search 与 keywordHitScore 都必须有这一段，且不许只有一处。
+  const iKw5 = MW.indexOf('function keywordHitScore(')
+  const kwHot5 = iKw5 < 0 ? '' : MW.slice(iKw5, MW.indexOf('\nfunction ', iKw5 + 1))
+  const nUnit5 = (MW.match(/const unitScore = topScore > 0 \? topScore : 1;/g) || []).length
   check(
     'VW5 两支打分器都走 post-pass（search 与 keywordHitScore 各一处 unitScore）',
-    (MW.match(/const unitScore = topScore > 0 \? topScore : 1;/g) || []).length === 2,
+    nUnit5 >= 2 && kwHot5.includes('const unitScore = topScore > 0 ? topScore : 1;'),
+    `${nUnit5} 处 · keywordHitScore ${kwHot5.includes('const unitScore = topScore > 0 ? topScore : 1;') ? '有' : '无'}`,
   )
   check(
     'VW6 放行条件放行「无词分但有原样证据」',
@@ -15199,6 +15205,150 @@ dt063: {
   const vS31 = (readS31('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS31 = vS31.length === 3 ? vS31[0] * 10000 + vS31[1] * 100 + vS31[2] : 0
   check('OR091 版本号不低于 0.6.31（后续补丁不必回头改这一条）', vNumS31 >= 631, vS31.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.32] OR092：扫描期只写缓冲，只把前 k 条物化成对象 ═══════════════
+{
+  const readS32 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const rawS32 = readS32('./vendor/meow-memory/lib/index.js')
+  const stripS32 = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const bodyOf32 = (name) => {
+    const at = rawS32.indexOf(`function ${name}(`)
+    if (at < 0) return ''
+    const next = rawS32.indexOf('\nfunction ', at + 1)
+    const body = next < 0 ? rawS32.slice(at) : rawS32.slice(at, next)
+    return stripS32(body)
+  }
+  const hotS32 = readS32('./tools/probe-hotpath.mjs')
+  const allS32 = readS32('./tools/check-all.mjs')
+  check('OR092 探针在位：probe-hotpath 有 H20–H22 三条（快路形状 / k 边界 / 缓冲复用），check-all 挂了它',
+    ['H20 ', 'H21 ', 'H22 '].every((t) => hotS32.includes(t)) &&
+      allS32.includes('probe-hotpath') &&
+      rawS32.includes('const HIT_BUF = {'))
+  const searchC32 = bodyOf32('search')
+  const bufC32 = bodyOf32('hitBufOf')
+  const bufOk32 = bufC32.includes('const cap = n + 64;') &&
+    bufC32.includes('if (s.n !== cap)') &&
+    bufC32.includes('if (s.busy) return null;') &&
+    bufC32.includes('new Int32Array(cap)') &&
+    bufC32.includes('new Float64Array(cap)') &&
+    bufC32.includes('new Uint8Array(cap)') &&
+    bodyOf32('hitBufDone').includes('HIT_BUF.busy = false;')
+  const fastOk32 = searchC32.includes('const hitBuf = leanHit ? hitBufOf(docs.length) : null;') &&
+    searchC32.includes('const fastOk = hitBuf !== null;') &&
+    searchC32.includes('let fastDone = false;') &&
+    searchC32.includes('if (fastOk) {') &&
+    searchC32.includes('hdi[q] = di;') &&
+    searchC32.includes('hscore[q] = raw[di] * w * impW * stW * foldOf;')
+  // 快路是「加法」：老路的三只临时数组与两段对象字面量必须一字不动地留着，交接处靠 fastDone
+  const oldOk32 = searchC32.includes('vbTmp.push(vbOf);') &&
+    searchC32.includes('srTmp.push(srOf);') &&
+    searchC32.includes('lvTmp.push(lvHit && lvOn ? 1 : 0);') &&
+    searchC32.includes('trTmp.push(trOf);') &&
+    searchC32.includes('if (leanHit) {') &&
+    searchC32.includes('} else hits.push({')
+  const atGuard32 = searchC32.indexOf('if (!fastDone) {')
+  const atBandize32 = searchC32.indexOf("bandize(hits, '_raw', k);")
+  const atTrim32 = searchC32.indexOf('const outHits = trimByBand(hits, k, opts);')
+  const guardOk32 = atGuard32 >= 0 && atBandize32 > atGuard32 && atTrim32 > atBandize32 &&
+    (searchC32.match(/hitBufDone\(\);/g) ?? []).length === 2 &&
+    searchC32.includes('const haveBands = cnt >= 2;') &&
+    searchC32.includes('want > 0 && cmpQ(q, heap[0]) < 0')
+  check('OR092 引擎形状：扫描期写缓冲、老后处理原样留在 if (!fastDone) 里、档号「一条都不写」的边界照老口径',
+    bufOk32 && fastOk32 && oldOk32 && guardOk32,
+    `缓冲=${bufOk32} 快路=${fastOk32} 老路=${oldOk32} 守卫=${guardOk32}`)
+  // 进程内：k 的四个边界口径（0 / 负与缺省同走「want = 全量」；0.4 是老路会崩的那条）
+  const Mv32 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const NOW32 = 1795470000000
+  const corp32 = [
+    { id: 'sa1', project: 'p', level: 'fact', title: '潮汐 表', content: '潮汐 表 读数 一。', keywords: ['潮汐'], importance: 2, updated_at: NOW32 - 1000, last_accessed_at: NOW32 - 1000 },
+    { id: 'sa2', project: 'p', level: 'fact', title: '鲸歌', content: '鲸歌 频率 二。', keywords: ['鲸歌'], importance: 3, updated_at: NOW32 - 2000, last_accessed_at: NOW32 - 2000 },
+    { id: 'sa3', project: 'p', level: 'fact', title: '潮汐 表 读数', content: '潮汐 表 读数 三。', keywords: ['潮汐', '表'], importance: 1, updated_at: NOW32 - 3000, last_accessed_at: NOW32 - 3000 },
+  ]
+  const run32 = (q, o) => {
+    try {
+      return { n: Mv32.search(q, corp32, { ...o, now: NOW32 }).length, err: null }
+    } catch (e) {
+      return { n: -1, err: e.message }
+    }
+  }
+  const rWide32 = run32('潮汐 表 读数', {})
+  const rHuge32 = run32('潮汐 表 读数', { k: 1e9 })
+  const rZero32 = run32('潮汐 表 读数', { k: 0 })
+  const rNeg32 = run32('潮汐 表 读数', { k: -3 })
+  const rFrac32 = run32('潮汐 表 读数', { k: 0.4 })
+  const rOne32 = run32('鲸歌 频率', { k: 5 })
+  const rNone32 = run32('完全不存在的丙词', { k: 5 })
+  check('OR092 进程内：k 缺省 / 0 / 负数 / 1e9 同条数，k=0.4 返回空数组且不抛（老路由在这里取空堆 heap[0] 会崩）',
+    rWide32.err === null && rHuge32.err === null && rZero32.err === null && rNeg32.err === null &&
+      rFrac32.err === null && rOne32.err === null && rNone32.err === null &&
+      rWide32.n > 0 && rWide32.n === rHuge32.n && rZero32.n === rWide32.n && rNeg32.n === rWide32.n &&
+      rFrac32.n === 0 && rOne32.n === 1 && rNone32.n === 0,
+    `缺省=${rWide32.n} 超大=${rHuge32.n} k0=${rZero32.n} k负=${rNeg32.n} k0.4=${rFrac32.n} 单命中=${rOne32.n} 空=${rNone32.n}`)
+  // 进程内：缓冲是复用的——目标问在任何前序之后、连跑第二遍、冷语料副本上都必须逐位相同
+  const mk32 = () => Array.from({ length: 60 }, (_, i) => ({
+    id: '0mr' + String(i).padStart(6, '0'),
+    level: i % 5 === 0 ? 'rules' : 'fact',
+    title: ['alpha', 'beta', 'gamma'][i % 3],
+    content: ['alpha beta', 'alpha delta 记忆', 'beta gamma 星图', 'delta 一律 必须'][i % 4] + ` 第 ${i} 条。`,
+    importance: 1 + (i % 4),
+    updated_at: NOW32 - i * 1000,
+    last_accessed_at: NOW32 - i * 700,
+    keywords: [['alpha'], ['beta'], ['gamma'], null][i % 4],
+    project: 'p',
+  }))
+  const dig32 = (rs) => rs.map((h) => `${h.id}@${h.score.toFixed(12)}#${h.cover ?? ''}`).join(',')
+  const QA32 = 'delta 一律 必须 星图'
+  const dA32 = mk32()
+  const dB32 = mk32()
+  Mv32.search('alpha beta gamma', dA32, { k: 5, now: NOW32 })
+  const afterB32 = dig32(Mv32.search(QA32, dA32, { k: 5, now: NOW32 }))
+  Mv32.search('zeta 不存在的词', dA32, { k: 5, now: NOW32 })
+  const afterC32 = dig32(Mv32.search(QA32, dA32, { k: 5, now: NOW32 }))
+  const twice32 = dig32(Mv32.search(QA32, dA32, { k: 5, now: NOW32 }))
+  const cold32 = dig32(Mv32.search(QA32, dB32, { k: 5, now: NOW32 }))
+  check('OR092 进程内：缓冲复用不串味（不同前序 / 连跑 / 冷语料三路回执逐位相同）',
+    afterB32 !== '' && afterB32 === afterC32 && afterB32 === twice32 && afterB32 === cold32,
+    `前序=${afterB32 === afterC32} 连跑=${afterB32 === twice32} 冷=${afterB32 === cold32}`)
+  // 回执指纹：0.6.32 只是「不建那些注定被丢的对象」，分数一位都不许动（同串见 DESIGN 227 / INTERNAL 9.231）
+  const lcg32 = (seed0) => {
+    let s = seed0
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648
+      return s / 2147483648
+    }
+  }
+  const r32 = lcg32(97)
+  const w32 = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图']
+  const corpG32 = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((r32() * 5) | 0)
+    const ws = Array.from({ length: n }, () => w32[(r32() * w32.length) | 0])
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(r32() * 4) | 0],
+      title: ws[0],
+      content: ws.join(' '),
+      importance: 1 + ((r32() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: r32() < 0.2 ? null : [w32[(r32() * w32.length) | 0]],
+      project: 'p',
+    }
+  })
+  const qsG32 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha']
+  const digestG32 = qsG32.map((q) => Mv32.search(q, corpG32, { k: 8, now: NOW32 })
+    .map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|')
+  const GOLD32 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025'
+  check('OR092 进程内：回执指纹与 0.6.29 / 0.6.30 / 0.6.31 逐位相同（只省对象，不碰分数与顺序）',
+    digestG32 === GOLD32, digestG32 === GOLD32 ? '指纹同' : '指纹不同')
+  check('OR092 文档在位：INTERNAL 9.231、README 写「只物化前 k 条」、DESIGN 有 ## 227.、PLAN 有 0.6.32',
+    readS32('./docs/INTERNAL.md').includes('## 9.231 ') &&
+      readS32('./README.md').includes('只物化前 k 条') &&
+      readS32('./DESIGN.md').includes('## 227. ') &&
+      /0\.6\.32/.test(readS32('./docs/PLAN-0.6.md')))
+  const vS32 = (readS32('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS32 = vS32.length === 3 ? vS32[0] * 10000 + vS32[1] * 100 + vS32[2] : 0
+  check('OR092 版本号不低于 0.6.32（后续补丁不必回头改这一条）', vNumS32 >= 632, vS32.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

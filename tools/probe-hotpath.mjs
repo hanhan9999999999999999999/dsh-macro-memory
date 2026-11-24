@@ -636,5 +636,134 @@ const plain = [
   if (d !== GOLDEN31) console.log('DIGEST31 ' + d);
 }
 
+// ── H20 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.32] 扫描期不再给每条候选建回执对象：算完分数就写进平行缓冲，定档 / 补分 /
+// 选前 k / 物化四步全在缓冲上做，只有入选的 k 条变成对象。这条只管形状：快路必须真的在，
+// 老后处理必须**原样**留在 `if (!fastDone) { … }` 里（一个字都不能改，否则老路口径就变了）。
+{
+  const codeOf = (name) => {
+    const at = ENGINE.indexOf(`function ${name}(`);
+    if (at < 0) return '';
+    const next = ENGINE.indexOf('\nfunction ', at + 1);
+    const body = next < 0 ? ENGINE.slice(at) : ENGINE.slice(at, next);
+    return body.split('\n').filter((ln) => !ln.trimStart().startsWith('//')).join('\n');
+  };
+  const searchBody = codeOf('search');
+  const bufBody = codeOf('hitBufOf');
+  const atGuard = searchBody.indexOf('if (!fastDone) {');
+  const atBandize = searchBody.indexOf("bandize(hits, '_raw', k);");
+  const fastShape =
+    searchBody.includes('const hitBuf = leanHit ? hitBufOf(docs.length) : null;') &&
+    searchBody.includes('const fastOk = hitBuf !== null;') &&
+    searchBody.includes('let fastDone = false;') &&
+    searchBody.includes('if (fastOk) {') &&
+    searchBody.includes('hdi[q] = di;') &&
+    searchBody.includes('hscore[q] = raw[di] * w * impW * stW * foldOf;') &&
+    searchBody.includes('continue;') &&
+    // 老路的三只临时数组与两段对象字面量都还在（快路是**加法**，不是替换）
+    searchBody.includes('vbTmp.push(vbOf);') &&
+    searchBody.includes('srTmp.push(srOf);') &&
+    searchBody.includes('lvTmp.push(lvHit && lvOn ? 1 : 0);') &&
+    searchBody.includes('trTmp.push(trOf);') &&
+    searchBody.includes('if (leanHit) {') &&
+    searchBody.includes('} else hits.push({');
+  // 老后处理整段（补分 → bandize）必须落在守卫里面：`bandize` 夹在守卫开头与 `trimByBand` 之间
+  const atTrim = searchBody.indexOf('const outHits = trimByBand(hits, k, opts);');
+  const guarded =
+    atGuard >= 0 && atBandize > atGuard && atTrim > atBandize &&
+    searchBody.slice(atGuard, atTrim).includes("bandize(hits, '_raw', k);");
+  const guardShape =
+    (searchBody.match(/hitBufDone\(\);/g) || []).length === 2 &&
+    searchBody.includes('const haveBands = cnt >= 2;') &&
+    searchBody.includes('want > 0 && cmpQ(q, heap[0]) < 0');
+  const bufShape =
+    bufBody.includes('const cap = n + 64;') &&
+    bufBody.includes('if (s.n !== cap)') &&
+    bufBody.includes('if (s.busy) return null;') &&
+    bufBody.includes('new Int32Array(cap)') &&
+    bufBody.includes('new Float64Array(cap)') &&
+    bufBody.includes('new Uint8Array(cap)') &&
+    codeOf('hitBufDone').includes('HIT_BUF.busy = false;');
+  ok(
+    'H20 扫描期只写缓冲、老后处理原样留在守卫里：形状在位',
+    fastShape && guarded && guardShape && bufShape,
+    `快路=${fastShape} 守卫=${guarded && guardShape} 缓冲=${bufShape}`,
+  );
+}
+
+// ── H21 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.32] 快路自己走的定档 / 选前 k，边界值必须与老路同一口径：
+//   · `k` 缺省（`undefined`）、`k = 0`、`k` 为负数在两边都走「want = 全量」那条支，回执必须同条数；
+//   · `k` 取 0.4（`Math.round` 成 0）是唯一的例外：老路由在 `bandize` 的空堆上读 `heap[0]` 抛
+//     TypeError，快路带了 `want > 0` 守卫、返回空数组。这条把「不抛且空」钉住（老行为是崩，不是答案）；
+//   · 命中 0 条 / 恰好 1 条（`cnt < 2` 时一条档都不许写）都不许抛。
+{
+  const corpus = [
+    { id: 'sa1', project: 'p', level: 'fact', title: '潮汐 表', content: '潮汐 表 读数 一。', keywords: ['潮汐'], importance: 2, updated_at: NOW - 1000, last_accessed_at: NOW - 1000 },
+    { id: 'sa2', project: 'p', level: 'fact', title: '鲸歌', content: '鲸歌 频率 二。', keywords: ['鲸歌'], importance: 3, updated_at: NOW - 2000, last_accessed_at: NOW - 2000 },
+    { id: 'sa3', project: 'p', level: 'fact', title: '潮汐 表 读数', content: '潮汐 表 读数 三。', keywords: ['潮汐', '表'], importance: 1, updated_at: NOW - 3000, last_accessed_at: NOW - 3000 },
+  ];
+  const run = (q, opts) => {
+    try {
+      return { n: search(q, corpus, { ...opts, now: NOW }).length, err: null };
+    } catch (e) {
+      return { n: -1, err: e.message };
+    }
+  };
+  const wide = run('潮汐 表 读数', {});
+  const huge = run('潮汐 表 读数', { k: 1e9 });
+  const zero = run('潮汐 表 读数', { k: 0 });
+  const neg = run('潮汐 表 读数', { k: -3 });
+  const frac = run('潮汐 表 读数', { k: 0.4 });
+  const one = run('鲸歌 频率', { k: 5 });
+  const none = run('完全不存在的丙词', { k: 5 });
+  const okEdge =
+    wide.err === null && huge.err === null && zero.err === null && neg.err === null && frac.err === null &&
+    one.err === null && none.err === null &&
+    wide.n === huge.n && wide.n > 0 &&
+    zero.n === wide.n && neg.n === wide.n && frac.n === 0 &&
+    one.n === 1 && none.n === 0;
+  ok(
+    'H21 快路的 k 边界与命中 0/1 条：不抛、k=0/负与缺省同条数、k=0.4 空数组',
+    okEdge,
+    `缺省=${wide.n} 超大=${huge.n} k0=${zero.n} k负=${neg.n} k0.4=${frac.n} 单命中=${one.n} 空=${none.n}${frac.err ? ' · 0.4 抛 ' + frac.err : ''}`,
+  );
+}
+
+// ── H22 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.32] 缓冲是**复用**的：同一个进程里上一问留下的档号 / 分数如果没被覆盖干净，
+// 下一问就会读到别人的残值。这里让三问交替（宽命中 → 窄命中 → 目标问）反复跑，
+// 目标问无论在什么前序之后、在冷启动的语料副本上、还是连跑两遍，回执都必须逐位相同。
+{
+  const mkDocs = () => Array.from({ length: 60 }, (_, i) => ({
+    id: '0mr' + String(i).padStart(6, '0'),
+    level: i % 5 === 0 ? 'rules' : 'fact',
+    title: ['alpha', 'beta', 'gamma'][i % 3],
+    content: ['alpha beta', 'alpha delta 记忆', 'beta gamma 星图', 'delta 一律 必须'][i % 4] + ` 第 ${i} 条。`,
+    importance: 1 + (i % 4),
+    updated_at: NOW - i * 1000,
+    last_accessed_at: NOW - i * 700,
+    keywords: [['alpha'], ['beta'], ['gamma'], null][i % 4],
+    project: 'p',
+  }));
+  const dig = (rs) => rs.map((h) => `${h.id}@${h.score.toFixed(12)}#${h.cover ?? ''}`).join(',');
+  const A = 'delta 一律 必须 星图';
+  const B = 'alpha beta gamma';
+  const C = 'zeta 不存在的词';
+  const d1 = mkDocs();
+  const d2 = mkDocs();
+  search(B, d1, { k: 5, now: NOW });
+  const afterB = dig(search(A, d1, { k: 5, now: NOW }));
+  search(C, d1, { k: 5, now: NOW });
+  const afterC = dig(search(A, d1, { k: 5, now: NOW }));
+  const twice = dig(search(A, d1, { k: 5, now: NOW }));
+  const cold = dig(search(A, d2, { k: 5, now: NOW }));
+  ok(
+    'H22 缓冲复用不串味：同一目标问在不同前序 / 连跑 / 冷语料上逐位相同',
+    afterB !== '' && afterB === afterC && afterB === twice && afterB === cold,
+    `前序B=${afterB === afterC ? '同' : '不同'} 连跑=${afterB === twice ? '同' : '不同'} 冷语料=${afterB === cold ? '同' : '不同'}`,
+  );
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'}  probe-hotpath：${pass}/${pass + fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

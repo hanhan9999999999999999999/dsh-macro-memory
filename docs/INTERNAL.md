@@ -13470,3 +13470,25 @@ rawkTopPrev = top;
 1. `indexSignature`（25.0%）与 `search`（23.0%）是同一件事的两半：「每问 × 每条」摸字段 / 枚举候选。要降只能预建倒排索引，增量维护成本与风险都高于本轮收益，暂缓。
 2. `setBandsByThreshold` 剩 810.2ms，里面最大的是猜位后半区间二分三行（124.9 / 79.0 / 76.9）。再降要么改档数 `m`（影响语义），要么从「每命中也定档」改成「只对前 limit 定档」（改语义，需单独一轮验证）。
 3. `bandize` 的 `orderOf` 排序 65.1ms，档内排序换个更省比较次数的插入排序（档内元素通常极少）可能有 1% 级别收益，需单独确认逐位等价。
+
+## 9.231 0.6.32：扫描期只写缓冲，只把前 k 条物化成对象
+
+**病根**：一条问句大约铺 2,850 条 hits，`trimByBand` 只切前 `k = 5` 条 —— 99.8% 的 hit 对象从生到死没人读；而「建对象 + 以 hits 为输入的五道工序」（`setBandsByThreshold` 810.2ms / `anchorChainOf` 207.1ms / `bandize` 159.1ms / 三趟回扫 / `trimByBand` 水化）全付在它们身上。实验 `engX.mjs`（命中 0 条）0.9941ms/问 对 原样 1.5183ms/问：**34% 是这条路的价**。反证两条：对象字段数几乎不花钱（瘦对象 1.482 对完整 1.485），`raw[di]` 重复读也不花钱（提局部量 1.5187 对 1.5201）。
+
+**处方**：
+
+1. 模块级 `HIT_BUF` + `hitBufOf(n)` / `hitBufDone()`，复用规矩照抄 `HOT_SCRATCH`（`busy` 防重入、`n + 64` 才重分配、出口放旗子）。
+2. 扫描循环里 `fastOk`（`leanHit` 且拿到缓冲）时只写平行缓冲就 `continue`：`hdi / hraw / hscore / hsubj / hsr / hlv / htr / hhasvb / hvbr / hvid`，**老路的 `vbTmp/srTmp/lvTmp/trTmp` 与两段对象字面量一字不动地留着**。
+3. 快路五步按老顺序在缓冲上做：指认与主语补分（`unitScore` 从缓冲 max 取）→ 层级乘子 → 断言乘子 → 现状仓（`share = 1.15 - si * 0.03`）→ 定档（`anchorChainOf` + 同分抄档 + 猜位 + 半区间二分，逐行照抄 `setBandsByThreshold`）。
+4. 选前 k 用 `bandize` 同款有界堆，比较器逐键照抄 `orderOf`（档 → 分降 → `stampOf` → `cmpText`）。
+5. 只物化 k 条：非 digest 条 `{_subj, _raw, id, updated_at, score, _di, _band}`；digest 条 `{...d, _raw, cover: 0, score, _band}`（不带 `_di`）。老后处理整段包进 `if (!fastDone) { … }`。
+
+**三条边界**：`cnt < 2` 时 `haveBands = false`、一条档都不写（对 `trimByBand` 的 `!(h._band > 0)` 与写 `0` 同判）；`0 < k < 0.5` 老路会取空堆 `heap[0]` 抛 `TypeError`，快路带 `want > 0` 守卫返回空数组（本版唯一的行为变化，方向是「不崩」）；缓冲复用靠 `busy` + 整表覆盖，H22 用三种前序 + 连跑 + 冷语料证明不串味。
+
+**读数**（`warmprof28.mjs` 单引擎进程交替，10,000 条 / 3,000 问 / k=5）：0.6.31 三轮 1.5076 / 1.5324 / 1.5091（中位 1.5091），0.6.32 三轮 1.2847 / 1.3272 / 1.3547（中位 1.3272）→ **−12.1%**（每对 −14.8% / −13.4% / −10.2%）。新剖面 `search:3981` 2,146.9ms（内联了原来的定档与定序）、`indexSignature` 1,394.2、`scoreCandSet` 752.6，`setBandsByThreshold` 与 `bandize` 从榜上消失。
+
+**等价性**：`colddiff32` 462 项、`tokdiff32` 15,810 项、`searchdiff32` 2,462 项、`fastdiff32` 3,868 项，**全部 0 不符**；固定语料 × 八个问句的回执指纹与 0.6.29 / 0.6.30 / 0.6.31 同一串（`GOLD32` = `GOLDEN31` = `GOLD30`）。
+
+**判据**：`tools/probe-hotpath.mjs` H20–H22（快路形状 / k 边界 / 复用不串味，22/22 ALL PASS）；`verify.mjs` OR092 七条；老判据 `VW5` 同义放宽为「`unitScore` ≥ 2 处且 `keywordHitScore` 里必须有」。
+
+**踩坑**：`codeOf` 剔整行注释 → 拿注释当锚点必取到 `-1`（改用 `bandize` 夹在守卫与 `trimByBand` 之间判）；`HIT_BUF.busy` 只在 `hitBufDone` 里，`hitBufOf` 里是 `if (s.busy) return null;`；`k = 0` 与负数走「`want = 全量`」不是空数组（判据错，不是引擎错）；A/B 必须一引擎一进程。

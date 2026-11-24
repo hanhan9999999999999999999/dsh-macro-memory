@@ -8718,3 +8718,143 @@ if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= i
 1. **`indexSignature:3281` 1,458.2ms / 25.0%**——已经两轮证伪（0.6.26 把签名摊平成数值、0.6.28 试过按长度分组），剩下的开销是「每问 × 每条」摸一遍字段，除非换数据结构（预建倒排），否则不会降。预建倒排要走增量维护，风险大于本版收益，暂缓。
 2. **`search:3949` 1,339.7ms / 23.0%**——遍历与 emit 自身，其中 `hits.push` 与 `candAt` 是主要行；要降只能换「候选集枚举方式」，与 1 号候选是同一件事的两半。
 3. **`setBandsByThreshold` 剩 810.2ms**——现在里面最大的是二分三行（124.9 + 79.0 + 76.9），要再降只能改档数（`m` 变小）或改「每命中也定档」为「只对前 limit 定档」，后者会改语义，需要单独一轮验证。
+
+## 227. 扫描期只写缓冲，只把前 k 条物化成对象（0.6.32）
+
+### 227.1 选材：钱花在「注定被丢掉的对象」上
+
+0.6.31 剖面（`E:\Temp\cmp\wfix31b\CPU.20261124.164809.1952.0.001.cpuprofile`，10,000 条 / 3,000 问 / k=5，5,826.4ms）里，`search` 之外最贵的三段全部以「hits 数组」为输入：
+
+| 工序 | 0.6.31 采样 | 它读的东西 |
+| --- | --- | --- |
+| `setBandsByThreshold:2826` | 810.2ms（13.9%） | 每条 hit 的 `_raw` / `_ident` / `_subj` |
+| `anchorChainOf:2758` | 207.1ms（3.6%） | 同上（阈值链入口） |
+| `bandize:2924` | 159.1ms（2.7%） | 每条 hit 的 `_bandTmp` / `score` / `updated_at` / `id` |
+
+三条加起来 1,176ms，加上扫描期建对象本身的成本、以及补分 / 层级 / 断言三趟回扫，全部付在 hits 上。
+
+问题在于 **hits 的长度与真正交给读者的条数差两个数量级**：把 `bandize` 里 `for (const h of hits)` 那一行（17.1ms）按「每条一次 `_bandTmp` 读 + 一次比较」折算，一条问句大约铺 **2,850 条** hits，而 `trimByBand` 只切前 `k = 5` 条 —— **99.8% 的对象从生到死没人读**。
+
+用实验把这条判断钉住（`node_modules\.tmp-diff\engX.mjs`：把两处 `if (leanHit) {` 强制成 `false`，一条命中都不产生）：
+
+| 版本 | ms/问（两次） |
+| --- | --- |
+| 0.6.31 原样 | 1.5183 / 1.5228 |
+| 命中 0 条（下游全空转） | **0.9941 / 1.0051** |
+
+差 0.52ms = **34%**。这 34% 就是「对象 + 五道下游工序」的总价。
+
+另外两个实验把「省在哪」排除了两遍，省得下一版再回头：
+
+- `engX2.mjs`（lean 分支只 push 六个字段的瘦对象：`{_subj, _raw, id, updated_at, score, _di}`）：1.482 / 1.5174，与完整字面量的 1.485 / 1.5174 **同值** → 对象字面量的字段数、`_raw` 那条长表达式本身**几乎不花钱**，别在这上面省。
+- 改动 A（`raw[di]` 五次读提成一次 `const rv`，`_raw` 的四个加项提成四个局部量）：1.5245 / 1.5128（中位 1.5187）对 1.5228 / 1.5174（中位 1.5201）→ **收益 0**，整体回退。
+
+结论：要省的不是「一个对象」，是「两千八百个对象 + 以它们为输入的五道工序」。
+
+### 227.2 处方：扫描期写平行缓冲，定档 / 补分 / 选 k 全在缓冲上做
+
+新增模块级 `HIT_BUF`（与 `HOT_SCRATCH` 同一套复用规矩：`busy` 旗子防重入、`n` 变了才重分配、出口统一 `hitBufDone()` 放旗子）：
+
+```js
+const HIT_BUF = { busy: false, n: -1, di: null, raw: null, score: null, subj: null, sr: null, lv: null,
+  tr: null, vbR: null, vbId: null, hasVb: null, ident: null, dig: null, band: null, vals: null };
+function hitBufOf(n) {
+  const s = HIT_BUF;
+  if (s.busy) return null;
+  s.busy = true;
+  const cap = n + 64;            // 多备 64 格：现状仓在扫描之后追加的那几条
+  if (s.n !== cap) { s.n = cap; s.di = new Int32Array(cap); /* … raw/score/sr/tr/vbR/vals: Float64；
+    subj/lv/vbId/hasVb/ident/dig: Uint8；band: Int32 … */ }
+  return s;
+}
+```
+
+搜索主路里按 `leanHit` 决定走不走快路（`leanHit = opts.explain !== true && opts.keepBand !== true`，本来就是「不需要中间态」的那个开关）：
+
+```js
+const hitBuf = leanHit ? hitBufOf(docs.length) : null;
+const fastOk = hitBuf !== null;
+```
+
+扫描循环里算完 `trOf / foldOf / vbOf / srOf` 之后分岔：
+
+```js
+if (fastOk) {
+  const q = cnt++;
+  hdi[q] = di;
+  hraw[q] = <与瘦字面量同一条长表达式>;
+  hscore[q] = raw[di] * w * impW * stW * foldOf;
+  hsubj[q] = …; hsr[q] = srOf; hlv[q] = lvHit && lvOn ? 1 : 0; htr[q] = trOf;
+  hident[q] = 0; hdig[q] = 0;
+  // vbOf 非空时再写 hhasvb / hvbr / hvid（hvid = id 前缀命中匹配词）
+  continue;
+}
+```
+
+**老路的每一行都原样留着**（`vbTmp.push(vbOf); srTmp.push(srOf); lvTmp.push(lvHit && lvOn ? 1 : 0); trTmp.push(trOf);` + 两段对象字面量），快路是加法不是替换：拿不到缓冲、`explain`、`keepBand` 一律退回老路，口径因此不需要重新论证。
+
+快路五步，顺序与老代码严格同序（补分在定档之前、现状仓在定档之前，与 `search` 原来的段落顺序一致）：
+
+1. **指认 / 主语补分**：`topScore` 由缓冲取 max，`unitScore = topScore > 0 ? topScore : 1`，逐条 `hscore[q] += unitScore * hvbr * (hvid ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0)`；`hvid && identHardOk` 时 `hident[q] = 1`；`sr > 0 && identSubjW > 0 && opts.identSubj !== false` 再加 `unitScore * sr * identSubjW`。
+2. **层级意图乘子**：`hlv[q] === 1` 的 `hscore *= 1 + levelIntentW`。
+3. **断言密度乘子**：`tr > 0` 的 `hscore *= 1 + tipAssertW * tr`。
+4. **现状仓**：`digIds` / `topScore` / `topRaw`（排除 digest 自身）/ `share = 1.15 - si * 0.03`，已有条目取 max，没有的 `cnt++` 追加并标 `hdig[q] = 1`。
+5. **定档**：把非指认、非主语项的 `raw` 收进 `vals`，`anchorChainOf(vals, plain)` 拿 `m / a0v / aLv / spanV / posScale`，逐条「同分抄档 + 猜位 + 半区间二分」（逐行照抄 `setBandsByThreshold`，包括 `lastV / lastBand` 那套同分短路）；指认与主语项档号恒 `-1`。
+
+选前 k 用与 `bandize` 同一套有界堆（`siftUp` / `siftDown`），比较器逐键照抄 `orderOf`：
+
+```js
+const cmpQ = (x, y) => (hband[x] - hband[y])
+  || (hscore[y] - hscore[x])
+  || (stampOf(docs[hdi[x]]) < stampOf(docs[hdi[y]]) ? 1 : stampOf(docs[hdi[x]]) > stampOf(docs[hdi[y]]) ? -1 : 0)
+  || cmpText(docs[hdi[x]].id, docs[hdi[y]].id);
+```
+
+最后**只物化入选的 k 条**：非 digest 条给 `{_subj, _raw, id, updated_at, score, _di, _band}`，digest 条给 `{...docs[di], _raw, cover: 0, score, _band}`（**不带 `_di`**，水化时靠它跳过）。之后 `if (!fastDone) { … }` 里是原封不动的老后处理，`trimByBand` / `keepBand` / 水化三段一行未改。
+
+### 227.3 三条不显然的边界
+
+- **`cnt < 2` 时一条档都不许写**：老 `bandize` 开头就是 `if (total < 2) return hits;`。快路对应改成 `const haveBands = cnt >= 2;`，`false` 时物化对象**不挂 `_band`**。`trimByBand` 的判据是 `!(h._band > 0)`，对 `undefined` 与 `0` 同判，回执因此逐位相同。
+- **`0 < k < 0.5` 是个老 bug**：老路 `bandize` 里 `want = Math.round(k) = 0`，有界堆空着就去读 `heap[0]`，直接抛 `TypeError: Cannot read properties of undefined (reading '_bandTmp')`。快路加了 `want > 0 &&` 守卫，同一输入返回空数组。这是本版唯一的**行为变化**，且变化的方向是「不崩」（H21 / OR092 把这条钉住）。
+- **缓冲是复用的，必须证明不串味**：上一问留下的档号 / 分数若没被覆盖干净，下一问就会读到别人的残值。H22 / OR092 用「宽命中 → 不存在的词 → 目标问」交替、连跑两遍、再换一份冷语料副本，四路回执逐位相同。
+
+### 227.4 读数
+
+单引擎进程交替（`node_modules\.tmp-diff\warmprof28.mjs`，10,000 条 / 3,000 问 / k=5，`ENG=eng0631.mjs|eng0632.mjs`），三轮 × 两版：
+
+| 轮次 | 0.6.31 | 0.6.32 | 每对 |
+| --- | --- | --- | --- |
+| 1 | 1.5076 | 1.2847 | −14.8% |
+| 2 | 1.5324 | 1.3272 | −13.4% |
+| 3 | 1.5091 | 1.3547 | −10.2% |
+| 中位 | **1.5091** | **1.3272** | **−12.1%** |
+
+新剖面 `E:\Temp\cmp\wfix32a\CPU.20261124.172910.2748.0.001.cpuprofile`（4,134.4ms / 3,000 问 / 1.3781 ms/问）：`search:3981` 2,146.9（含内联，行级 `4721:168.7` 定档二分、`4209:149.5` 候选去重、`4495:127.0` + `4494:110.0` 时间衰减、`4485:97.1` 扫描循环）／`indexSignature:3281` 1,394.2／`scoreCandSet:4231` 752.6／`anchorChainOf` 193.2／`liveDocs` 97.1／`verbatimInputs` 85.4；**`setBandsByThreshold` 与 `bandize` 已经从榜上消失**（0.6.31 分别是 810.2 与 159.1）。
+
+代价：`search` 自己的采样从 1,339.7 涨到 2,146.9 —— 原来分摊在 `setBandsByThreshold` / `bandize` 两个函数里的活，现在内联在 `search` 里（V8 把 `anchorChainOf` 之外的部分都内联了）。总时间仍是降的。
+
+### 227.5 三把尺子 + 一把新的
+
+| 尺子 | 覆盖 | 项数 | 不符 |
+| --- | --- | --- | --- |
+| `colddiff32` | 冷建 / 索引结构 | 462 | 0 |
+| `tokdiff32` | 切词 / 归一 | 15,810 | 0 |
+| `searchdiff32` | 八组选项 × 300 问（含 keepBand / explain / 倒排关） | 2,462 | 0 |
+| `fastdiff32` | 十九组选项（k 的五个边界 / minKeep / bandKeep / verbatim / statusDigest / causeAware / levelIntent / tipAssert / identSubj / 倒排 / 实体先验）× 200 问 + 小语料 + 忙时退回 | 3,868 | 0 |
+
+`fastdiff32` 的 175 条 `edge` 全部是 `k = 0.4`（老引擎崩、新引擎空数组），已单列为预期差异，不计入不符。
+
+回执指纹（固定语料 120 条 × 八个问句的 `id@score.toFixed(12)`）与 0.6.29 / 0.6.30 / 0.6.31 是同一串：`GOLD32`（`verify.mjs` OR092 里与 H19 的 `GOLDEN31`、OR090 的 `GOLD30` 逐字符相同）。
+
+### 227.6 判据
+
+- `tools/probe-hotpath.mjs` H20–H22：快路形状（老后处理必须原样留在 `if (!fastDone) {` 里）、k 的五个边界、缓冲复用不串味。
+- `verify.mjs` OR092 七条：探针在位 / 引擎形状 / k 边界 / 复用 / 指纹 / 文档在位 / 版本地板。
+- 老判据 `VW5`（`search` 与 `keywordHitScore` 各一处 `unitScore`）同义放宽：快路自己也要算一次单位分，`search` 里现在有两份，判据改成「≥ 2 处且 `keywordHitScore` 里必须有」。
+
+### 227.7 踩坑
+
+1. **`codeOf` 会把整行注释剔掉**，拿注释当锚点（`// [macro-fusion 0.2.148] 补分在这里落地`）必然取到 `-1`，判据静默变 `false`。判「老后处理在守卫里」改用「`bandize` 夹在 `if (!fastDone) {` 与 `trimByBand` 之间」。
+2. **`HIT_BUF.busy` 只出现在 `hitBufDone` 里**，`hitBufOf` 里写的是 `if (s.busy) return null;`。形状断言按函数体切的时候别把两者混着判。
+3. **`k = 0` 与 `k = -3` 不是空数组**：两边都走「`want = 全量`」，回执是全部命中。第一版 H21 把它们写成 0，红得对——是判据错，不是引擎错。
+4. `warmprof28.mjs` 的 A/B 必须**同一个引擎各起一个进程**交替跑；同进程双引擎（`warmab32.mjs`）会把改动效益摊薄到噪声里（0.6.31 那一版已经踩过）。

@@ -3946,6 +3946,38 @@ function hotScratchDone() {
   // 只放下「有人在用」这只旗子。异常路径漏放也只是从此退回新开（结果照样对，只是慢）。
   HOT_SCRATCH.busy = false;
 }
+// [macro-fusion 0.6.32] 扫描期缓冲：只装「定档与定序真正要的那几个数」，不给每条候选建对象。
+// 复用的规矩与 HOT_SCRATCH 一致（忙＝重入就返回 null，调用方退回老路）；
+// 数组按 `n + 64` 备：多出来的 64 格留给「现状仓」在扫描之后追加的那几条。
+const HIT_BUF = { busy: false, n: -1, di: null, raw: null, score: null, subj: null, sr: null, lv: null, tr: null, vbR: null, vbId: null, hasVb: null, ident: null, dig: null, band: null, vals: null };
+function hitBufOf(n) {
+  const s = HIT_BUF;
+  if (s.busy) return null;
+  s.busy = true;
+  const cap = n + 64;
+  if (s.n !== cap) {
+    s.n = cap;
+    s.di = new Int32Array(cap);
+    s.raw = new Float64Array(cap);
+    s.score = new Float64Array(cap);
+    s.subj = new Uint8Array(cap);
+    s.sr = new Float64Array(cap);
+    s.lv = new Uint8Array(cap);
+    s.tr = new Float64Array(cap);
+    s.vbR = new Float64Array(cap);
+    s.vbId = new Uint8Array(cap);
+    s.hasVb = new Uint8Array(cap);
+    s.ident = new Uint8Array(cap);
+    s.dig = new Uint8Array(cap);
+    s.band = new Int32Array(cap);
+    s.vals = new Float64Array(cap);
+  }
+  return s;
+}
+function hitBufDone() {
+  // 与 `hotScratchDone` 同一条规矩：异常路径漏放也只是从此退回新开，结果照样对、只是慢。
+  HIT_BUF.busy = false;
+}
 function search(query, docs, opts = {}) {
   // [macro-fusion 0.6.7] 一条 null 不许把整次检索打成异常（账在 `liveDocs` 上方）
   docs = liveDocs(docs);
@@ -4424,6 +4456,32 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.6.31] 「够不够格不折时间」的阈值是 `IMP_BAND * maxRaw`，跟候选无关：
   // 老写法每条候选乘一次（`:4433` 那格），提到循环外只算一次，比较结果逐位相同。
   const impBandMax = IMP_BAND * maxRaw;
+  // [macro-fusion 0.6.32] 只物化前 k 条。症状（0.6.31 剖面，10,000 条 / 3,000 问，5,826.4ms）：
+  // 扫描期给约 2,850 条候选各建一个对象，之后五道工序全按 hits 条数走——定档 `setBandsByThreshold`
+  // 810.2ms（13.9%）、桶表 `anchorChainOf` 207.1ms、定序 `bandize` 159.1ms，再加补分/层级/断言
+  // 三趟回扫与截断后的水化；而 `trimByBand` 只取前 k 条，剩下 2,800+ 条从生到死没人读
+  //（实测把命中数强制归零：一次问句 1.52ms → 1.00ms，省下的全在这些下游工序上，不在建对象本身）。
+  // 处方：扫描期只把「定档与定序真正要的数」写进复用缓冲（下标、`_raw`、`score`、四个补分标记），
+  // 补分、定档、选前 k 全在缓冲上做，只有入选的 k 条才铺成对象。口径逐条照抄老路：
+  // 补分三趟的先后与单位、档号梯子（猜位 + 半区间二分 + 同分抄档）、定序四键
+  //（档升 → 分数降 → 更新时间降 → id 字典序）。三把尺子逐位对拍。
+  // 兜底：`explain` / `keepBand` / 重入（拿不到缓冲）/ `_raw` 有脏值，一律退回下面原封不动的老路。
+  const hitBuf = leanHit ? hitBufOf(docs.length) : null;
+  const fastOk = hitBuf !== null;
+  const hdi = fastOk ? hitBuf.di : null;
+  const hraw = fastOk ? hitBuf.raw : null;
+  const hscore = fastOk ? hitBuf.score : null;
+  const hsubj = fastOk ? hitBuf.subj : null;
+  const hsr = fastOk ? hitBuf.sr : null;
+  const hlv = fastOk ? hitBuf.lv : null;
+  const htr = fastOk ? hitBuf.tr : null;
+  const hvbr = fastOk ? hitBuf.vbR : null;
+  const hvid = fastOk ? hitBuf.vbId : null;
+  const hhasvb = fastOk ? hitBuf.hasVb : null;
+  const hident = fastOk ? hitBuf.ident : null;
+  const hdig = fastOk ? hitBuf.dig : null;
+  const hband = fastOk ? hitBuf.band : null;
+  let cnt = 0;
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
     // [macro-fusion 0.6.15] 这一条下面要读十来次同一条记录的字段：`docs[di]` 取一次，别每次重算下标。
@@ -4448,6 +4506,30 @@ function search(query, docs, opts = {}) {
     const foldOf = ruleFoldOf(di);
     const vbOf = rawVerbatim[di] === null ? void 0 : rawVerbatim[di];
     const srOf = subjRatio === void 0 ? 0 : subjRatio[di];
+    if (fastOk) {
+      // 同一批式子、同一顺序：`_raw` / `score` 与下面两条字面量逐位相同。
+      const q = cnt++;
+      hdi[q] = di;
+      hraw[q] = raw[di] * (1 + (vbOf === void 0 || !bandWOn ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || !subjBandOn ? 0 : identSubjW * srOf) + (lvHit && lvOn ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf;
+      hscore[q] = raw[di] * w * impW * stW * foldOf;
+      hsubj[q] = subjZero ? 0 : srOf >= 0.5 ? 1 : 0;
+      hsr[q] = srOf;
+      hlv[q] = lvHit && lvOn ? 1 : 0;
+      htr[q] = trOf;
+      hident[q] = 0;
+      hdig[q] = 0;
+      if (vbOf === void 0) {
+        hhasvb[q] = 0;
+        hvbr[q] = 0;
+        hvid[q] = 0;
+      } else {
+        hhasvb[q] = 1;
+        hvbr[q] = vbOf.ratio;
+        const idLow = String(dOf.id ?? "").toLowerCase();
+        hvid[q] = vbOf.matched.some((t) => idLow.startsWith(t.replace(/\(局部\)$/, ""))) ? 1 : 0;
+      }
+      continue;
+    }
     vbTmp.push(vbOf);
     srTmp.push(srOf);
     // [macro-fusion 0.6.30] 这句里的 `opts.levelIntent !== false` 每候选读一次属性表（行级 166.7ms，
@@ -4494,7 +4576,217 @@ function search(query, docs, opts = {}) {
       score: raw[di] * w * impW * stW * foldOf,
       ...opts.explain === true ? { explain: { bm25: Math.round(baseRaw[di] * 1e3) / 1e3, importance: dOf.importance, importanceWeight: Math.round(impW * 1e3) / 1e3, entities: entToks.length, recencyWeight: Math.round(w * 1e3) / 1e3, statusWeight: Math.round(stW * 1e3) / 1e3, cover: Math.round(coverOf[di] * 1e3) / 1e3, ...(adapt === null ? {} : { adaptiveIdf: { lam: Math.round(adapt.lam * 1e3) / 1e3, cluster: adapt.cluster } }), ...(qStrip.stripped.length === 0 ? {} : { stripped: qStrip.stripped.slice() }), ...(noiseDropped.length === 0 ? {} : { noiseDropped: noiseDropped.slice() }), ...(funcDropped.length === 0 ? {} : { funcDropped: funcDropped.slice() }), ...(vbOf === void 0 ? {} : { verbatim: vbOf.matched.slice() }), ...(timeAnchor ? { timeAnchor: true } : {}), ...(anchored ? { anchorHit: true } : {}), score: Math.round(raw[di] * w * impW * stW * foldOf * 1e3) / 1e3 } } : {}
     });
+
   }
+  // [macro-fusion 0.6.32] 快路：补分、定档、定序全在缓冲上做，只有前 k 条物化。
+  // 下面 `if (!fastDone)` 里是原封不动的老路（`explain` / `keepBand` / 重入 / 脏值兜底走它）。
+  let fastDone = false;
+  if (fastOk) {
+    let badRaw = false;
+    for (let q = 0; q < cnt; q++) {
+      const v = hraw[q];
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+        badRaw = true;
+        break;
+      }
+    }
+    if (badRaw) {
+      // 脏值兜底：把缓冲铺回对象，分数用 push 期那份，后面四步仍在对象上算——与老路逐位相同。
+      for (let q = 0; q < cnt; q++) {
+        const di = hdi[q];
+        vbTmp.push(rawVerbatim[di] === null ? void 0 : rawVerbatim[di]);
+        srTmp.push(hsr[q]);
+        lvTmp.push(hlv[q]);
+        trTmp.push(htr[q]);
+        hits.push({
+          _subj: hsubj[q],
+          _raw: hraw[q],
+          id: docs[di].id,
+          updated_at: docs[di].updated_at,
+          score: hscore[q],
+          _di: di
+        });
+      }
+    } else {
+      // ① 指认 / 主语补分：单位是「榜首的实际分数」，不是词分。先取榜首，再逐条加。
+      if (verbOn) {
+        let topScore = 0;
+        for (let q = 0; q < cnt; q++) if (hscore[q] > topScore) topScore = hscore[q];
+        const unitScore = topScore > 0 ? topScore : 1;
+        for (let q = 0; q < cnt; q++) {
+          if (hhasvb[q] === 0) continue;
+          const srHit = Number(hsr[q]) || 0;
+          const add = unitScore * hvbr[q] * (hvid[q] === 1 ? IDENT_ID_W : IDENT_W) * (identHardOk ? 1 : 0);
+          hscore[q] += add;
+          if (hvid[q] === 1 && identHardOk) hident[q] = 1;
+          if (srHit > 0 && identSubjW > 0 && opts.identSubj !== false) hscore[q] += unitScore * srHit * identSubjW;
+        }
+      }
+      // ② 层级意图 / ③ 断言密度：都只改档内顺序，各一趟乘法（与老路同序）。
+      if (levelIntentW > 0 && opts.levelIntent !== false) {
+        for (let q = 0; q < cnt; q++) if (hlv[q] === 1) hscore[q] *= 1 + levelIntentW;
+      }
+      if (tipOn && opts.tipAssert !== false && tipAssertW > 0) {
+        for (let q = 0; q < cnt; q++) {
+          const tr = Number(htr[q]) || 0;
+          if (tr <= 0) continue;
+          hscore[q] *= 1 + tipAssertW * tr;
+        }
+      }
+      // ④ 现状仓：分数跟榜首的实际分数走，只高一头 15%（`statusDigestOf` 已挡住点名标识符的问句）。
+      if (statusDig !== null && statusDig !== void 0) {
+        let topScore = 0;
+        let topRaw = 0;
+        const digIds = new Set(statusDig.map((di) => String(docs[di].id)));
+        for (let q = 0; q < cnt; q++) {
+          if (digIds.has(String(docs[hdi[q]].id))) continue;
+          if (Number(hscore[q]) > topScore) topScore = Number(hscore[q]);
+          if (Number(hraw[q]) > topRaw) topRaw = Number(hraw[q]);
+        }
+        for (let si = 0; si < statusDig.length; si++) {
+          const di = statusDig[si];
+          const digId = String(docs[di].id);
+          const share = 1.15 - si * 0.03;
+          const digScore = topScore > 0 ? topScore * share : share;
+          const digRaw = topRaw > 0 ? topRaw * share : share;
+          let found = -1;
+          for (let q = 0; q < cnt; q++) if (String(docs[hdi[q]].id) === digId) { found = q; break; }
+          if (found < 0) {
+            const q = cnt++;
+            hdi[q] = di;
+            hraw[q] = digRaw;
+            hscore[q] = digScore;
+            hsubj[q] = 0;
+            hsr[q] = 0;
+            hlv[q] = 0;
+            htr[q] = 0;
+            hident[q] = 0;
+            hhasvb[q] = 0;
+            hvbr[q] = 0;
+            hvid[q] = 0;
+            hdig[q] = 1;
+          } else {
+            if (digRaw > Number(hraw[found])) hraw[found] = digRaw;
+            if (digScore > Number(hscore[found])) hscore[found] = digScore;
+          }
+        }
+      }
+      // ⑤ 定档：与 `setBandsByThreshold` 同一把梯子——指认/主语不进阈值链、`bot`（band）从链尾倒着数。
+      // 老实现 `total < 2` 直接返回、一条档都不写，这里照抄：`haveBands` 为假时物化对象上不挂 `_band`。
+      const haveBands = cnt >= 2;
+      if (haveBands) {
+        let plain = 0;
+        const vals = hitBuf.vals;
+        for (let q = 0; q < cnt; q++) {
+          if (hident[q] === 1 || hsubj[q] === 1) {
+            hband[q] = -1;
+            continue;
+          }
+          vals[plain++] = hraw[q];
+        }
+        if (plain > 0) {
+          const anchors = anchorChainOf(vals, plain);
+          const m = anchors.length;
+          const a0v = anchors[0];
+          const aLv = anchors[m - 1];
+          const spanV = aLv - a0v;
+          const posScale = spanV > 0 ? (m - 1) / spanV : 0;
+          let lastV = -1;
+          let lastBand = 0;
+          for (let q = 0; q < cnt; q++) {
+            if (hident[q] === 1 || hsubj[q] === 1) continue;
+            const v = hraw[q];
+            if (v === lastV) {
+              hband[q] = lastBand;
+              continue;
+            }
+            let lo;
+            if (!(v > a0v)) lo = 0;
+            else if (v > aLv) lo = m;
+            else {
+              let est = ((v - a0v) * posScale) | 0;
+              if (est > m - 1) est = m - 1;
+              else if (est < 0) est = 0;
+              let loI;
+              let hiI;
+              if (anchors[est] >= v) {
+                loI = 0;
+                hiI = est;
+              } else {
+                loI = est + 1;
+                hiI = m - 1;
+              }
+              while (loI < hiI) {
+                const mid = (loI + hiI) >> 1;
+                if (anchors[mid] >= v) hiI = mid;
+                else loI = mid + 1;
+              }
+              lo = loI;
+            }
+            lastV = v;
+            lastBand = m - 1 - lo;
+            hband[q] = lastBand;
+          }
+        } else {
+          for (let q = 0; q < cnt; q++) hband[q] = -1;
+        }
+      }
+      // ⑥ 选前 k：有界堆（与 `bandize` 同一套 siftUp / siftDown，比较器换成下标版）。
+      // 比较器逐键照抄 `orderOf`：档升 → 分数降 → 更新时间降 → id 字典序。
+      const want = Number.isFinite(k) && k > 0 ? Math.round(k) : cnt;
+      const cmpQ = (x, y) => (hband[x] - hband[y]) || (hscore[y] - hscore[x]) ||
+        (stampOf(docs[hdi[x]]) < stampOf(docs[hdi[y]]) ? 1 : stampOf(docs[hdi[x]]) > stampOf(docs[hdi[y]]) ? -1 : 0) ||
+        cmpText(docs[hdi[x]].id, docs[hdi[y]].id);
+      const heap = [];
+      const swapQ = (i, j) => { const t = heap[i]; heap[i] = heap[j]; heap[j] = t; };
+      const siftUpQ = (i) => {
+        while (i > 0) {
+          const p = (i - 1) >> 1;
+          if (cmpQ(heap[i], heap[p]) <= 0) break;
+          swapQ(i, p);
+          i = p;
+        }
+      };
+      const siftDownQ = (i) => {
+        for (;;) {
+          const l = i * 2 + 1;
+          if (l >= heap.length) break;
+          const r = l + 1;
+          let m = i;
+          if (cmpQ(heap[l], heap[m]) > 0) m = l;
+          if (r < heap.length && cmpQ(heap[r], heap[m]) > 0) m = r;
+          if (m === i) break;
+          swapQ(i, m);
+          i = m;
+        }
+      };
+      for (let q = 0; q < cnt; q++) {
+        if (heap.length < want) {
+          heap.push(q);
+          siftUpQ(heap.length - 1);
+        } else if (want > 0 && cmpQ(q, heap[0]) < 0) {
+          heap[0] = q;
+          siftDownQ(0);
+        }
+      }
+      heap.sort(cmpQ);
+      // ⑦ 物化：只有这 k 条铺对象，键序与老路一致（`_band` 直接给，`trimByBand` 只读它）。
+      for (let hi = 0; hi < heap.length; hi++) {
+        const q = heap[hi];
+        const di = hdi[q];
+        if (hdig[q] === 1) {
+          // 现状仓那几条老路是从 `docs[di]` 整条 spread 出来的（没有 `_di`：水化时跳过）。
+          hits.push({ ...docs[di], _raw: hraw[q], cover: 0, score: hscore[q], ...haveBands ? { _band: hband[q] } : {} });
+        } else {
+          hits.push({ _subj: hsubj[q], _raw: hraw[q], id: docs[di].id, updated_at: docs[di].updated_at, score: hscore[q], _di: di, ...haveBands ? { _band: hband[q] } : {} });
+        }
+      }
+      fastDone = true;
+    }
+  }
+
+  // [macro-fusion 0.6.32] 老路整段保留：`fastDone` 为真时上面四步已经在缓冲上做过，这里不再跑。
+  if (!fastDone) {
   // [macro-fusion 0.2.148] 补分在这里落地：单位是「榜首的实际分数」，不是词分——所以一条
   // importance 更高的措辞命中不会再把它压下去；摘掉临时挂的原样证据，别让它漏进回执。
   if (verbOn) {
@@ -4583,8 +4875,10 @@ function search(query, docs, opts = {}) {
   }
   // [macro-fusion 0.6.12] 只排前 k：keepBand / trimByBand 都只读前 k 条。
   bandize(hits, '_raw', k);
+  }
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
   if (opts.keepBand === true) {
+    hitBufDone();
     hotScratchDone();
     return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
   }
@@ -4600,6 +4894,7 @@ function search(query, docs, opts = {}) {
     }
   }
   // 缓冲到此为止不再用（上面两次 `hotScratchDone()` 是本函数仅有的两个出口）。
+  hitBufDone();
   hotScratchDone();
   return outHits;
 }
