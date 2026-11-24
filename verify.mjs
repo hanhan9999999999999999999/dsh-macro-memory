@@ -37,8 +37,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
 // 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）；
-// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）；0.6.20 起 = 48（加 probe-sigrow）；0.6.21 起 = 49（加 probe-lex）。
-const SUITE_FLOOR = 49
+// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）；0.6.20 起 = 48（加 probe-sigrow）；0.6.21 起 = 49（加 probe-lex）；0.6.22 起 = 50（加 probe-cold）。
+const SUITE_FLOOR = 50
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -952,6 +952,7 @@ function makeHostCtx() {
     'tools/probe-band.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.19），不拼仓内路径',
   'tools/probe-sigrow.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.20），不拼仓内路径',
   'tools/probe-lex.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.21），不拼仓内路径',
+  'tools/probe-cold.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.22），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -12714,8 +12715,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'WZ2 kwSeparate 默认开：正文 BM25 只吃 title + content（opts.kwSeparate === false 才回退）',
-    MWz.includes('const kwToks = opts.kwSeparate === false ? null : docs.map(') &&
-      MWz.includes('const dText = opts.kwSeparate === false'),
+    MWz.includes('const kwSep = opts.kwSeparate !== false;') &&
+      MWz.includes('plainToks[i] = kwSep') &&
+      MWz.includes(': finishToks(ts.concat(cs, kwList(d).flatMap((w) => tokenizeSegs(String(w ?? \'\')))));'),
   )
   check('WZ3 关键词计数按 kwTfW 打折写进同一张 df 表（候选资格不掉）', MWz.includes('m.set(t, (m.get(t) ?? 0) + kwTfW);'))
   check(
@@ -12945,12 +12947,14 @@ dt063: {
     'DT066 docText 改走 kwList，旧 `...d.keywords` 已清零（脏条目不再让 verbatimInputs 抛 TypeError）',
     eng.includes('return [d.title ?? "", d.content ?? "", kwList(d).join(" ")].join(" ");') && !eng.includes('...d.keywords].join'),
   )
-  const kwToksLine = eng.split('\n').find((l) => l.includes('const kwToks = opts.kwSeparate === false')) ?? ''
+  const kwFlatLine = eng.split('\n').find((l) => l.includes('? docs.map((d) => kwList(d).flatMap((w) => tokenize(')) ?? ''
+  const kwToksLine = eng.split('\n').find((l) => l.includes('const kwToks = kwSep ? kwFlatArr')) ?? ''
   const kwSetsLine = eng.split('\n').find((l) => l.includes('const kwSets = useField')) ?? ''
   check(
     'DT066 打分面两处（kwToks / kwSets）同样走 kwList——逗号串的关键词真的进 tf-idf，不只是不崩',
-    kwToksLine.includes('kwList(d).flatMap') && kwSetsLine.includes('new Set(kwList(d).flatMap'),
-    `kwToks ${kwToksLine.includes('kwList(d)') ? 'ok' : 'miss'} / kwSets ${kwSetsLine.includes('kwList(d)') ? 'ok' : 'miss'}`,
+    eng.includes('const kwFlatArr = kwSep || useField') && kwFlatLine.includes('kwList(d).flatMap') &&
+      kwToksLine.includes('kwFlatArr') && kwSetsLine.includes('kwFlatArr'),
+    `kwList ${kwFlatLine.includes('kwList(d)') ? 'ok' : 'miss'} / kwToks ${kwToksLine.includes('kwFlatArr') ? 'ok' : 'miss'} / kwSets ${kwSetsLine.includes('kwFlatArr') ? 'ok' : 'miss'}`,
   )
   check(
     'DT066 索引签名也走 kwList：字符串词表被改写要让缓存失效，不许拿旧索引答新库（0.6.10 起在 sigDocHash 里逐词 put）',
@@ -13859,8 +13863,9 @@ dt063: {
   )
 
   const ENGINE_L = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  // 0.6.22 起 tokenize 只剩一行包装（`return finishToks(tokenizeSegs(text));`），切段循环搬进了 tokenizeSegs。
   const tokBodyL = (() => {
-    const a = ENGINE_L.indexOf('function tokenize(text) {')
+    const a = ENGINE_L.indexOf('function tokenizeSegs(text) {')
     return a < 0 ? '' : ENGINE_L.slice(a, ENGINE_L.indexOf('\n}\n', a))
   })()
   const partsL = {
@@ -13961,6 +13966,106 @@ dt063: {
   const vS12 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS12 = vS12.length === 3 ? vS12[0] * 10000 + vS12[1] * 100 + vS12[2] : 0
   check('OR081 版本号不低于 0.6.21（后续补丁不必回头改这一条）', vNumS12 >= 621, vS12.join('.'))
+}
+
+// 0.6.22：建索引不再把同一批字段切两遍（见 INTERNAL 9.221 / DESIGN 217）。
+{
+  const cSrc = readFileSync(new URL('./tools/probe-cold.mjs', import.meta.url), 'utf8')
+  const cWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-cold.mjs'")
+  const cExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-cold.mjs'")
+  const cLabels = ['C0 形状', 'C1 分段可交换', 'C2 成词可交换', 'C3 字段口径', 'C4 确定性', 'C5 退化'].every((t) => cSrc.includes(t))
+  check(
+    'OR082 冷建探针 C0–C5 在位（形状 / 分段可交换 / 成词可交换 / 五张表与老表达式逐条相同 / 确定性 / 退化），check-all 挂线且列进取根例外',
+    cLabels && cWired && cExcused,
+    `标签 ${cLabels} / 挂线 ${cWired} / 取根例外 ${cExcused}`,
+  )
+
+  const ENGINE_C = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const buildC = (() => {
+    const a = ENGINE_C.indexOf('function buildSearchIndex(docs, opts = {}, sig = null) {')
+    return a < 0 ? '' : ENGINE_C.slice(a, ENGINE_C.indexOf('\n}\n', a))
+  })()
+  const tokC = (() => {
+    const a = ENGINE_C.indexOf('function tokenize(text) {')
+    return a < 0 ? '' : ENGINE_C.slice(a, ENGINE_C.indexOf('\n}\n', a))
+  })()
+  const partsC = {
+    分段函数: ENGINE_C.includes('function tokenizeSegs(text) {'),
+    成词函数: ENGINE_C.includes('function finishToks(out) {') && ENGINE_C.includes('return isMostlyLatin(out) ? normalizeEn(out) : out;'),
+    tokenize仍是包装: tokC.includes('return finishToks(tokenizeSegs(text));'),
+    单趟三张表: buildC.includes("const ts = tokenizeSegs(String(d.title ?? ''));") && buildC.includes("const cs = tokenizeSegs(String(d.content ?? ''));"),
+    bodyLen就地: buildC.includes('const body = finishToks(cs);') && buildC.includes('bodyLen[i] = body.length > 0 ? body.length : 1;'),
+    plainToks就地: buildC.includes('plainToks[i] = kwSep') && buildC.includes('finishToks(ts.concat(cs))'),
+    标题集合就地: buildC.includes('titleSets[i] = new Set(finishToks(ts));'),
+    关键词只成词一趟: (buildC.match(/tokenize\(/g) ?? []).length === 1 && buildC.includes('const kwSets = useField ? kwFlatArr.map((t) => new Set(t)) : null;'),
+    不再配seen: buildC.includes('const seen = new Set();') === false && buildC.includes('seen.has(') === false,
+    首见改用m: buildC.includes('const cur = m.get(t);') && buildC.includes('else m.set(t, cur + 1);'),
+    不再重切字段: buildC.includes('new Set(tokenize(') === false && buildC.includes("docs.map((d) => tokenize(String(d.content ?? '')))") === false,
+  }
+  const missC = Object.keys(partsC).filter((k) => !partsC[k])
+  check(
+    'OR082 引擎里建索引改单趟：切词拆成分段 + 成词两段（tokenize 仍是一行包装）、plainToks/bodyLen/titleSets 一趟填满、keywords 只成词一趟、每条不再配 seen Set、首见判据改 m.get',
+    missC.length === 0,
+    missC.length === 0 ? `${Object.keys(partsC).length} 件在位` : `缺 ${missC.join(' / ')}`,
+  )
+
+  const segC = (() => {
+    const a = ENGINE_C.indexOf('var CJK = ')
+    const b = ENGINE_C.indexOf('function docText(d) {')
+    return a >= 0 && b > a ? ENGINE_C.slice(a, b) : ''
+  })()
+  const CORPUS_C = [
+    ['基线要跑几轮才收敛', '自检基线 跑两趟 三趟 才收敛'],
+    ['keywords as string', '逗号分隔的关键词写法 也要一致'],
+    ['KvNet probe 0.6.22', 'kvnet 探针 65,536 个码点 😀𠀀𪚥'],
+    ['the quick brown fox', 'jumps over the lazy dog and the end'],
+    ['索引 缓存', 'the index cache is warm and the search is fast'],
+    ['', ''],
+    ['中', 'a'],
+    ['a', '中'],
+    ['   ', '  \n\t '],
+  ]
+  let segOkC = false
+  let segDetailC = ''
+  let joinOkC = false
+  let joinDetailC = ''
+  try {
+    const MC = new Function(`${segC}\nreturn { tokenizeSegs, finishToks, tokenize, isMostlyLatin };`)()
+    let badSeg = 0
+    let badJoin = 0
+    for (const [t, c] of CORPUS_C) {
+      const segWant = JSON.stringify(MC.tokenizeSegs(`${t} ${c}`))
+      const segGot = JSON.stringify(MC.tokenizeSegs(t).concat(MC.tokenizeSegs(c)))
+      if (segWant !== segGot) badSeg += 1
+      const joinWant = JSON.stringify(MC.tokenize(`${t} ${c}`))
+      const joinGot = JSON.stringify(MC.finishToks(MC.tokenizeSegs(t).concat(MC.tokenizeSegs(c))))
+      if (joinWant !== joinGot) badJoin += 1
+    }
+    // 混排反例：标题单看以拉丁为主（会被英文化砍停用词、词尾归一），拼上中文正文后不再以拉丁为主。
+    // 逐段成词会得出更短的词表——所以成词只能在整表上跑一次。
+    const naive = JSON.stringify(MC.tokenize('keywords as string').concat(MC.tokenize('这是中文正文 四个实词 都在这里')))
+    const whole = JSON.stringify(MC.tokenize('keywords as string 这是中文正文 四个实词 都在这里'))
+    segOkC = badSeg === 0
+    segDetailC = `${CORPUS_C.length} 对 · 不一致 ${badSeg}`
+    joinOkC = badJoin === 0 && naive !== whole
+    joinDetailC = `${CORPUS_C.length} 对 · 不一致 ${badJoin} · 混排反例逐段成词会变短 ${naive !== whole}`
+  } catch (e) {
+    segDetailC = String(e && e.message)
+    joinDetailC = String(e && e.message)
+  }
+  check('OR082 进程内：分段可交换——segs(a) ++ segs(b) 与 segs(a ␠ b) 逐 token 相同', segOkC, segDetailC)
+  check('OR082 进程内：成词可交换——finishToks(segs(a) ++ segs(b)) 与 tokenize(a ␠ b) 逐 token 相同（英文化只在整表上跑一次）', joinOkC, joinDetailC)
+
+  check(
+    'OR082 文档在位：INTERNAL 9.221 写了「同一批字段不再切两遍」，README 写了「同一批字段不再切两遍」，DESIGN 有 ## 217.，PLAN 有 0.6.22',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.221 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('同一批字段不再切两遍') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 217. ') &&
+      /0\.6\.22/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS13 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS13 = vS13.length === 3 ? vS13[0] * 10000 + vS13[1] * 100 + vS13[2] : 0
+  check('OR082 版本号不低于 0.6.22（后续补丁不必回头改这一条）', vNumS13 >= 622, vS13.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

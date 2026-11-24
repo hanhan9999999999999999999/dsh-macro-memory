@@ -86,6 +86,7 @@ const STEPS = [
   ['tools/probe-band.mjs', '定档账：阈值定档不再全量排序（桶计数排序 + 段扫、桶 0 特判、小端退路只排前 n 个、与排序链 500 组逐位相同、同桶比值 ≥ 0.85、复用缓冲不串味）'],
   ['tools/probe-sigrow.mjs', '签名账：条级哈希校验改按数组下标对齐的侧表（只在同一数组第 2 次访问才铺行、与每次新建数组那条路逐位相同、计数口径不变、八种改法必被看见、脏值不合并）'],
   ['tools/probe-lex.mjs', '词法账：分类不再逐字符跑两条 Unicode 正则（BMP 表由那两条正则自己扫出、惰性建一次、单码点快路 + 星外退路、全 1,112,064 码点与旧正则相同、切段与语料逐串相同）'],
+  ['tools/probe-cold.mjs', '冷建账：建索引不再把同一批字段切两遍（切词拆成分段 + 成词两段、字段各分段一遍单趟填 plainToks·bodyLen·titleSets、每条不再配 seen Set、分段与成词都与整串口径逐 token 相同、五张表与老表达式逐条相同）'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],

@@ -10,8 +10,8 @@
 
 | 项 | 读数 | 日期 | 版本 / commit | 复核命令 |
 |---|---|---|---|---|
-| 健康基线 | 49 支 suite / **3,797 断言** / failed 0 / 与 baseline 逐支一致（约 280s） | 2026-11-24 10:4x | 0.6.21 | `node tools/check-all.mjs` |
-| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 10:4x | 0.6.21 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
+| 健康基线 | 50 支 suite / **3,809 断言** / failed 0 / 与 baseline 逐支一致（约 290s） | 2026-11-24 11:4x | 0.6.22 | `node tools/check-all.mjs` |
+| 两棵树同步 | drift 0 / extra 0（同步后） | 2026-11-24 11:4x | 0.6.22 | `node tools/doctor.mjs`（结果 PASS）；`node tools/sync-trees.mjs --apply` |
 | 库变大后的照抄召回（新尺子） | 同一批 52 问、真库快照 660 条 active：照抄 **hit@1 0.895 → 0.921**、MRR 0.934 → 0.947；换说法 **0.333 → 0.417**、MRR 0.528 → 0.569；时间锚 0.500 不动；**救回 2 / 误伤 0 / 移位 0**（逐题只有两条 #2→#1）。关掉即回 0.5.0 逐位相同（52/52）。同尺横比 v0.3.0 / v0.4.0 / v0.5.0 三档逐位相同、只有本节双升 | 2026-11-23 22:00 | 0.6.0 · meow 补丁（局部 idf，`adaptiveIdf` 产品路径默认开） | `node tools/probe-idf.mjs`（D1–D12 十四条；读数见 `docs/PLAN-0.6.md` §1） |
 | 换场景适应力（新尺子） | 5 个陌生领域（医学/法律/园艺/天文/财务）× 12 条 + 10 条换说法问句：换说法 **hit@3 0.40 → 0.80**、hit@1 0.00 不动、MRR 0.342；两遍合并**第一名改判 0 题**；关共现自学习 hit@3 掉回 0.30；混库 60 条与单域持平；同词 hit@1 100% | 2026-11-22 22:40 | 0.5.0 · meow 补丁 `[macro-fusion 0.5.0 · P1]` | `node tools/probe-adapt.mjs`（A0–A5 九条） |
 | 版本与接口面 | 0.3.0，接口面冻结 | 2026-11-22 | `2c029b0`（`chore(baselines): 0.3.0 · 24 suites / 3323 assertions`） | `git log --oneline -1` |
@@ -234,3 +234,12 @@ Select-String -Path README.md,docs\*.md -Pattern "71\.95|0\.7195"
 - **OR081 除标签/挂线/文档/版本地板外，把 L1 与 L3 在 `verify.mjs` 里再跑一遍**（用 `new Function` 把引擎那一段切出来当纯函数），并把引擎形状九件（三档常量 / 惰性槽 / 表由 `CJK.source` 与 `WORD.source` 扫出 / 只补空格 / 单码点快路 / 星外退路 / `classify` 包装 / `tokenize` 数值比较 / `tokenize` 不再出现 `classify(`）钉住。
 
 读数口径：本版**没有跟改任何老判据**——`OR073`–`OR080`、`probe-*` 全部原样通过；`SUITE_FLOOR` 48 → 49，`NO_ROOT` 增 `tools/probe-lex.mjs` 一条（只经相对 import 与 `import.meta.url` 取引擎）。
+
+### 关于「3,809」的来路
+
+- 相对 0.6.21 的 3,797：**净 +12**，逐笔对得上，没有别的来路。
+  - `tools/probe-cold.mjs` **+6**（C0 形状十一件 / C1 分段可交换 14 对 / C2 成词可交换 14 对含混排反例 / C3 五张表 12 条 × 4 支路 / C4 确定性 / C5 退化 11 例）。
+  - `verify.mjs` 的 `OR082` **+6**（C0–C5 标签 + 挂线 + 取根例外 / 引擎十一件 / 进程内分段对拍 / 进程内成词对拍 + 混排反例 / 文档四处 / 版本 ≥ 0.6.22）。
+  - 其它支**一条未动**：`OR081` 与 `probe-lex` 的 L0 只是把「切段循环」的取址从 `tokenize` 改到 `tokenizeSegs`（条数不变），`WZ2` / `DT066` 两条源码形状断言改成读新的派生链（条数不变），`WZ3` 保留原字面量、连源码都照老写法写回去了。
+- 套件 49 → **50**（`SUITE_FLOOR` 50，`NO_ROOT` 增 `tools/probe-cold.mjs`）。
+- 语义兜底：三条被改写的形状断言（`WZ2` / `DT066`）由 `probe-cold` C3（五张表与老表达式 12 条 × 4 支路逐条相同）与 `colddiff22.mjs`（11 轮 277 项对拍）兜住——**形状跟着源码走，语义一字不动**。

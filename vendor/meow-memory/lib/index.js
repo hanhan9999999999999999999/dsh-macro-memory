@@ -1674,7 +1674,10 @@ function isMostlyLatin(tokens) {
   for (const t of tokens) if (/^[a-z]+$/.test(t)) latin += 1;
   return latin * 2 >= tokens.length;
 }
-function tokenize(text) {
+// [macro-fusion 0.6.22] 切词拆成两段：「分段」只看本串（纯函数、逐码点），「英文化」那一趟
+// （isMostlyLatin → normalizeEn）看的是整张词表的成分比例。分开之后建索引时一个字段只分段一遍，
+// 需要成词的地方再各自补一次英文化——原来 content 段两遍、title 段两遍、keywords 段两遍，白付。
+function tokenizeSegs(text) {
   const cps = Array.from(text.normalize("NFKC"));
   const out = [];
   const nCp = cps.length;
@@ -1697,7 +1700,13 @@ function tokenize(text) {
     }
     i = j;
   }
+  return out;
+}
+function finishToks(out) {
   return isMostlyLatin(out) ? normalizeEn(out) : out;
+}
+function tokenize(text) {
+  return finishToks(tokenizeSegs(text));
 }
 var EN_STOPWORDS = /* @__PURE__ */ new Set([
   "a",
@@ -3332,29 +3341,47 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   const n = docs.length;
   const useField = opts.fieldBoost !== false;
   const kwTfW = Number.isFinite(opts.kwTfW) && opts.kwTfW >= 0 ? opts.kwTfW : KW_TF_W;
-  const dText = opts.kwSeparate === false
-    ? docText
-    : (d) => [String(d.title ?? ''), String(d.content ?? '')].join(' ');
-  const plainToks = docs.map((d) => tokenize(dText(d)));
+  // [macro-fusion 0.6.22] 每个字段只「分段」一遍：title / content / keywords 各切一次，成词的地方
+  // 在各自最终的词表上补一趟英文化。原来 content 切两遍（plainToks 一遍、数 bodyLen 又一遍）、
+  // title 切两遍（plainToks + titleSets）、keywords 切两遍（kwToks 与 kwSets 那两处表达式一字不差）。
+  // 等价依据：空格是可跳字符、词不错跨（分段与拼接可交换），而英文化只看整表成分比例，
+  // 所以「先拼后切」=「先切后拼、末了对整表跑一次英文化」——判据 probe-cold 的 C2/C3 钉这一条。
+  const kwSep = opts.kwSeparate !== false;
+  // kwToks / kwSets 要的是「逐个关键词各自成词」（老口径就是逐个 tokenize），
+  // 而 plainToks 在 kwSeparate:false 时要的是「关键词拼起来再成词」——两者不是一回事，各留一份。
+  const kwFlatArr = kwSep || useField
+    ? docs.map((d) => kwList(d).flatMap((w) => tokenize(String(w ?? ''))))
+    : null;
+  // 单趟下来：plainToks / bodyLen / titleSets 一起填满，中间那几份分段不留引用（原地走掉就没 GC 压力）。
+  const plainToks = new Array(n);
+  const bodyLen = new Array(n);
+  const titleSets = useField ? new Array(n) : null;
+  for (let i = 0; i < n; i++) {
+    const d = docs[i];
+    const ts = tokenizeSegs(String(d.title ?? ''));
+    const cs = tokenizeSegs(String(d.content ?? ''));
+    const body = finishToks(cs);
+    bodyLen[i] = body.length > 0 ? body.length : 1;
+    plainToks[i] = kwSep
+      ? finishToks(ts.concat(cs))
+      : finishToks(ts.concat(cs, kwList(d).flatMap((w) => tokenizeSegs(String(w ?? '')))));
+    if (titleSets !== null) titleSets[i] = new Set(finishToks(ts));
+  }
   const sessTopics = opts.sessionTopic === false ? null : sessionTopicTerms(docs, plainToks);
   const docToks = sessTopics ? docs.map((d, i) => {
     const extra = sessTopics.get(d.source_session);
     return extra ? plainToks[i].concat(extra) : plainToks[i];
   }) : plainToks;
   const avgdl = docToks.reduce((s2, t) => s2 + t.length, 0) / n || 1;
-  const bodyLen = docs.map((d) => {
-    const t = tokenize(String(d.content ?? ''));
-    return t.length > 0 ? t.length : 1;
-  });
   const avgBody = bodyLen.reduce((s2, x) => s2 + x, 0) / n || 1;
 
   // [macro-fusion 0.6.16] 字段命中（标题 / 关键词）在建索引时一次算进倒排条目，热路不再
   // 每条每个词查两次 Set。两个集合本来就只由 docs 决定，提前建不影响任何读法。
-  const titleSets = useField ? docs.map((d) => new Set(tokenize(String(d.title ?? '')))) : null;
-  const kwSets = useField ? docs.map((d) => new Set(kwList(d).flatMap((w) => tokenize(String(w ?? ''))))) : null;
+  // [macro-fusion 0.6.22] 标题集合在上面那趟里就地建好；关键词集合直接由 kwFlatArr 建，不再重切一遍。
+  const kwSets = useField ? kwFlatArr.map((t) => new Set(t)) : null;
   const df = new Map();
   const tf = [];
-  const kwToks = opts.kwSeparate === false ? null : docs.map((d) => kwList(d).flatMap((w) => tokenize(String(w ?? ''))));
+  const kwToks = kwSep ? kwFlatArr : null;
   // 倒排：词 → 出现过它的条目（`d` 下标、`f` 该条的词频、`t` 该条的字段命中位：1=标题 2=关键词）。
   // 打分只碰「问句里那几个词真的出现过」的条目，而不是把整库每条都乘一遍。
   // opts.inverted === false 可关掉，用于阴性对照。
@@ -3363,29 +3390,36 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   // 词频与字段命中位都是建索引时就定死的，记在倒排里，热路就只剩数组读 + 浮点乘加。
   // 字段权重值本身不预乘（opts.fieldKwW 是每问参数），这里只记「命中了哪几个字段」。
   const postings = opts.inverted === false ? null : new Map();
+  // [macro-fusion 0.6.22] 不再给每条配一个 seen Set：`m` 里「键还不存在」本身就等价于
+  // 「这个词这条第一次出现」（两次写入都是 m.set，从来只增不减），一次 m.get 就判完了。
+  // 原来每个（条, 词）对要付 m.get + m.set + seen.has + seen.add 四次哈希查找，现在两次。
   for (let di = 0; di < docToks.length; di++) {
     const m = new Map();
-    const seen = new Set();
-    for (const t of docToks[di]) {
-      m.set(t, (m.get(t) ?? 0) + 1);
-      if (!seen.has(t)) {
-        seen.add(t);
+    const toks = docToks[di];
+    for (let ti = 0; ti < toks.length; ti++) {
+      const t = toks[ti];
+      const cur = m.get(t);
+      if (cur === void 0) {
+        m.set(t, 1);
         df.set(t, (df.get(t) ?? 0) + 1);
         const p = postings?.get(t);
         if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
         else p.d.push(di);
-      }
+      } else m.set(t, cur + 1);
     }
     if (kwToks !== null) {
-      for (const t of kwToks[di]) {
-        m.set(t, (m.get(t) ?? 0) + kwTfW);
-        if (!seen.has(t)) {
-          seen.add(t);
+      const kts = kwToks[di];
+      for (let ti = 0; ti < kts.length; ti++) {
+        const t = kts[ti];
+        // 关键词支路只在首见时记 df / 倒排；词频照老口径一行写成「打折后累加」，
+        // 与正文支路的 cur + 1 同义（0.6.22 起正文支路才走 `m.get` 首见判据）。
+        if (m.get(t) === void 0) {
           df.set(t, (df.get(t) ?? 0) + 1);
           const p = postings?.get(t);
           if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
           else p.d.push(di);
         }
+        m.set(t, (m.get(t) ?? 0) + kwTfW);
       }
     }
     if (postings !== null) {

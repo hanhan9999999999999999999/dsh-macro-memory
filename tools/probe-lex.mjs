@@ -84,8 +84,12 @@ function segsOf(text, cls) {
 // ── L0 形状 ───────────────────────────────────────────────────────────────────
 {
   const seg = segOf(ENGINE);
-  const body = ENGINE.slice(ENGINE.indexOf('function tokenize(text) {'));
+  // 0.6.22 起切词拆成 tokenizeSegs（分段）+ finishToks（英文化），逐码点的活全在 tokenizeSegs 里，
+  // 所以形状检查盯它；tokenize 现在只是一行包装。
+  const body = ENGINE.slice(ENGINE.indexOf('function tokenizeSegs(text) {'));
   const tokBody = body.slice(0, body.indexOf('\n}\n'));
+  const wrapper = ENGINE.slice(ENGINE.indexOf('function tokenize(text) {'));
+  const wrapperBody = wrapper.slice(0, wrapper.indexOf('\n}\n'));
   const cjkLine = (seg.match(/^var CJK = (.*)$/m) || ['', ''])[1];
   const wordLine = (seg.match(/^var WORD = (.*)$/m) || ['', ''])[1];
   const shape = {
@@ -99,12 +103,13 @@ function segsOf(text, cls) {
     wrapper: /function classify\(cp\) \{\n {2}var k = clsCode\(cp\);/.test(seg),
     tokNumeric: tokBody.includes('const cls = clsCode(cps[i]);') && tokBody.includes('if (cls === CLS_SKIP) {') && tokBody.includes('while (j < nCp && clsCode(cps[j]) === cls) j++;') && tokBody.includes('if (cls === CLS_CJK) {'),
     tokNoRegex: tokBody.includes('classify(') === false,
+    tokWrap: wrapperBody.includes('return finishToks(tokenizeSegs(text));'),
     nCp: tokBody.includes('const nCp = cps.length;'),
     regeces: cjkLine.includes('\\p{Script=Han}') && wordLine.includes('\\p{L}'),
   };
   const bad = Object.keys(shape).filter((k) => !shape[k]);
   ok(
-    'L0 形状：三档常量 / 惰性表 / 表由 CJK·WORD 两条正则扫出 / 单码点快路 + 星外退路 / tokenize 改数值比较且不再调 classify / classify 留成字符串包装',
+    'L0 形状：三档常量 / 惰性表 / 表由 CJK·WORD 两条正则扫出 / 单码点快路 + 星外退路 / tokenizeSegs 改数值比较且不再调 classify / tokenize 留成一行包装 / classify 仍留成字符串包装',
     bad.length === 0 && mod !== null,
     `缺 ${bad.length === 0 ? '无' : bad.join(',')}`,
   );

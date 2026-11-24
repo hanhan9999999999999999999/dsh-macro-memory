@@ -7667,3 +7667,74 @@ function clsCode(cp) {
 读数（10,000 条 / 300 问，三次取中位）：`search` **2.04 → 2.00ms（−2.1%；相对 0.6.12 的 27.377ms 累计 −92.7%）**、`searchAdaptive` **2.59 → 2.53ms（−2.5%）**、**冷建 292 → 233.5ms（−20%）**（tokenize 的大头在冷建）、总采样 **1,433.5 → 1,337.0ms（−6.7%）**，`classify` 从前 20 名掉出去。
 
 踩坑：①这一刀真正的收益在**冷建**不在热问——热问每问只切几个短句，省下的 88.7ms 摊在 300 问里看不见；读数要同时看 `coldMs`，否则会误判「改了没用」。②`buildClsBmp()` 里那个大串必须用 `String.fromCharCode` 逐个数拼成 6.5 万个码点（`String.fromCodePoint` 会产出代理对，破坏了「一个下标一个码点」的对齐）。③判据不能只测几个样本：`probe-lex` 的 L1 把全 1,112,064 个码点逐点与旧正则对拍，一次跑完约 1.5s，比任何抽样都便宜。
+
+## 217. 建索引不再把同一批字段切两遍：分段 + 成词两趟，`seen` 退场（0.6.22）
+
+**症状**（0.6.21 之后，`--cpu-prof`，10,000 条 / 300 问，总采样 1,337.0ms）。热查那条链已经压到 2.00ms，贵的地方全挪到了冷建：
+
+| 位置 | 自证 | 干什么 |
+| --- | --- | --- |
+| `vendor/meow-memory/lib/index.js:3331` | 23.1ms | `buildSearchIndex` 的字段预处理 |
+| `vendor/meow-memory/lib/index.js:3370` | 21.0ms | `m.set(t, (m.get(t) ?? 0) + 1)` 词频累加 |
+| `vendor/meow-memory/lib/index.js:3397` | 17.8ms | `postings.get(t)` 铺倒排 |
+| `vendor/meow-memory/lib/index.js:3373` | 13.6ms | `df.set(t, …)` 记文档频率 |
+| `vendor/meow-memory/lib/index.js:3399` | 11.5ms | `p.t.push(…)` 记字段命中位 |
+
+函数级：`buildSearchIndex` **138.3ms / 10.3%**、`bumpIn` 65.8、`buildCoocSyn` 43.0、`coocShareHan` 29.7。
+
+**病根两条**：
+
+1. **同一批字段被切了两遍**。`plainToks` 切 content（`dText` 那一趟），`bodyLen` 又 `tokenize(String(d.content ?? ''))` 切一遍；`plainToks` 切 title，`titleSets` 又切一遍；keywords 在 `kwToks` 与 `kwSets` 两处写着一字不差的两份 `docs.flatMap((d) => kwList(d).flatMap((w) => tokenize(String(w ?? ''))))`。
+2. **每条配一个 `seen` Set**。每个（条, 词）对要先 `seen.has(t)` 再 `seen.add(t)`，只为回答「这个词在这条里是不是第一次出现」。加上词频那句的 `m.get` / `m.set`，一个对子四次哈希查找。
+
+**处方两条**：
+
+1. **把切词拆成两段**。`tokenize` 原来是「逐码点切段 + 按整表成分决定要不要英文化」两步，现在拆开：
+
+```js
+function tokenizeSegs(text) { /* 原逐码点循环：二元组 / 整词小写 / 跳过 */ }
+function finishToks(list) { return isMostlyLatin(list) ? normalizeEn(list) : list; }
+function tokenize(text) { return finishToks(tokenizeSegs(text)); }
+```
+
+建索引时 title / content **各只 `tokenizeSegs` 一次**，三张表全在这两份分段上就地成词：
+
+```js
+const ts = tokenizeSegs(String(d.title ?? ''));
+const cs = tokenizeSegs(String(d.content ?? ''));
+const body = finishToks(cs);
+bodyLen[i] = body.length > 0 ? body.length : 1;
+plainToks[i] = kwSep ? finishToks(ts.concat(cs)) : finishToks(ts.concat(cs, kwList(d).flatMap((w) => tokenizeSegs(String(w ?? '')))));
+if (titleSets !== null) titleSets[i] = new Set(finishToks(ts));
+```
+
+keywords 只成词一趟给 `kwFlatArr`，`kwToks`（`kwSeparate` 真）与 `kwSets`（`fieldBoost` 真）都从它派生。
+
+2. **`seen` 退场，首见判据换成 `m.get`**：
+
+```js
+const cur = m.get(t);
+if (cur === void 0) {
+  m.set(t, 1);
+  df.set(t, (df.get(t) ?? 0) + 1);
+  const p = postings?.get(t);
+  if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
+  else p.d.push(di);
+} else m.set(t, cur + 1);
+```
+
+关键词支路同形，首见写 `kwTfW` 而不是 1。`m` 里「键不存在」本来就等价于「这个词在这条里第一次出现」——两次写入都是 `m.set`，只增不减，`seen` 是纯冗余。
+
+**为什么逐位不变**（三条，缺一条就会错）：
+
+- **分段可交换**：`tokenizeSegs` 是纯函数，空格与标点都是 `skip`、不跨词合并，所以 `segs(a) ++ segs(b)` 与 `segs(a + ' ' + b)` 逐 token 相同。
+- **成词不可交换**：`finishToks` 看的是**整表成分比例**，只能在拼好的整表上跑一次。第一版实现图省事，直接逐段 `tokenize` 再 concat，被新旧对拍当场抓出 **52 处不一致**（`avgdl 14.6 vs 14.5`，doc#6 `keywords,as,string` vs `keyword,string`）——标题单看是 mostly-Latin，停用词被砍、词尾被归一；拼上中文正文之后整表不再是 mostly-Latin，两个口径就分叉了。
+- **首见等价**：`seen` 判的「第一次」与 `m.get(t) === void 0` 判的是同一件事，且 `df` / `postings` 只在首见写、`m` 只累加。
+
+**读数**（同进程新旧交替 9 轮取中位，`node_modules\.tmp-diff\warmab22.mjs`）：冷建 **236.28 → 200.3ms（−15.2%）**、热查 **1.849 → 1.878ms**（噪声内，不退化）。官方表 `coldMs` **233.5 → 204–221ms**；`--cpu-prof`（`E:\Temp\cmp\prof22\CPU.20261124.111434.12552.0.001.cpuprofile`）总采样 **1,337.0 → 1,254.2ms（−6.2%）**，`buildSearchIndex` 138.3 → 135.2、`bumpIn` 65.8 → 64.0，切词那段搬成独立函数 `tokenizeSegs` 43.2ms。
+
+**踩坑三条**：
+
+- `kwFlatArr` 的判空不能写成 `kwSep || useField ? … : null`：`kwSeparate` 与 `fieldBoost` 双关时 `plainToks` 仍要用它，第一次跑就 `TypeError: Cannot read properties of null (reading '0')`。它有三个读者（`kwToks` / `plainToks` / `kwSets`），条件要覆盖三个。
+- `tokenize` 的拆分让 `tools/probe-lex.mjs` 的 L0 取函数体失效（原来从 `function tokenize(text) {` 取，现在只剩一行包装）——改成从 `tokenizeSegs` 取循环体、另取 `wrapperBody` 断言包装仍是一行。
+- 做新旧对拍的临时副本必须放 `node_modules\.tmp-diff\`：引擎有 33 条静态 `import`，只有这个位置的祖先链能找到 `@deepseek-ai/*`；`buildSearchIndex` 未导出，副本末尾补一句 `export { buildSearchIndex as __buildSearchIndexProbe };`。

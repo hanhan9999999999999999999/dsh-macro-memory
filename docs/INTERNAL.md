@@ -12596,3 +12596,60 @@ function clsCode(cp) {
 - **`buildSearchIndex` 138.3ms / 10.3%**：`bumpIn` 65.8 / `buildCoocSyn` 43.0 / `coocShareHan` 29.7 / `tokenize` 83.8 都在冷建这条链上，可以合成一版。
 - **`setBandsByThreshold` 97.5ms / 7.3%**：0.6.19 之后又回到 7% 量级（桶计数排序 + 段扫），桶内 `seg.sort()` 是下一处可动的。
 - **`indexSignature` 106.7ms / 8.0%**：行缓存之后剩下的就是「按下标逐字段比」本身。
+
+## 9.221 0.6.22：建索引不再把同一批字段切两遍
+
+### 9.221.1 症状
+
+- 读数来源：`E:\Temp\cmp\prof21\CPU.20261124.103136.2816.0.001.cpuprofile`（0.6.21 之后，总采样 **1,337.0ms**）。热查 `search` 已经 2.00ms/问，贵处在冷建。
+- 函数级：`buildSearchIndex` **138.3ms / 10.3%**、`bumpIn` 65.8、`buildCoocSyn` 43.0、`coocShareHan` 29.7。
+- 行级（`vendor/meow-memory/lib/index.js`）：`:3331` **23.1ms**、`:3370` **21.0ms**（`m.set(t, (m.get(t) ?? 0) + 1)`）、`:3397` **17.8ms**（`postings.get(t)`）、`:3373` **13.6ms**（`df.set`）、`:3399` **11.5ms**（`p.t.push`）。
+
+### 9.221.2 病根
+
+1. **同一批字段切两遍**：content 为 `plainToks` 切一遍、为 `bodyLen` 又切一遍；title 为 `plainToks` 切一遍、为 `titleSets` 又切一遍；keywords 在 `kwToks` 与 `kwSets` 两处写着一字不差的两份 `tokenize` 表达式。
+2. **每条一个 `seen` Set**：每个（条, 词）对多付 `seen.has` + `seen.add` 两次哈希，只为回答「第一次出现没有」；加上词频那句，一个对子四次哈希查找。
+
+### 9.221.3 处方
+
+`tokenize` 拆成 `tokenizeSegs`（逐码点切段，纯函数）+ `finishToks`（看整表成分决定英文化）+ 一行包装 `tokenize(text) { return finishToks(tokenizeSegs(text)); }`。`buildSearchIndex` 里 title / content 各 `tokenizeSegs` 一次，`plainToks` / `bodyLen` / `titleSets` 就地成词；keywords 只成词一趟给 `kwFlatArr`，`kwToks` / `kwSets` 从它派生。tf 循环去掉 `seen`，首见判据用 `m.get(t) === void 0`：
+
+```js
+const cur = m.get(t);
+if (cur === void 0) {
+  m.set(t, 1);
+  df.set(t, (df.get(t) ?? 0) + 1);
+  const p = postings?.get(t);
+  if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
+  else p.d.push(di);
+} else m.set(t, cur + 1);
+```
+
+关键词支路首见写 `kwTfW`、否则 `cur + kwTfW`。
+
+### 9.221.4 读数
+
+| 项 | 0.6.21 | 0.6.22 | 变化 |
+| --- | --- | --- | --- |
+| 冷建（同进程 9 轮中位） | 236.28ms | **200.3ms** | **−15.2%** |
+| 热查（同进程） | 1.849ms | 1.878ms | 噪声内 |
+| 官方表 `coldMs` | 233.5ms | 204–221ms | −6…−13% |
+| `--cpu-prof` 总采样 | 1,337.0ms | **1,254.2ms** | **−6.2%** |
+| `buildSearchIndex` 自证 | 138.3ms | 135.2ms | −2% |
+| `bumpIn` 自证 | 65.8ms | 64.0ms | −3% |
+
+### 9.221.5 判据
+
+- 新探针 `tools/probe-cold.mjs`（C0–C5，6 条，ALL PASS）：形状十一件 / 分段可交换 14 对 / 成词可交换 14 对（含混排反例）/ 五张表与老表达式 12 条 × 4 支路 / 确定性 / 退化 11 例。
+- 等价取证：`node_modules\.tmp-diff\colddiff22.mjs` 11 轮 **277 项检查 0 不一致**（10 条合成 + 1,451 条 LoCoMo 真实 doc × 9 组开关 + 2 组真实库）；答案侧 `E:\Temp\cmp\ab22.mjs` → `{"samples":10,"docs":5882,"questions":1986,"mismatches":0}`；`final.mjs` 与 0.6.21 逐行一致。
+- `verify.mjs` 新增 `OR082` 六条（C0–C5 标签 + 挂线 + 取根例外 / 引擎十一件 / 进程内分段对拍 / 进程内成词对拍 + 混排反例 / 文档四处 / 版本 ≥ 0.6.22），`SUITE_FLOOR` 49 → **50**，`NO_ROOT` 增 `tools/probe-cold.mjs`。
+- 适配：`tools/probe-lex.mjs` 的 L0 改从 `tokenizeSegs` 取循环体、另断言包装仍是一行。
+
+### 9.221.6 账
+
+- 套件 49 → **50**；断言 3,797 → **3,809**（净 +12 = `probe-cold` 6 + `OR082` 6）。
+- 本版**没有删改任何判据的语义**，但有五处「读源码形状」的地方要跟着源码走：`OR081` 与 `probe-lex` 的 L0 改从 `tokenizeSegs` 取函数体（`tokenize` 已退成一行包装）；`WZ2`（kwSeparate 默认开）与 `DT066`（kwToks / kwSets 都走 `kwList`）改成断言新的派生链（`kwSep` → `plainToks` 三目 / `kwFlatArr` → `kwToks`·`kwSets`）；`WZ3`（kwTfW 打折写进 df）保留原字面量 `m.set(t, (m.get(t) ?? 0) + kwTfW);`，把关键词支路照老写法写回去，所以那条一字未动。三条被改写的形状断言，语义都由 `probe-cold` 的 C3（五张表与老表达式 12 条 × 4 支路逐条相同）与 `colddiff22.mjs` 的 277 项对拍兜着。
+
+### 9.221.7 下一版候选
+
+`search` 191.9 / 15.3%、`buildSearchIndex` 135.2 / 10.8%、`indexSignature` 125.2 / 10.0%、`scoreCandSet` 96.6、GC 81.6、`bumpIn` 64.0、`setBandsByThreshold` 62.4、`sessionTopicTerms` 57.2。
