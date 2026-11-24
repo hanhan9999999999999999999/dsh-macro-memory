@@ -9581,3 +9581,66 @@ if (kept.length === 0) return null;
 
 - `tools/probe-floor.mjs`（F1–F6，30 条）：F1 形状十处（常量、两处默认、schema、`reqNum`、`resolveConfig`、`LIVE_CONFIG_KEYS`、透传、日志、`h.score < floor` 只出现一次）；F2 默认线下强命中照旧、弱命中被挡、无关问句整块 `null`；F3 关闸两条都进且正文与 `renderHitEntries` 逐字相同；F4 被挡条目不进 seen、不加 `hit_count`，下一轮仍可注入；F5 门槛 0 / 0.45 / 1.5 单调、0.05 时弱命中能进；F6 坏值两种待遇。
 - `probe-budget` / `probe-neighbor` / `probe-gold` 不受影响：闸门在 `buildHitInjection` 里，不碰检索打分，也不碰预算压缩（压缩是闸门之后的事）。
+
+## 236. 条内摘要与中文选句（0.6.41）
+
+### 236.1 症状
+
+`injectFloor` 管住了「这一轮要不要注入」，但**注进来的那一条有多长，此前没有任何上限**：`hitTopK` 只管条数（默认 2），`injectMaxChars` 管整次注入的总字数且默认 `0 = 不限`（0.6.38 加，绝大多数人不设）。真库 824 条 active 的正文长度：p50 **248 字** / p75 382 / p90 595 / p95 806 / p99 1,262 / **max 2,576**；按层看 topic p50 596、project p50 566、fact 401、lesson 223——**越「总结性」的条目越长，而它们恰恰最常被关键词命中**。典型一轮 = 「600 字的 topic + 400 字的 fact」整段进上下文，其中与当前问句相关的往往只有一两句；这些字一旦进上下文，之后每一轮都要重新计费。
+
+另有一处**顺手发现的静默缺陷**：`squeezeBody` 的选句对中文从来是失效的（见 236.2），但只有在真的压缩时才会显形——0.6.38 的默认不压缩，所以它一直没被看见。
+
+### 236.2 病根
+
+① **缺一层闸**：`renderHitEntries` 只有 `injectMaxChars` 一条总预算，单条长度由「总预算剩余」间接决定，而总预算默认不限时单条也就没有上限。
+
+② **中文选句恒为 0 分**：`injectTermsOf(text)` 用 `INJECT_WORD_RE = /[\u4e00-\u9fa5A-Za-z0-9_]{2,}/g` 切词——对中文它把**整串汉字当一个 term**（「宏记忆的星图是怎么连起来的」= 1 个词），而 `sentScoreOf(sent, terms)` 用 `sent.includes(w)` 判断命中。于是任何一句都不会命中那个整串 → 所有句子得分 0 → `squeezeBody` 的 `ranked` 为空 → `pick = [0]` → **永远只剩首句**（`mode='head'`）。英文/拉丁语料上完全正常（词间有空格），所以这一缺陷在英文夹具上不会被发现。
+
+### 236.3 处方
+
+1. **`injectBodyMax`（默认 240，`0` = 不限）**：独立的一层闸，与总预算取小——`per = Math.min(per, bodyMax)`（总预算路）、非预算路则 `per = bodyMax`。240 不是新拍的数：它就是 0.6.38 预算路里的 `INJECT_BODY_CAP`，这里把它从「预算内部常数」抬成「对外可配的一层闸」。
+2. **中文按 2-gram 展开**：`injectTermsOf` 里汉字串 `han.slice(i, i + 2)` 逐对生成，跳过 `INJECT_STOP_BI`（怎么 / 什么 / 如何 / 是否 …这类疑问虚词二元组，命中它们只会把「怎么写的」这类套话句拉上来）；其它（拉丁词、标识符）原样并 `toLowerCase()`。`sentScoreOf` 改 **case-insensitive**（`low.includes(w)`），`sentPickScore(sent, terms)` = 句级分 + 硬信息加权。
+3. **硬信息保底**：`INJECT_HARD_RE = /[0-9]|`|\/|→|::/`（数字、反引号、斜杠、箭头、双冒号）命中则加 `INJECT_HARD_BONUS = 4`。所以「一句软话都没有」时，带 `240` / `` `injectBodyMax: 0` `` 的边界句仍会被选进 `ranked`——**压缩不许把可执行的信息压掉**。
+4. **选句与拼装**：`ranked` = 非首句里 `sentPickScore > 0` 的 `[idx, score]` 降序（同分保持原文序），`pick = [0].concat(前 INJECT_SENT_KEEP = 2 个)`，按原文序拼；超 `cap` 时按分数升序从低分句开始丢（首句权重 `Infinity`，最后才动），仍超再 `clipChars`；`mode` 记 `squeeze`（pick > 1）/ `head` / `clip` / `full`。
+5. **指路行**：被压的条目在正文后插 `lbl2('inject.bodyNote', { id, rest })`（`…（本条还有 N 字未展开，全文用 memory_read("<id>") 取。）`，中英葡三份标签），`rest = contentLen - sq.text.length`。`INJECT_BODY_NOTE_MAX = 56` 是给这一行预留的宽度，在切正文前先扣掉，免得「说好 240 实际 300」。
+6. **配置面六处**：`CONFIG_DEFAULTS` 字面 `injectBodyMax: 240,`（理由同 0.6.40 的 0.45：该对象求值早于 `INJECT_BODY_MAX_DEF`）、`DEFAULT_OPTS`、zod schema、`reqNum("injectBodyMax")`、`resolveConfig`（非负整数）、`LIVE_CONFIG_KEYS`，pre-step 透传 `injectBodyMax`，日志加 `body=${…} bodyCut=${…}`，回执 `budget.bodyMax` / `budget.bodyCut`。
+
+### 236.4 坏值待遇
+
+| 写坏了 | 结果 | 为什么 |
+| --- | --- | --- |
+| `NaN` / 字符串 / `null` | 回默认 **240** | 「配置读坏了」不许变成「整条灌进来」 |
+| 数字但为负（`-1`） | 夹成 **0** = 显式不限 | 负数在语义上只能是「不要这层闸」 |
+
+这层兜底在 `renderHitEntries` 里**再做一次**（`Number.isFinite(o.injectBodyMax) ? Math.floor(…) : INJECT_BODY_MAX_DEF` 再 `> 0 ? : 0`）：`resolveConfig` 只覆盖「设置文件」那条路，直接调 `buildHitInjection` 的调用方（插件内部补注入、探针、第三方脚本）不经过它。第一版只改了 `resolveConfig`，负数被原样交给 `squeezeBody` → `contentLen > -1` 恒真 → 正文被切成空串而指路行还在。
+
+### 236.5 读数
+
+真库 824 条 active，`E:\Temp\cmp\sweep41.mjs`（A 组 9 条记忆相关问句 / B 组 13 条操作问句，闸门关掉、只扫单条上限）：
+
+| 单条上限 | A 组正文 | B 组正文 | 被压条目数 |
+| --- | --- | --- | --- |
+| 0（不限） | 7,337 字 | 8,272 字 | 0 |
+| 200 | 5,121 | 5,721 | 12 |
+| **240（默认）** | **5,485（省 25.2%）** | **5,926（省 28.3%）** | **12** |
+| 260 | 5,694 | 6,217 | 9 |
+| 320 | 6,174 | 6,520 | 5 |
+| 400 | 6,473 | 7,082 | 3 |
+
+240 落在「压得动」与「留得住」的交界：200 档省字更多但开始伤长条目的第二句，320 档一半条目又退回整条。单条样例（`probe-digest` 夹具，471 字）：整条 570 字 → 默认 **249 字（省 56.3%）**；1,564 字的长 fact 在 320 档下压到 840 字。
+
+### 236.6 与 0.6.38 / 0.6.40 的关系
+
+- `injectBodyMax: 0` 时输出与 `renderHitEntries(entries, { injectMaxChars: 0, injectBodyMax: 0 }, q)` **逐字相同**（570 vs 570），不加指路行、`bodyCut = 0`。
+- 与 `injectFloor` 各管一层：floor 决定「要不要注」（`kept`），bodyMax 决定「注多长」（`per`）。被 floor 挡掉的条目**根本没进渲染器**，所以不占 `bodyCut`。
+- 与 `injectMaxChars` 叠加取小：`per = Math.min(per, bodyMax)`；总预算很紧时仍可 `per < INJECT_BODY_MIN(60)` → 整条不列（`dropped`），这是 0.6.38 的既有行为，不变。
+
+### 236.7 边界：摘要不等于截断
+
+摘要永远从**首句**开始（题眼），且一定带上「本条还有多少字、全文在哪取」——模型因此不会把摘要当全文引用。指路行走 `memory_read("<id>")`，它不受任何注入闸门约束，随时可取全文。星图邻域注入（`neighborBlockOf`）与压缩后重放（`buildReinjection` 的段级 `budgetText`）各有自己的预算口径，不走这一层。
+
+### 236.8 判据
+
+- `tools/probe-digest.mjs`（D1–D7，36 条）：D1 形状十二处（常量、两处默认、schema、`reqNum`、`resolveConfig`、`LIVE_CONFIG_KEYS`、透传、日志、三份标签、2-gram、`contentLen > per` 只出现一次）；D2 默认 240 下长条目被压到 240 + 指路行、短条目逐字不动；D3 `0` ＝不限与直接渲染逐字相同；D4 中段句真被选中（0.6.40 之前恒只留首句）；D5 问句词不指向任何句子时硬信息句仍留一句；D6 与 `injectMaxChars` 叠加取小；D7 坏值两种待遇。
+- `probe-budget` 34/34、`probe-floor` 30/30 不受影响：前者量的是总预算路（`per` 取小后仍满足「一律不超 cap」），后者量的是闸门（渲染器变更不改变「挡没挡」）。
+

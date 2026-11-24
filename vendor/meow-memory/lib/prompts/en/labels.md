@@ -21,6 +21,7 @@
 - inject.budgetTail: …(injection fit to {cap} chars: {squeezed} entries kept first + most relevant sentence, {heads} kept header only, {dropped} not listed; use memory_read("{id}") for full text.)
 - inject.budgetTailDropOnly: …(injection fit to {cap} chars: {dropped} entries not listed; use memory_search with keywords to find them.)
 - inject.budgetNote: …({label}truncated to {cap} chars; {dropped} blocks dropped. Use memory_read / memory_project for the rest.)
+- inject.bodyNote: …({rest} more chars elided; use memory_read("{id}") for the full text.)
 - dream.title: Memory consolidation task (dream)
 - dream.round.atomic: atomic memory entries
 - dream.round.topic: topic memory entries

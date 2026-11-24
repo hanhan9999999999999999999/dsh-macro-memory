@@ -21,6 +21,7 @@
 - inject.budgetTail: …(injeção ajustada a {cap} caracteres: {squeezed} entradas mantiveram a primeira frase + a mais relevante, {heads} mantiveram só o cabeçalho, {dropped} não listadas; use memory_read("{id}") para o texto completo.)
 - inject.budgetTailDropOnly: …(injeção ajustada a {cap} caracteres: {dropped} entradas não listadas; use memory_search com palavras-chave para encontrá-las.)
 - inject.budgetNote: …({label}truncado em {cap} caracteres; {dropped} blocos descartados. Use memory_read / memory_project para o resto.)
+- inject.bodyNote: …(mais {rest} caracteres omitidos; use memory_read("{id}") para o texto completo.)
 - dream.title: Tarefa de consolidação de memória (dream)
 - dream.round.atomic: entradas de memória atômicas
 - dream.round.topic: entradas de memória de topic

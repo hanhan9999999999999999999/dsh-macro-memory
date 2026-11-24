@@ -1263,6 +1263,9 @@ var CONFIG_DEFAULTS = {
   // [macro-fusion 0.6.40] 命中闸门：低于此分的命中不注入（0 = 关，逐位等同旧行为）。
   // 这里写死 0.45 而不是引 INJECT_FLOOR_DEF：本对象在模块求值时先于那一行执行。
   injectFloor: 0.45,
+  // [macro-fusion 0.6.41] 单条正文上限（0 = 不限，逐位等同 0.6.40 的整条注入）。
+  // 同样写死字面值：本对象求值早于 INJECT_BODY_MAX_DEF 那一行。
+  injectBodyMax: 240,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -5653,7 +5656,15 @@ function topicDrift(turnText, topics) {
 // 0.45 这条线保住 823/824 = 99.9%；12 条纯操作问句（跑一下测试 / 继续 / 帮我看看这个文件 …）
 // 的最高分是 0.42，全部被挡在门外。设 0 就是关闸，逐位回到 0.6.39 的「有命中就注入」。
 var INJECT_FLOOR_DEF = 0.45;
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF };
+// [macro-fusion 0.6.41] 单条正文上限的默认值：0 = 不限（逐位回到 0.6.40）。
+// 它和 injectMaxChars 是两层账：injectMaxChars 管「这一次注入总共多少字」，
+// injectBodyMax 管「其中一条记忆自己最多占多少字」——后者才是长条目（topic / project 全景）
+// 不再整条灌进来的那道闸。设 0 就整条给，两种上限同时有效时取较小者。
+// 240 与 INJECT_BODY_CAP 同值：0.6.38 的预算路早就在用它当「一条像样的正文」的下限，
+// 0.6.41 只是把它从「预算耗尽时才生效」提升成独立常开的第三条闸。真库标定读数：
+// A 组 9 问 7,337 → 5,485 字（省 25.2%，只摘要最长的 12 条），B 组 13 问 8,272 → 5,926 字。
+var INJECT_BODY_MAX_DEF = 240;
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -6197,15 +6208,59 @@ function buildReinjection(db, workspace, sessionId, projects, opts = {}, dir = "
 var INJECT_BODY_MIN = 60;
 var INJECT_BODY_CAP = 240;
 var INJECT_NOTE_RESERVE = 120;
+// [macro-fusion 0.6.41] 「本条还有 N 字 · 全文 memory_read("id")」那一行的预留长度（中英取长）。
+var INJECT_BODY_NOTE_MAX = 56;
 var INJECT_SENT_SPLIT = /(?<=[。！？；!?;\n])/;
 var INJECT_WORD_RE = /[\u4e00-\u9fa5A-Za-z0-9_]{2,}/g;
+// [macro-fusion 0.6.41] 纯疑问/虚词二元组不算证据：它们出现在任何一句里都不说明「这就是答案那一句」。
+var INJECT_STOP_BI = new Set([
+  "怎么", "什么", "为什", "么样", "是不", "不是", "有没", "没有", "可以", "如何",
+  "哪里", "哪个", "多少", "是不", "这个", "那个", "一下", "我们", "你们", "他们",
+  "现在", "还是", "就是", "因为", "所以", "如果", "但是", "然后", "这样", "那样"
+]);
+// 硬信息句：带数字 / 版本号 / 路径 / 反引号代码 / 箭头的句子。技术记忆里的阈值、id、命令
+// 几乎都在这种句子里，摘要就算跟问句没词面重合也得留一句，否则「压完更省但答不了」。
+var INJECT_HARD_RE = /[0-9]|`|\/|→|→|::/;
+// [macro-fusion 0.6.41] 首句之外最多再留几句（按分取，超预算从低分的开始丢）。
+var INJECT_SENT_KEEP = 2;
+// 硬信息句的加权：等于「命中两三个双字词」的量级，够把纯数字句顶进候选，又不至于压过
+// 真正词面重合的句子。
+var INJECT_HARD_BONUS = 4;
 
-/** 从一句话里取打分用的词：中文整段不切（句子级重合足够），英文/数字按下划线词。 */
+/**
+ * 从一句话里取打分用的词。
+ * [macro-fusion 0.6.41] 中文按 2-gram 展开，不再整串当一个词：汉语没有空格，
+ * 「宏记忆的星图是怎么连起来的」整串当词时，条目里没有哪一句会 include 它，
+ * 句级选句对中文**永远**是 0 分（旧实现因此在中文上恒退化成「只留首句」——压缩看着在跑，
+ * 其实是盲的）。英文 / 数字 / 路径保持原样，另加小写形态供 case-insensitive 匹配。
+ */
 function injectTermsOf(text) {
   const out = []
+  const seen = new Set()
+  const push = (w) => {
+    const k = w.toLowerCase()
+    if (k.length < 2 || seen.has(k)) return
+    seen.add(k)
+    out.push(k)
+  }
   const s = String(text ?? '')
   const m = s.match(INJECT_WORD_RE)
-  if (m !== null) for (const w of m) out.push(w)
+  if (m === null) return out
+  for (const w of m) {
+    const han = w.replace(/[^\u4e00-\u9fa5]/g, '')
+    if (han.length === w.length && han.length >= 2) {
+      if (han.length === 2) {
+        if (!INJECT_STOP_BI.has(han)) push(han)
+        continue
+      }
+      for (let i = 0; i + 2 <= han.length; i += 1) {
+        const bi = han.slice(i, i + 2)
+        if (!INJECT_STOP_BI.has(bi)) push(bi)
+      }
+      continue
+    }
+    push(w)
+  }
   return out
 }
 
@@ -6222,12 +6277,20 @@ function splitSentsOf(body) {
   return out
 }
 
-/** 句子与这一轮问句的重合分：命中词按长度加权（长词更值钱）。 */
+/** 句子与这一轮问句的重合分：命中词按长度加权（长词更值钱）。
+ *  [macro-fusion 0.6.41] 两边都小写再比：injectTermsOf 现在吐小写词。 */
 function sentScoreOf(sent, terms) {
   if (terms.length === 0) return 0
+  const low = String(sent ?? '').toLowerCase()
   let score = 0
-  for (const w of terms) if (sent.includes(w)) score += w.length
+  for (const w of terms) if (low.includes(w)) score += w.length
   return score
+}
+
+/** 句子在本轮的值：词面重合 + 硬信息加权（见 INJECT_HARD_RE）。 */
+function sentPickScore(sent, terms) {
+  const sc = sentScoreOf(sent, terms)
+  return INJECT_HARD_RE.test(sent) ? sc + INJECT_HARD_BONUS : sc
 }
 
 /** 按字切（找不到句边界时的兜底）：切点尽量落在标点后，切完带省略号。 */
@@ -6241,8 +6304,14 @@ function clipChars(text, cap) {
 
 /**
  * 一条正文的预算内形态。
- * mode: full=原样 / squeeze=首句+最相关句 / head=只有首句（找不到更相关的）/ clip=硬切
+ * mode: full=原样 / squeeze=首句+相关句 / head=只有首句（找不到更像答案的句子）/ clip=硬切
  * cap <= 0 表示「这条不给预算」（调用方已判定预算耗尽），只返回空正文。
+ *
+ * [macro-fusion 0.6.41] 两条改动：
+ * ① 相关句从「只留 1 句」变成「按分留 INJECT_SENT_KEEP 句」，并给带数字/路径/命令的句子加权
+ *    （技术记忆里能执行的部分几乎都在这种句子里）；
+ * ② 拼出来仍超上限时，从「分最低、位置最靠后」的补充句开始丢，首句永远保留——
+ *    宁可少留一句，也不把首句切成半截。
  */
 function squeezeBody(body, cap, qTerms) {
   const text = String(body ?? '')
@@ -6251,20 +6320,30 @@ function squeezeBody(body, cap, qTerms) {
   if (text.length <= cap) return { text, mode: 'full' }
   const sents = splitSentsOf(text)
   if (sents.length <= 1) return { text: clipChars(text, cap), mode: 'clip' }
-  const keep = [sents[0]]
-  let best = -1
-  let bestScore = 0
+  const ranked = []
   for (let i = 1; i < sents.length; i += 1) {
-    const sc = sentScoreOf(sents[i], qTerms)
-    if (sc > bestScore) {
-      bestScore = sc
-      best = i
-    }
+    const sc = sentPickScore(sents[i], qTerms)
+    if (sc > 0) ranked.push([i, sc])
   }
-  if (best > 0) keep.push(sents[best])
-  let out = keep.join(' ')
+  ranked.sort((a, b) => b[1] - a[1] || a[0] - b[0])
+  const pick = [0]
+  for (const [i] of ranked.slice(0, INJECT_SENT_KEEP)) pick.push(i)
+  pick.sort((a, b) => a - b)
+  // 从最不值的开始丢（ranked 末尾），直到塞进上限；首句不在丢弃范围内。
+  const order = pick.slice().sort((a, b) => {
+    const sa = a === 0 ? Infinity : sentPickScore(sents[a], qTerms)
+    const sb = b === 0 ? Infinity : sentPickScore(sents[b], qTerms)
+    return sa - sb
+  })
+  let out = pick.map((i) => sents[i]).join(' ')
+  while (out.length > cap && order.length > 1) {
+    const drop = order.shift()
+    const at = pick.indexOf(drop)
+    if (at > 0) pick.splice(at, 1)
+    out = pick.map((i) => sents[i]).join(' ')
+  }
   if (out.length > cap) out = clipChars(out, cap)
-  return { text: out, mode: keep.length > 1 ? 'squeeze' : 'head' }
+  return { text: out, mode: pick.length > 1 ? 'squeeze' : 'head' }
 }
 
 /**
@@ -6303,11 +6382,24 @@ function budgetText(text, cap, label = '') {
 }
 
 /**
- * 命中注入的渲染器（0.6.38）：预算内拼装。`cap <= 0` 时逐位走旧拼法。
- * @returns {{text: string, modes: string[], dropped: number, squeezed: number, heads: number}}
+ * 命中注入的渲染器（0.6.38）：预算内拼装。`cap <= 0` 且 `injectBodyMax <= 0` 时逐位走旧拼法。
+ *
+ * [macro-fusion 0.6.41] 新增第二条上限 `injectBodyMax`（单条正文上限）：
+ * injectMaxChars 管「整次注入的总字数」，它管「其中任何一条自己最多占多少字」。
+ * 两者可以单独生效，也可以同时生效（此时单条上限取较小者）；都关掉就逐位回到 0.6.40。
+ * 被摘要的条目会在正文后面紧跟一行「全文在哪」，因为压过之后模型必须知道还能 memory_read。
+ *
+ * @returns {{text: string, modes: string[], dropped: number, squeezed: number, heads: number, bodyCut: number, bodyMax: number}}
  */
 function renderHitEntries(entries, o, query) {
   const cap = Number.isFinite(o.injectMaxChars) ? o.injectMaxChars : 0
+  // [macro-fusion 0.6.41] 坏值一律回默认，且这一层兜底必须在渲染器里再做一遍：
+  // resolveConfig 只管「设置文件」那条路，直接调 buildHitInjection 的调用方（插件内部
+  // 补注入、探针、第三方脚本）不经过它。非数字（NaN / 字符串 / null）→ 240；
+  // 负数 → 0（= 显式不限）。原写法把负数原样交给 squeezeBody，会得到「正文空、
+  // 只剩一条指路行」的条目——那是比整条灌进来更坏的结果。
+  const bodyMaxRaw = Number.isFinite(o.injectBodyMax) ? Math.floor(o.injectBodyMax) : INJECT_BODY_MAX_DEF
+  const bodyMax = bodyMaxRaw > 0 ? bodyMaxRaw : 0
   const header = keyedValue('labels', 'inject.hitHeader')
   const boundary = lbl2('inject.boundary')
   const headLines = []
@@ -6316,7 +6408,7 @@ function renderHitEntries(entries, o, query) {
     const time = e.updated_at ? ` ${new Date(e.updated_at).toISOString().slice(0, 16).replace('T', ' ')} [${relativeTime(e.updated_at)}]` : ''
     headLines.push(`[${proj} : ${e.level}] [${e.id}]${time}`)
   }
-  if (!(cap > 0)) {
+  if (!(cap > 0) && !(bodyMax > 0)) {
     const lines = [header]
     for (let i = 0; i < entries.length; i += 1) {
       lines.push(headLines[i])
@@ -6324,53 +6416,74 @@ function renderHitEntries(entries, o, query) {
       lines.push('')
     }
     lines.push(boundary)
-    return { text: lines.join('\n').trimEnd(), modes: entries.map(() => 'full'), dropped: 0, squeezed: 0, heads: 0 }
+    return { text: lines.join('\n').trimEnd(), modes: entries.map(() => 'full'), dropped: 0, squeezed: 0, heads: 0, bodyCut: 0, bodyMax: 0 }
   }
   const qTerms = injectTermsOf(query)
+  const budgeted = cap > 0
+  let bodyCut = 0
   const fixed = header.length + boundary.length + 4
   // 上限小到连「头 + 边界句 + 一句自述」都放不下：只给骨架，绝不假装注入完整。
-  if (cap <= fixed + 40) {
-    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, tooSmall: true }
+  if (budgeted && cap <= fixed + 40) {
+    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
   }
   // 自述尾巴也算在上限里：先扣掉，宁可正文少留一句，也不许「说好 300 实际 420」。
-  let rest = cap - fixed - INJECT_NOTE_RESERVE
+  let rest = budgeted ? cap - fixed - INJECT_NOTE_RESERVE : 0
   const blocks = []
   const modes = []
   let dropped = 0
-  if (rest <= 0) {
+  if (budgeted && rest <= 0) {
     // 连「头 + 边界句 + 自述」都排不下：只给骨架，绝不假装注入完整。
-    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, tooSmall: true }
+    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
   }
   // 单条正文上限：既要防「一条超长条目吃掉全部预算」，又不能在上限本身很宽时
   // 把每条都按 240 字硬压（那样用户调大上限也换不回正文）。所以取「上限的一半」
   // 与 240 的较大者——预算越宽，单条越能整条呈现。
-  const bodyCap = Math.max(INJECT_BODY_CAP, Math.floor(cap * 0.5))
+  const bodyCap = budgeted ? Math.max(INJECT_BODY_CAP, Math.floor(cap * 0.5)) : 0
   for (let i = 0; i < entries.length; i += 1) {
     const head = headLines[i]
     const left = entries[i]
-    const per = Math.min(bodyCap, rest - head.length - 1)
-    // 放不下「头 + 一句像样的正文」就整条不列——只留一个 id 的占位条目对模型几乎无用，
-    // 不如把预算留给前面几条完整呈现，并把「还有 N 条」说在尾巴上。
-    if (per < INJECT_BODY_MIN) {
-      dropped = entries.length - i
-      break
+    const contentLen = String(left.content ?? '').length
+    let per
+    if (budgeted) {
+      per = Math.min(bodyCap, rest - head.length - 1)
+      if (bodyMax > 0) per = Math.min(per, bodyMax)
+      // 放不下「头 + 一句像样的正文」就整条不列——只留一个 id 的占位条目对模型几乎无用，
+      // 不如把预算留给前面几条完整呈现，并把「还有 N 条」说在尾巴上。
+      if (per < INJECT_BODY_MIN) {
+        dropped = entries.length - i
+        break
+      }
+      rest -= head.length + 1
+    } else {
+      per = bodyMax
     }
-    rest -= head.length + 1
+    // 要摘要的条目先扣掉「全文在哪」那一行的位置，别让它把上限顶爆。
+    const willCut = contentLen > per
+    if (willCut && per > INJECT_BODY_MIN + INJECT_BODY_NOTE_MAX) per -= INJECT_BODY_NOTE_MAX
     const sq = squeezeBody(left.content, per, qTerms)
     modes.push(sq.mode)
     blocks.push(head)
     if (sq.text !== '') blocks.push(sq.text)
+    if (willCut) {
+      bodyCut += 1
+      blocks.push(lbl2('inject.bodyNote', { id: String(left.id ?? ''), rest: Math.max(0, contentLen - sq.text.length) }))
+    }
     blocks.push('')
-    rest -= sq.text.length + 1
-    if (rest < 0) rest = 0
+    if (budgeted) {
+      rest -= sq.text.length + 1
+      if (willCut) rest -= INJECT_BODY_NOTE_MAX + 1
+      if (rest < 0) rest = 0
+    }
   }
   const squeezed = modes.filter((m) => m === 'squeeze' || m === 'clip').length
   const heads = modes.filter((m) => m === 'head').length
-  const firstId = entries.find((e, i) => modes[i] === 'squeeze' || modes[i] === 'clip' || modes[i] === 'head')?.id
   const lines = [header, ...blocks, boundary]
-  if (squeezed + heads > 0) lines.push(lbl2('inject.budgetTail', { cap, squeezed, heads, dropped, id: String(firstId ?? '') }))
-  else if (dropped > 0) lines.push(lbl2('inject.budgetTailDropOnly', { cap, dropped }))
-  return { text: lines.join('\n').trimEnd(), modes, dropped, squeezed, heads }
+  if (budgeted) {
+    const firstId = entries.find((e, i) => modes[i] === 'squeeze' || modes[i] === 'clip' || modes[i] === 'head')?.id
+    if (squeezed + heads > 0) lines.push(lbl2('inject.budgetTail', { cap, squeezed, heads, dropped, id: String(firstId ?? '') }))
+    else if (dropped > 0) lines.push(lbl2('inject.budgetTailDropOnly', { cap, dropped }))
+  }
+  return { text: lines.join('\n').trimEnd(), modes, dropped, squeezed, heads, bodyCut, bodyMax }
 }
 
 function hitQuery(db, workspace, sessionId, userText, o, dir) {
@@ -6422,7 +6535,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   const ids = kept.map((h) => h.id);
   markInjected(workspace, sessionId, ids, dir);
   for (const h of kept) db.bumpHit(h.level, h.id);
-  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped } };
+  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0 } };
 }
 
 // src/tools.ts
@@ -10365,6 +10478,14 @@ var config = z.object({
    *  只拦注入不拦检索——被挡的条目照样能 memory_search 到。
    *  想看清省了什么：闸门挡了几条写在 dream-debug.log 的 hit-chain 行的 gated=。 */
   injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),
+  /** [macro-fusion 0.6.41] 单条正文上限：一次注入里「任何一条记忆自己」最多占多少字（0 = 不限）。
+   *  与 injectMaxChars 两层账：那个管整次注入的总字数，这个管单条体积——长条目（topic /
+   *  project 全景动辄 600–2,500 字）不再整条灌进来，而是压成「首句 + 相关句 + 硬信息句」，
+   *  条目头一条不丢、正文后紧跟一行 memory_read(id) 指路，全文随时可回取。
+   *  默认 240：等于 INJECT_BODY_CAP，也就是「一条像样的正文」这个既有尺度；真库正文 p50=248，
+   *  所以只动最长的大约一半条目，短条目逐字不动。
+   *  设 0 = 整条给（逐位回到 0.6.40）；与 injectMaxChars 同时生效时单条取两者较小者。 */
+  injectBodyMax: z.number().min(0).default(INJECT_BODY_MAX_DEF),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
@@ -10438,6 +10559,7 @@ function validateConfigUserLayer(value) {
   reqNum("titleMax");
   reqNum("injectMaxChars");
   reqNum("injectFloor");
+  reqNum("injectBodyMax");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -10524,6 +10646,9 @@ function resolveConfig(config2) {
     // 非数字（字符串 / NaN / null）→ 回默认 0.45（「配置读坏了」不许变成「闸门悄悄关了」）；
     // 数字但为负 → 夹到 0 = 显式关闸（负数在语义上只能是「不要闸门」，没别的意思）。
     injectFloor: Number.isFinite(c.injectFloor) ? Math.max(0, c.injectFloor) : INJECT_FLOOR_DEF,
+    // [macro-fusion 0.6.41] 单条正文上限是整数字数，取整后夹到非负：
+    // 非数字 → 回默认 240（配置读坏了不许变成「整条灌进来」）；负数 → 夹成 0 = 不限。
+    injectBodyMax: Number.isFinite(c.injectBodyMax) ? Math.max(0, Math.floor(c.injectBodyMax)) : INJECT_BODY_MAX_DEF,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -10681,7 +10806,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectBodyMax", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -11313,10 +11438,11 @@ ${e.stack ?? ""}` : String(e)}
           hitTopK: resolved.hitTopK,
           titleMax: resolved.titleMax,
           injectMaxChars: resolved.injectMaxChars,
-          injectFloor: resolved.injectFloor
+          injectFloor: resolved.injectFloor,
+          injectBodyMax: resolved.injectBodyMax
         }, resolved.projectDir);
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0}
+          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0}
 `);
         } catch {
         }

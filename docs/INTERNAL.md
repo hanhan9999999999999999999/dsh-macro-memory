@@ -13723,3 +13723,28 @@ rawkTopPrev = top;
 **断言**：新探针 `tools/probe-floor.mjs`（F1 形状十条 / F2 默认线下强命中照旧·弱命中被挡·无关问句 `null` / F3 关闸逐字回旧 / F4 被挡条目不进 seen 也不加 `hit_count` 且下一轮还能来 / F5 门槛 0·0.45·1.5 单调且 0.05 能让弱命中进 / F6 坏值两种待遇），共 **30 条**。规模 **56 支 / 4,066 → 57 支 / 4,096 条**。
 
 **踩坑三条**：①`CONFIG_DEFAULTS` 的字面 0.45 与 `INJECT_FLOOR_DEF` 的求值顺序（见处方 1）——写常量名不会报错，只会「没挡」。②`hitQuery` 原来把分数丢掉了，闸门要读分必须多带 `score`；少带这个字段闸门只能全放行，而全部放行的表现和「关闸」一模一样，靠读数分不出来（得靠 F2 的 `gated === 1`）。③「关闸逐字回旧」必须拿 `renderHitEntries` 的**原始输出**对拍（`len 204 vs 204`），只比条数不够——条数相同、顺序变了也是回退没做干净。
+
+### 9.240 0.6.41：条内摘要与中文选句
+
+**症状**：0.6.40 的闸门管了「要不要注入」，但注入的那一条**有多长没人管**。`injectMaxChars`（0.6.38）是整次注入的总字数、默认 `0 = 不限`，绝大多数人不设；于是单条正文长度就是「条目本身的长度」。真库 824 条 active 的正文长度 p50 **248 字** / p75 382 / p90 595 / p95 806 / p99 1,262 / **max 2,576**；按层看 topic p50 596、project p50 566、fact 401、lesson 223——**越长越常被命中**。`hitTopK` 默认 2 → 典型一轮 = 「600 字 topic + 400 字 fact」整段进上下文，之后每轮重新计费。
+
+**顺手挖出的静默缺陷**：0.6.38 的 `squeezeBody` 选句对中文**恒定失效**。`injectTermsOf` 的 `INJECT_WORD_RE = /[\u4e00-\u9fa5A-Za-z0-9_]{2,}/g` 把整串汉字当一个 term（「宏记忆的星图是怎么连起来的」= 1 个），`sentScoreOf` 用 `sent.includes(w)` → 任何一句都不命中 → 全部 0 分 → `ranked` 空 → `pick = [0]` → **只留首句**（`mode='head'`）。英文/拉丁语料完全正常，所以英文夹具永远绿。`E:\Temp\cmp\meas41c.mjs` 改 2-gram 后立刻能选中中段真相关句（如「三张对外面：8 个 memory_* 工具…」「原因：update 写的是仓里 tools/baselines.json…」）。
+
+**处方（`injectBodyMax`，默认 240，0 = 不限）**：
+
+1. 常量 `var INJECT_BODY_MAX_DEF = 240;`（= 0.6.38 预算路的 `INJECT_BODY_CAP`，不是新拍的数）+ `DEFAULT_OPTS` 写它能拿到值 + `CONFIG_DEFAULTS` 加**字面** `injectBodyMax: 240,`（理由同 0.6.40 的 0.45：该对象求值早于常量赋值行）。
+2. `injectTermsOf` 重写：汉字串按 **2-gram** 展开（`han.slice(i, i + 2)`），跳过 `INJECT_STOP_BI`（怎么 / 什么 / 如何 / 是否 …这类疑问虚词二元组——命中它们只会把「怎么写的」套话句拉上来），其它原样 + 小写去重；`sentScoreOf` 改 case-insensitive（`low.includes(w)`）；新增 `sentPickScore(sent, terms)` = 句级分 + 硬信息加权。
+3. 硬信息保底：`INJECT_HARD_RE = /[0-9]|`|\/|→|::/` + `INJECT_HARD_BONUS = 4`，软句子一句都选不中时，带 `240` / `` `injectBodyMax: 0` `` 的边界句仍进 `ranked`。
+4. `squeezeBody(body, cap, qTerms)` 重写：`ranked` = 非首句里 `sentPickScore > 0` 的 `[idx, score]` 降序（同分保持原文序），`pick = [0] + 前 INJECT_SENT_KEEP(2) 个` 再按原文序排；超 `cap` 时按分数升序丢低分句（首句 `Infinity`，最后才动），仍超才 `clipChars`；`mode` 记 `squeeze` / `head` / `clip` / `full`。
+5. `renderHitEntries(entries, o, query)` 重写：新增 `bodyMax`；`!(cap > 0) && !(bodyMax > 0)` 走**逐位旧拼法**（返回 `bodyCut: 0, bodyMax: 0`）；`budgeted = cap > 0`；`per` 在 budgeted 时 `Math.min(bodyCap, rest - head - 1)` 再 `Math.min(per, bodyMax)`，非 budgeted 时 `per = bodyMax`；`willCut = contentLen > per`，且 `willCut && per > INJECT_BODY_MIN + INJECT_BODY_NOTE_MAX(56)` 时先扣掉 `INJECT_BODY_NOTE_MAX` 再切；被压条目在正文后插 `lbl2('inject.bodyNote', { id, rest })`；返回多 `bodyCut` / `bodyMax`。
+6. 配置面六处：schema `injectBodyMax: z.number().min(0).default(INJECT_BODY_MAX_DEF)`、`reqNum("injectBodyMax")`、`resolveConfig` 非负整数、`LIVE_CONFIG_KEYS` 加 `"injectBodyMax"`、pre-step 透传 `injectBodyMax: resolved.injectBodyMax`、日志加 `body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0}`；`buildHitInjection` 的 budget 加 `bodyMax` / `bodyCut`。
+7. 坏值两种待遇：非数字（`NaN` / 字符串 / `null`）→ 回默认 240；数字但为负 → 夹成 0（显式不限）。**兜底在 `renderHitEntries` 里再做一次**：`const bodyMaxRaw = Number.isFinite(o.injectBodyMax) ? Math.floor(o.injectBodyMax) : INJECT_BODY_MAX_DEF; const bodyMax = bodyMaxRaw > 0 ? bodyMaxRaw : 0`——`resolveConfig` 只管设置文件那条路，直接调 `buildHitInjection` 的调用方（内部补注入 / 探针 / 第三方）不经过它。第一版只改 `resolveConfig`：`NaN` → `bodyMax = 0`（整条灌），`-1` → 原样传给 `squeezeBody` → `contentLen > -1` 恒真 → 正文切成空串而指路行还在（`probe-digest` D7 抓到）。
+
+**240 的标定**（`E:\Temp\cmp\sweep41.mjs`，真库 824 条、闸门关掉只扫单条上限，A 组 9 条记忆相关问句 / B 组 13 条操作问句）：0 → 7,337 / 8,272（0 条被压）；200 → 5,121 / 5,721（12 条）；**240 → 5,485 / 5,926（省 25.2% / 28.3%，12 条）**；260 → 5,694 / 6,217（9 条）；320 → 6,174 / 6,520（5 条）；400 → 6,473 / 7,082（3 条）。240 卡在「压得动」与「留得住」的交界。
+
+**读数**：`probe-digest` 夹具（471 字长条目）整条 **570 字** → 默认 **249 字（省 56.3%）**，留下首句题眼 + 与问句重合的「邻域默认最多 4 条…」 + 带 `injectBodyMax: 0` 的边界句 + 指路行；`E:\Temp\cmp\t41.mjs` 里 1,564 字长 fact 在 320 档压到 840 字。`injectBodyMax: 0` 时与 `renderHitEntries(entries, { injectMaxChars: 0, injectBodyMax: 0 }, q)` **逐字相同**（570 vs 570）。
+
+**断言**：新探针 `tools/probe-digest.mjs`（D1 形状十二 / D2 默认 240 长条目被压而短条目逐字不动 / D3 0＝不限逐字回旧且无指路行 / D4 中段句真被选中且保持原文序 / D5 词面不指向任何句子时硬信息句保底 / D6 与 `injectMaxChars` 叠加取小 / D7 坏值两种待遇），共 **36 条**。规模 **57 支 / 4,096 → 58 支 / 4,132 条**。回归：`probe-budget` 34/34、`probe-floor` 30/30（两者都不受渲染器变更影响，前者量「一律不超 cap」，后者量「挡没挡」）。
+
+**踩坑三条**：①**压缩器「能不能选句」必须用中文语料验证**——0.6.38 那版在英文上完全正常，中文静默退化成「只留首句」，不报错、不写日志，看起来只是「压得狠一点」。②**「0 = 关」与「坏值」要分开测**：负数原样进 `squeezeBody` 会得到「正文空 + 指路行」的条目，比整条灌进来更坏，而 `bodyCut === 1` 的断言照样绿（假绿），必须同时钉 `budget.bodyMax === 0` 与正文非空。③**兜底要放在最后一层**（渲染器），只放在 `resolveConfig` 会让内部调用方与探针走另一条路——`probe-digest` 用 `buildHitInjection(db, ws, sid, q, { injectBodyMax: NaN })` 直接调用，正是为了钉这一层。
+
