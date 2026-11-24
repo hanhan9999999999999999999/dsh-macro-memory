@@ -806,7 +806,9 @@ if (denseUsable) {
     eng.split('coverOf[di] = Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
     (eng.split('cvr = Math.pow(coverOf[di], COORD_POW);').length - 1 === 2 ||
       eng.split('cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);').length - 1 === 2) &&
-    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 2 &&
+    // [0.6.34] 扫倒排那处把 `1 - COORD_W` 提成循环外的 `coordKeep`：两种写法的处数相加仍是 2。
+    (eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 +
+      eng.split('s *= coordKeep + COORD_W * cvr;').length - 1 === 2) &&
     eng.split('coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);').length - 1 === 2
   if (!knobOk) wrong.push('覆盖度没真正进打分路径（归一 / 取幂 / 协调三笔里有一笔写偏了）')
   // ③ 行为：覆盖度真的能把分差拉开（受控语料：等长、同 importance、只有覆盖度不同）
@@ -1289,7 +1291,9 @@ if (denseUsable) {
     (eng.match(/\* foldOf[ ,*]/g) || []).length >= 2 &&
     // 带缘由词的现状词句归缘由：「评测台为什么封存」里的「封存」是状态词，但问的是当初。
     eng.includes('const situationQ = LEVEL_INTENT_SITUATION.test(String(query ?? "")) && LEVEL_INTENT_TOPIC.test(String(query ?? "")) === false;') &&
-    eng.includes('if (!anchored && !causeQ && now !== null && dOf.importance < 3')
+    // [0.6.34] 守卫换序（`!(raw[di] >= impBandMax)` 提到 `dOf.importance` 之前），两种写法都认。
+    (eng.includes('if (!anchored && !causeQ && now !== null && dOf.importance < 3') ||
+      eng.includes('if (!anchored && !causeQ && now !== null && !(raw[di] >= impBandMax) && dOf.importance < 3'))
   if (!srcOk) wrong.push('缘由判定的四笔（两个常量 / 开关 / 同一条 helper 算一次乘两处 / 缘由词优先）没落全')
 
   check(

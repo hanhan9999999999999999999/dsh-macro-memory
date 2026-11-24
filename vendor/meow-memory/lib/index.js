@@ -3613,6 +3613,12 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   }) : plainToks;
   const avgdl = docToks.reduce((s2, t) => s2 + t.length, 0) / n || 1;
   const avgBody = bodyLen.reduce((s2, x) => s2 + x, 0) / n || 1;
+  // [macro-fusion 0.6.34] 打了 3,000 问之后，长度归一那一行的 self 时间是 176.4ms——每条候选都要
+  // `docToks[di].length`：先取数组对象指针、再读它的 length 槽，一趟变两次访存。词表长度在建索引时
+  // 就是死数（`docToks` 建完不再变形），先摊成 Int32Array，热路改成一次元素读：值逐位不变
+  // （`Array#length` 与这里的整数同值），`docToks` 本身照旧留着给需要整份词表的地方用。
+  const tokLen = new Int32Array(n);
+  for (let i = 0; i < n; i++) tokLen[i] = docToks[i].length;
 
   // [macro-fusion 0.6.16] 字段命中（标题 / 关键词）在建索引时一次算进倒排条目，热路不再
   // 每条每个词查两次 Set。两个集合本来就只由 docs 决定，提前建不影响任何读法。
@@ -3721,7 +3727,7 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
     __n: n,
     __sig: sig ?? indexSignature(docs),
     __opts: `${useField ? 1 : 0}${opts.kwSeparate === false ? 0 : 1}${opts.sessionTopic === false ? 0 : 1}${kwTfW}${opts.coocLearn === false ? 0 : 1}${opts.coocForms === false ? 0 : 1}`,
-    plainToks, docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn, coocForms,
+    plainToks, docToks, tokLen, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, useField, coocSyn, coocForms,
     hayAt
   };
 }
@@ -3922,7 +3928,7 @@ function literalFallback(query, docs, opts = {}) {
 // 忙（重入）时一律退回新开——共享缓冲在嵌套调用里会互相踩。
 // `kDen` / `cvrOf` 只在候选上「先写后读」（scoreCandSet 首趟写、后两趟读），所以不必清零；
 // 这一点写成注释而不是省掉 fill，是为了让下一个改的人知道不是漏了。
-const HOT_SCRATCH = { busy: false, n: -1, raw: null, cover: null, candAt: null, kDen: null, cvr: null, coverAcc: null };
+const HOT_SCRATCH = { busy: false, n: -1, raw: null, cover: null, candAt: null, cand: null, kDen: null, cvr: null, coverAcc: null };
 function hotScratchOf(n) {
   const s = HOT_SCRATCH;
   if (s.busy) return null;
@@ -3932,6 +3938,10 @@ function hotScratchOf(n) {
     s.raw = new Array(n).fill(0);
     s.cover = new Array(n).fill(0);
     s.candAt = new Uint8Array(n);
+    // [macro-fusion 0.6.34] 候选表改成定长 Int32Array：候选每问都要从头铺一遍（10,000 条时
+    // 8,700 个），原来往一只 `[]` 里 push，容量增长与元素装箱的钱全付在热路上（行级 146.2ms 那行）。
+    // 「谁在用这块内存」变了、铺法与顺序一字不改，下游读到的仍是同一串 di。
+    s.cand = new Int32Array(n);
     s.kDen = new Float64Array(n);
     s.cvr = new Float64Array(n);
     s.coverAcc = new Float64Array(n);
@@ -4003,7 +4013,7 @@ function search(query, docs, opts = {}) {
   // 老实现是 `docs.map((d) => textOf(d).toLowerCase())`——每问一次拼一遍整库，占热检索的四成。
   const { hayOf, rawVerbatim, subjRatio } = verbatimInputs(query, docs, opts, null, index.hayAt, idents);
   const verbOn = hayOf !== null;
-  const { docToks, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
+  const { docToks, tokLen, avgdl, bodyLen, avgBody, df, tf, kwToks, kwTfW, titleSets, kwSets, postings, coocSyn, coocForms } = index;
   const FIELD_TITLE_W = 0.6;
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
   // [macro-fusion 0.6.29] 打分内层每条 posting 都要按字段标志位把权重加成重算一遍（两次位与 + 两次加法）。
@@ -4198,15 +4208,18 @@ function search(query, docs, opts = {}) {
   // 行级读数（cpu-prof positionTicks，10,000 条 / 300 问，1,808.2ms 总采样）：这个 IIFE 137.4ms/7.6%，
   // 是 0.6.17 之后热路第五名；同期 `scoreCandSet` 里的 `for (const di of candSet)` 也在付迭代器的钱。
   const candAt = postings === null || verbOn ? null : scratch === null ? new Uint8Array(docs.length) : scratch.candAt;
-  const candList = candAt === null ? null : [];
-  if (candList !== null) {
+  // [macro-fusion 0.6.34] 候选表从 `[]` + push 换成定长 Int32Array + 计数：铺法与首见顺序一字不改，
+  // 省掉的是每问 8,700 次 push 的容量增长与元素装箱（0.6.33 剖面里那行 146.2ms 的账）。
+  const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;
+  let candN = 0;
+  if (candBuf !== null) {
     for (const term of qLoop) {
       const p = postings.get(term);
       if (p === void 0) continue;
       const pd = p.d;
       for (let pi = 0; pi < pd.length; pi++) {
         const di = pd[pi];
-        if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }
+        if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }
       }
     }
     if (synOf !== null) {
@@ -4216,7 +4229,7 @@ function search(query, docs, opts = {}) {
         const pd = p.d;
         for (let pi = 0; pi < pd.length; pi++) {
           const di = pd[pi];
-          if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }
+          if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }
         }
       }
     }
@@ -4225,21 +4238,24 @@ function search(query, docs, opts = {}) {
   // 每条拿到的加数顺序仍是 qLoop 原序，所以浮点和逐位不变。词频与字段权重在建索引时就记在条目里
   // （见 buildSearchIndex），这一趟不再有哈希查找；「这个词这条根本没有」的格子被整个省掉——
   // 0.6.15 之后 scanDoc 的头号热点正是这些空手查找（535.3ms / 300 问）。
-  const kDen = candList === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.kDen;
-  const cvrOf = candList === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.cvr;
-  const candArr = candList === null ? null : [];
+  const kDen = candBuf === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.kDen;
+  const cvrOf = candBuf === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.cvr;
   const scoreCandSet = () => {
     // 先把每条自己的常数算好（覆盖度、长度惩罚、协调项），再让每个词只碰它真出现过的条。
-    // 换尺子那趟会再进来一次，候选表要重铺（不然同一条会被收尾循环算两遍）。
-    candArr.length = 0;
+    // [macro-fusion 0.6.34] 原来这趟一边算常数一边把候选再抄一份进 `candArr`，收尾循环读那份副本；
+    // 而副本的内容与顺序恒等于候选表本身（同一趟候选集、同一次扫描顺序），第二趟换尺子时两边一起重铺。
+    // 抄这一份 = 每问一次 8,700 元素的数组增长 + 8,700 次 push，收尾循环直接读候选表就够。
     // [macro-fusion 0.6.29] 这三样跟「具体哪一条候选」无关，提在循环外：`opts.lengthOnBody` 一趟里是同一个值，
     // 用来选长度与均值的那两个三元分支、以及 `k1 + 1`，原来在候选循环里每条都要重算一遍（`k1 + 1` 在
     // posting 内层里每条还要再算一次）。值不变，只是不再重复求。
     const onBody = opts.lengthOnBody === false;
     const lenDl = onBody ? avgdl : avgBody;
     const k1p1 = k1 + 1;
-    for (let ci = 0; ci < candList.length; ci++) {
-      const di = candList[ci];
+    // [macro-fusion 0.6.34] 协调项的 `1 - COORD_W` 一趟里是同一个死数，原来每条候选算一次减法
+    // （那一行 self 39.8ms）。提出来照旧写进同一条表达式，加法顺序不变、值逐位不变。
+    const coordKeep = 1 - COORD_W;
+    for (let ci = 0; ci < candN; ci++) {
+      const di = candBuf[ci];
       let cvr = 0;
       if (qIdfSum > 0) {
         coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);
@@ -4247,9 +4263,8 @@ function search(query, docs, opts = {}) {
       }
       cvrOf[di] = cvr;
       const bEff = b * (1 - coverLenRelief * cvr);
-      const len = onBody ? docToks[di].length : bodyLen[di];
+      const len = onBody ? tokLen[di] : bodyLen[di];
       kDen[di] = k1 * (1 - bEff + bEff * len / lenDl);
-      candArr.push(di);
     }
     for (let qi = 0; qi < qLoop.length; qi++) {
       const e = postings.get(qLoop[qi]);
@@ -4266,13 +4281,13 @@ function search(query, docs, opts = {}) {
         raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));
       }
     }
-    for (let ci = 0; ci < candArr.length; ci++) {
-      const di = candArr[ci];
+    for (let ci = 0; ci < candN; ci++) {
+      const di = candBuf[ci];
       let s = raw[di];
       const cvr = cvrOf[di];
       if (synOf !== null) {
         const tfi = tf[di];
-        const len = onBody ? docToks[di].length : bodyLen[di];
+        const len = onBody ? tokLen[di] : bodyLen[di];
         const bEff = b * (1 - coverLenRelief * cvr);
         // [macro-fusion 0.6.29] 饱和分母只由这条候选自己决定，原来写成 `sat(f)` 闭包，每个替身词
         // 都要把长度归一那段从头算一遍（还带一次闭包调用）。
@@ -4288,7 +4303,7 @@ function search(query, docs, opts = {}) {
           s += synW * best;
         }
       }
-      if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;
+      if (cvr > 0) s *= coordKeep + COORD_W * cvr;
       if (entSets) {
         let hit = 0;
         const es = entSets[di];
@@ -4298,7 +4313,7 @@ function search(query, docs, opts = {}) {
       raw[di] = s;
     }
   };
-  if (candList === null) {
+  if (candBuf === null) {
     for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
   } else {
     scoreCandSet();
@@ -4345,7 +4360,7 @@ function search(query, docs, opts = {}) {
             buildCoverAcc();
             raw.fill(0);
             coverOf.fill(0);
-            if (candList === null) {
+            if (candBuf === null) {
               for (let di = 0; di < docs.length; di++) raw[di] = scanDoc(di);
             } else {
               scoreCandSet();
@@ -4491,15 +4506,32 @@ function search(query, docs, opts = {}) {
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
     // [macro-fusion 0.2.179] 缘由问句不折：问的是当初为什么那样，旧是自然的（与时间锚同源）。
     const anchored = anchorSel === null ? false : anchorSel(di);
-    if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= impBandMax)) {
-      w = Math.max(RECENCY_FLOOR, recencyWeight(now - (dOf.last_accessed_at ?? dOf.updated_at)));
+    // [macro-fusion 0.6.34] 两个条件换个次序：`raw[di] >= impBandMax` 只用一支数值数组，
+    // `dOf.importance` 是散落对象上的一次访存（这条 112.6ms 的行里八成是它）。`&&` 两边都是纯判断，
+    // 换序不改真值；越过 impBandMax 的那几条不必再去翻对象。
+    if (!anchored && !causeQ && now !== null && !(raw[di] >= impBandMax) && dOf.importance < 3) {
+      // [macro-fusion 0.6.34] 这里每问要判一万条（3,000 问 = 三千万次），而 `recencyWeight` 只是
+      // 一串阈值比较：调一次要付调用 + 栈帧的钱（剖面：调用那行 114.0ms、函数体里 `days` 那行 45.2ms）。
+      // 摊平进循环，除式与比较顺序、九个返回常数一字不改，`Math.max` 的下限也照旧包在外面。
+      // [macro-fusion 0.6.34] 梯子直接踩在**毫秒差**上：`ageDays < K`（K 为整数天）与 `ageMs < K*864e5`
+      // 在整数毫秒时间戳下逐位等价——`K*864e5` 都是精确可表示的整数，`ageMs/864e5 < K` 只在「商被舍入到
+      // 恰好 K、而真值略小于 K」这一条窄缝里会分叉，而那条缝宽约 1e-8 毫秒（相对 1e-16 个 ulp），整数
+      // 毫秒的差值根本落不进去。省掉的是每问一万次除法（行级 114.8ms 那行里的一半）。
+      const ageMs = now - (dOf.last_accessed_at ?? dOf.updated_at);
+      w = Math.max(
+        RECENCY_FLOOR,
+        ageMs < 864e5 ? 1 : ageMs < 1728e5 ? 0.9 : ageMs < 3456e5 ? 0.8 : ageMs < 6048e5 ? 0.65
+          : ageMs < 1296e6 ? 0.5 : ageMs < 2592e6 ? 0.35 : ageMs < 5184e6 ? 0.25 : ageMs < 15552e6 ? 0.15 : 0.08,
+      );
     }
     // [macro-fusion 0.6.30] `impOf(dOf)` 是每条候选一次的小调用（闭包里做 optional chaining + round +
     // 两次 min/max）。`dOf` 在这里必然非空（上一行已经读过 `dOf.importance`），所以 `d?.importance` 与
     // `d.importance` 同值；把三步摊平进循环、顺序一格不改，`impW` 逐位不变。
     const impRaw = Math.round(Number(dOf.importance));
     const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;
-    const stW = anchored ? 1 : statusWeight(dOf.status);
+    // [macro-fusion 0.6.34] 同一个理由：`statusWeight` 只是 `String(x ?? "active")` 加一次表读，
+    // 摊平后值逐位不变（`?? 1` 的兜底也照旧）。
+    const stW = anchored ? 1 : (STATUS_WEIGHT[String(dOf.status ?? "active")] ?? 1);
     // [macro-fusion 0.6.14] 这三样每条只算一次：`assertRatioOf` 原来在 `_tr` 与 `_raw` 里各算一遍，
     // `ruleFoldOf(di)` 原来在 `_raw`/`score`/`explain` 里各算一遍。算一次再引用，值逐位不变。
     const trOf = tipOn ? assertRatioOf(dOf.content) : 0;

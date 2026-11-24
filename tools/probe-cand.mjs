@@ -55,16 +55,25 @@ const mk = (id, content, importance = 2, extra = {}) => ({
   const AT_NEW = 'const candAt = postings === null || verbOn ? null : scratch === null ? new Uint8Array(docs.length) : scratch.candAt;';
   const AT = ENGINE.includes(AT_OLD) ? AT_OLD : AT_NEW;
   const hasAt = ENGINE.includes(AT);
-  const hasList = ENGINE.includes('const candList = candAt === null ? null : [];');
-  const dedupe = (ENGINE.split('if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }').length - 1) === 2;
-  const loops = ENGINE.includes('for (let ci = 0; ci < candList.length; ci++) {');
-  const nullChecks = (ENGINE.split('if (candList === null) {').length - 1) === 2;
+  // [macro-fusion 0.6.34] 候选表两种形态都认：老的 `[]` + push（0.6.18–0.6.33），
+  // 新的定长 `Int32Array` + 游标 `candN`（0.6.34 起）——铺法与首见顺序不变，只是换了持有者。
+  const DEDUPE_OLD = 'if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }';
+  const DEDUPE_NEW = 'if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }';
+  const DEDUPE = ENGINE.includes(DEDUPE_NEW) ? DEDUPE_NEW : DEDUPE_OLD;
+  const hasList = ENGINE.includes('const candList = candAt === null ? null : [];') ||
+    ENGINE.includes('const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;');
+  const dedupe = (ENGINE.split(DEDUPE).length - 1) === 2;
+  const loops = ENGINE.includes('for (let ci = 0; ci < candList.length; ci++) {') ||
+    ENGINE.includes('for (let ci = 0; ci < candN; ci++) {');
+  const nullChecks = (ENGINE.split('if (candList === null) {').length - 1) === 2 ||
+    (ENGINE.split('if (candBuf === null) {').length - 1) === 2;
   // 只在这一段里查「Set 有没有退场」：引擎别处还用 Set，那是别的事。
   const candStart = ENGINE.indexOf(AT);
   const candEnd = ENGINE.indexOf('const scoreCandSet = () => {', candStart + 1);
   const candSeg = candStart >= 0 && candEnd > candStart ? ENGINE.slice(candStart, candEnd) : '';
   const noSet = candSeg !== '' && candSeg.includes('new Set()') === false && candSeg.includes('set.add(') === false;
-  const noIter = ENGINE.includes('for (const di of candList)') === false;
+  const noIter = ENGINE.includes('for (const di of candList)') === false &&
+    ENGINE.includes('for (const di of candBuf)') === false;
   ok(
     'C0 位图 + 候选表在位：两处去重语句（问句词 / 同义扩词）、两处退路判空、遍历是下标循环、Set 已退场',
     hasAt && hasList && dedupe && loops && nullChecks && noSet && noIter,
@@ -168,7 +177,9 @@ const QS = ['astra', 'astra bravo', 'cygnus dorado', 'zulu', 'astra bravo cygnus
   const bridged = on.trimmed === 1 && off.trimmed === void 0;
   // 桥只加候选、不加名次：回执的**条与序**逐位相同（分数会被桥抬高，那是扩词自己的账）。
   const same = JSON.stringify(on.map((h) => h.id)) === JSON.stringify(off.map((h) => h.id));
-  const dedupeTwice = (ENGINE.split('if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }').length - 1) === 2;
+  // [macro-fusion 0.6.34] 两种形态都认（见 C0）。
+  const dedupeTwice = (ENGINE.split('if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }').length - 1) === 2 ||
+    (ENGINE.split('if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }').length - 1) === 2;
   ok(
     'C3 同义扩词那条路也进候选表：开桥时多出一条候选（trimmed 0→1）、关桥时没有，且回执的条与序逐位相同',
     bridged && same && dedupeTwice,

@@ -10350,7 +10350,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       // 主动注入那支照旧折——注入多提一句常常是好事，抹平反而坏事（见 HZ14）。
       eng.split('if (!anchored && !causeQ && now !== null').length - 1 === 1 &&
       eng.split('if (!anchored && now !== null').length - 1 === 1 &&
-      eng.split('const stW = anchored ? 1 : statusWeight').length - 1 === 2 &&
+      // [0.6.34] 扫倒排那处摊平成 `(STATUS_WEIGHT[...] ?? 1)`，两支仍各一处、只认前缀。
+      eng.split('const stW = anchored ? 1 : ').length - 1 === 2 &&
       eng.includes('!timeAnchor && now !== null') === false &&
       eng.includes('const stW = timeAnchor ? 1') === false,
   )
@@ -10358,12 +10359,15 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'GZ 只免两样: 词分与覆盖度一个字没动（动了就是改判据，不是改口径）',
     // [0.6.16] 打分拆成两条路（扫倒排的 scoreCandSet 与逐条扫的 scanDoc），协调因子那句在两个
     // 函数里各有一处、算式逐字相同——所以钉「两处」而不是「一处」，但仍是两处、不许再散。
-    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 2 &&
+    // [0.6.34] 扫倒排那处把 `1 - COORD_W` 提成循环外的 `coordKeep`：两种写法的处数相加仍是 2。
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 +
+      eng.split('s *= coordKeep + COORD_W * cvr;').length - 1 === 2 &&
       !/COORD_W[^\n]*anchored/.test(eng) &&
       eng.split('const coverage = len > 0 ? overlap / len : 0;').length - 1 === 1 &&
       // [0.6.15] 两支打分器的 w 同形（都带 RECENCY_FLOOR 下限）。0.6.15 起 search 那支先落 `dOf`，
       // 两条的字面量不再逐字相同 → 改钉共有的那半句，两处都得在。
-      eng.split('w = Math.max(RECENCY_FLOOR, recencyWeight(now - (').length - 1 === 2 &&
+      // [0.6.34] 热路改成毫秒梯子（`Math.max(\n  RECENCY_FLOOR,` 换行），一律按 `Math.max(※RECENCY_FLOOR,` 数。
+      (eng.match(/Math\.max\(\s*RECENCY_FLOOR,/g) || []).length === 2 &&
       eng.split('anchorHit').length - 1 === 1,
   )
   check(
@@ -10654,7 +10658,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   check(
     'HC 只动一处: 协调因子在打分路径里出现一次，线性旧写法一处不剩',
     // [0.6.16] 同上：扫倒排与逐条扫两条路各一处，算式逐字相同；线性旧写法仍是一处不剩。
-    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 2 &&
+    // [0.6.34] 扫倒排那处把 `1 - COORD_W` 提成循环外的 `coordKeep`：两种写法的处数相加仍是 2。
+    eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 +
+      eng.split('s *= coordKeep + COORD_W * cvr;').length - 1 === 2 &&
       eng.split('s *= 1 - COORD_W + COORD_W * Math.min(1, cover / qIdfSum);').length - 1 === 0,
   )
   check(
@@ -11600,7 +11606,9 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       countOf(eng179, 'coverOf[di] = Math.min(1, cover / qIdfSum);') === 1 &&
         (countOf(eng179, 'cvr = Math.pow(coverOf[di], COORD_POW);') === 2 ||
           countOf(eng179, 'cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);') === 2) &&
-        countOf(eng179, 'if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;') === 2,
+        // [0.6.34] 扫倒排那处把 `1 - COORD_W` 提成 `coordKeep`：两种写法的处数相加仍是 2。
+        countOf(eng179, 'if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;') +
+          countOf(eng179, 's *= coordKeep + COORD_W * cvr;') === 2,
       '三步都在，各一处',
     )
     check(
@@ -11612,7 +11620,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     )
     check(
       'HZ14 两笔账分开落：新鲜度吃 !causeQ、折价走 ruleFoldOf 一个 helper（分档 + 打分 + explain 三处），explain 里也看得见（否则单题排查看不出这一笔）',
-      countOf(eng179, 'if (!anchored && !causeQ && now !== null && dOf.importance < 3') === 1 &&
+      // [0.6.34] 守卫换序（`!(raw[di] >= impBandMax)` 提前），两种写法只认前缀 + 尾部条件。
+      countOf(eng179, 'if (!anchored && !causeQ && now !== null && ') === 1 &&
+        (countOf(eng179, 'now !== null && dOf.importance < 3') === 1 ||
+          countOf(eng179, '!(raw[di] >= impBandMax) && dOf.importance < 3') === 1) &&
         countOf(eng179, 'const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;') === 1 &&
         // [0.6.14] helper 每条只调一次（`const foldOf = ruleFoldOf(di);`），三个消费点都吃这个变量：
         // 分档（_raw）× 打分（score）× explain。口径仍是一处定义，只是不再重算三遍。
@@ -12659,7 +12670,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VY5 两处新鲜度都有下限（Math.max(RECENCY_FLOOR, recencyWeight(...))）',
-    (MY.match(/Math\.max\(RECENCY_FLOOR, recencyWeight\(/g) || []).length === 2,
+    // [0.6.34] 热路改毫秒梯子，`Math.max` 里换成多行三元；一律按 `Math.max(※RECENCY_FLOOR,` 数（仍是两处）。
+    (MY.match(/Math\.max\(\s*RECENCY_FLOOR,/g) || []).length === 2,
   )
   check(
     'VY6 两支打分器都挂词分给分档用（_raw 两处；search 那处还要乘上标识符、主语位、层级意图三把刀）',
@@ -13513,7 +13525,9 @@ dt063: {
   const engSrc7 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const pathOk =
     engSrc7.includes('const scoreCandSet = () => {') &&
-    engSrc7.includes('candArr.length = 0;') &&
+    // [0.6.34] `candArr` 那只副本（内容与顺序恒等于候选表）整只删掉，改认定长 `Int32Array` + 游标。
+    (engSrc7.includes('const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;') ||
+      engSrc7.includes('candArr.length = 0;')) &&
     // [0.6.29] `k1 + 1` 提成 `k1p1`、字段加成改成 `FIELD_W_TAB[fl & 3]`：老写法与新写法任在位即算过。
     (engSrc7.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') ||
       engSrc7.includes('raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));')) &&
@@ -13679,16 +13693,25 @@ dt063: {
     cMissing.length ? `缺 ${cMissing.join(' ')}` : `挂线 ${cWired ? 'ok' : 'miss'} / 例外 ${cExcused ? 'ok' : 'miss'}`,
   )
   const engSrc9 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
-  const dedupeLine = 'if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }'
+  // [0.6.34] 候选表换成定长 `Int32Array` + 游标 `candN`：两种形态都认（见 probe-cand C0）。
+  const dedupeLine =
+    engSrc9.includes('if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }')
+      ? 'if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }'
+      : 'if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }'
   const candStart = engSrc9.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);') >= 0
     ? engSrc9.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);')
     : engSrc9.indexOf('const candAt = postings === null || verbOn ? null : scratch === null ? new Uint8Array(docs.length) : scratch.candAt;')
   const candEnd = candStart < 0 ? -1 : engSrc9.indexOf('const scoreCandSet = () => {', candStart + 1)
   const candBody = candStart >= 0 && candEnd > candStart ? engSrc9.slice(candStart, candEnd) : ''
-  const bitmapOk = candStart >= 0 && engSrc9.includes('const candList = candAt === null ? null : [];')
+  const bitmapOk = candStart >= 0 &&
+    (engSrc9.includes('const candList = candAt === null ? null : [];') ||
+      engSrc9.includes('const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;'))
   const dedupeTwice = engSrc9.split(dedupeLine).length - 1 === 2
-  const loopOk = engSrc9.includes('for (let ci = 0; ci < candList.length; ci++) {') && !engSrc9.includes('for (const di of candList)')
-  const nullTwice = engSrc9.split('if (candList === null) {').length - 1 === 2
+  const loopOk = (engSrc9.includes('for (let ci = 0; ci < candList.length; ci++) {') ||
+    engSrc9.includes('for (let ci = 0; ci < candN; ci++) {')) &&
+    !engSrc9.includes('for (const di of candList)') && !engSrc9.includes('for (const di of candBuf)')
+  const nullTwice = engSrc9.split('if (candList === null) {').length - 1 === 2 ||
+    engSrc9.split('if (candBuf === null) {').length - 1 === 2
   // 候选集那一段里 Set 必须真的退场；引擎别处（比如 forms、图遍历）还在用 Set，全文件查会误判。
   const noSet = candBody.length > 0 && !candBody.includes('new Set()') && !candBody.includes('set.add(')
   check(
@@ -14789,7 +14812,8 @@ dt063: {
   const scratchS28 = engS28.includes('const HOT_SCRATCH = { busy: false,') && engS28.includes('if (s.busy) return null;') &&
     engS28.includes('const scratch = hotScratchOf(docs.length);') &&
     (engS28.match(/hotScratchDone\(\);/g) ?? []).length === 2 &&
-    (engS28.match(/scratch === null \?/g) ?? []).length === 6
+    // [0.6.34] 六处 → 七处：候选表也走 `hotScratchOf`（`candBuf` 的 `scratch === null ? new Int32Array(docs.length)`）。
+    (engS28.match(/scratch === null \?/g) ?? []).length === 7
   check('OR088 引擎形状：覆盖度幂走恒等快路（两处三元、无裸求幂）、档号同分批量、临时缓冲按长度复用（六处取用、两个出口归还）',
     powS28 && powSites28 === 2 && powBare28 === 0 && bandS28 && scratchS28,
     `pow=${powSites28} 裸=${powBare28} band=${bandS28} scratch=${scratchS28}`)
@@ -15486,6 +15510,144 @@ dt063: {
   const vS33 = (readS33('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS33 = vS33.length === 3 ? vS33[0] * 10000 + vS33[1] * 100 + vS33[2] : 0
   check('OR093 版本号不低于 0.6.33（后续补丁不必回头改这一条）', vNumS33 >= 633, vS33.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.34] OR094：每问常数项与候选表形态 ═══════════════
+// 症状（`docs/INTERNAL.md` 9.233，10,000 条 / 3,000 问剖面）：候选表是 `const candArr = []` +
+// `candArr.push(di)`——每问 8,700 元素、容量翻倍 + 元素搬移，`scoreCandSet` 随后顺序读的其实只是
+// 「这一问命中了哪几条」；扫描循环里 `recencyWeight(...)` / `statusWeight(...)` 记在调用那一行
+// （114 / 50ms），容易被当成调用开销。
+// 处方：候选表换成与 `raw` / `kDen` 同寿命的定长 `Int32Array` + 游标 `candN`；时间梯子改踩毫秒差
+// （去掉一次除法）；衰减守卫把数值数组条件提前；`impW` / `stW` 就地摊平。
+// 反证：光摊平那两个一元小函数只值 −0.6%（V8 本来就内联），加上候选表与守卫换序才到 −7.4%。
+{
+  const readS34 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const eng34 = readS34('./vendor/meow-memory/lib/index.js')
+  const searchStart34 = eng34.indexOf('function search(query, docs, opts = {}) {')
+  const searchEnd34 = eng34.indexOf('\nfunction ', searchStart34 + 10)
+  const searchC34 = eng34.slice(searchStart34, searchEnd34)
+  // ① 探针在位
+  const probe34 = readS34('./tools/probe-hotpath.mjs')
+  check('OR094 探针在位：probe-hotpath 有 H24a–H24c 三条（候选表形态 / 毫秒梯子等价 / 复用不串味）',
+    probe34.includes('H24a 候选表改定长 Int32Array') &&
+      probe34.includes('H24b 毫秒梯子与老除法梯子逐位等价') &&
+      probe34.includes('H24c 定长候选表复用不串味') &&
+      readS34('./tools/check-all.mjs').includes('probe-hotpath.mjs'),
+    `H24a=${probe34.includes('H24a 候选表改定长 Int32Array')} 挂载=${readS34('./tools/check-all.mjs').includes('probe-hotpath.mjs')}`)
+  // ② 引擎形状：定长候选表 + 游标、毫秒梯子、守卫换序、impW/stW 摊平；老写法（[]+push、ageDays、调用）已撤
+  const candOk34 = searchC34.includes('const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;') &&
+    searchC34.includes('let candN = 0;') &&
+    (searchC34.split('if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }').length - 1) === 2 &&
+    searchC34.includes('for (let ci = 0; ci < candN; ci++) {') &&
+    !searchC34.includes('candList.push(') &&
+    !searchC34.includes('candArr.push(')
+  const ladderOk34 = searchC34.includes('const ageMs = now - (dOf.last_accessed_at ?? dOf.updated_at);') &&
+    searchC34.includes('ageMs < 15552e6 ? 0.15 : 0.08') &&
+    !searchC34.includes('const ageDays =') &&
+    !searchC34.includes('recencyWeight(now,') &&
+    searchC34.includes('const impW = 1 + ((Number.isFinite(impRaw)') &&
+    searchC34.includes('const stW = anchored ? 1 : (STATUS_WEIGHT[String(dOf.status ?? "active")] ?? 1);') &&
+    searchC34.includes('!(raw[di] >= impBandMax) && dOf.importance < 3')
+  const scratchOk34 = eng34.includes('cand: null, kDen: null') &&
+    eng34.includes('s.cand = new Int32Array(n);')
+  check('OR094 引擎形状：候选表改定长 Int32Array + 游标、时间梯子踩毫秒差、守卫换序，老写法全撤',
+    candOk34 && ladderOk34 && scratchOk34,
+    `候选表=${candOk34} 梯子=${ladderOk34} 缓冲=${scratchOk34}`)
+  // ③ 进程内：快路（默认）与老后处理（explain:true）逐位同档，八种分布
+  const Mv34 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const NOW34 = 1795470000000
+  const lcg34 = (seed0) => {
+    let s = seed0
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648
+      return s / 2147483648
+    }
+  }
+  const mkCorp34 = (kind, n, seed) => {
+    const r = lcg34(seed)
+    const words = ['alpha', 'beta', 'gamma', 'delta', '一律', '必须', '记忆', '星图', '索引', '锚点']
+    return Array.from({ length: n }, (_, i) => {
+      const dup = kind === 'dup'
+      const spread = kind === 'scale' ? i * (1 + (i % 7 === 0 ? 40 : 0)) : i
+      const ws = dup ? ['alpha', 'beta', 'gamma', '记忆'] : Array.from({ length: 1 + ((r() * 6) | 0) }, () => words[(r() * words.length) | 0])
+      return {
+        id: '0md' + String(i).padStart(6, '0'),
+        level: ['fact', 'lesson', 'rules', 'topic'][kind === 'level' ? (i % 4) : ((r() * 4) | 0)],
+        title: ws[0],
+        content: `${ws.join(' ')} 第 ${dup ? 0 : i} 条`,
+        importance: kind === 'flat' ? 2 : 1 + ((r() * 4) | 0),
+        updated_at: NOW34 - spread * 3600000,
+        last_accessed_at: NOW34 - spread * 600000,
+        keywords: r() < 0.2 ? null : [words[(r() * words.length) | 0]],
+        project: 'p',
+      }
+    })
+  }
+  const kinds34 = [['mix', 80], ['dup', 30], ['scale', 60], ['flat', 50], ['level', 40], ['tiny', 3], ['pair', 2], ['wide', 150]]
+  const bandsOf34 = (rs) => rs.map((h) => `${h.id}@${h._band ?? 'x'}`).join(',')
+  const qs34 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta 锚点 索引', 'alpha gamma 记忆', 'rules 是什么']
+  let sameAll34 = true
+  let pairs34 = 0
+  const bad34 = []
+  for (const [kind, n] of kinds34) {
+    const corp = mkCorp34(kind, n, 11 + n)
+    for (const q of qs34) {
+      const lean = bandsOf34(Mv34.search(q, corp, { k: n, now: NOW34 }))
+      const told = bandsOf34(Mv34.search(q, corp, { k: n, now: NOW34, explain: true }))
+      pairs34 += 1
+      if (lean !== told) { sameAll34 = false; if (bad34.length < 3) bad34.push(`${kind}/${q}`) }
+    }
+  }
+  check('OR094 进程内：候选表与毫秒梯子不换算术——快路档号与老后处理逐位相同（八种分布 × 六问）',
+    sameAll34 && pairs34 === 48,
+    `对拍=${pairs34} 不同=${bad34.length === 0 ? '无' : bad34.join(' ')}`)
+  // ④ 进程内：档号两条硬性质（raw 大 ⇒ 档号不增；等分 ⇒ 等档）
+  const corpMono34 = mkCorp34('mix', 90, 4242)
+  const rsMono34 = Mv34.search('alpha beta gamma 记忆 星图', corpMono34, { k: 90, now: NOW34, explain: true })
+  let mono34 = true
+  let tie34 = true
+  for (const a of rsMono34) {
+    for (const b of rsMono34) {
+      if (a._raw > b._raw && !(a._band <= b._band)) mono34 = false
+      if (a._raw === b._raw && a._band !== b._band) tie34 = false
+    }
+  }
+  check('OR094 进程内：档号随 raw 单调不增、同分必同档（换缓冲不改定档）',
+    rsMono34.length >= 2 && mono34 && tie34,
+    `条数=${rsMono34.length} 单调=${mono34} 同分同档=${tie34}`)
+  // ⑤ 进程内：回执指纹与 0.6.29–0.6.33 逐位相同（只动每问常数项与缓冲形态，分数与顺序一位不动）
+  const r34 = lcg34(97)
+  const w34 = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图']
+  const corpG34 = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((r34() * 5) | 0)
+    const ws = Array.from({ length: n }, () => w34[(r34() * w34.length) | 0])
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(r34() * 4) | 0],
+      title: ws[0],
+      content: ws.join(' '),
+      importance: 1 + ((r34() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: r34() < 0.2 ? null : [w34[(r34() * w34.length) | 0]],
+      project: 'p',
+    }
+  })
+  const qsG34 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha']
+  const digestG34 = qsG34.map((q) => Mv34.search(q, corpG34, { k: 8, now: NOW34 })
+    .map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|')
+  const GOLD34 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025'
+  check('OR094 进程内：回执指纹与 0.6.29 / 0.6.30 / 0.6.31 / 0.6.32 / 0.6.33 逐位相同（只动常数项与缓冲，不碰分数与顺序）',
+    digestG34 === GOLD34, digestG34 === GOLD34 ? '指纹同' : '指纹不同')
+  // ⑥ 文档在位 + ⑦ 版本
+  check('OR094 文档在位：INTERNAL 9.233、README 写「候选表」、DESIGN 有 ## 229.、PLAN 有 0.6.34',
+    readS34('./docs/INTERNAL.md').includes('## 9.233 ') &&
+      readS34('./README.md').includes('候选表') &&
+      readS34('./DESIGN.md').includes('## 229. ') &&
+      /0\.6\.34/.test(readS34('./docs/PLAN-0.6.md')))
+  const vS34 = (readS34('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS34 = vS34.length === 3 ? vS34[0] * 10000 + vS34[1] * 100 + vS34[2] : 0
+  check('OR094 版本号不低于 0.6.34（后续补丁不必回头改这一条）', vNumS34 >= 634, vS34.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

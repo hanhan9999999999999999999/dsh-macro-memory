@@ -13512,3 +13512,31 @@ rawkTopPrev = top;
 **判据**：`tools/probe-hotpath.mjs` H23a–H23c（25/25 ALL PASS）；`verify.mjs` OR093 七条；`probe-band` 7/7、`probe-order` 10/10 不动。
 
 **踩坑**：①「老写法不在」不能整篇判——冷路 `setBandsByThreshold` 还留着线性写法，必须切成热路段（`const g0 = rawkBucketOf(a0v);` → `// ⑥ 选前 k：有界堆`）；②离线基准只值方向（`bandbench33` 预示 −39% 定档内部、整机 3–4%，实测 −8.1%），幅度一律以 A/B 为准；③`.cjs` 里不能写 `import`（报 `Cannot use import statement outside a module`），改写 `require`。
+
+## 9.233 0.6.34：每问常数项与候选表的存储形态
+
+**病根**：三笔跟着问句走、但跟问句内容无关的钱——①候选表 `candList` 用 `[]` + `push` 攒（10,000 条中文档时 8,700 个），`scoreCandSet` 里又把它**抄一份**进 `candArr`（同样 `push`），收尾循环读副本；而副本的内容与顺序**恒等于**候选表本身（同一趟候选集、同一次扫描顺序），这份抄写是每问一次 8,700 元素的容量翻倍 + 元素搬移（行级 `L4209` 136.6ms）。②时间梯子 `recencyWeight` 每问除一次：`const days = (now - last) / 864e5;` 再与整数天比档，10,000 条 × 3,000 问 = 三千万次除法（`L4495` 114.0ms）。③衰减守卫先翻对象再判数值：`dOf.importance < 3` 写在 `!(raw[di] >= impBandMax)` 之前，`raw[di]` 是连着的数值数组、`dOf` 是散落对象，先翻对象 = 每问多付一万次可能的 cache miss（`L4494` 96.8 + `L4501` 54.9）。另有两笔随手的：`tokLen` 每候选取一次 `docToks[di].length`、`coordKeep = 1 - COORD_W` 每候选算一次死数。
+
+**两条反证（写进 PLAN，别再动）**：
+
+1. 光把 `recencyWeight` / `statusWeight` 摊进循环只值 **−0.6%**（A/B 跨进程三轮中位 1.1647 → 1.1578）——V8 本来就内联这种一元小函数，剖面把时间记在**调用那一行**不等于真有调用开销。
+2. 把 `indexSignature` 的签名行改成平铺存储**更慢**：`E:\Temp\cmp\sigflat34.mjs`（10,000 条同形 doc，300 趟 × 5 轮中位）行对象 **9.07 ns/行** vs 平铺（五只字符串数组 + 两只 Float64Array + 关键词数组 + `Uint8Array`）**9.98 ns/行**，`same hash: true`。行对象在一趟里顺序分配、本身就是相邻内存，没有 cache miss 可省；平铺多付五次下标换算。`indexSignature` 引擎内 41ns/行 与离线 9ns 的差在 doc 对象散落 + 真语料更长，属**访存主导**。
+
+**处方**（六处，`vendor/meow-memory/lib/index.js`）：
+
+1. `buildSearchIndex` 摊 `const tokLen = new Int32Array(n); for (let i = 0; i < n; i++) tokLen[i] = docToks[i].length;`（接在 `avgBody` 之后），进返回对象与 `search` 解构；`scoreCandSet` 两处 `const len = onBody ? tokLen[di] : bodyLen[di];`。
+2. `coordKeep = 1 - COORD_W` 提循环外，`s *= coordKeep + COORD_W * cvr;`。
+3. `impW` / `stW` 就地摊平：`const impRaw = Math.round(Number(dOf.importance)); const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;`、`const stW = anchored ? 1 : (STATUS_WEIGHT[String(dOf.status ?? "active")] ?? 1);`（`statusWeight` 在冷路 `:2148` 仍留着）。
+4. 时间梯子踩毫秒差：`const ageMs = now - (dOf.last_accessed_at ?? dOf.updated_at);` + `w = Math.max(RECENCY_FLOOR, ageMs < 864e5 ? 1 : ageMs < 1728e5 ? 0.9 : ageMs < 3456e5 ? 0.8 : ageMs < 6048e5 ? 0.65 : ageMs < 1296e6 ? 0.5 : ageMs < 2592e6 ? 0.35 : ageMs < 5184e6 ? 0.25 : ageMs < 15552e6 ? 0.15 : 0.08);`（1/2/4/7/15/30/60/180 天）。
+5. 衰减守卫换序：`if (!anchored && !causeQ && now !== null && !(raw[di] >= impBandMax) && dOf.importance < 3) {`（`&&` 两边都是纯判断，换序不改真值；越过 `impBandMax` 的那几条不必再翻对象）。
+6. 候选表换形态：`HOT_SCRATCH` 加 `cand: null`，`hotScratchOf` 里 `s.cand = new Int32Array(n);`；`search` 里 `const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;` + `let candN = 0;` + 两处 `if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }`；下游 `candList.length` → `candN`、`candList[ci]` → `candBuf[ci]`、`candList === null` → `candBuf === null`；**`candArr` 整只删掉**。
+
+**正确性**：①梯子等价——`K * 864e5` 都是精确双精度整数，`ageMs / 864e5 < K` 只在「商被舍入到恰好 K、真值略小于 K」的窄缝里分叉，缝宽 ≈ 0.5 ulp × 864e5 ≈ **1e-8 毫秒**，整数毫秒时间差落不进去；H24b 在 10 档 × 边界 ±1ms 上逐位对拍老除法梯子，30/30 同分叉。②候选表换持有者不改铺法、首见顺序、浮点加法顺序，`scoreCandSet` 读到的元素与序一字不动。③守卫换序是 `&&` 纯判断交换，真值不变。
+
+**读数**：跨进程交替三轮（`warmprof28.mjs`，10,000 条 / 3,000 问 / k=5）**1.1725 → 1.0856 ms/问（−7.4%）**，逐对 −5.9 / −7.6 / −6.6%；只做①–④ 的中间版是 −3.2%（1.1748 → 1.1376）。新剖面 `node_modules\.tmp-diff\p34b\CPU.20261124.190842.7740.0.001.cpuprofile` 总采样 **4,457.6ms**（0.6.33 4,722.9、0.6.32 5,371.8）：`search:3991` self 1,777.0 → **1,658.1**、`scoreCandSet:4243` 730.4 → **707.9**、`indexSignature:3281` 1,227.4 → 1,179.5（未动代码）。行级：`L4222` 候选去重 146.2 → **120.3**、`L4520` 时间差 114.8 → **107.3**、`L4512` 守卫 96.8+54.9 → **83.5**。
+
+**等价性**：四把尺子 `colddiff34` **462** / `tokdiff34` **15,810** / `searchdiff34` **2,462** / `fastdiff34` `edgeCount 0`、`digFired 900` 全 **0 不符**；进程内快路 vs `explain: true` 在 8 种分布 × 6 问 = **48 对**上档号逐位相同；`GOLD34` 与 0.6.29–0.6.33 同一串（分数与顺序一位不动，只动常数项与缓冲形态）。
+
+**判据**：`tools/probe-hotpath.mjs` H24a–H24c（**28/28 ALL PASS**）；`verify.mjs` OR094 七条；`probe-cand` 6/6、`probe-score` 6/6（旧形状断言改成「新旧两种形态都认」，回滚不必返工）；H9 的 `scratch === null ?` 计数由 6 改 **7**（候选表也领缓冲）。
+
+**踩坑**：①剖面把时间记在调用行 ≠ 真有调用开销（per-call 摊平只值 0.6%，`recencyWeight`/`statusWeight` 这两处差点白干）；②别拿离线微基准给存储形态下结论（`sigflat34` 差 10%，引擎里另一种量级；`bandbench33` 曾预示 −39% 实测 −8.1%），离线只回答「值不值得动手」；③`k: 0` 的语义是**全给**不是「一条不给」（`trimByBand:3921` `k2 > 0 ? Math.round(k2) : hits.length`），H24c 第一版按 0 条断言必红；④老探针的形状断言会跟着引擎改而红（H9 数 `scratch === null ?` 出现次数、`probe-cand` C0/C3 与 `probe-score` S0 点着 `candList.push` / `candArr.length = 0`），一律写「新形状 || 老形状」；⑤`candArr` 看着像「换尺子那趟要重铺」，其实两次调用的候选集与顺序完全一样，重铺只会追加重复。

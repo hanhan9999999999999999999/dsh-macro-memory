@@ -178,7 +178,10 @@ const plain = [
     ENGINE.includes('function hotScratchDone() {') &&
     ENGINE.includes('const scratch = hotScratchOf(docs.length);') &&
     (ENGINE.match(/hotScratchDone\(\);/g) || []).length === 2 &&
-    (ENGINE.match(/scratch === null \?/g) || []).length === 6;
+    // [macro-fusion 0.6.34] 六处 → 七处：候选表也改从 `hotScratchOf` 领（`candAt` 那处之外又多了
+    // `candBuf` 的 `scratch === null ? new Int32Array(docs.length) : scratch.cand`），`hotScratchDone`
+    // 仍是两处（正常返回 + 异常兜底）。
+    (ENGINE.match(/scratch === null \?/g) || []).length === 7;
   const A = 'alpha beta';
   const B = 'alpha 一律 必须先跑';
   const s1 = JSON.stringify(search(A, plain, { k: 5, explain: true, now: NOW }));
@@ -864,6 +867,101 @@ const plain = [
     'H23c 档号仍单调、同分同档：raw 大则档号不增，等分必等档',
     rs.length >= 2 && mono && sameScoreSameBand,
     `条数=${rs.length} 单调=${mono} 同分同档=${sameScoreSameBand}`,
+  );
+}
+
+// ── H24 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.34] 每问常数项与候选表的存储形态。
+//
+// 症状（`docs/INTERNAL.md` 9.233）：`search` 行级剖面里 `recencyWeight(...)` / `statusWeight(...)`
+// 这两个一元小函数的耗时被记在**调用那一行**（114 / 50ms），看上去像「调用开销」；候选表是
+// `const candArr = []` + `candArr.push(di)`，每问都要长一只 8,700 元素的普通数组（容量翻倍、
+// 元素搬移），而 `scoreCandSet` 随后顺序读的其实只是「这一问命中了哪几条」。
+//
+// 处方：候选表换成与 `raw` / `kDen` 同寿命的定长 `Int32Array` + 游标 `candN`；时间梯子改踩
+// **毫秒差**（`ageMs < 864e5 ? … : ageMs < 15552e6 ? 0.15 : 0.08`），省掉 `ageMs / 864e5` 这一次
+// 除法；衰减守卫把只读数值数组的条件提前，越过 `impBandMax` 的那几条不必再去翻 doc 对象；
+// `impW` / `stW` 就地摊平（顺带把 `recencyWeight` / `statusWeight` 从热路调用点摘掉）。
+//
+// 反证留档：光摊平这两个小函数只值 **−0.6%**（跨进程三轮中位 1.1647 → 1.1578）——V8 本来就会
+// 内联它们，剖面把时间记在调用行不等于真有调用开销；加上定长候选表与守卫换序才到 **−7.4%**
+// （同一把尺子三轮中位 1.1725 → 1.0856）。
+//
+// 这里钉三件事：形状在位（老 `[]`+push 与 `ageDays` 已撤）／递推梯子与老除法梯子逐位等价
+// （±1ms 边界各探一遍）／定长缓冲跨查询复用不串味。
+{
+  const want = [
+    'const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;',
+    's.cand = new Int32Array(n);',
+    'if (candAt[di] === 0) { candAt[di] = 1; candBuf[candN++] = di; }',
+    'const ageMs = now - (dOf.last_accessed_at ?? dOf.updated_at);',
+    'ageMs < 15552e6 ? 0.15 : 0.08',
+  ];
+  const missing = want.filter((s) => !ENGINE.includes(s));
+  const gone = ['candArr.push(', 'candArr.length = 0', 'const ageDays = (now -', 'recencyWeight(now,'];
+  const alive = gone.filter((s) => ENGINE.includes(s));
+  ok(
+    'H24a 候选表改定长 Int32Array、时间梯子踩毫秒差：形状在位、老写法已撤',
+    missing.length === 0 && alive.length === 0,
+    `缺=${missing.length} 残留=${alive.length}${alive.length === 0 ? '' : `（${alive.join(' / ')}）`}`,
+  );
+}
+{
+  // ② 梯子等价：整数毫秒下 `ageMs < K * 864e5` 与 `ageMs / 864e5 < K` 逐位同分叉。
+  // 探 10 个档位 × 边界前后各 1ms（含 0 天与越界端），任何一处阈值写错（比如 15552e5）都会红。
+  const FLOOR = 0.08;
+  const ladderOld = (ageMs) => {
+    const d = ageMs / 864e5;
+    return Math.max(
+      FLOOR,
+      d < 1 ? 1 : d < 2 ? 0.9 : d < 4 ? 0.8 : d < 7 ? 0.65 : d < 15 ? 0.5 : d < 30 ? 0.35 : d < 60 ? 0.25 : d < 180 ? 0.15 : 0.08,
+    );
+  };
+  const ladderNew = (ageMs) =>
+    Math.max(
+      FLOOR,
+      ageMs < 864e5 ? 1 : ageMs < 1728e5 ? 0.9 : ageMs < 3456e5 ? 0.8 : ageMs < 6048e5 ? 0.65 : ageMs < 1296e6 ? 0.5 : ageMs < 2592e6 ? 0.35 : ageMs < 5184e6 ? 0.25 : ageMs < 15552e6 ? 0.15 : 0.08,
+    );
+  let mismatch = 0;
+  let probed = 0;
+  for (const days of [0, 1, 2, 4, 7, 15, 30, 60, 180, 400]) {
+    for (const off of [-1, 0, 1]) {
+      const ageMs = days * 864e5 + off;
+      probed += 1;
+      if (ladderOld(ageMs) !== ladderNew(ageMs)) mismatch += 1;
+    }
+  }
+  ok('H24b 毫秒梯子与老除法梯子逐位等价（10 档 × 边界 ±1ms）', mismatch === 0 && probed === 30, `探=${probed} 不符=${mismatch}`);
+}
+{
+  // ③ 定长缓冲复用不串味：同一目标问在「前序其它问 / 连跑 / 冷语料」三种前序下结果逐位相同，
+  //    且 k 边界（1 / 全部 / 0）不越界。
+  const NOW2 = NOW;
+  const docs = Array.from({ length: 240 }, (_, i) => ({
+    id: '0md' + String(i).padStart(6, '0'),
+    level: i % 5 === 0 ? 'rules' : 'fact',
+    title: ['alpha', 'beta', 'gamma'][i % 3],
+    content: `${'alpha '.repeat(1 + (i % 4))}${['beta', 'gamma', 'delta'][i % 3]} 记忆 第 ${i} 条`,
+    importance: 1 + ((i * 3) % 4),
+    updated_at: NOW2 - ((i * 53) % 400) * 864e5,
+    last_accessed_at: NOW2 - ((i * 29) % 400) * 36e5,
+    keywords: [['alpha'], ['beta'], null][i % 3],
+    project: 'p',
+  }));
+  const fp = (rs) => rs.map((h) => `${h.id}@${h._band ?? 'x'}@${h.score.toFixed(9)}`).join(',');
+  const target = 'alpha beta 记忆';
+  const runA = fp(search(target, docs, { k: 5, now: NOW2 }));
+  search('gamma delta 第 1 条', docs, { k: 8, now: NOW2 });
+  const runB = fp(search(target, docs, { k: 5, now: NOW2 }));
+  const again = fp(search(target, docs, { k: 5, now: NOW2 }));
+  const cold = fp(search(target, docs.map((d) => ({ ...d })), { k: 5, now: NOW2 }));
+  const one = search(target, docs, { k: 1, now: NOW2 });
+  const two = search(target, docs, { k: 2, now: NOW2 });
+  const all = search(target, docs, { k: docs.length, now: NOW2 });
+  ok(
+    'H24c 定长候选表复用不串味、k 边界不越界',
+    runA !== '' && runA === runB && runA === again && runA === cold && one.length === 1 && two.length === 2 && all.length > 1 && all.length <= docs.length,
+    `前序=${runA === runB ? '同' : '不同'} 连跑=${runA === again ? '同' : '不同'} 冷语料=${runA === cold ? '同' : '不同'} k1=${one.length} k2=${two.length} kAll=${all.length}`,
   );
 }
 

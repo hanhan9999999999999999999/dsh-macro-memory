@@ -56,7 +56,10 @@ const mk = (id, content, importance = 2, extra = {}) => ({
     // [0.6.29] `k1 + 1` 提成循环外的 `k1p1`，两种写法都认。
     (ENGINE.includes('raw[di] += idf0 * fw * (f * (k1 + 1) / (f + kDen[di]));') ||
       ENGINE.includes('raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]));')) &&
-    ENGINE.includes('candArr.length = 0;');
+    // [0.6.34] 候选表从 `[]` + push 换成定长 `Int32Array` + 游标；老写法的 `candArr.length = 0;`
+    // 与候选副本一起撤了，这里改认新形状（旧的仍认，便于回滚时不必改探针）。
+    (ENGINE.includes('const candBuf = candAt === null ? null : scratch === null ? new Int32Array(docs.length) : scratch.cand;') ||
+      ENGINE.includes('candArr.length = 0;'));
   const hasIndex =
     ENGINE.includes('p.f.push(v);') &&
     ENGINE.includes('p.t.push((ts !== null && ts.has(t) ? 1 : 0) | (ks !== null && ks.has(t) ? 2 : 0));');
