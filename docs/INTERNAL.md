@@ -13540,3 +13540,42 @@ rawkTopPrev = top;
 **判据**：`tools/probe-hotpath.mjs` H24a–H24c（**28/28 ALL PASS**）；`verify.mjs` OR094 七条；`probe-cand` 6/6、`probe-score` 6/6（旧形状断言改成「新旧两种形态都认」，回滚不必返工）；H9 的 `scratch === null ?` 计数由 6 改 **7**（候选表也领缓冲）。
 
 **踩坑**：①剖面把时间记在调用行 ≠ 真有调用开销（per-call 摊平只值 0.6%，`recencyWeight`/`statusWeight` 这两处差点白干）；②别拿离线微基准给存储形态下结论（`sigflat34` 差 10%，引擎里另一种量级；`bandbench33` 曾预示 −39% 实测 −8.1%），离线只回答「值不值得动手」；③`k: 0` 的语义是**全给**不是「一条不给」（`trimByBand:3921` `k2 > 0 ? Math.round(k2) : hits.length`），H24c 第一版按 0 条断言必红；④老探针的形状断言会跟着引擎改而红（H9 数 `scratch === null ?` 出现次数、`probe-cand` C0/C3 与 `probe-score` S0 点着 `candList.push` / `candArr.length = 0`），一律写「新形状 || 老形状」；⑤`candArr` 看着像「换尺子那趟要重铺」，其实两次调用的候选集与顺序完全一样，重铺只会追加重复。
+## 9.234 0.6.35：每问一次的文档身份
+
+**病根**：`memory_search` 的处理体每问都用 `filtered.map(docFor)`（引擎 `:6380`）现造**整库文档对象 + 整只数组**。而引擎的两处缓存只认身份——条级哈希 `SIG_DOC_CACHE`（`WeakMap`，`:3138`，按 doc 对象）、行缓存 `SIG_ROW_CACHE`（`WeakMap`，`:3252`，按 docs 数组、`visits >= 2` 才铺行）。身份一换两处全落空，于是每问把整库 `content` / `title` / `keywords` 重新混一遍签名。**所有基准测试都测不到这一层**：`warmprof28.mjs` 复用同一只 docs 数组，而生产里最不成立的前提就是这个。
+
+量测（`E:\Temp\cmp\prodpath35.mjs`，0.6.34 引擎，10,000 条 / 600 问 / `k = 5`，每问现拷行）：复用同一批 = **1.1072 ms/问**、每问新造 = **12.5965 ms/问**、只换数组不改对象 = **1.8460 ms/问** → 生产路径慢 **11.4 倍**，其中 ≈10.7ms 是重算签名、≈0.74ms 是行缓存失效。0.6.34 剖面 `indexSignature` 1,199.6ms ÷ 30,000,000 行 ≈ **39 ns/行**（离线同形语料 9 ns/行），行级读数全在那三行比较上（`L3269` 474.7 / `L3205` 366.3 / `L3270` 98.6）——差的不是比较速度，是**冷缓存**。
+
+**两条不许走的路（本次再确认）**：
+
+1. 改签名结构本身：内联只值 −5%（0.6.33）、平铺更慢 9.07 → 9.98 ns/行（0.6.34 §229.1）。
+2. 扫描期缓存 `importance / status / level`：签名只覆盖八个字段（`id / updated_at / updatedAt / content / title / keywords / source_session / project`），这三个变了签名**不会变**，缓存会无失鲜。
+
+**处方**（三件，新增整块 `[macro-fusion 0.6.35] 每问一次的文档身份`，接上入口只两行）：
+
+1. `stableDocFor(r)`：`DOC_OBJ_CACHE`（`Map`，按 `id`）存 `{ u, la, c, t, lv, st, im, ca, kw, doc }`；取到就逐字段比十字段（八字段 + `keywords` 逐元素），全等 → `reuse++` 还回同一只 `doc`，否则按老 `docFor` 的字段与顺序造新对象并覆盖缓存项（`fresh++`）。上限 `DOC_OBJ_CACHE_MAX = 20000`，超了按插入序裁（`trimmed++`）。
+2. `stableDocs(list)`：只留一只数组（`DOCS_LAST`）。逐引用相同 → `arrReuse++` 还回；有格不同或长度不同 → **就地换格 / 就地改 `length`**（`arrPatch++` / `patchSlots += 换了几格`），**身份永不换**。
+3. `docObjCacheInfo()` / `resetDocObjCache()`（`size / max / reuse / fresh / trimmed / arrReuse / arrFresh / arrPatch / patchSlots`），四个入口一并导出。
+
+接法：`:6418` `const docFor = stableDocFor;`、`:6456` `const docs = stableDocs(filtered.map(docFor));`。历史提升池 `rankForSearch(query, pool.map(docFor), …)`（`:6444`）**刻意不接**——过期子集每次行数不同，接进去只会把主表那只数组来回顶。
+
+**正确性**（四条）：
+
+1. 行缓存判鲜字段是 `id / updated_at / updatedAt / content / title / source_session / project / keywords`（`sigDocOfRow`，`:3264`），**不含 `last_accessed_at`**——被 `bumpHit` 抬过的条目换格后连哈希都不重算。
+2. 换格后签名与「每问新数组」逐字相同：`probe-docid` D3（120 条，含 `keywords` 逗号串 / `null` / 单元素）与 D7（2,000 条 / 400 问 `idDigest` 逐字相同）各钉一次。
+3. 搜索引擎不就地改文档对象：命中全是新字面量（`hits.push({ ...docs[di], … })` / `hits.push({ ...d, … })`），全文件三处 `= {` 计数为 0；D7 连跑 900 次检索（含 `explain`）后 `JSON.stringify` 一字不变。
+4. 长度变化也不换身份（`a.length = n`）；`sigRowFor` 只在 `slot.n !== n` 时重建行表（`:3255`），所以只重铺一次。
+
+**读数**：生产口径 A/B（10,000 条 / 600 问 / 每问 `bumpHit`，跨进程交替三轮，`E:\Temp\cmp\prodab35.mjs`）：0.6.34 `11.4869 / 11.1483 / 11.4028`（中位 **11.4028**）vs 0.6.35 `2.0563 / 2.0699 / 2.0953`（中位 **2.0699**）→ **−81.9%**（5.51×），`idDigest 16499:16200` 两版逐字相同。无 `bumpHit` 一轮 11.2201 → 1.9195ms。缓存账：`fresh 12,995 / reuse 8,987,005`（12,995 = 10,000 + 5 × 599）、`arrFresh 1 / arrReuse 300 / arrPatch 599 / patchSlots 2,995`。引擎级 `warmab35.mjs`：warm 中位 1.138 → 1.033ms、cold 130.58 → 129.57ms（这一层本来就复用同一只数组，量它是为了证明新增代码没往热路上添东西）。探针 D7（2,000 条 / 400 问）：无 bump 2.2963 → 0.5301ms（4.33×）、有 bump 2.329 → 0.5061ms（4.60×）。
+
+**等价性**：`E:\Temp\cmp\mk35.mjs` 生成 `eng0635.mjs`（610,248 B，八只 `__*Probe` 导出），四把尺子对 0.6.34：`colddiff35` 462 / `tokdiff35` 15,810 / `searchdiff35` 2,462 / `fastdiff35` 3,868（`edgeCount 0`、`digFired 900`），**全部 0 不符**。它们只证明引擎没变（0.6.35 改的是入口层），入口层由 D3/D7 与旧探针全绿兜住。
+
+**判据**：新增 `tools/probe-docid.mjs`（D0–D7 共 8 条）并挂进 `tools/check-all.mjs`；D7 判据「含 `bumpHit` 那轮比值 ≥ 2.0」+ 命中串逐字相同 + 复用中的对象未被就地改。
+
+**踩坑**：
+
+1. **第一版 `stableDocs` 只做「一样就还回、不一样就还新数组」**，`prodab35` 一轮看着 5.9×，加上 `bumpHit` 立刻现形：每问总有 5 条 `last_accessed_at` 变了 → 每问新数组 → 行缓存整表作废（退到 ≈2.6ms/问，只剩对象那一刀）。改成**就地换格**才拿到 2.07ms/问。教训：「数组内容没变」不是判据，「同一只数组 + 引擎逐格自会判鲜」才是。
+2. **探针第一版按「换序 / 换长 → 新数组」断言**，D6 当场红——那是第一版行为，不是契约；把第一版行为钉成判据等于把 bug 钉成规格。
+3. **`db.bumpHit` 在 `memory_search` 里（`:6513`），不在 `search` 里**。量入口层收益必须把入口的副作用抄全，否则读数虚高（无 bump 1.92 vs 有 bump 2.07 只差 8%，但「数组复用」这一刀的价值全在它存不存在）。
+4. **`indexSignatureStats.hashed` 是「每次调用都 hashed++」**，复用的只是条级哈希，不是「跳过该条」；文档里不能把它说成命中率。
+5. **改动落盘前先备份**：`D:\备份\20261124-200500-0635-docid\`（`index.js.0634` = `git show v0.6.34:vendor/meow-memory/lib/index.js`、`check-all.mjs.0634`、`probe-docid.mjs.new`）；还原用 `git checkout v0.6.34 -- vendor/meow-memory/lib/index.js`。**注意**：这次是先改后备份，顺序反了——以后一律先拷再动。

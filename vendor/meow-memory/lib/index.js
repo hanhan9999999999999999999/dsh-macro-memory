@@ -5348,6 +5348,97 @@ function toDocs(rows) {
     // #91：衰减按最后使用时间
   }));
 }
+// ═══════════ [macro-fusion 0.6.35] 每问一次的文档身份：库没变就还回上一只对象与上一只数组 ═══════════
+// 病根不在打分，在**进打分之前那几步**：`memory_search` 每次都用 `filtered.map(docFor)` 现造整库文档，
+// 而引擎的条级哈希缓存（`SIG_DOC_CACHE`，WeakMap 按对象身份）与行缓存（`SIG_ROW_CACHE`，按数组身份）
+// 都只认身份——新对象一到就全落空，于是每问一次把整库的 content/title 重新混一遍。
+// 实测（10,000 条 / 600 问，`E:\Temp\cmp\prodpath35.mjs`）：每问新建 = 12.5965ms/问，
+// 复用同一批对象 = 1.1072ms/问，只换数组不改对象 = 1.8460ms/问 —— 11.4 倍全花在「重新算一遍签名」。
+// 这里不碰任何判分口径：内容一模一样就还回上一只对象，整表逐引用一模一样就还回上一只数组。
+// 值真变了怎么办：指纹（十个字段逐个比）不等就造新的，旧的留在缓存里等下一次；正确性仍由引擎的
+// 逐条校验兜着——这一层只是「别把没变的又造一遍」，它认不出来最多退回老路，不会把旧值当成新值。
+const DOC_OBJ_CACHE = new Map();
+const DOC_OBJ_CACHE_MAX = 20000;
+const docIdStats = { reuse: 0, fresh: 0, trimmed: 0, arrReuse: 0, arrFresh: 0, arrPatch: 0, patchSlots: 0 };
+let DOCS_LAST = null;
+function docObjCacheInfo() {
+  return { size: DOC_OBJ_CACHE.size, max: DOC_OBJ_CACHE_MAX, ...docIdStats };
+}
+function resetDocObjCache() {
+  DOC_OBJ_CACHE.clear();
+  DOCS_LAST = null;
+  docIdStats.reuse = 0;
+  docIdStats.fresh = 0;
+  docIdStats.trimmed = 0;
+  docIdStats.arrReuse = 0;
+  docIdStats.arrFresh = 0;
+  docIdStats.arrPatch = 0;
+  docIdStats.patchSlots = 0;
+}
+// keywords 可能是数组、逗号串、null（老库三种都见过）：数组逐元素比，其余按值比。
+function docKwSame(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+function docFromRow(r) {
+  return { id: r.id, level: r.level, title: r.title, content: r.content, keywords: r.keywords,
+    importance: r.importance, created_at: r.created_at, updated_at: r.updated_at,
+    last_accessed_at: r.last_accessed_at, status: r.status };
+}
+function stableDocFor(r) {
+  const hit = DOC_OBJ_CACHE.get(r.id);
+  if (hit !== void 0 &&
+      hit.u === r.updated_at && hit.la === r.last_accessed_at && hit.c === r.content &&
+      hit.t === r.title && hit.lv === r.level && hit.st === r.status && hit.im === r.importance &&
+      hit.ca === r.created_at && docKwSame(hit.kw, r.keywords)) {
+    docIdStats.reuse += 1;
+    return hit.doc;
+  }
+  const doc = docFromRow(r);
+  DOC_OBJ_CACHE.set(r.id, { u: r.updated_at, la: r.last_accessed_at, c: r.content, t: r.title,
+    lv: r.level, st: r.status, im: r.importance, ca: r.created_at,
+    kw: Array.isArray(r.keywords) ? r.keywords.slice() : r.keywords, doc });
+  docIdStats.fresh += 1;
+  while (DOC_OBJ_CACHE.size > DOC_OBJ_CACHE_MAX) {
+    DOC_OBJ_CACHE.delete(DOC_OBJ_CACHE.keys().next().value);
+    docIdStats.trimmed += 1;
+  }
+  return doc;
+}
+// 整表逐引用比一遍（10,000 次指针比较 ≈ 0.1ms，比重新算签名便宜两个量级）：
+// 一模一样就把上一只数组还回去，引擎的行缓存才按「同一个数组第 2 次进来」生效。
+// 不一样时**就地换格**，不新建数组——这是第二刀（第一版只做「一样就还回去」，被 `bumpHit` 当场打回原形）。
+// 每次检索 `memory_search` 都会 `db.bumpHit` 抬 hit 那几条的 `last_accessed_at`（引擎 `:6513`），
+// 所以下一问的 `db.list` 里**总有几条不一样**：若此时还回新数组，引擎的行缓存（按数组身份 + 逐格比字段）
+// 整表作废，等于每问重算整库签名；就地换格则只让那几格重算。行缓存的判鲜字段里有 `id / updated_at /
+// content / title / source_session / project / keywords`，**没有 `last_accessed_at`**——被 bump 的那几条
+// 连哈希都不用重算。长度变了也走同一只数组（`length` 一起改），仍不会把行缓存打掉。
+function stableDocs(list) {
+  const a = DOCS_LAST;
+  if (a === null) {
+    DOCS_LAST = list;
+    docIdStats.arrFresh += 1;
+    return list;
+  }
+  const n = list.length;
+  if (a.length === n) {
+    let same = true;
+    for (let i = 0; i < n; i++) {
+      if (a[i] !== list[i]) { same = false; break; }
+    }
+    if (same) { docIdStats.arrReuse += 1; return a; }
+  }
+  if (a.length !== n) a.length = n;
+  let slots = 0;
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== list[i]) { a[i] = list[i]; slots += 1; }
+  }
+  docIdStats.arrPatch += 1;
+  docIdStats.patchSlots += slots;
+  return a;
+}
 function buildInjectionBody(db, o) {
   const lbl3 = (key, params) => fillTemplate(keyedValue("labels", key), params);
   const soul = db.list("soul", { status: "active" });
@@ -6339,7 +6430,10 @@ function searchTool(dir) {
         if (statusList.length > 1) return db.list(lv);
         return db.listSearchable(lv);
       });
-      const docFor = (r) => ({ id: r.id, level: r.level, title: r.title, content: r.content, keywords: r.keywords, importance: r.importance, created_at: r.created_at, updated_at: r.updated_at, last_accessed_at: r.last_accessed_at, status: r.status });
+      // [macro-fusion 0.6.35] 文档对象不再是每问现造一只：内容没变就复用上一只（`stableDocFor`），
+      // 整表逐引用没变就把上一只数组还回去（`stableDocs`，在下方 `filtered.map` 处包一层）。
+      // 字段与顺序与老 `docFor` 一字不差——判分口径一位不动，动的只是「哪一只对象」。
+      const docFor = stableDocFor;
       // [macro-fusion 0.2.171] 历史可查：问句里点了名（版本号 / 路径 / 短 id / commit），这个名字
       // 只活在已过期的条目里 —— 那就把它翻出来，并标明已过期。只并「点了名的那几条」，
       // 所以 listSearchable 的口径一个字不动（主人拍板：其他类别过时不默认检索），
@@ -6377,7 +6471,7 @@ function searchTool(dir) {
       }
       const filtered = filterSearchable(rows, { project, status, days });
       const byId = new Map(filtered.map((r) => [r.id, r]));
-      const docs = filtered.map(docFor);
+      const docs = stableDocs(filtered.map(docFor));
       // [macro-fusion 0.2.154] 稠密能上就上：模型 / 依赖缺一个立刻退回词法，
       // 答案与 0.2.153 逐位相同（这条由 probe-cost 的 C5 快照守着）。
       // [macro-fusion 0.2.167] band_keep：默认按置信档收口（0.2.165 的刀），
@@ -11637,6 +11731,12 @@ export {
   searchIndexOf,
   searchIndexCacheInfo,
   clearSearchIndexCache,
+  // [macro-fusion 0.6.35] 文档身份层对探针开放：`probe-docid` 要量「复用了几只对象 / 几只数组」，
+  // 也要能在同一进程里把账归零（不然上一支用例的复用数会漏进下一支）。
+  stableDocFor,
+  stableDocs,
+  docObjCacheInfo,
+  resetDocObjCache,
   keywordHitScore,
   // [macro-fusion 0.6.12] 定序原语对探针开放：`probe-order` 要拿它跟「全量排序再取前 k」逐位对拍。
   bandize,

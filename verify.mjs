@@ -15650,6 +15650,176 @@ dt063: {
   check('OR094 版本号不低于 0.6.34（后续补丁不必回头改这一条）', vNumS34 >= 634, vS34.join('.'))
 }
 
+// ═══════════════ [macro-fusion 0.6.35] OR095：每问一次的文档身份 ═══════════════
+// 症状（`docs/INTERNAL.md` 9.234，10,000 条 / 600 问生产口径）：`memory_search` 每问
+// `filtered.map(docFor)` 现造整库文档对象与整只数组，而引擎两处缓存只认身份——
+// `SIG_DOC_CACHE`（WeakMap 按 doc 对象）、`SIG_ROW_CACHE`（WeakMap 按 docs 数组，`visits >= 2` 才铺行），
+// 于是每问把整库 content / title / keywords 重新混一遍签名：复用 1.1072ms/问 vs 现造 12.5965ms/问 = 11.4×。
+// 处方：`stableDocFor`（按 id + 十字段指纹复用对象）、`stableDocs`（只留一只数组、就地换格、身份永不换）、
+// `docObjCacheInfo` / `resetDocObjCache` 出账；历史提升池 `rankForSearch(query, pool.map(docFor), …)` 不接。
+// 踩坑：第一版 `stableDocs` 是「不一样就还新数组」，被每问的 `db.bumpHit` 抬 `last_accessed_at` 打回原形。
+{
+  const readS35 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const eng35 = readS35('./vendor/meow-memory/lib/index.js')
+  // ① 探针在位
+  const probe35 = readS35('./tools/probe-docid.mjs')
+  const mount35 = readS35('./tools/check-all.mjs')
+  check('OR095 探针在位：probe-docid 有 D0–D7 八条（形状 / 复用 / 十字段 / 签名 / 上限 / 脏行 / 身份 / 生产口径）',
+    ['D0 身份层接在 memory_search 上', 'D1 复用：', 'D2 十个字段任一动必换对象', 'D3 签名与现造逐字相同',
+      'D4 上限口径在位', 'D5 脏行不炸', 'D6 数组身份恒定', 'D7 生产口径'].every((t) => probe35.includes(t)) &&
+      mount35.includes('probe-docid.mjs'),
+    `D 条=${probe35.includes('D6 数组身份恒定')} 挂载=${mount35.includes('probe-docid.mjs')}`)
+  // ② 引擎形状：两个入口函数 + 两行接法 + 导出四件 + 就地换格；老的现造字面量已撤
+  const fnOk35 = eng35.includes('function stableDocFor(r) {') &&
+    eng35.includes('function stableDocs(list) {') &&
+    eng35.includes('const DOC_OBJ_CACHE = new Map();') &&
+    eng35.includes('const DOC_OBJ_CACHE_MAX = 20000;') &&
+    eng35.includes('let DOCS_LAST = null;')
+  const wireOk35 = eng35.includes('const docFor = stableDocFor;') &&
+    eng35.includes('const docs = stableDocs(filtered.map(docFor));') &&
+    eng35.includes('if (a.length !== n) a.length = n;')
+  const expOk35 = /export\s*\{[^}]*\bstableDocFor\b/.test(eng35) &&
+    /export\s*\{[^}]*\bstableDocs\b/.test(eng35) &&
+    /export\s*\{[^}]*\bdocObjCacheInfo\b/.test(eng35) &&
+    /export\s*\{[^}]*\bresetDocObjCache\b/.test(eng35)
+  const oldGone35 = !eng35.includes('const docFor = (r) => ({') &&
+    !eng35.includes('const docs = filtered.map(docFor);')
+  check('OR095 引擎形状：stableDocFor / stableDocs 两件 + 两行接法 + 四件导出 + 就地换格，老现造字面量全撤',
+    fnOk35 && wireOk35 && expOk35 && oldGone35,
+    `函数=${fnOk35} 接法=${wireOk35} 导出=${expOk35} 老写法已撤=${oldGone35}`)
+  // ③ 进程内：身份口径（同一行两次同一只对象 / last_accessed_at 动就换新且旧对象不被改 /
+  //    数组一样就还回、换序就地换格且身份恒定 / 签名与现造逐字相同 / 脏行不炸）
+  const Mv35 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const row35 = { id: '0mi000001', level: 'fact', title: 't', content: '正文 alpha 记忆', keywords: ['alpha', '记忆'], importance: 3, created_at: 11, updated_at: 22, last_accessed_at: 33, status: 'active' }
+  Mv35.resetDocObjCache()
+  const o1 = Mv35.stableDocFor(row35)
+  const o2 = Mv35.stableDocFor({ ...row35 })
+  const o3 = Mv35.stableDocFor({ ...row35, last_accessed_at: 34 })
+  const o4 = Mv35.stableDocFor({ ...row35, content: '换了正文' })
+  const identOk35 = o1 === o2 && o1 !== o3 && o1 !== o4 && o1.content === '正文 alpha 记忆' && o3.last_accessed_at === 34
+  const a1 = Mv35.stableDocs([o1, o3])
+  const a2 = Mv35.stableDocs([o1, o3])
+  const a3 = Mv35.stableDocs([o3, o1])
+  const lenBefore35 = a1.length
+  const tailOk35 = a3[1] === o1 && a3[0] === o3
+  const a4 = Mv35.stableDocs([o3])
+  const arrOk35 = a1 === a2 && a1 === a3 && tailOk35 && lenBefore35 === 2 && a1 === a4 && a1.length === 1
+  const sigRef35 = Mv35.indexSignature([o1, o4])
+  const sigNew35 = Mv35.indexSignature([
+    { id: '0mi000001', level: 'fact', title: 't', content: '正文 alpha 记忆', keywords: ['alpha', '记忆'], importance: 3, created_at: 11, updated_at: 22, last_accessed_at: 33, status: 'active' },
+    { id: '0mi000001', level: 'fact', title: 't', content: '换了正文', keywords: ['alpha', '记忆'], importance: 3, created_at: 11, updated_at: 22, last_accessed_at: 33, status: 'active' },
+  ])
+  const oldDocFor35 = (r) => ({ id: r.id, level: r.level, title: r.title, content: r.content, keywords: r.keywords,
+    importance: r.importance, created_at: r.created_at, updated_at: r.updated_at,
+    last_accessed_at: r.last_accessed_at, status: r.status })
+  const throwOf35 = (fn) => { try { fn(); return null } catch (e) { return String(e && e.message) } }
+  // 脏行口径与老路径逐字对齐：null 两版都抛（老 lambda 也要读 r.id），标量/缺字段都不抛且签名逐字相同
+  const nullParity35 = (throwOf35(() => Mv35.stableDocFor(null)) === null) === (throwOf35(() => oldDocFor35(null)) === null)
+  const rows35 = [Mv35.stableDocFor({ ...row35, id: '0mi000002', status: undefined }), 42]
+  const dirtySig35 = throwOf35(() => {
+    const a = Mv35.indexSignature(rows35.map((r) => (r === 42 ? 42 : Mv35.stableDocFor(r))))
+    const b = Mv35.indexSignature([oldDocFor35({ ...row35, id: '0mi000002', status: undefined }), oldDocFor35(42)])
+    if (a !== b) throw new Error('dirty sig mismatch')
+  })
+  check('OR095 进程内：同一行同一只对象、字段动就换新、数组身份恒定就地换格、签名与现造逐字相同、脏行不炸',
+    identOk35 && arrOk35 && sigRef35 === sigNew35 && nullParity35 && dirtySig35 === null,
+    `对象=${identOk35} 数组=${arrOk35} 签名=${sigRef35 === sigNew35} 脏行=${nullParity35 && dirtySig35 === null ? 'ok' : (dirtySig35 ?? 'parity')}`)
+  // ④ 进程内：快路（默认）与老后处理（explain:true）逐位同档，八种分布
+  const NOW35 = 1795470000000
+  const lcg35 = (seed0) => {
+    let s = seed0
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648
+      return s / 2147483648
+    }
+  }
+  const mkCorp35 = (kind, n, seed) => {
+    const r = lcg35(seed)
+    const words = ['alpha', 'beta', 'gamma', 'delta', '一律', '必须', '记忆', '星图', '索引', '锚点']
+    return Array.from({ length: n }, (_, i) => {
+      const dup = kind === 'dup'
+      const spread = kind === 'scale' ? i * (1 + (i % 7 === 0 ? 40 : 0)) : i
+      const ws = dup ? ['alpha', 'beta', 'gamma', '记忆'] : Array.from({ length: 1 + ((r() * 6) | 0) }, () => words[(r() * words.length) | 0])
+      return {
+        id: '0md' + String(i).padStart(6, '0'),
+        level: ['fact', 'lesson', 'rules', 'topic'][kind === 'level' ? (i % 4) : ((r() * 4) | 0)],
+        title: ws[0],
+        content: `${ws.join(' ')} 第 ${dup ? 0 : i} 条`,
+        importance: kind === 'flat' ? 2 : 1 + ((r() * 4) | 0),
+        updated_at: NOW35 - spread * 3600000,
+        last_accessed_at: NOW35 - spread * 600000,
+        keywords: r() < 0.2 ? null : [words[(r() * words.length) | 0]],
+        project: 'p',
+      }
+    })
+  }
+  const kinds35 = [['mix', 80], ['dup', 30], ['scale', 60], ['flat', 50], ['level', 40], ['tiny', 3], ['pair', 2], ['wide', 150]]
+  const bandsOf35 = (rs) => rs.map((h) => `${h.id}@${h._band ?? 'x'}`).join(',')
+  const qs35 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta 锚点 索引', 'alpha gamma 记忆', 'rules 是什么']
+  let sameAll35 = true
+  let pairs35 = 0
+  const bad35 = []
+  for (const [kind, n] of kinds35) {
+    const corp = mkCorp35(kind, n, 11 + n)
+    for (const q of qs35) {
+      const lean = bandsOf35(Mv35.search(q, corp, { k: n, now: NOW35 }))
+      const told = bandsOf35(Mv35.search(q, corp, { k: n, now: NOW35, explain: true }))
+      pairs35 += 1
+      if (lean !== told) { sameAll35 = false; if (bad35.length < 3) bad35.push(`${kind}/${q}`) }
+    }
+  }
+  check('OR095 进程内：复用文档身份不换算术——快路档号与老后处理逐位相同（八种分布 × 六问）',
+    sameAll35 && pairs35 === 48,
+    `对拍=${pairs35} 不同=${bad35.length === 0 ? '无' : bad35.join(' ')}`)
+  // ⑤ 进程内：档号两条硬性质（raw 大 ⇒ 档号不增；等分 ⇒ 等档）
+  const corpMono35 = mkCorp35('mix', 90, 4242)
+  const rsMono35 = Mv35.search('alpha beta gamma 记忆 星图', corpMono35, { k: 90, now: NOW35, explain: true })
+  let mono35 = true
+  let tie35 = true
+  for (const a of rsMono35) {
+    for (const b of rsMono35) {
+      if (a._raw > b._raw && !(a._band <= b._band)) mono35 = false
+      if (a._raw === b._raw && a._band !== b._band) tie35 = false
+    }
+  }
+  check('OR095 进程内：档号随 raw 单调不增、同分必同档（换身份不改定档）',
+    rsMono35.length >= 2 && mono35 && tie35,
+    `条数=${rsMono35.length} 单调=${mono35} 同分同档=${tie35}`)
+  // ⑥ 进程内：回执指纹与 0.6.29–0.6.34 逐位相同（只换对象/数组身份，分数与顺序一位不动）
+  const r35 = lcg35(97)
+  const w35 = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图']
+  const corpG35 = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((r35() * 5) | 0)
+    const ws = Array.from({ length: n }, () => w35[(r35() * w35.length) | 0])
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(r35() * 4) | 0],
+      title: ws[0],
+      content: ws.join(' '),
+      importance: 1 + ((r35() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: r35() < 0.2 ? null : [w35[(r35() * w35.length) | 0]],
+      project: 'p',
+    }
+  })
+  const qsG35 = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha']
+  const digestG35 = qsG35.map((q) => Mv35.search(q, corpG35, { k: 8, now: NOW35 })
+    .map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|')
+  const GOLD35 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025'
+  check('OR095 进程内：回执指纹与 0.6.29 / 0.6.30 / 0.6.31 / 0.6.32 / 0.6.33 / 0.6.34 逐位相同（只换身份，不碰分数与顺序）',
+    digestG35 === GOLD35, digestG35 === GOLD35 ? '指纹同' : '指纹不同')
+  // ⑦ 文档在位 + ⑧ 版本
+  check('OR095 文档在位：INTERNAL 9.234、README 写「文档身份」、DESIGN 有 ## 230.、PLAN 有 0.6.35',
+    readS35('./docs/INTERNAL.md').includes('## 9.234 ') &&
+      readS35('./README.md').includes('文档身份') &&
+      readS35('./DESIGN.md').includes('## 230. ') &&
+      /0\.6\.35/.test(readS35('./docs/PLAN-0.6.md')))
+  const vS35 = (readS35('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS35 = vS35.length === 3 ? vS35[0] * 10000 + vS35[1] * 100 + vS35[2] : 0
+  check('OR095 版本号不低于 0.6.35（后续补丁不必回头改这一条）', vNumS35 >= 635, vS35.join('.'))
+}
+
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
 
 {
