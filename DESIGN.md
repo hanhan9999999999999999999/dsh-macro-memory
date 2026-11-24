@@ -7484,3 +7484,33 @@ const f = tfi.get(term);
 **换尺子那趟必须先重铺候选**：`scoreCandSet` 开头 `candArr.length = 0;`。少了这一句，自适应第二趟会把候选再 push 一遍，收尾循环对同一条算两遍（`synOf` / 协调项 / 实体层叠乘）——第一次实测就是这样：非自适应路逐位相同，只有 `0.6.0 开` 换说法 hit@3 0.750 → 0.833、MRR 0.569 → 0.583，指纹非常明确（同一函数被调两次）。
 
 读数（10,000 条 / 300 问，三次取中位）：`search` **10.67 → 8.35 ms（−21.8%；相对 0.6.12 的 27.377ms 累计 −69.5%）**、`searchAdaptive` **12.52 → 10.16 ms（−18.9%）**、总采样 **4,143.7 → 3,295.9ms**；索引热命中 0.692 ms/问。代价只有一条、且只付在冷建上：**269 → ~300ms（约 +11%）**，倒排每个词多存两个数组。答案一位没动：真库 52 问与 LoCoMo（1,531 问）全项逐位不变。判据 `probe-score` S0–S5 与 `verify.mjs` OR076，账见 INTERNAL 9.215。
+
+## 212. 命中对象先瘦后水化（0.6.17）
+
+打分改成顺倒排累加之后，`--cpu-prof` 第五次点名（总采样 **1,808.2ms**，0.6.16 是 3,295.9ms）：`search` 自证从 48.0% 掉到 **9.0%**，剩下的最贵几行不是算法——是**回执对象的字面量本身**：
+
+```js
+hits.push({
+  _subj: ...,
+  _raw: raw[di] * (...),
+  cover: ...,
+  ...(anchored ? { anchored: true } : {}),
+  id: dOf.id,
+  level: dOf.level,
+  ...
+  ...dOf.keywords === void 0 ? {} : { keywords: dOf.keywords },
+  ...
+  score: ...,
+  explain: ...
+});
+```
+
+十四字段 + 四个条件展开 spread，行级各 **134–176ms**、合计 **约 1.07s / 300 问**（`vendor/meow-memory/lib/index.js:3858-3883`）。它给**每条 raw>0 的候选**都建一份完整对象，可 `bandize` 定档、`trimByBand` 截断最后只留前 k 条——绝大部分对象的字段根本没人读。扫 10,000 条、k=8 时，等于为 9,992 条注定被丢掉的东西付整份对象钱（还额外付 GC）。
+
+处方三条，口径一字不改：
+
+1. **扫描期只铺定档要用的六样加一个下标**：`leanHit = opts.explain !== true && opts.keepBand !== true` 时 `hits.push({ _subj, _raw, cover, id: dOf.id, updated_at: dOf.updated_at, score: raw[di] * w * impW * stW * foldOf, _di: di })`。这六样正好是定档与定序的全部输入：`_subj` / `_raw` 定档，`score` / `updated_at` / `id` 定序（并列时比更新时间与 id 字典序）。`_di` 只是回查下标，不进回执。
+2. **截断之后再水化**：`const outHits = trimByBand(hits, k, opts);` 之后把入选的 k 条按 `matHitOf(h, di)` 原地换回完整对象——键序与原字面量**逐字一致**（`_subj` → `cover` → 可选 `anchored` → `id` → `level` → `title` → `content` → `importance` → `updated_at` → 五个可选字段 → `score`），所以 `JSON.stringify` 与老实现逐字节相同（含键序）。`score` 直接取瘦对象上那份：它已经被标识符补分、层级意图、断言密度、现状仓改过，重算会把补分丢掉。水化是**原地替换数组元素**，不换数组——`trimmed` / `rescueAdded` 是挂在数组上的非枚举属性，换数组就丢。
+3. **`explain` 与 `keepBand` 两条路照旧走完整字面量**：前者要在对象上就地打补丁（identBonus / subjBonus / levelIntent / tipAssert / statusDigest），后者要把 `_band` 留给 searchHybrid 融合。statusDig 推入的 `{ ...d, _raw, cover, score }` 没有 `_di`，水化时 `if (di === void 0) continue;` 跳过它。
+
+读数（10,000 条 / 300 问，三次取中位）：`search` **8.35 → 3.5 ms（−58%；相对 0.6.12 的 27.377ms 累计 −87%）**、`searchAdaptive` **10.16 → 4.5 ms（−54%）**、总采样 **3,295.9 → 1,808.2ms**；索引热命中 0.688 ms/问、冷建 288–301ms（与 0.6.16 同量级，瘦对象不改建索引）。答案一位没动：真库 52 问与 LoCoMo（1,531 问）全项逐位不变。判据 `probe-hydrate` H0–H5 与 `verify.mjs` OR077，账见 INTERNAL 9.216。

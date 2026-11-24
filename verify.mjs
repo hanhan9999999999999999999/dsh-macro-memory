@@ -36,8 +36,9 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 抬地板是一次明确的承诺动作，与「今天恰好几支」分开记——实际支数由 check-all 汇总对账。
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
-// 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）。
-const SUITE_FLOOR = 44
+// 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）；
+// 0.6.17 起 = 45（加 probe-hydrate）。
+const SUITE_FLOOR = 45
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -946,6 +947,7 @@ function makeHostCtx() {
     'tools/probe-hotpath.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.14），不拼仓内路径',
     'tools/probe-cover.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.15），不拼仓内路径',
     'tools/probe-score.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.16），不拼仓内路径',
+    'tools/probe-hydrate.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.17），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -10324,7 +10326,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'GZ 同口径: 两个打分器（search / keywordHitScore）都认锚，且旧写法一处不剩',
-    eng.split('const anchored = anchorSel === null ? false : anchorSel(di);').length - 1 === 2 &&
+    // [0.6.17] 第三处是水化（`matHitOf`）：入选条要重建 `anchored` 这个回执字段，判据一样一句。
+    eng.split('const anchored = anchorSel === null ? false : anchorSel(di);').length - 1 === 3 &&
       // 0.2.179 起这两支有意不同口径：search 的缘由问句免折新鲜度（!causeQ），
       // 主动注入那支照旧折——注入多提一句常常是好事，抹平反而坏事（见 HZ14）。
       eng.split('if (!anchored && !causeQ && now !== null').length - 1 === 1 &&
@@ -10414,7 +10417,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     'HA 版本号问句不误报: 榜首那条自己就带这个日期/版本号时，不许说「措辞对不上」',
     eng.includes('if (top.anchored === true) return { weak: false, why: "anchor"') &&
       eng.includes('...(anchored ? { anchored: true } : {}),') &&
-      eng.split('...(anchored ? { anchored: true } : {}),').length - 1 === 1,
+      // [0.6.17] 两处：完整字面量（explain / keepBand 那两条路）+ 水化。
+      eng.split('...(anchored ? { anchored: true } : {}),').length - 1 === 2,
   )
   check(
     'HA 覆盖度有出处: cover 只算一遍，hit 与 explain 用的是同一个算式（不是文案里另算一遍）',
@@ -12616,7 +12620,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     'VY6 两支打分器都挂词分给分档用（_raw 两处；search 那处还要乘上标识符、主语位、层级意图三把刀）',
-    (MY.match(/_raw: raw\[di\]/g) || []).length === 2 &&
+    // [0.6.17] 三处：逐条扫的 scanDoc、扫描期瘦 hit、水化——瘦路与完整路同一句算式。
+    (MY.match(/_raw: raw\[di\]/g) || []).length === 3 &&
       MY.includes('_raw: raw[di] * (1 +') &&
       // [0.6.15] 三把刀的比例先进 `vbOf` / `srOf`，_raw 那行读变量。
       MY.includes('identBandW * vbOf.ratio') &&
@@ -13503,6 +13508,88 @@ dt063: {
   const vS7 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS7 = vS7.length === 3 ? vS7[0] * 10000 + vS7[1] * 100 + vS7[2] : 0
   check('OR076 版本号不低于 0.6.16（后续补丁不必回头改这一条）', vNumS7 >= 616, vS7.join('.'))
+}
+
+// 0.6.17：命中对象不许扫描期就把十四个字段全铺出来——定档截断只吃六样，入选的 k 条事后水化
+{
+  const hSrc = readFileSync(new URL('./tools/probe-hydrate.mjs', import.meta.url), 'utf8')
+  const hLabels = ['H0 ', 'H1 ', 'H2 ', 'H3 ', 'H4 ', 'H5 ']
+  const hMissing = hLabels.filter((t) => !hSrc.includes(`'${t}`))
+  const hWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-hydrate.mjs'")
+  const hExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-hydrate.mjs'")
+  check(
+    'OR077 水化探针 H0–H5 在位（源码五件 / 瘦路与 explain 逐字节含键序 / keepBand 路 / 无 _di 泄漏且数组属性在 / 可选字段照旧省略 / 大库仍一致），check-all 挂线且列进取根例外',
+    hMissing.length === 0 && hWired && hExcused,
+    hMissing.length ? `缺 ${hMissing.join(' ')}` : `挂线 ${hWired ? 'ok' : 'miss'} / 例外 ${hExcused ? 'ok' : 'miss'}`,
+  )
+  const engSrc8 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  // 瘦路的条件：只有「不要 explain 也不要 band」才走，另外两条路必须留在完整字面量上。
+  const leanOk =
+    engSrc8.includes('const leanHit = opts.explain !== true && opts.keepBand !== true;') &&
+    engSrc8.includes('if (leanHit) {') &&
+    engSrc8.includes('} else hits.push({')
+  // 瘦对象只许带定档要用的六样加下标：多带了字段说明整条字面量被搬回来了。
+  const leanBody = engSrc8.slice(engSrc8.indexOf('if (leanHit) {'), engSrc8.indexOf('} else hits.push({'))
+  const leanFields = [...leanBody.matchAll(/^ {8}([A-Za-z_]+):/gm)].map((m) => m[1])
+  const leanFieldsOk =
+    JSON.stringify(leanFields) === JSON.stringify(['_subj', '_raw', 'cover', 'id', 'updated_at', 'score', '_di']) &&
+    leanBody.includes('_di: di')
+  const hydrateOk =
+    engSrc8.includes('const matHitOf = (h, di) => {') &&
+    engSrc8.includes('const outHits = trimByBand(hits, k, opts);') &&
+    engSrc8.includes('outHits[hi] = matHitOf(h, di);') &&
+    engSrc8.includes('return outHits;')
+  // keepBand 那条提前返回必须还在（searchHybrid 要拿 `_band` 融合），水化在它之后不许动手。
+  const keepOk = engSrc8.includes('if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);')
+  check(
+    'OR077 引擎里命中对象先瘦后水化：扫描期只铺定档要用的六样加 _di，截断之后再按原键序水化；explain / keepBand 两条路仍走完整字面量',
+    leanOk && leanFieldsOk && hydrateOk && keepOk,
+    `瘦路 ${leanOk ? 'ok' : 'miss'} / 瘦字段 ${leanFieldsOk ? leanFields.join(',') : `多带 ${leanFields.join(',')}`} / 水化 ${hydrateOk ? 'ok' : 'miss'} / keepBand ${keepOk ? 'ok' : 'miss'}`,
+  )
+  const S3 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  let hyOk = false
+  let hyDetail = 'search 未导出'
+  if (typeof S3.search === 'function') {
+    const docs = [
+      { id: '0mhyd111', content: 'astra bravo', title: 'astra', importance: 2, keywords: ['bravo'], project: 'p' },
+      { id: '0mhyd222', content: 'astra cygnus dorado', title: 'cygnus', importance: 1, project: 'p', status: 'stale' },
+      { id: '0mhyd333', content: 'dorado echo', title: 'dorado', importance: 3, project: 'q', created_at: '2026-01-02T00:00:00Z' },
+    ].map((d) => ({ ...d, level: 'fact', updated_at: '2026-01-01T00:00:00Z' }))
+    const q = 'astra dorado cygnus'
+    const base = { k: 3, now: 1795470000000 }
+    const strip = (h) => {
+      const o = { ...h }
+      delete o.explain
+      return JSON.stringify(o)
+    }
+    const lean = S3.search(q, docs, base)
+    const full = S3.search(q, docs, { ...base, explain: true })
+    const same = lean.length === full.length && lean.every((h, i) => strip(h) === strip(full[i]))
+    const noLeak = lean.every((h) => !('_di' in h) && !('_raw' in h) && !('_band' in h) && !('_ident' in h) && !('_dense' in h))
+    let keepSame = false
+    const keep = S3.search(q, docs, { ...base, keepBand: true })
+    if (keep.length === lean.length) {
+      const peel = (h) => {
+        const o = { ...h }
+        for (const f of ['_raw', '_bandTmp', '_band', '_ident', '_dense']) delete o[f]
+        return JSON.stringify(o)
+      }
+      keepSame = keep.every((h, i) => peel(h) === strip(full[i]))
+    }
+    hyOk = same && noLeak && keepSame && keep.length > 0
+    hyDetail = `两条路逐字节 ${same} / 无内部字段 ${noLeak} / keepBand 路 ${keepSame}（${keep.length} 条）`
+  }
+  check('OR077 进程内：瘦路回执与 explain 路逐字段逐字节相同（含键序），keepBand 路剥内部字段后也相同', hyOk, hyDetail)
+  check(
+    'OR077 文档在位：INTERNAL 9.216 写了「命中对象先瘦后水化」，README 写了「先瘦后水化」，DESIGN 有 ## 212.，PLAN 有 0.6.17',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.216 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('先瘦后水化') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 212. ') &&
+      /0\.6\.17/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS8 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS8 = vS8.length === 3 ? vS8[0] * 10000 + vS8[1] * 100 + vS8[2] : 0
+  check('OR077 版本号不低于 0.6.17（后续补丁不必回头改这一条）', vNumS8 >= 617, vS8.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

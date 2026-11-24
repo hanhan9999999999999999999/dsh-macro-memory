@@ -81,6 +81,7 @@ const STEPS = [
   ['tools/probe-hotpath.mjs', '热路账：回执对象不许先挂后摘（不再用 delete、平行数组不跨查询残留、原样补分/层级意图/断言密度只落在该落的那条上、自适应换尺子要清缓存）'],
   ['tools/probe-cover.mjs', '覆盖度账：顺倒排往回加，不再每条×每个问句词重算（两条路对拍逐位相同、覆盖度语义没变、空手问句不留 NaN、换尺子那趟先重记账）'],
   ['tools/probe-score.mjs', '打分账：顺倒排打分，不再每条×每个问句词查表（倒排记着词频与字段命中位、两条路对拍逐位相同、字段权重仍按每问参数算、换尺子那趟候选先重铺）'],
+  ['tools/probe-hydrate.mjs', '水化账：扫描期只铺够定档的瘦回执，入选的 k 条截断后再水化（两条完整路对拍逐字节相同含键序、_di 不泄漏、trimmed 属性在、可选字段照旧省略）'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],

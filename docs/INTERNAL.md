@@ -12206,3 +12206,106 @@ for (const term of qKept) if (tfi.has(term)) cover += idfAt(term);
 - **候选集那支 IIFE**（`index.js:3626`，`(anon)` 4.3% / 140.4ms）：现在用 `Set` 逐个 `add` 攒候选。语料大、问句词多时这是「几十万次 `Set.add`」。可改成按 `docs.length` 开一张 `Uint8Array` 位图（`seen[di] = 1`，顺手压进数组），语义与 `Set` 相同、`add` 换成数组下标写。
 - `hits.push` 的对象字面量与 `explain` 展开（`search` 行级 `:3863-:3868`、`:3427`，合计约 0.9s / 300 问）：条件展开已经是最优形状（恒在字段试过，更慢），下一步只能减字段或把 `explain` 分两段拼。
 - `setBandsByThreshold`（247.6ms / 7.5%）与 `sigDocOf`（314.0ms / 9.5%）：后者已是 0.6.10 的 WeakMap 记账形状，进一步要动签名算法本身（换更便宜的混合函数，风险是抗碰撞变差）。
+
+## 9.216 命中对象先瘦后水化（0.6.17）
+
+### 9.216.1 症状
+
+0.6.16 把打分搬去顺倒排累加之后，第五次 `--cpu-prof`（10,000 条 / 300 问，单次 8.35ms，`E:\Temp\cmp\prof17\s17.cpuprofile`，总采样 **1,808.2ms**，0.6.16 是 3,295.9ms）里，函数级榜单换了一批名字：`sigDocOf` 265.2ms / **14.7%**、`setBandsByThreshold` 243.6 / **13.5%**、`search` 自证只剩 **162.3ms / 9.0%**（0.6.16 是 1,582.8 / 48.0%）、`buildSearchIndex` 148.5、候选集 IIFE `(anon)@index.js:3626` 137.4、`scoreCandSet` 112.2、GC 4.1%。
+
+`search` 自证那一块按行摊开（`node E:\Temp\cmp\prof-lines.mjs … search 8`），最贵的几行全在同一个对象字面量上：`:3881` 176.4ms、`:3868` 176.4、`:3866` 175.3、`:3863` 166.9、`:3865` 142.6、`:3864` 136.2、`:3867` 134.1（均 ms / 300 问）——即十四字段的 `hits.push({ ... })` 与四个条件展开 spread，**合计约 1.07s**，占 `search` 自证的三分之二。
+
+### 9.216.2 病根
+
+扫描循环 `for (let di = 0; di < docs.length; di++)`（`index.js:3867`）对**每条 raw>0 的候选**都建一份完整命中对象：`_subj` / `_raw` / `cover` / 可选 `anchored` / `id` / `level` / `title` / `content` / `importance` / `updated_at` / 五个可选字段（`keywords` / `project` / `created_at` / `status` / `source_session`）/ `score` / 可选 `explain`。可下游只用得上其中很少几样：
+
+- `bandize(hits, '_raw', k)`（`index.js:4015`）→ `setBandsByThreshold` 读 `_ident` / `_subj` / `_raw`；
+- 定序比较器 `(a._bandTmp - b._bandTmp) || (b.score - a.score) || stampOf || cmpText(a.id, b.id)` 读 `_bandTmp` / `score` / `updated_at` / `id`；
+- `trimByBand(hits, k, opts)` 只 `delete h._raw / h._ident / h._band / h._dense`，留前 k 条。
+
+也就是说，扫 10,000 条、k=8 时，为 9,992 条注定被丢掉的东西付了整份对象钱——还要额外付 GC。这与 0.6.14 治的那笔账同一种形状（**给热路上的每一条都付，最后只留几条**），只是 0.6.14 付在 `delete` 上，这一版付在**构造**上。
+
+### 9.216.3 处方三条
+
+一、**扫描期只铺六样加一个下标**。`leanHit = opts.explain !== true && opts.keepBand !== true` 时：
+
+```js
+hits.push({
+  _subj: ...,
+  _raw: raw[di] * (...) * foldOf,
+  cover: Math.round(coverOf[di] * 1e3) / 1e3,
+  id: dOf.id,
+  updated_at: dOf.updated_at,
+  score: raw[di] * w * impW * stW * foldOf,
+  _di: di
+});
+```
+
+六样正好是定档（`_subj` / `_raw`）与定序（`score` / `updated_at` / `id`）的全部输入，`cover` 是回执字段里唯一还被定档后逻辑读到的（`trimByBand` 之后的补充路径）。`_di` 不进回执，只是回查下标。
+
+二、**截断之后再水化**。`const outHits = trimByBand(hits, k, opts);` 之后：
+
+```js
+if (leanHit) {
+  for (let hi = 0; hi < outHits.length; hi++) {
+    const h = outHits[hi];
+    const di = h._di;
+    if (di === void 0) continue;
+    outHits[hi] = matHitOf(h, di);
+  }
+}
+return outHits;
+```
+
+`matHitOf(h, di)` 按原字面量的键序重建对象：`_subj` → `cover` → 可选 `anchored` → `id` → `level` → `title` → `content` → `importance` → `updated_at` → 五个可选字段 → `score`。两点必须守住：
+
+- **`score` 取 `h.score`，不许重算**——瘦对象上的那份已经被标识符补分（`identBonus`）、层级意图、断言密度、现状仓（`statusDigest`）改过，重算就把补分全丢了。
+- **原地替换元素，不许换数组**——`trimmed` / `rescueAdded` 是挂在 `hits` / 回执数组上的非枚举属性，`outHits` 必须是同一个数组对象；所以是 `outHits[hi] = matHitOf(h, di)`，不是 `map`。
+
+`statusDig` 推入的 `{ ...d, _raw, cover, score }` 没有 `_di`，`if (di === void 0) continue;` 直接跳过它（它本来就是完整对象）。
+
+三、**`explain` 与 `keepBand` 两条路照旧走完整字面量**：前者要在对象上就地打补丁（`identBonus` / `subjBonus` / `levelIntent` / `tipAssert` / `statusDigest` 全写进 `h.explain`），后者要把 `_band` 留给 searchHybrid 融合（`if (opts.keepBand === true) return hits.slice(0, ...)` 提前返回，水化在它之后）。不带 `explain` 也不带 `keepBand` 才是绝大多数调用（工具面默认如此），热路只优化这一条。
+
+### 9.216.4 读数
+
+10,000 条 / 300 问，`node E:\Temp\cmp\prof012b.mjs` 三次取中位：
+
+| 项 | 0.6.16 | 0.6.17 | 变化 |
+| --- | --- | --- | --- |
+| `search` | 8.35 ms | **3.558 / 3.477 ms** | **−58%**（相对 0.6.12 的 27.377 累计 **−87%**） |
+| `searchAdaptive` | 10.16 ms | **4.541 / 4.736 ms** | **−54%**（累计 **−85%**） |
+| 总采样（cpu-prof） | 3,295.9 ms | **1,808.2 ms** | −45% |
+| `searchIndexOf` 热命中 | 0.692 ms | **0.688 ms** | 持平 |
+| 冷建索引 | ~300 ms | **288–301 ms** | 持平（瘦对象不碰建索引） |
+
+返回条数合计仍 1,500（k 与截断逻辑没动）。质量逐位不变：真库 52 问三档 0.921 / 0.417 / 0.500、平均取回 6.342 / 6.917、两条 #2→#1 位移（「基线要跑几轮才收敛」「把一个文件拆开之后…」）；LoCoMo（1,531 问）0.3932 / 0.6192 / 0.6924 / 0.7511、MRR 0.4958、recall@20 0.6322、空回 0。
+
+### 9.216.5 判据 H0–H5 与 OR077
+
+新探针 `tools/probe-hydrate.mjs` **6 条**（进程内小库 + LCG 大库）：
+
+- **H0** 源码五件：`const leanHit = opts.explain !== true && opts.keepBand !== true;` / `const matHitOf = (h, di) => {` / `_di: di` / `const outHits = trimByBand(hits, k, opts);` / `outHits[hi] = matHitOf(h, di);` / `if (leanHit) {`。
+- **H1** 瘦路回执 vs `{ explain: true }` 完整路，剥掉 `explain` 后 `JSON.stringify` **逐字节相同 6/6**（含键序——这条最容易被「键序稍微不一样」骗过去）。
+- **H2** `{ keepBand: true }` 路剥掉 `_raw` / `_bandTmp` / `_band` / `_ident` / `_dense` 后同样相同 6/6。
+- **H3** 回执里无 `_di` / `_raw` 泄漏，且 `trimmed` / `rescueAdded` 两个数组属性与完整路逐项一致（属性少被触发：实测只在同档不足 k 时才挂）。
+- **H4** 可选五字段（`keywords` / `project` / `created_at` / `status` / `source_session`）无则不写、有则透传。
+- **H5** 空手问句 0 条；300 条 × 30 问（LCG `seed = 20261124`）两路逐位相同，不一致 0。
+
+`verify.mjs` 新增 **OR077** 六条：H0–H5 标签在位 + `check-all` 挂线 + 取根例外表第八条 / 引擎里瘦路条件与瘦字段**恰好七项**（`['_subj','_raw','cover','id','updated_at','score','_di']`，多一项说明整条字面量被搬回来了）+ `matHitOf` 与截断后水化 + `keepBand` 提前返回在位 / 进程内瘦路与 explain 路逐字节相同、无内部字段、keepBand 路剥内部字段后相同 / 文档四处 / 版本地板 ≥ 0.6.17。
+
+**跟改老判据 3 处**（都是计数从 2 变 3、或从 1 变 2——瘦对象里也有一份 `anchored`）
+
+- `GZ 同口径`（`verify.mjs:10327` 附近）`const anchored = anchorSel === null ? false : anchorSel(di);` 由 `=== 2` 改 **`=== 3`**（第三处就是 `matHitOf` 里的水化）。
+- `HA 版本号问句不误报`（`:10416`）`...(anchored ? { anchored: true } : {}),` 由 `=== 1` 改 **`=== 2`**。
+- `VY6`（`:12619`）`(_raw: raw\[di\]/g)` 由 `=== 2` 改 **`=== 3`**（瘦对象也要写一份 `_raw` 给定档）。
+
+### 9.216.6 账
+
+支数 44 → **45**（新增 `tools/probe-hydrate.mjs`）；断言 3,739 → **3,750**（`probe-hydrate` +6、`OR077` +6；`SUITE_FLOOR` 44 → **45**，`NO_ROOT` 补 `tools/probe-hydrate.mjs`）。
+
+### 9.216.7 下一版候选（已按 1,808.2ms 的榜重排）
+
+- **`sigDocOf` 265.2ms / 14.7%**：现在是全榜第一。它已是 0.6.10 的 WeakMap 条级记账形状（值比较 + 复用），进一步只能动混合函数本身或减少参与哈希的字符数（风险：抗碰撞变差，签名撞了会拿旧索引答新库——`probe-signature` 的 S3–S6 会当场红）。
+- **`setBandsByThreshold` 243.6ms / 13.5%**：0.6.13 的阈值链 + 二分，已是 `log m` 比较。再往下要合并「求 `m` 个锚点」与「逐条二分」，或者对 `_raw` 相同的条批量定档（重复 raw 在真库里很常见）。
+- **候选集那支 IIFE**（`(anon)@index.js:3626`，137.4ms / 7.6%）：`Set.add` 换 `Uint8Array` 位图。
+- **`buildSearchIndex` 148.5ms / 8.2%**：只在冷建付，暂不动。

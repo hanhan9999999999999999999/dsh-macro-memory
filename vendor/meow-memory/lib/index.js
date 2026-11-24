@@ -3831,6 +3831,39 @@ function search(query, docs, opts = {}) {
   const ruleFoldOf = (di) => causeQ && String(docs[di].level ?? "") === "rules" ? (situationQ ? situationRuleFold : causeRuleFold) : 1;
   const tipOn = tipAssertOn(query) && opts.tipAssert !== false;
   const statusDig = statusDigestOf(docs, query, verbOn, opts);
+  // [macro-fusion 0.6.17] 瘦对象 + 事后水化。扫描期每条候选都建一个十四字段的 hit 对象（还带四个
+  // 条件展开 spread），可 bandize / trimByBand 最后只留前 k 条——行级读数（cpu-prof positionTicks，
+  // 10,000 条 / 300 问，3,295.9ms 总采样）：这条字面量连同 spread 合计 **约 1.07s**，占 search 自证的
+  // 三分之二，而真正进回执的只有 k 条。定档只吃 `_subj` / `_raw` / `cover` / `score` / `id` /
+  // `updated_at`（并列时比更新时间和 id 字典序），所以扫描期只铺这六样加一个下标 `_di`，
+  // 截断之后再按原来字面量的键序把入选条水化回来（`matHitOf`）。
+  // `explain` 与 `keepBand` 两条路照旧走完整字面量：前者要在对象上就地打补丁（identBonus /
+  // subjBonus / levelIntent / tipAssert / statusDigest），后者要把 `_band` 留给 searchHybrid 融合，
+  // 都不适合水化。三条路的输出逐字节相同（`probe-hydrate.mjs` 对拍）。
+  const leanHit = opts.explain !== true && opts.keepBand !== true;
+  const matHitOf = (h, di) => {
+    const dOf = docs[di];
+    const anchored = anchorSel === null ? false : anchorSel(di);
+    const srOf = subjRatio === void 0 ? 0 : subjRatio[di];
+    return {
+      _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,
+      cover: Math.round(coverOf[di] * 1e3) / 1e3,
+      ...(anchored ? { anchored: true } : {}),
+      id: dOf.id,
+      level: dOf.level,
+      title: dOf.title,
+      content: dOf.content,
+      importance: dOf.importance,
+      updated_at: dOf.updated_at,
+      ...dOf.keywords === void 0 ? {} : { keywords: dOf.keywords },
+      ...dOf.project === void 0 ? {} : { project: dOf.project },
+      ...dOf.created_at === void 0 ? {} : { created_at: dOf.created_at },
+      ...dOf.status === void 0 ? {} : { status: dOf.status },
+      ...dOf.source_session === void 0 ? {} : { source_session: dOf.source_session },
+      // 分数取瘦对象上那份：它已经被标识符补分、层级意图、断言密度、现状仓改过，重算会把补分丢掉。
+      score: h.score
+    };
+  };
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null && !(statusDig !== null && statusDig !== void 0 && statusDig.includes(di))) continue;
     // [macro-fusion 0.6.15] 这一条下面要读十来次同一条记录的字段：`docs[di]` 取一次，别每次重算下标。
@@ -3855,7 +3888,17 @@ function search(query, docs, opts = {}) {
     srTmp.push(srOf);
     lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0);
     trTmp.push(trOf);
-    hits.push({
+    if (leanHit) {
+      hits.push({
+        _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,
+        _raw: raw[di] * (1 + (vbOf === void 0 || opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
+        cover: Math.round(coverOf[di] * 1e3) / 1e3,
+        id: dOf.id,
+        updated_at: dOf.updated_at,
+        score: raw[di] * w * impW * stW * foldOf,
+        _di: di
+      });
+    } else hits.push({
       _subj: subjRatio === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : srOf >= 0.5 ? 1 : 0,
       _raw: raw[di] * (1 + (vbOf === void 0 || opts.identBand === false || !identHardOk ? 0 : identBandW * vbOf.ratio) + (vbOf === void 0 || opts.identSubjBand === false || !identHardOk ? 0 : identSubjW * srOf) + (lvHit && opts.levelIntent !== false ? levelIntentW : 0) + (tipOn ? tipAssertW * trOf : 0)) * foldOf,
       cover: Math.round(coverOf[di] * 1e3) / 1e3,
@@ -3972,7 +4015,18 @@ function search(query, docs, opts = {}) {
   bandize(hits, '_raw', k);
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
   if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
-  return trimByBand(hits, k, opts);
+  const outHits = trimByBand(hits, k, opts);
+  // [macro-fusion 0.6.17] 截断之后再把入选的 k 条水化：整条命中的键序与原来那条字面量一致，
+  // 数组本身不动（`trimmed` / `rescueAdded` 挂在数组上的非枚举属性要留着）。
+  if (leanHit) {
+    for (let hi = 0; hi < outHits.length; hi++) {
+      const h = outHits[hi];
+      const di = h._di;
+      if (di === void 0) continue;
+      outHits[hi] = matHitOf(h, di);
+    }
+  }
+  return outHits;
 }
 // ═══════════════ [macro-fusion 0.5.0 · P1] 换场景检索：词形桥的第二遍 ═══════════════
 // 问题不是「词库太死」，而是**两套词形不在一个坐标系**：共现表学的是 keywords 的原词
