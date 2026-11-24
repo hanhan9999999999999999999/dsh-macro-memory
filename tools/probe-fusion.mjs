@@ -4580,7 +4580,7 @@ const adminEnum = tools.get('memory_admin').parameters.properties.action.enum
 const tableKeys = Object.keys(adminMod.ACTIONS)
 check('K1 枚举就是动作表本身（同一份数据）', JSON.stringify(adminEnum) === JSON.stringify(tableKeys), adminEnum.join('/'))
 // 0.2.97：多了 dream 一行（整理留痕），八行变九行。
-check('K2 动作表九行，一个不多一个不少', tableKeys.length === 9 && ['home', 'stats', 'hygiene', 'sources', 'ingest', 'cost', 'dream', 'links', 'guide'].every((k) => tableKeys.includes(k)), tableKeys.join('/'))
+check('K2 动作表十行，一个不多一个不少', tableKeys.length === 10 && ['home', 'stats', 'hygiene', 'sources', 'ingest', 'cost', 'inject', 'dream', 'links', 'guide'].every((k) => tableKeys.includes(k)), tableKeys.join('/'))
 check('K3 每个动作恰好一种实现', tableKeys.every((k) => ['call', 'graph', 'local'].filter((kind) => adminMod.ACTIONS[k].kind === kind).length === 1) && tableKeys.every((k) => adminMod.ACTIONS[k].kind), tableKeys.map((k) => `${k}:${adminMod.ACTIONS[k].kind}`).join(' '))
 const deadEnds = []
 for (const action of adminEnum) {
@@ -4619,8 +4619,8 @@ for (const action of adminEnum) {
 const headPanels = panels.filter((p) => p.action !== 'guide')
 const badHead = headPanels.filter((p) => !p.first.startsWith(panelMod.panelHead(adminMod.ACTIONS[p.action].label)))
 check(
-  'L1 八个统计面板的抬头同一个样（名字取自动作表）',
-  badHead.length === 0 && headPanels.length === 8,
+  'L1 九个统计面板的抬头同一个样（名字取自动作表）',
+  badHead.length === 0 && headPanels.length === 9,
   badHead.map((p) => `${p.action}: ${p.first.slice(0, 40)}`).join(' | ') || `${headPanels.length} 个一致`,
 )
 check(
@@ -5696,15 +5696,15 @@ check(
 
   const statsStray = text(await run('memory_admin', { action: 'stats', limit: 5 }))
   check(
-    'AY2 stats 配了 limit：要说清 limit 归 hygiene / cost / dream / links，stats 不读它',
-    first(statsStray).includes('limit 是 hygiene / cost / dream / links 的') && first(statsStray).includes('stats 不读它'),
+    'AY2 stats 配了 limit：要说清 limit 归 hygiene / cost / inject / dream / links，stats 不读它',
+    first(statsStray).includes('limit 是 hygiene / cost / inject / dream / links 的') && first(statsStray).includes('stats 不读它'),
     first(statsStray).slice(0, 140),
   )
 
   const homeStray = text(await run('memory_admin', { action: 'home', limit: 3 }))
   check(
     'AY3 home 配了 limit：必须被点出来（不许因为「反正读了一个参数」就整句吞掉）',
-    first(homeStray).includes('limit 是 hygiene / cost / dream / links 的') && first(homeStray).includes('home 不读它'),
+    first(homeStray).includes('limit 是 hygiene / cost / inject / dream / links 的') && first(homeStray).includes('home 不读它'),
     first(homeStray).slice(0, 140),
   )
 
@@ -5718,7 +5718,7 @@ check(
   const guideStray = text(await run('memory_admin', { action: 'guide', limit: 5 }))
   check(
     'AY5 手册豁免抬头但不豁免说话：末尾补 limit 那句，第一行仍是门牌',
-    guideStray.startsWith('宏记忆有三个面') && guideStray.includes('limit 是 hygiene / cost / dream / links 的'),
+    guideStray.startsWith('宏记忆有三个面') && guideStray.includes('limit 是 hygiene / cost / inject / dream / links 的'),
     guideStray.split('\n').slice(-1)[0].slice(0, 120),
   )
 

@@ -13817,4 +13817,21 @@ rawkTopPrev = top;
 
 **踩坑三条**：①**Windows 的 rename 不覆盖目标**——第一版只写 `renameSync6`，第二次轮转时 `.old` 已存在、抛错被外层 catch 吞掉，文件继续长；R6 的「第二代」断言专门抓这个，改成先 `unlinkSync` 再 rename。②**下调闸门不能只看「省字」**——真库上 0.35 与 0.45 逐位相同，只看这一池会误判成「改不改一样」；是 gold 池的召回（+2.9 点）说明 0.45 在切正确答案，两池一起看才知道往哪走。③**日志写入点必须收敛**：散在 9 处只要漏一处轮转就是假的，断言直接数 `appendDreamLog(` 的次数并禁止裸写正则，比「改完跑一遍看有没有 `.old`」可靠。
 
+### 9.245 0.6.46：注入账本面板（memory_admin action="inject"）
+
+**症状**：三道闸一直在写账，却**没有读口**。0.6.40 的 `hit-chain` 行记 `floor=` / `gated=`，0.6.44 又加了 `hit-skip`（`reason=empty|floor|budget|repeat|…`），可真库日志长到 1,037 行时，想回答「这三小时注入了多少字、被哪条闸挡了几次、我该调 floor 还是 bodyMax」只能自己去 `Select-String`；更麻烦的是写法本身不查代码猜不出——`spent=268/∞` 用 `Number()` 直接变 NaN、`hit=null` 与「压根没这个键」是两件事、老行连 `floor` 都没有。账在写、无人读，等于没有账。
+
+**处方**：
+
+1. 新文件 `lib/macro/injectledger.js`：`parseInjectLog(text)` 只认 `hit-chain` / `hit-skip` 两种行（`LINE_RE`），`pre-step` / `check` / `turn-stopping` **不计坏行**；`pairsOf` 拆 `k=v`；`spent` 取除号前那一半、`limit` 留 `/` 后半（`∞` 原样）；`hit` 三态 `yes` / `null` / `unknown` 原样保留；`dream-debug.log.old`（前）与本日志（后）连读按 `at` 稳定排序；`readInjectPanel({workspace, dir, limit, config})` 输出闸门五个读数（取 config，缺省回 `DEFAULTS`，脏值也回默认不打 NaN）、出口统计（注入轮数 + 四类 skip，未知 reason 原样列）、字数（合计/平均/中位/最省/最多）、`gated` / `bodyCut` / `repeated` 汇总、旧格式行数与「挡下只统计新格式」的说明、最近 N 轮明细（新的在前）、日志路径与体积；三种空态分开说（还没有注入账 / 一行注入账都没有 / limit=0 只关明细）。
+2. `lib/macro/defs/admin.js`：`ACTIONS` 加 `inject`（`kind: 'local'`、`label: '注入账本'`、`params: ['limit']`、`defaultLimit: 12`），`local.inject(args, exec)` 走 `limitOf` + `workspaceOfExec` + `meowDir()`；`PANEL_SUMMARY` 自动长出一句（清单由表生成，不手抄第二份）；schema 的 `limit` 说明补上 `inject` 与默认 12。
+3. `lib/macro/prompt.js` 的运维列表补 `inject`；`PANEL_SUMMARY` 顺手压回 **199/200 字**（可读性尺是 ≤200，加一行就顶到 221）——压缩落在 `inject` / `dream` / `links` 三个 hint 上，`hygiene` 的九类**一个字没动**（`probe-words` 用括号里的 `/` 数类目，动了会红）。
+4. 探针 `tools/probe-injectlog.mjs`（**39 条**）：I1 装配面（kind/label/params/defaultLimit、面板名不撞车、摘要与手册自动带 inject、schema 提到 inject）；I2 解析（六键、spent 除号前半、limit ∞、hit 三态、legacy、四类 reason、未知 reason 不吞、pre-step 不计坏行、坏行计数）；I3 面板（字数 1,180 / 平均 295 / 中位 300 / 最省 100 / 最多 512 可验算、9 轮里 4 注入 5 挡下、四类中文解释、gated 1 / bodyCut 2 / legacy 2、含 1 份 `.old`、明细新的在前、limit=0、无日志、日志无账行）；I4 config 五旋钮与脏值；I5 真调 `createAdmin` 的抬头与 limit=3 只出 3 条、脏 limit 说话、无工作区不炸；I6 只读（两文件 sha256 不变、不新增文件）。
+
+**读数**（真库 `.dsh-meow/dream-debug.log`，81.6 KB / 66 行账，运行中的 DSH 仍是 0.6.43 前的模块）：**66 轮里 50 轮注入、0 轮挡下、16 轮没命中注入**；字数合计 **4,189**、平均 84、中位 **25**、最省 4、最多 **1,336**。66 行全是旧格式（无 `hit-skip`），面板会明说「挡下计数只统计新格式」——这也顺手证实了「重启前新模块没跑起来」。
+
+**判据**：新支进 `tools/check-all.mjs`；规模 60 支 / 4,228 → **61 支 / 4,267 断言**；`verify.mjs` 的三处「九个面板」改成十个、`probe-fusion` 的 K2/L1/AY2/AY3/AY5 跟着表走、`probe-host` D3 的 schema 体积 13,567 → **13,590 B**（README 与两份市场索引同步）、`probe-words` 的注入字符数 1,235 → **1,242**（手册多了 `|inject`）。
+
+**踩坑两条**：①**日志里的 `spent=268/∞` 不是数字**——`Number('268/∞')` 是 NaN，取 `split('/')[0]` 才拿得到已花字数，`/` 后半是上限（`∞` 或 `800`）；第一版直接把整串 `Number()`，面板上整片 NaN。②**摘要长度是一条会被自己踩的尺**：`PANEL_SUMMARY` 由表生成，每加一个面板就长一截，加了 `inject` 立刻从 193 涨到 221 被 `probe-words` 判红——正确修法是压 hint 文案而不是放宽 200 的尺；同时 `hygiene` 的括号里那九类被另一条断言当「类目清单」数着，压缩时不能碰它（第一版把它缩成六类，`手册：体检九类` 当场红）。
+
 
