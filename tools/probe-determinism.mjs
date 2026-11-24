@@ -138,10 +138,15 @@ check('D7 检索定序里没有 localeCompare（显示分组那两处不算）',
 // 红线被「同进程里已加载过的那份引擎」悄悄钉死，量出来是假绿。子进程里没有这份状态，才是真读数。
 // [0.6.12] 梯子抽成了 `orderOf`（全序与有界堆两路共用同一条），所以红证明改成**把梯子本身换掉**：
 // 只留「分数」一跳，档位与并列的两把钥匙一起消失——两套插入顺序立刻分叉。
+// [0.6.32] 热路改成「扫描期只写缓冲、只物化前 k 条」之后，对象版 `orderOf` 只在 `if (!fastDone)`
+// 里跑，lean 检索走的是缓冲版 `cmpQ`（同一把梯子的下标版）。只换 `orderOf` 的话红证明会变成假绿
+// （`SAME t-00..`），所以两把梯子一起换：语义仍是「只留分数一跳」，作用到的才是真跑的那条路。
 const NEW = 'const orderOf = (a, b) => (a._bandTmp - b._bandTmp) || (b.score - a.score) ||\n    (stampOf(a) < stampOf(b) ? 1 : stampOf(a) > stampOf(b) ? -1 : 0) || cmpText(a.id, b.id);'
 const RED = 'const orderOf = (a, b) => b.score - a.score;'
-if (!src.includes(NEW)) {
-  check('D8 能红证明：定序梯子还在源码里（能定位到才谈得上「删掉就红」）', false)
+const NEWQ = 'const cmpQ = (x, y) => (hband[x] - hband[y]) || (hscore[y] - hscore[x]) ||\n        (stampOf(docs[hdi[x]]) < stampOf(docs[hdi[y]]) ? 1 : stampOf(docs[hdi[x]]) > stampOf(docs[hdi[y]]) ? -1 : 0) ||\n        cmpText(docs[hdi[x]].id, docs[hdi[y]].id);'
+const REDQ = 'const cmpQ = (x, y) => hscore[y] - hscore[x];'
+if (!src.includes(NEW) || !src.includes(NEWQ)) {
+  check('D8 能红证明：定序梯子还在源码里（能定位到才谈得上「删掉就红」）', false, `${src.includes(NEW)} / ${src.includes(NEWQ)}`)
 } else {
   const redCode = `
 import { readFileSync } from 'node:fs'
@@ -154,7 +159,7 @@ const red = new Module('red-det', null)
 // 而 check-all 是在 E:\\Temp\\macro-neutral-cwd-* 里跑每一支的（第一版就是这么红的）。
 red.filename = enginePath
 red.paths = Module._nodeModulePaths(enginePath.slice(0, enginePath.lastIndexOf('/')))
-red._compile(src.replace(${JSON.stringify(NEW)}, ${JSON.stringify(RED)}), enginePath)
+red._compile(src.replace(${JSON.stringify(NEW)}, ${JSON.stringify(RED)}).replace(${JSON.stringify(NEWQ)}, ${JSON.stringify(REDQ)}), enginePath)
 const docs = []
 for (let i = 0; i < 40; i++) docs.push({ id: 't-' + String(i).padStart(2, '0'), title: '复测', content: '滴定终点读两遍，记在备忘里。', level: 'fact', status: 'active' })
 let s = 1 >>> 0
