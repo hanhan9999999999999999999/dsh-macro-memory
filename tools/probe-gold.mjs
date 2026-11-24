@@ -804,7 +804,8 @@ if (denseUsable) {
     // [0.6.16] 打分拆成两条路（扫倒排的 scoreCandSet 与逐条扫的 scanDoc）：归一那句只剩逐条扫的退路 1 处，
     // 扫倒排那路改读 `coverAcc`（候选集与备常数两处各算一次，共 2 处）；取幂与协调两步两路各一处、算式逐字相同。
     eng.split('coverOf[di] = Math.min(1, cover / qIdfSum);').length - 1 === 1 &&
-    eng.split('cvr = Math.pow(coverOf[di], COORD_POW);').length - 1 === 2 &&
+    (eng.split('cvr = Math.pow(coverOf[di], COORD_POW);').length - 1 === 2 ||
+      eng.split('cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);').length - 1 === 2) &&
     eng.split('if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;').length - 1 === 2 &&
     eng.split('coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);').length - 1 === 2
   if (!knobOk) wrong.push('覆盖度没真正进打分路径（归一 / 取幂 / 协调三笔里有一笔写偏了）')

@@ -115,7 +115,9 @@ const same = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b
   const hasTail = SEG.includes('seg.sort()') && SEG.includes('if (b === 0) {');
   const hasFallback = SEG.includes('vals.subarray(0, n).sort();');
   const bodyStart = ENGINE.indexOf(SEG_END);
-  const bodyEnd = ENGINE.indexOf('\n}', ENGINE.indexOf('h._bandTmp = m - 1 - lo;', bodyStart)) + 2;
+  // [0.6.28] 同分批量把赋值拆成两句：老形状 `h._bandTmp = m - 1 - lo;`，新形状 `h._bandTmp = lastBand;`
+  const BAND_ANCHOR = ENGINE.indexOf('h._bandTmp = m - 1 - lo;') >= 0 ? 'h._bandTmp = m - 1 - lo;' : 'h._bandTmp = lastBand;';
+  const bodyEnd = ENGINE.indexOf('\n}', ENGINE.indexOf(BAND_ANCHOR, bodyStart)) + 2;
   const body = bodyStart >= 0 && bodyEnd > bodyStart ? ENGINE.slice(bodyStart, bodyEnd) : '';
   // 只认带分号的真实调用：注释里的「`vals.sort()`」不算，否则这条判据会被自己的注脚判红
   const noSort = body !== '' && body.includes('vals.sort();') === false;

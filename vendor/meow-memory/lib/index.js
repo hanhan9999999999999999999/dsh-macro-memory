@@ -2836,10 +2836,20 @@ function setBandsByThreshold(hits, rawKey) {
   }
   const anchors = anchorChainOf(vals, plain); // 逐位同「vals.sort() + 阈值链」，见上方 0.6.19 说明
   const m = anchors.length;
+  // [macro-fusion 0.6.28] 同分批量：档号是 raw 的纯函数，连着几条 raw 一模一样时只该二分一次。
+  // 老实现每条都从头二分（`mid` / `anchors[mid]` / 比较三件套各一次），而候选里同分的很多
+  // （分数只由少数几个量决定，10,000 条同构语料上大量并列）。一行记忆「上一值的档号」，
+  // 相同就抄，不同才二分——`lastV` 用 -1 当哨兵（非指认的 raw 都是有限非负数）。
+  let lastV = -1;
+  let lastBand = 0;
   for (let i = 0; i < total; i++) {
     const h = hits[i];
     if (h._ident === true || h._subj === 1) continue;
     const v = h[rawKey];
+    if (v === lastV) {
+      h._bandTmp = lastBand;
+      continue;
+    }
     let lo = 0;
     let hi = m;
     while (lo < hi) {
@@ -2847,7 +2857,9 @@ function setBandsByThreshold(hits, rawKey) {
       if (anchors[mid] >= v) hi = mid;
       else lo = mid + 1;
     }
-    h._bandTmp = m - 1 - lo;
+    lastV = v;
+    lastBand = m - 1 - lo;
+    h._bandTmp = lastBand;
   }
   return true;
 }
@@ -3862,6 +3874,37 @@ function literalFallback(query, docs, opts = {}) {
   if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k2) && k2 > 0 ? Math.round(k2) : hits.length);
   return trimByBand(hits, k2, opts);
 }
+// [macro-fusion 0.6.28] 热查的临时缓冲按长度复用。一问答要开出：覆盖度账（Float64Array）、
+// raw 与 coverOf（两只 Array）、候选位图（Uint8Array）、两条候选账（Float64Array）——10,000 条
+// 约 330KB，2,600 问/秒就是每秒 850MB 的分配与清零。这里复用的只是「谁持有这块内存」：
+// 每问进场照样 fill(0)，读写顺序、浮点加法顺序一个不动，算出来的数逐位不变。
+// 忙（重入）时一律退回新开——共享缓冲在嵌套调用里会互相踩。
+// `kDen` / `cvrOf` 只在候选上「先写后读」（scoreCandSet 首趟写、后两趟读），所以不必清零；
+// 这一点写成注释而不是省掉 fill，是为了让下一个改的人知道不是漏了。
+const HOT_SCRATCH = { busy: false, n: -1, raw: null, cover: null, candAt: null, kDen: null, cvr: null, coverAcc: null };
+function hotScratchOf(n) {
+  const s = HOT_SCRATCH;
+  if (s.busy) return null;
+  s.busy = true;
+  if (s.n !== n) {
+    s.n = n;
+    s.raw = new Array(n).fill(0);
+    s.cover = new Array(n).fill(0);
+    s.candAt = new Uint8Array(n);
+    s.kDen = new Float64Array(n);
+    s.cvr = new Float64Array(n);
+    s.coverAcc = new Float64Array(n);
+  } else {
+    s.raw.fill(0);
+    s.cover.fill(0);
+    s.candAt.fill(0);
+  }
+  return s;
+}
+function hotScratchDone() {
+  // 只放下「有人在用」这只旗子。异常路径漏放也只是从此退回新开（结果照样对，只是慢）。
+  HOT_SCRATCH.busy = false;
+}
 function search(query, docs, opts = {}) {
   // [macro-fusion 0.6.7] 一条 null 不许把整次检索打成异常（账在 `liveDocs` 上方）
   docs = liveDocs(docs);
@@ -3892,6 +3935,10 @@ function search(query, docs, opts = {}) {
   const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;
   const COORD_W = Number.isFinite(opts.coordW) ? opts.coordW : COORD_W_DEF;
   const COORD_POW = Number.isFinite(opts.coordPow) && opts.coordPow > 0 ? opts.coordPow : COORD_POW_DEF;
+  // [macro-fusion 0.6.28] 默认幂是 1，而 `Math.pow(x, 1)` 与 `x` 逐位相同（含 NaN / ±0 / ±Infinity），
+  // 却要付一次通用幂运算：热查里这一句在候选循环里每条一次，实测 263.3ms / 5.3%。
+  // 幂仍是可配的（`opts.coordPow`），只在它正好等于 1 时走恒等快路，其余一律照原样求幂。
+  const COORD_POW_ONE = COORD_POW === 1;
   const k1 = 1.5;
   const b = 0.75;
   // 实体先验要逐条查「这条描述里有没有那个专名」——集合建在索引建立时最省，
@@ -3969,7 +4016,12 @@ function search(query, docs, opts = {}) {
     for (let qi = 0; qi < qLoop.length; qi++) qLoopIdf[qi] = idfAt(qLoop[qi]);
   };
   refreshQidf();
-  const coverAcc = postings === null ? null : new Float64Array(docs.length);
+  // [macro-fusion 0.6.28] 这一问要用的临时缓冲（覆盖度账、raw、cover、位图、两条候选账）按长度复用。
+  // 10,000 条时每问新开约 330KB（两张 Array + 四张 Float64Array/Uint8Array），2,600 问/秒就是 850MB/秒
+  // 的分配与清零；复用的只是「谁持有这块内存」，每问进场照样清零，算出来的数一个不变。
+  // 忙（重入）时一律退回新开——共享缓冲在嵌套调用里会互相踩。
+  const scratch = hotScratchOf(docs.length);
+  const coverAcc = postings === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.coverAcc;
   const buildCoverAcc = () => {
     if (coverAcc === null) return;
     coverAcc.fill(0);
@@ -4013,7 +4065,7 @@ function search(query, docs, opts = {}) {
         for (let qi = 0; qi < qKept.length; qi++) if (tfi.has(qKept[qi])) cover += qKeptIdf[qi];
         coverOf[di] = Math.min(1, cover / qIdfSum);
       }
-      cvr = Math.pow(coverOf[di], COORD_POW);
+      cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);
     }
     const bEff = b * (1 - coverLenRelief * cvr);
     for (let qi = 0; qi < qLoop.length; qi++) {
@@ -4059,8 +4111,8 @@ function search(query, docs, opts = {}) {
     return s;
   
   };
-  const raw = new Array(docs.length).fill(0);
-  const coverOf = new Array(docs.length).fill(0);
+  const raw = scratch === null ? new Array(docs.length).fill(0) : scratch.raw;
+  const coverOf = scratch === null ? new Array(docs.length).fill(0) : scratch.cover;
   // [macro-fusion 0.6.18] 候选集不再用 Set：这一趟只是「把几个词的倒排下标并起来」，而 `Set.add`
   // 每条都要算一次哈希、找到桶、再在桶链上比一遍；后面还要 `for..of` 过迭代器协议。改成
   // **位图去重 + 按下标攒的候选表**：去重是一次字节读一次字节写，候选表给后面两趟当连续数组遍历。
@@ -4068,7 +4120,7 @@ function search(query, docs, opts = {}) {
   // 于是扫描顺序、浮点加法顺序、回执顺序全都逐位不变（`probe-cand.mjs` 对拍）。
   // 行级读数（cpu-prof positionTicks，10,000 条 / 300 问，1,808.2ms 总采样）：这个 IIFE 137.4ms/7.6%，
   // 是 0.6.17 之后热路第五名；同期 `scoreCandSet` 里的 `for (const di of candSet)` 也在付迭代器的钱。
-  const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);
+  const candAt = postings === null || verbOn ? null : scratch === null ? new Uint8Array(docs.length) : scratch.candAt;
   const candList = candAt === null ? null : [];
   if (candList !== null) {
     for (const term of qLoop) {
@@ -4096,8 +4148,8 @@ function search(query, docs, opts = {}) {
   // 每条拿到的加数顺序仍是 qLoop 原序，所以浮点和逐位不变。词频与字段权重在建索引时就记在条目里
   // （见 buildSearchIndex），这一趟不再有哈希查找；「这个词这条根本没有」的格子被整个省掉——
   // 0.6.15 之后 scanDoc 的头号热点正是这些空手查找（535.3ms / 300 问）。
-  const kDen = candList === null ? null : new Float64Array(docs.length);
-  const cvrOf = candList === null ? null : new Float64Array(docs.length);
+  const kDen = candList === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.kDen;
+  const cvrOf = candList === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.cvr;
   const candArr = candList === null ? null : [];
   const scoreCandSet = () => {
     // 先把每条自己的常数算好（覆盖度、长度惩罚、协调项），再让每个词只碰它真出现过的条。
@@ -4108,7 +4160,7 @@ function search(query, docs, opts = {}) {
       let cvr = 0;
       if (qIdfSum > 0) {
         coverOf[di] = Math.min(1, coverAcc[di] / qIdfSum);
-        cvr = Math.pow(coverOf[di], COORD_POW);
+        cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);
       }
       cvrOf[di] = cvr;
       const bEff = b * (1 - coverLenRelief * cvr);
@@ -4464,7 +4516,10 @@ function search(query, docs, opts = {}) {
   // [macro-fusion 0.6.12] 只排前 k：keepBand / trimByBand 都只读前 k 条。
   bandize(hits, '_raw', k);
   // keepBand 只给 searchHybrid 用：融合要按 band 收口，就不能在这里先摘掉。
-  if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
+  if (opts.keepBand === true) {
+    hotScratchDone();
+    return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);
+  }
   const outHits = trimByBand(hits, k, opts);
   // [macro-fusion 0.6.17] 截断之后再把入选的 k 条水化：整条命中的键序与原来那条字面量一致，
   // 数组本身不动（`trimmed` / `rescueAdded` 挂在数组上的非枚举属性要留着）。
@@ -4476,6 +4531,8 @@ function search(query, docs, opts = {}) {
       outHits[hi] = matHitOf(h, di);
     }
   }
+  // 缓冲到此为止不再用（上面两次 `hotScratchDone()` 是本函数仅有的两个出口）。
+  hotScratchDone();
   return outHits;
 }
 // ═══════════════ [macro-fusion 0.5.0 · P1] 换场景检索：词形桥的第二遍 ═══════════════

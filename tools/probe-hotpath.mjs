@@ -128,5 +128,91 @@ const plain = [
   );
 }
 
+// ── H7 ───────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.28] 覆盖度的幂默认是 1，而 `Math.pow(x, 1)` 与 `x` 逐位相同，却要付一次通用幂。
+{
+  const powOne = ENGINE.includes('const COORD_POW_ONE = COORD_POW === 1;');
+  const sites = (ENGINE.match(/cvr = COORD_POW_ONE \? coverOf\[di\] : Math\.pow\(coverOf\[di\], COORD_POW\);/g) || []).length;
+  const bare = (ENGINE.match(/cvr = Math\.pow\(coverOf\[di\], COORD_POW\);/g) || []).length;
+  const a = JSON.stringify(search('alpha beta', plain, { k: 5, explain: true, now: NOW }));
+  const b = JSON.stringify(search('alpha beta', plain, { k: 5, coordPow: 1, explain: true, now: NOW }));
+  const c = JSON.stringify(search('alpha beta', plain, { k: 5, coordPow: 2, explain: true, now: NOW }));
+  ok(
+    'H7 覆盖度幂的恒等快路：pow=1 时两处都走三元（无裸求幂），结果与显式 pow=1 逐位相同、与 pow=2 不同',
+    powOne && sites === 2 && bare === 0 && a === b && c !== a,
+    `形状=${powOne} 两处=${sites} 裸写=${bare} pow2 变=${c !== a}`,
+  );
+}
+
+// ── H8 ───────────────────────────────────────────────────────────────────
+// 档号是 raw 的纯函数：同分只该二分一次。错位（抄了别人的档号）就会串档，所以逐对验。
+{
+  const same = [];
+  for (let i = 0; i < 6; i++) same.push(mk(`0msame0${i}`, 'fact', 'alpha beta delta'));
+  same.push(mk('0mlong01', 'fact', 'alpha beta delta gamma epsilon zeta alpha beta'));
+  same.push(mk('0mshort1', 'fact', 'alpha'));
+  const hs = search('alpha beta', same, { k: 20, keepBand: true, now: NOW }).filter((h) => h._band !== void 0);
+  let pairBad = 0;
+  for (let i = 0; i < hs.length; i++) {
+    for (let j = 0; j < hs.length; j++) {
+      const x = hs[i];
+      const y = hs[j];
+      if (x._raw === y._raw && x._band !== y._band) pairBad += 1;
+      if (x._raw > y._raw && x._band > y._band) pairBad += 1;
+    }
+  }
+  const shape = ENGINE.includes('let lastV = -1;') && ENGINE.includes('if (v === lastV) {') &&
+    ENGINE.includes('lastV = v;') && ENGINE.includes('lastBand = m - 1 - lo;');
+  ok(
+    'H8 档号同分批量：同分同档、异分不串档（逐对）',
+    shape && hs.length > 3 && pairBad === 0,
+    `形状=${shape} ${hs.length} 条逐对 · 违例=${pairBad}`,
+  );
+}
+
+// ── H9 ───────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.28] 热查临时缓冲按长度复用。复用的只是「谁持有内存」，每问照样清零。
+{
+  const shape = ENGINE.includes('const HOT_SCRATCH = { busy: false,') &&
+    ENGINE.includes('function hotScratchOf(n) {') && ENGINE.includes('if (s.busy) return null;') &&
+    ENGINE.includes('function hotScratchDone() {') &&
+    ENGINE.includes('const scratch = hotScratchOf(docs.length);') &&
+    (ENGINE.match(/hotScratchDone\(\);/g) || []).length === 2 &&
+    (ENGINE.match(/scratch === null \?/g) || []).length === 6;
+  const A = 'alpha beta';
+  const B = 'alpha 一律 必须先跑';
+  const s1 = JSON.stringify(search(A, plain, { k: 5, explain: true, now: NOW }));
+  const s2 = JSON.stringify(search(A, plain, { k: 5, explain: true, now: NOW }));
+  search(B, plain, { k: 5, explain: true, now: NOW });
+  const s3 = JSON.stringify(search(A, plain, { k: 5, explain: true, now: NOW }));
+  const big = plain.concat([mk('0mbig001', 'fact', 'alpha beta gamma'), mk('0mbig002', 'fact', 'alpha delta')]);
+  const t1 = JSON.stringify(search(A, big, { k: 5, explain: true, now: NOW }));
+  const t2 = JSON.stringify(search(A, big, { k: 5, explain: true, now: NOW }));
+  const s4 = JSON.stringify(search(A, plain, { k: 5, explain: true, now: NOW }));
+  ok(
+    'H9 临时缓冲按长度复用：连跑 / 插别的问 / 换语料长度再换回来，同问三份逐位相同',
+    shape && s1 === s2 && s2 === s3 && s1 === s4 && t1 === t2,
+    `形状=${shape} ${s1.length} 字符`,
+  );
+}
+
+// ── H10 ──────────────────────────────────────────────────────────────────
+// kDen / cvrOf 不清零（只在候选上先写后读），所以必须证明「跨选项、跨问」不会把脏值读进来。
+{
+  const q1 = 'alpha beta';
+  const base = { k: 5, now: NOW };
+  const first = JSON.stringify(search(q1, plain, { ...base, explain: true }));
+  search(q1, plain, { ...base, coordPow: 2 });
+  search(q1, plain, { ...base, inverted: false });
+  search('0mzzzzzz', plain, base);
+  search(q1, plain, { ...base, coord: false });
+  const again = JSON.stringify(search(q1, plain, { ...base, explain: true }));
+  ok(
+    'H10 复用的缓冲不跨选项 / 不跨问残留：中间插 pow=2、inverted=false、另一问、coord=false，同一问逐位相同',
+    first === again && first.length > 2,
+    `${first.length} 字符`,
+  );
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'}  probe-hotpath：${pass}/${pass + fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

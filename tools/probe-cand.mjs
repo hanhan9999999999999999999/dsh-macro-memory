@@ -51,13 +51,16 @@ const mk = (id, content, importance = 2, extra = {}) => ({
 
 // ── C0 ───────────────────────────────────────────────────────────────────
 {
-  const hasAt = ENGINE.includes('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);');
+  const AT_OLD = 'const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);';
+  const AT_NEW = 'const candAt = postings === null || verbOn ? null : scratch === null ? new Uint8Array(docs.length) : scratch.candAt;';
+  const AT = ENGINE.includes(AT_OLD) ? AT_OLD : AT_NEW;
+  const hasAt = ENGINE.includes(AT);
   const hasList = ENGINE.includes('const candList = candAt === null ? null : [];');
   const dedupe = (ENGINE.split('if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }').length - 1) === 2;
   const loops = ENGINE.includes('for (let ci = 0; ci < candList.length; ci++) {');
   const nullChecks = (ENGINE.split('if (candList === null) {').length - 1) === 2;
   // 只在这一段里查「Set 有没有退场」：引擎别处还用 Set，那是别的事。
-  const candStart = ENGINE.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);');
+  const candStart = ENGINE.indexOf(AT);
   const candEnd = ENGINE.indexOf('const scoreCandSet = () => {', candStart + 1);
   const candSeg = candStart >= 0 && candEnd > candStart ? ENGINE.slice(candStart, candEnd) : '';
   const noSet = candSeg !== '' && candSeg.includes('new Set()') === false && candSeg.includes('set.add(') === false;

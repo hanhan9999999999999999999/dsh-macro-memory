@@ -13082,3 +13082,105 @@ for (const a of ws) { ... for (const b of unionArr) { if (ws.indexOf(b) >= 0) co
 - `buildCoocSyn:3354` 51.3ms（函数头，内联归属）：层内还能少一次「词号 → 词」的换回（`coocShareHan(wById[a], wById[b])` 每对新词对都要两次数组读）。
 - `tokenizeSegs:1717` 24.6ms：`normalize("NFKC")`。**快速路已试过并否决**（`E:\Temp\cmp\nfb27.mjs`：A=normalize 17.4ms / B=跳过 12.2ms / C=先扫再决定 17.2ms，且 A 与 C 输出 0 差异——中文正文带全角标点时必须归一，扫一遍等于白扫）。
 - `sessionTopicTerms:2074` 16.8ms：`tid.get(t)` 仍是串键哈希，可考虑与 `buildSearchIndex` 的词号表共用一份（同一个词在全库只有一个号）。
+## 9.227 0.6.28：幂的恒等快路、档号同分批量、热查缓冲按长度复用
+
+这一版第一次把主要力气放在**热查**上。0.6.21–0.6.27 治的是冷建（建索引 600–700ms 那段），热查只在 0.6.27 收尾时量过一次、判成噪声带。这一版的靶子是 0.6.27 留下的那句话：「`indexSignature` 占热查 19~20%」。把热查剖面逐行读完之后，真正先动手的是另外三笔——`indexSignature` 反而被量出来「没有 O(1) 的等价捷径」，留到下一版。
+
+### 9.227.1 症状（0.6.27 热查剖面行视图）
+
+量具与口径两件事先定清楚：
+
+- 固定条数。新量具 `node_modules\.tmp-diff\warmprof28.mjs` 固定跑 **3,000 问**，不再用「跑满 4 秒」——0.6.28 变快以后，4 秒会多跑几百问，读数不可比（这一条是 0.6.25 起就吃过一次的坑）。
+- 单引擎分进程。`warmone26.mjs` + `ENG=eng06xx.mjs`，25 轮取中位；同进程交替（`warmab28.mjs`）会被双索引污染 ±5%，只用来确认「建索引没被碰过」。
+
+| 函数 | 行 | 读数 | 那句话 |
+| --- | --- | --- | --- |
+| `scoreCandSet` | `:4111` | **423.3ms（5.9%）** | `cvr = Math.pow(coverOf[di], COORD_POW);` |
+| `setBandsByThreshold` | `:2847`+`:2848`+`:2845`+`:2850` | 182.6+120.3+93.9+88.7 | 每条命中从头二分一次找档号 |
+| `search` | `:4099`+`:4100` | 100.3+59.1（4 秒窗口） | 每问新开两张 `Float64Array(docs.length)` |
+| `search` | `:4078`+`:4079` | 两张 `Array` + `fill(0)` | 每问新开 `raw` / `coverOf` |
+
+### 9.227.2 病根三条
+
+1. **幂指数默认是 1，却照求一次通用幂**。`COORD_POW_DEF = 1`（`:2396`），`Math.pow(x, 1)` 与 `x` 逐位相同（含 `NaN` / `±0` / `±Infinity`），但每条候选要付一次「任意底数任意指数」的运算。
+2. **档号是 `raw` 的纯函数，却每条二分一遍**。`_bandTmp = m - 1 - lo` 只取决于 `raw` 与阈值链；同构语料上大量候选并列同分，连着几条 `raw` 一模一样时二分结果必然一样。
+3. **热查的临时缓冲每问新开一遍**。10,000 条时一问答开出约 330KB（覆盖度账 `Float64Array` + `raw`/`coverOf` 两只 `Array` + 候选位图 `Uint8Array` + 两条候选账 `Float64Array`），2,600 问/秒 ≈ 每秒 850MB 分配与清零，GC 跟着忙。
+
+### 9.227.3 处方三处
+
+**一、幂的恒等快路**
+
+```js
+const COORD_POW_ONE = COORD_POW === 1;
+// scanDoc（原 :4016）与 scoreCandSet（原 :4111）各一处
+cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);
+```
+
+幂仍然可配（`opts.coordPow`），只有正好等于 1 走恒等。判据要盯「裸写 0 处」与「默认 ≡ 显式 pow=1、≠ pow=2」。
+
+**二、档号同分批量**
+
+```js
+let lastV = -1;
+let lastBand = 0;
+...
+const v = h[rawKey];
+if (v === lastV) { h._bandTmp = lastBand; continue; }
+// 否则照老路二分，二分后：lastV = v; lastBand = m - 1 - lo; h._bandTmp = lastBand;
+```
+
+`-1` 当哨兵安全：非指认的 `raw` 都是有限非负数（初值 0、只加不减）。`bandize(hits, "_raw", k)` 全仓只有 `:3861`/`:4469`/`:4665` 三处，都走这条函数。
+
+**三、缓冲按长度复用**
+
+```js
+const HOT_SCRATCH = { busy: false, n: -1, raw: null, cover: null, candAt: null, kDen: null, cvr: null, coverAcc: null };
+function hotScratchOf(n) {
+  const s = HOT_SCRATCH;
+  if (s.busy) return null;   // 重入退回新开：共享缓冲在嵌套调用里会互相踩
+  s.busy = true;
+  if (s.n !== n) { /* 六件全套新建 */ } else { s.raw.fill(0); s.cover.fill(0); s.candAt.fill(0); }
+  return s;
+}
+```
+
+`search` 六处取用写成 `scratch === null ? <老写法> : scratch.xxx`（`coverAcc` / `raw` / `coverOf` / `candAt` / `kDen` / `cvrOf`），两个出口各调一次 `hotScratchDone()`（`keepBand` 提前返回处与末尾 `return outHits;` 前）。`kDen` / `cvrOf` 不清零：只在候选上「先写后读」，非候选格子永远读不到——这一点写成注释，因为改读写顺序的人必须回来加 `fill`。
+
+### 9.227.4 读数
+
+| 量的是什么 | 0.6.27 | 0.6.28 |
+| --- | --- | --- |
+| 热查（单引擎分进程 25 轮 ×4 趟） | 1.845ms | **1.734ms**（−6.0%） |
+| 热查（固定 3,000 问，两轮交替） | 1.8961 / 1.9021 | **1.7538 / 1.7556**（−7.5%） |
+| 热查剖面总采样（3,000 问） | 7,224.1ms | **6,760.1ms**（−6.4%） |
+| `scoreCandSet` 的 `Math.pow` 一行 | 423.3ms（5.9%） | 不再出现 |
+| `setBandsByThreshold` 二分四行合计 | 485.5ms | **395.0ms**（−18.7%，含新增同分比较行） |
+| 复用的代价 `hotScratchOf`（三次 `fill`） | — | 65.8ms / 3,000 问（约 1.2%） |
+| 冷建（21 轮同进程交替） | 110.98ms | 110.70ms（未动） |
+
+### 9.227.5 判据
+
+- `probe-hotpath` **10/10**：新增 H7（幂快路：两处三元、裸求幂 0 处、默认 ≡ 显式 `pow=1`、≠ `pow=2`）/ H8（档号同分同档、异分不串档，8 条逐对）/ H9（连跑 / 插别的问 / 换语料长度再换回来，同问三份逐位相同）/ H10（中间插 `pow=2`、`inverted:false`、另一问、`coord:false` 后同一问逐位相同——证明不清零的 `kDen`/`cvrOf` 没把脏值读进来）。
+- `searchdiff28`（新增量具）：8 组选项 × 300 问 + 60 问 `searchAdaptive` + 占用/复用两条边界，**2,462 项逐位 0 不一致**。八组选项：默认 / `coordPow:2` / `coordPow:1` 显式 / `keepBand` / `explain` / `inverted:false`（走 `scanDoc`）/ `coord:false` / `k:20`；比较「id 顺序 + `_raw` + `cover` + `score` + band + 指认位」；语料每 40 条复制上一条内容，专门造同分。
+- `colddiff28` 462 项 0 不一致、`tokdiff28` 15,810 项 0 不一致（本版没碰建索引，属回归保险）。
+- `verify.mjs` OR088 六条：探针在位 / 引擎三组形状 / 进程内幂口径 / 进程内缓冲不残留 / 文档在位 / 版本号。
+- 老判据跟着源码换字面量（条数不变）：`HZ14`、`OR073`、`OR074`、`OR078`、`OR079`、`probe-band B0`、`probe-cand C0`、`probe-gold 覆盖度三笔`，一律写成「老字面 || 新字面」。
+
+### 9.227.6 踩坑与复盘
+
+**坑一：回执字段名。** H8 第一次写「用 `_bandTmp` 过滤出同分组」，跑出来 0 条、直接判红——`search` 的回执里字段是 `_band`，`_bandTmp` 是定档过程中的中间位。判据要打的是**出门口**，不是过程位。
+
+**坑二：首跑剖面的方向被污染。** 第一次 `--cpu-prof` 在同一进程顺序里跑，0628 反而慢（2.1187 vs 1.9091）。换成反向顺序（先跑 0628 再跑 0627）后回到 0628 更快（1.7872 vs 1.9091）。教训：剖面量具也要「换顺序复测一遍」，尤其在差 5% 量级上——首跑污染能把结论整条翻转。
+
+**复盘。** 三笔钱的共同形状是「输入没变还在算」：常量当变量算（幂）、纯函数每条重算（档号）、同年份的缓冲每年重买（临时数组）。最大的一笔只有一行 `Math.pow(x, 1)`，而它之所以存在，是因为 `coordPow` 被设计成可配——**参数化的边界与执行的开销是两件事**，中间本该有一个 `=== 1`。
+
+`indexSignature` 这一版明确不动：逐条 9.6ns 已经接近值比较的下限，而「数组身份 / 对象身份」都不能替代值比较（`S5` 判据钉着「就地改 `content` / `keywords` 必须看得见」）。要动它得连判据一起改，另开一版。
+
+### 9.227.7 下一版候选
+
+- **`indexSignature` 19~20%**（`:3216` 八字段比较链 + `:3152` 关键词逐元素比较）：唯一可行的方向是把签名从「读时算」改成「写入端维护」——但那要先证明所有写入路径都过同一个口（`bumpIn` 之类），否则 S5 立刻红。
+- `search:4345` 177.7 / `:4342` 165.1（`cover: Math.round(...)` 与 `hits.push({...})` 造对象）：回执对象的形状是公开契约，只能从「少造一只中间对象」上想。
+- `search:4080` 102.4（候选位图 `candAt[di] === 0` 判断 + push）：位图已复用，剩下的是一次分支 + 一次 push。
+- `sessionTopicTerms:2074`（`tid.get(t)` 串键哈希）：与 `buildSearchIndex` 的词号表共用一份，同一个词在全库只该有一个号。
+- `tokenizeSegs:1717` `normalize("NFKC")` 24.6ms：快速路已否决（`nfb27.mjs`：A=normalize 17.4 / B=跳过 12.2 / C=先扫再决定 17.2，A 与 C 输出 0 差异），不要再试。
+- `setBandsByThreshold` 剩下的是 `anchors[mid] >= v` 与 `lo = mid + 1`（二分本身）：同分批量已经把「重复值」这块吃掉，剩下的要靠「先桶后二分」才有新收益，风险是把档号语义挪出纯函数。

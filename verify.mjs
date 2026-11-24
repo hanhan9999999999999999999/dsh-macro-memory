@@ -11578,7 +11578,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       // [0.6.16] 覆盖度归一那句只剩逐条扫的退路（1 处，扫倒排那路走 `coverAcc` 的 `Math.min(1, coverAcc[di] / qIdfSum)`）；
       // 取幂与协调两步在两条路各一处，算式逐字相同（共 2 处）。
       countOf(eng179, 'coverOf[di] = Math.min(1, cover / qIdfSum);') === 1 &&
-        countOf(eng179, 'cvr = Math.pow(coverOf[di], COORD_POW);') === 2 &&
+        (countOf(eng179, 'cvr = Math.pow(coverOf[di], COORD_POW);') === 2 ||
+          countOf(eng179, 'cvr = COORD_POW_ONE ? coverOf[di] : Math.pow(coverOf[di], COORD_POW);') === 2) &&
         countOf(eng179, 'if (cvr > 0) s *= 1 - COORD_W + COORD_W * cvr;') === 2,
       '三步都在，各一处',
     )
@@ -13284,7 +13285,8 @@ dt063: {
     engSrc4.includes('const anchors = anchorChainOf(vals, plain);') &&
     engSrc4.includes('function anchorChainOf(vals, n) {') &&
     engSrc4.includes('function anchorChainSorted(vals, n) {') &&
-    engSrc4.includes('h._bandTmp = m - 1 - lo;')
+    // [0.6.28] 同分批量后赋值拆成两句：`lastBand = m - 1 - lo;` 与 `h._bandTmp = lastBand;`
+    (engSrc4.includes('h._bandTmp = m - 1 - lo;') || (engSrc4.includes('lastBand = m - 1 - lo;') && engSrc4.includes('h._bandTmp = lastBand;')))
   const fallOk = engSrc4.includes('function setBandsBySort(hits, rawKey)') &&
     engSrc4.includes('if (!setBandsByThreshold(hits, rawKey)) setBandsBySort(hits, rawKey);')
   check(
@@ -13412,7 +13414,8 @@ dt063: {
   // [0.6.16] 倒排条目从「下标数组」变成 `{ d, f, t }` 之后，覆盖度这趟改成先取 `const pd = p.d;`
   // 再按 `pd.length` 遍历——旧钉 `coverAcc[p[pi]] += w;` 已经不在了，改钉新形（两半都得在）。
   const accOk =
-    engSrc6.includes('const coverAcc = postings === null ? null : new Float64Array(docs.length);') &&
+    (engSrc6.includes('const coverAcc = postings === null ? null : new Float64Array(docs.length);') ||
+      engSrc6.includes('const coverAcc = postings === null ? null : scratch === null ? new Float64Array(docs.length) : scratch.coverAcc;')) &&
     engSrc6.includes('const buildCoverAcc = () => {') &&
     engSrc6.includes('const pd = p.d;') &&
     engSrc6.includes('for (let pi = 0; pi < pd.length; pi++) coverAcc[pd[pi]] += w;') &&
@@ -13572,7 +13575,10 @@ dt063: {
     engSrc8.includes('outHits[hi] = matHitOf(h, di);') &&
     engSrc8.includes('return outHits;')
   // keepBand 那条提前返回必须还在（searchHybrid 要拿 `_band` 融合），水化在它之后不许动手。
-  const keepOk = engSrc8.includes('if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);')
+  // [0.6.28] 这个出口前面多了一句 `hotScratchDone();`，返回语句本身没动。
+  const keepSlice = 'return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);'
+  const keepOk = engSrc8.includes('if (opts.keepBand === true) return hits.slice(0, Number.isFinite(k) && k > 0 ? Math.round(k) : hits.length);') ||
+    (engSrc8.includes('if (opts.keepBand === true) {') && engSrc8.includes(keepSlice) && engSrc8.includes('hotScratchDone();'))
   check(
     'OR077 引擎里命中对象先瘦后水化：扫描期只铺定档要用的六样加 _di，截断之后再按原键序水化；explain / keepBand 两条路仍走完整字面量',
     leanOk && leanFieldsOk && hydrateOk && keepOk,
@@ -13639,7 +13645,9 @@ dt063: {
   )
   const engSrc9 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
   const dedupeLine = 'if (candAt[di] === 0) { candAt[di] = 1; candList.push(di); }'
-  const candStart = engSrc9.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);')
+  const candStart = engSrc9.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);') >= 0
+    ? engSrc9.indexOf('const candAt = postings === null || verbOn ? null : new Uint8Array(docs.length);')
+    : engSrc9.indexOf('const candAt = postings === null || verbOn ? null : scratch === null ? new Uint8Array(docs.length) : scratch.candAt;')
   const candEnd = candStart < 0 ? -1 : engSrc9.indexOf('const scoreCandSet = () => {', candStart + 1)
   const candBody = candStart >= 0 && candEnd > candStart ? engSrc9.slice(candStart, candEnd) : ''
   const bitmapOk = candStart >= 0 && engSrc9.includes('const candList = candAt === null ? null : [];')
@@ -13710,7 +13718,8 @@ dt063: {
   const bBegin = ENGINE_B.indexOf('const RAWK_SHIFT = 16;')
   const bBodyStart = ENGINE_B.indexOf('function setBandsByThreshold(hits, rawKey) {')
   const bSeg = bBegin >= 0 && bBodyStart > bBegin ? ENGINE_B.slice(bBegin, bBodyStart) : ''
-  const bBodyEnd = ENGINE_B.indexOf('\n}', ENGINE_B.indexOf('h._bandTmp = m - 1 - lo;', bBodyStart))
+  const bBandAnchor = ENGINE_B.indexOf('h._bandTmp = m - 1 - lo;') >= 0 ? 'h._bandTmp = m - 1 - lo;' : 'h._bandTmp = lastBand;'
+  const bBodyEnd = ENGINE_B.indexOf('\n}', ENGINE_B.indexOf(bBandAnchor, bBodyStart))
   const bBody = bBodyStart >= 0 && bBodyEnd > bBodyStart ? ENGINE_B.slice(bBodyStart, bBodyEnd) : ''
   const parts = {
     桶常量: bSeg.includes('const RAWK_SHIFT = 16;') && bSeg.includes('const RAWK_NB = 1 << (32 - RAWK_SHIFT);'),
@@ -14725,6 +14734,58 @@ dt063: {
   const vS18 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS18 = vS18.length === 3 ? vS18[0] * 10000 + vS18[1] * 100 + vS18[2] : 0
   check('OR087 版本号不低于 0.6.27（后续补丁不必回头改这一条）', vNumS18 >= 627, vS18.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.28] OR088：热查的三笔固定开销 ═══════════════
+{
+  const readS28 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const stripS28 = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const engS28 = stripS28(readS28('./vendor/meow-memory/lib/index.js'))
+  const hotS28 = readS28('./tools/probe-hotpath.mjs')
+  const allS28 = readS28('./tools/check-all.mjs')
+  check('OR088 探针在位：probe-hotpath 有 H7–H10 四条，check-all 挂了它',
+    ['H7 ', 'H8 ', 'H9 ', 'H10 '].every((t) => hotS28.includes(t)) && allS28.includes('probe-hotpath'))
+  const powS28 = engS28.includes('const COORD_POW_ONE = COORD_POW === 1;')
+  const powSites28 = (engS28.match(/cvr = COORD_POW_ONE \? coverOf\[di\] : Math\.pow\(coverOf\[di\], COORD_POW\);/g) ?? []).length
+  const powBare28 = (engS28.match(/cvr = Math\.pow\(coverOf\[di\], COORD_POW\);/g) ?? []).length
+  const bandS28 = engS28.includes('let lastV = -1;') && engS28.includes('if (v === lastV) {') &&
+    engS28.includes('lastV = v;') && engS28.includes('lastBand = m - 1 - lo;')
+  const scratchS28 = engS28.includes('const HOT_SCRATCH = { busy: false,') && engS28.includes('if (s.busy) return null;') &&
+    engS28.includes('const scratch = hotScratchOf(docs.length);') &&
+    (engS28.match(/hotScratchDone\(\);/g) ?? []).length === 2 &&
+    (engS28.match(/scratch === null \?/g) ?? []).length === 6
+  check('OR088 引擎形状：覆盖度幂走恒等快路（两处三元、无裸求幂）、档号同分批量、临时缓冲按长度复用（六处取用、两个出口归还）',
+    powS28 && powSites28 === 2 && powBare28 === 0 && bandS28 && scratchS28,
+    `pow=${powSites28} 裸=${powBare28} band=${bandS28} scratch=${scratchS28}`)
+  const MvH = await import('./vendor/meow-memory/lib/index.js')
+  const NOWH = 1795470000000
+  const mkH = (id, level, content, importance = 2) => ({ id, level, title: 't', content, importance, updated_at: '2026-01-01T00:00:00Z', keywords: ['alpha'], project: 'p' })
+  const plainH = [mkH('0mzzzzzz', 'fact', 'alpha beta delta'), mkH('0mrrrrrr', 'rules', 'alpha 一律 必须先跑 alpha', 3), mkH('0mfffffff', 'fact', 'alpha 随便 看看 alpha', 1), mkH('0mvvvvvv', 'fact', 'alpha 必须 先 alpha', 4)]
+  const dfltH = JSON.stringify(MvH.search('alpha beta', plainH, { k: 5, explain: true, now: NOWH }))
+  const powOneH = JSON.stringify(MvH.search('alpha beta', plainH, { k: 5, coordPow: 1, explain: true, now: NOWH }))
+  const powTwoH = JSON.stringify(MvH.search('alpha beta', plainH, { k: 5, coordPow: 2, explain: true, now: NOWH }))
+  check('OR088 进程内：默认幂与显式 pow=1 逐位相同、与 pow=2 不同（快路与求幂同值，旋钮仍接着）',
+    dfltH === powOneH && dfltH !== powTwoH, `${dfltH.length} 字符`)
+  const qH = 'alpha beta'
+  const b1H = JSON.stringify(MvH.search(qH, plainH, { k: 5, explain: true, now: NOWH }))
+  const b2H = JSON.stringify(MvH.search(qH, plainH, { k: 5, explain: true, now: NOWH }))
+  MvH.search('0mzzzzzz', plainH, { k: 5, now: NOWH })
+  MvH.search(qH, plainH, { k: 5, coordPow: 2, now: NOWH })
+  MvH.search(qH, plainH, { k: 5, inverted: false, now: NOWH })
+  const b3H = JSON.stringify(MvH.search(qH, plainH, { k: 5, explain: true, now: NOWH }))
+  const bigH = plainH.concat([mkH('0mbig001', 'fact', 'alpha beta gamma'), mkH('0mbig002', 'fact', 'alpha delta')])
+  MvH.search(qH, bigH, { k: 5, explain: true, now: NOWH })
+  const b4H = JSON.stringify(MvH.search(qH, plainH, { k: 5, explain: true, now: NOWH }))
+  check('OR088 进程内：复用缓冲不残留——连跑、插别的问、插 pow=2 与 inverted=false、换语料长度再换回来，同问四份逐位相同',
+    b1H === b2H && b2H === b3H && b3H === b4H, `${b1H.length} 字符`)
+  check('OR088 文档在位：INTERNAL 9.227、README 写「一次幂运算」、DESIGN 有 ## 223.、PLAN 有 0.6.28',
+    readS28('./docs/INTERNAL.md').includes('## 9.227 ') &&
+      readS28('./README.md').includes('一次幂运算') &&
+      readS28('./DESIGN.md').includes('## 223. ') &&
+      /0\.6\.28/.test(readS28('./docs/PLAN-0.6.md')))
+  const vS28 = (readS28('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS28 = vS28.length === 3 ? vS28[0] * 10000 + vS28[1] * 100 + vS28[2] : 0
+  check('OR088 版本号不低于 0.6.28（后续补丁不必回头改这一条）', vNumS28 >= 628, vS28.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
