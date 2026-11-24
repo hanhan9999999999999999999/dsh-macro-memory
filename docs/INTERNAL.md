@@ -13834,4 +13834,20 @@ rawkTopPrev = top;
 
 **踩坑两条**：①**日志里的 `spent=268/∞` 不是数字**——`Number('268/∞')` 是 NaN，取 `split('/')[0]` 才拿得到已花字数，`/` 后半是上限（`∞` 或 `800`）；第一版直接把整串 `Number()`，面板上整片 NaN。②**摘要长度是一条会被自己踩的尺**：`PANEL_SUMMARY` 由表生成，每加一个面板就长一截，加了 `inject` 立刻从 193 涨到 221 被 `probe-words` 判红——正确修法是压 hint 文案而不是放宽 200 的尺；同时 `hygiene` 的括号里那九类被另一条断言当「类目清单」数着，压缩时不能碰它（第一版把它缩成六类，`手册：体检九类` 当场红）。
 
+### 9.246 0.6.47：注入闸门只判进门、不判出门
 
+**症状**：三道闸（floor / budget / repeat）看着齐了，可**只有进门那一下被人管**。`injectSessionBudget` 的判据是 `spent >= sessionBudget`——本轮整轮跳过；至于「这一轮打算注多少字」，一个字都没查。于是剩 100 字额度的回合照样把整条 1,000+ 字的注入灌进去，`injectMaxChars` 出厂 `0`（不限）时更是一点边都没有：「已花 / 上限」只是事后读数，用户辛苦调的旋钮形同摆设。同一处还有三个同族的沉默，症状都是**账本与事实分叉**：①预算把后面几条挤掉时，旧写法照样把 `kept` 全体写进 `seen`、照样 `bumpHit` ——被挤掉的条目下一轮再也不出现，`hit_count` 却当它被用过；②单次上限小到只剩骨架（`modes.length === 0`）时，旧写法照样注入「标题 + 一句边界句」，一条 id 都不记，下一轮同一批再算一遍，每轮白烧一次上下文；③同话题闸挡下后 `lastQueryTerms` / `lastTopScore` 一个字都不写（旧代码只在注入成功那轮写），下一轮仍拿「上一次成功注入那轮」的旧账来比，门槛永远够不着 → **话题不断就永远挡，整个会话从此静默**。
+
+**处方**（五处，前 four 在 `vendor/meow-memory/lib/index.js` 的 `buildHitInjection` 出口）：
+
+1. **出门那道闸**：`const rendered` 改 `let rendered`，`renderHitEntries` 之后加 `if (sessionBudget > 0 && rendered.text.length > sessionBudget - spent) { const remain = sessionBudget - spent; const clamped = renderHitEntries(kept, { ...o, injectMaxChars: remain }, userText); if (clamped.modes.length === 0) { logHitSkip(workspace, dir, 'budget', \` remain=${remain} spent=${spent} limit=${sessionBudget}\`); return null } rendered = clamped }`——本轮剩余额度就是本轮硬上限，夹一次；夹完装不下就整轮不注入（**额度顶穿了不许硬塞**）。
+2. **只标真渲染出来的那几条**：`const shown = kept.slice(0, rendered.modes.length)`，`markInjected(workspace, dir, shown.map((h) => h.id))`、`for (const h of shown) db.bumpHit(...)`（旧写法对 `kept` 全体记账）。
+3. **骨架不注入**：`if (kept.length > 0 && rendered.modes.length === 0) { logHitSkip(workspace, dir, 'budget', \` cap=… spent=… limit=…\`); return null }`——只有标题没有正文的注入对模型几乎无用，宁可这轮不注。
+4. **挡下也让账本前进**：`if (kept.length === 0)` 的 repeat 出口，在 `logHitSkip` 前 `try { const after = readSeenFile(workspace, dir, sessionId); after.lastQueryTerms = curTerms.slice(0, 60); after.lastTopScore = Number.isFinite(fresh[0]?.score) ? fresh[0].score : 0; writeSeenFile(workspace, dir, sessionId, after) } catch {}`——基准跟着候选水平走，下一轮才有机会过闸。
+5. **两处错账**：`lib/macro/injectledger.js` 的轮数按 `sid` + `|Δat| ≤ 2000ms` 把 `hit-skip` 与 `hit-chain` 配成同一轮（旧 `hits.length + skips.length` 把每轮两行各算一轮），`gated` / `repeated` 改成 hits 全行 + skips 的 `gated=` / `repeated=` 一起加（旧只在 `hit === 'yes'` 上 reduce，全被挡的会话显示 0），三行汇总移出 `injected.length > 0` 块；`lib/macro/neighbor.js` 的 `if (lines.join('\n').length + line.length + 1 > bodyCap) break` → `continue`。
+
+**读数**：`tools/probe-rhythm.mjs` 34 → **48 条**。R7 七条（长条目：`injectBodyMax: 0`、content 1,000+ 字）——不计预算 2,179 字 / 2 条（seed `spent = 400` 逐位不变）、budget **340 → 242 字 / 1 条**、被挤掉的 `lg000002` 既不在 `seen` 也没 `bump`、下轮 `injectRepeatSim: 0` 放开后回来、cap 600 + budget 4000 时 ≤ 600、cap 600 + budget 400 时 ≤ 400（两条上限取更小）；R8 六条——seed `lastTopScore: 9.0` 加 `PREV_TERMS`，repeat 挡下且 `seen.lastQueryTerms` 等于本轮 `injectTermsOf(Q_SAME).slice(0, 60)`、`lastTopScore` 落到 **4.21 < 9.0**，`injectMaxChars: 200` → `null` 且日志 `reason=budget .*cap=200`。`tools/probe-injectlog.mjs` 39 → **41 条**（I3.13 同 `sid` 两秒内 skip+chain 只算一轮 → `2 轮里有 0 轮注入、2 轮没注入`；I3.14 全挡会话 `闸门挡下的条目：2 条` + `同话题抑制：3 条`），`tools/probe-neighbor.mjs` 51/51。
+
+**判据**：规模 61 支 / 4,267 → **61 支 / 4,283 断言**；`injectSessionBudget: 0`（出厂值）加 `injectMaxChars: 0` 时逐位等于 0.6.46（R7「额度宽裕时逐位不变」钉住）；面板两处只是读数；邻域那处是 `break`→`continue`。
+
+**踩坑两条**：①**夹具里的 `injectBodyMax` 会替你戴帽子**——只要它是 240，正文早被压到 ≤240，怎么调额度都「顶不穿」，第一次跑出来 2,179 字和 340 档一模一样，差一点误判成「出门闸没生效」；验出门闸必须把 `injectBodyMax` 也设 0，让正文真长（2,179 字）才显出差额。②**「被挤掉的条目下轮能回来」会被同话题闸先挡住**——两条断言互相干扰，复现时必须 `injectRepeatSim: 0`，否则看到的是 repeat 出口而不是「它本来可以回来」。另：**PowerShell here-string 写 JS 会吞双引号**——`logHitSkip(workspace, dir, "budget", …)` 落盘成 `dir, budget,`，`node --check` 仍然通过（变成变量引用），得靠 `Select-String` 才抓得住；一律先 `write` 落 `.mjs` 再 `node` 执行。

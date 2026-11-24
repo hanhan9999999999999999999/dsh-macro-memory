@@ -105,11 +105,14 @@ const body = panel.body
   // 注入的四轮：268 + 512 + 100 + 300(.old) = 1180；平均 295；中位 sorted([100,268,300,512])[2] = 300
   ok('I3.1 字数合计/平均/中位/最省/最多', body.includes('合计 1,180 字') && body.includes('平均 295 字每轮') && body.includes('中位 300') && body.includes('最省 100') && body.includes('最多 512'),
     (body.match(/字数：[^\n]*/) ?? [''])[0])
-  ok('I3.2 出口轮数按两代日志合计', body.includes('9 轮里有 4 轮注入、5 轮挡下'), (body.match(/出口：[^\n]*/) ?? [''])[0])
+  ok('I3.2 出口轮数按两代日志合计', body.includes('9 轮里有 4 轮注入、5 轮没注入'), (body.match(/出口：[^\n]*/) ?? [''])[0])
   ok('I3.3 四类挡下各 1 轮，且用中文解释', body.includes('未命中（没有条目过搜索线）：1 轮') && body.includes('命中闸门（过搜索线但没过 floor）：1 轮') && body.includes('会话预算用尽：1 轮') && body.includes('同话题抑制（上轮已注入）：1 轮'), '四行'
   )
   ok('I3.4 不认识的 reason 也列出来', body.includes('- weird：1 轮'), '未知出口')
-  ok('I3.5 挡下条数与压条数真的汇总', body.includes('闸门挡下的条目：1 条') && body.includes('正文被压：2 条'), 'gated/bodyCut')
+  // 挡下的轮，gated 只写在 hit-skip 行上（floor 那行 gated=3）；旧算法只数 hit=yes 的行，
+  // 于是「闸最生效的时候面板显示 0」——这里要求两边一起加：1（成功轮）+ 3（floor 挡下那轮）。
+  ok('I3.5 挡下条数与压条数真的汇总（挡下轮的 gated 也计进来）', body.includes('闸门挡下的条目：4 条') && body.includes('正文被压：2 条'),
+    (body.match(/闸门挡下的条目：[^\n]*/) ?? [''])[0] + ' / ' + (body.match(/正文被压：[^\n]*/) ?? [''])[0])
   ok('I3.6 旧格式行数与「挡下计数不全」的说明', body.includes('另有 2 行是 0.6.43 及以前的旧格式') && body.includes('计数不全'),
     (body.match(/另有 \d+ 行是[^\n]*/) ?? [''])[0])
   ok('I3.7 两代日志都读了（含 .old）', body.includes('（含 1 份 .old）') && body.includes('9 行账'), (body.match(/日志：[^\n]*/) ?? [''])[0])
@@ -130,6 +133,24 @@ const body = panel.body
   const empty = L.readInjectPanel({ workspace: emptyWs, dir: '.dsh-meow' }).body
   ok('I3.12 日志在但没有账行 → 分开说（不是「空账本」）', empty.includes('一行注入账都没有') && empty.includes('日志在'), empty.slice(0, 40))
   rmSync(emptyWs, { recursive: true, force: true })
+
+  // 0.6.47：同一轮会写两行（hit-skip 说原因 + hit-chain 说结果），旧算法两行各算一轮。
+  const pairWs = join(root, '.probe-injectlog-pair')
+  rmSync(pairWs, { recursive: true, force: true })
+  mkdirSync(join(pairWs, '.dsh-meow'), { recursive: true })
+  writeFileSync(join(pairWs, '.dsh-meow', 'dream-debug.log'), [
+    '[2026-11-25T02:00:00.100Z] hit-skip reason=floor gated=2 floor=0.35 sid=p1',
+    '[2026-11-25T02:00:00.180Z] hit-chain pid=1 sid=p1 textLen=40 hit=null floor=0.35 gated=0 spent=0/∞',
+    '[2026-11-25T02:00:01.100Z] hit-skip reason=repeat repeated=3 sim=0.31 prevTop=1.2 sid=p1',
+    '[2026-11-25T02:00:01.160Z] hit-chain pid=1 sid=p1 textLen=40 hit=null floor=0.35 gated=0 spent=0/∞ repeated=0',
+  ].join('\n') + '\n', 'utf8')
+  const pairBody = L.readInjectPanel({ workspace: pairWs, dir: '.dsh-meow', limit: 0 }).body
+  ok('I3.13 同一轮的两行（hit-skip + hit-chain）只算一轮', pairBody.includes('2 轮里有 0 轮注入、2 轮没注入'),
+    (pairBody.match(/出口：[^\n]*/) ?? [''])[0])
+  ok('I3.14 全被挡下的会话里，挡下条数 / 同话题抑制仍然看得见（不是 0）',
+    pairBody.includes('闸门挡下的条目：2 条') && pairBody.includes('同话题抑制：3 条'),
+    pairBody.split('\n').filter((l) => l.includes(' 条')).join(' | '))
+  rmSync(pairWs, { recursive: true, force: true })
 }
 
 // ── I4 闸门读数来自 config，不是面板写死 ─────────────────────────────────────

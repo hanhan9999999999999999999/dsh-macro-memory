@@ -6664,14 +6664,52 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     }
   }
   if (kept.length === 0) {
+    // [macro-fusion 0.6.47] 闸挡下也要让账本往前走：旧写法只在「注入成功」时写
+    // lastQueryTerms / lastTopScore，于是同话题一旦被挡，下一轮仍拿「上一次成功注入那一轮」
+    // 的词面与最高分来比——门槛永远是那个 prevTop×1.3，话题不断就永远挡，整个会话从此静默
+    // 不再注入，日志每轮一行 reason=repeat，看着像闸在正常工作。
+    // 这里把「这一轮最好的候选」记成下一轮的基准：门槛跟着候选水平走，真出现更贴题的仍能进来。
+    try {
+      const after = readSeenFile(workspace, sessionId, dir);
+      after.lastQueryTerms = curTerms.slice(0, 60);
+      after.lastTopScore = Number.isFinite(fresh[0]?.score) ? fresh[0].score : 0;
+      writeSeenFile(workspace, sessionId, after, dir);
+    } catch {
+    }
     logHitSkip(workspace, dir, "repeat", ` repeated=${repeated} sim=${sim} prevTop=${seen.lastTopScore}`);
     return null;
   }
-  const rendered = renderHitEntries(kept, o, userText);
+  let rendered = renderHitEntries(kept, o, userText);
+  // [macro-fusion 0.6.47] 骨架路径（单次上限小到连一条「像样的正文」都排不下）不再注入：
+  // 只灌一行标题加一句边界句，等于每轮白烧一次上下文；而且那条路上 modes 是空数组，
+  // 一条 id 都不会被记成「已注入」，下一轮把同一批再算一遍。跟「额度花光」同一个出口，
+  // 日志带 cap / spent / limit，看得清是哪一道上限卡住的。
+  if (kept.length > 0 && rendered.modes.length === 0) {
+    logHitSkip(workspace, dir, "budget", ` cap=${Number.isFinite(o.injectMaxChars) ? o.injectMaxChars : 0} spent=${spent} limit=${sessionBudget}`);
+    return null;
+  }
+  // [macro-fusion 0.6.47] 闸①过去只判「进门」不判「出门」：预算没花完、但只剩一点点的
+  // 那个回合仍会把整条注入照灌（injectMaxChars 默认 0 时连边都没有），一轮就能把上限顶穿
+  // 好几倍——「已花/上限」于是只是事后读数，用户调的旋钮等于摆设。这里补上出门那道：
+  // 本轮剩余额度就是本轮的硬上限，夹过之后连一条「像样的正文」都排不下，就整轮不注入
+  // （与「已经到顶」同一个出口，日志同样记 reason=budget，多带一个 remain）。
+  if (sessionBudget > 0 && rendered.text.length > sessionBudget - spent) {
+    const remain = sessionBudget - spent;
+    const clamped = renderHitEntries(kept, { ...o, injectMaxChars: remain }, userText);
+    if (clamped.modes.length === 0) {
+      logHitSkip(workspace, dir, "budget", ` remain=${remain} spent=${spent} limit=${sessionBudget}`);
+      return null;
+    }
+    rendered = clamped;
+  }
   const text = rendered.text;
-  const ids = kept.map((h) => h.id);
+  // [macro-fusion 0.6.47] 只标「真渲染出来的那几条」：预算把后面几条挤掉时（dropped>0），
+  // 旧写法照样把它们写进 seen、还照样 bumpHit——被挤掉的条目下一轮再也不出现，hit_count
+  // 却当它被用过，等于「悄悄消失」。modes 是一条一格的，长度正好等于真渲染出来的条数。
+  const shown = kept.slice(0, rendered.modes.length);
+  const ids = shown.map((h) => h.id);
   markInjected(workspace, sessionId, ids, dir);
-  for (const h of kept) db.bumpHit(h.level, h.id);
+  for (const h of shown) db.bumpHit(h.level, h.id);
   // 记账：累计字数 + 这一轮的词面与最高分（下一轮判同话题用）。
   // 写盘失败不影响这一轮的注入——账少了只等于「下一轮判不准」，不该挡内容。
   try {

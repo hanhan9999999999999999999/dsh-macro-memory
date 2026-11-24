@@ -135,13 +135,22 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
 
   const sid2 = 'sess-r2-under'
   seed(sid2, { injectChars: 400 })
-  const under = run(Q_SAME, { ...baseOpts, injectSessionBudget: 500 }, sid2)
+  const under = run(Q_SAME, { ...baseOpts, injectSessionBudget: 2000 }, sid2)
   const after = readSeen(sid2)
   ok('R2 预算还没花完 → 注入，并把「已花多少 / 上限多少」带在读数里',
-    under !== null && under.budget.spent === 400 + under.text.length && under.budget.sessionBudget === 500,
+    under !== null && under.budget.spent === 400 + under.text.length && under.budget.sessionBudget === 2000,
     under === null ? 'null' : `spent=${under.budget.spent}`)
   ok('R2 累计字数真的落进会话文件（下一轮接着算，不是每次从头）',
     after !== null && after.injectChars === 400 + under.text.length, `文件里 ${after?.injectChars}`)
+  // [0.6.47] 「门槛只判进门不判出门」的回归：剩 100 字装不下一条像样的正文 →
+  // 不是硬灌一条 300 字的，也不是灌个骨架，而是整轮不注入，并在日志里说清剩多少。
+  const sid3 = 'sess-r2-remain'
+  seed(sid3, { injectChars: 400 })
+  const tight = run(Q_SAME, { ...baseOpts, injectSessionBudget: 500 }, sid3)
+  ok('R2 剩余额度装不下一条正文 → 整轮不注入（不灌骨架、不顶穿上限）', tight === null, String(tight))
+  const logText = readFileSync(join(wsRoot, '.dsh-meow', 'dream-debug.log'), 'utf8')
+  ok('R2 这种挡法在日志里自述 remain（和「已经到顶」同一个出口）',
+    /hit-skip reason=budget .*remain=100 /.test(logText), logText.split('\n').filter((l) => l.includes('reason=budget')).pop() ?? '没有 budget 行')
 }
 
 // ── R3 闸②：同话题延续 ────────────────────────────────────────────────────
@@ -254,6 +263,84 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
   const siblings = readdirSync(join(wsRoot, '.dsh-meow')).filter((f) => f.startsWith('dream-debug.log.'))
   ok('R6 第二次轮转覆盖上一代（只留两代，不攒 .old.1 / .old.2）',
     oldSize2 > 2 * 1024 * 1024 && siblings.length === 1, `${oldSize2} B / ${siblings.join('|')}`)
+}
+
+// ── R7 出门那道闸：剩余额度就是本轮硬上限（0.6.47）────────────────────────
+// 病根：闸①只在开头判「花光了没有」，于是「还剩一点」的那一轮会把整条注入照灌，
+// injectMaxChars 默认 0 时连边都没有——一轮就能把上限顶穿好几倍，用户调的旋钮等于摆设。
+{
+  const filler = '细节'.repeat(500)
+  const longRow = (id, kws) => ({
+    id, level: 'topic', title: null, content: `${kws.join(' ')}。${filler}`, keywords: kws, importance: 3,
+    status: 'active', source_session: 'other-session', project: '全局',
+    created_at: NOW - 86400000, updated_at: NOW - 3600000, last_accessed_at: null,
+  })
+  const LONG = [longRow('lg000001', ['星图邻域', '强度下限', '门槛']), longRow('lg000002', ['星图邻域', '邻居条数', '每轮几条'])]
+  let bumpedLong = []
+  const longDb = () => ({
+    list: (level) => LONG.filter((r) => r.level === level),
+    bumpHit: (level, id) => { bumpedLong.push(id) },
+    isFresh: () => false,
+    idsBySession: () => [],
+    findById: (id) => ({ row: LONG.find((r) => r.id === id) }),
+  })
+  const base = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 0 }
+
+  const free = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-free', Q_SAME, base, '.dsh-meow')
+  ok('R7 不计预算、不限单条时两条长条目整条进来（这是对照：正文真长，会顶穿小额度）',
+    free !== null && free.injectedIds.length === 2 && free.text.length > 1800, free === null ? 'null' : `${free.text.length} 字 / ${free.injectedIds.length} 条`)
+
+  const wide = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-wide', Q_SAME, { ...base, injectSessionBudget: 3000 }, '.dsh-meow')
+  ok('R7 额度宽裕时逐位不变（没触发夹的动作，不许自己改输出）',
+    wide !== null && wide.text === free.text, wide === null ? 'null' : `${wide.text.length} vs ${free.text.length}`)
+
+  bumpedLong = []
+  const tight = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-tight', Q_SAME, { ...base, injectSessionBudget: 340 }, '.dsh-meow')
+  const seenTight = readSeen('sess-r7-tight')
+  ok('R7 额度只剩 340 → 本轮注入不超过 340 字（旧写法会把两条 1000+ 全灌进来）',
+    tight !== null && tight.text.length <= 340 && tight.text.length < free.text.length,
+    tight === null ? 'null' : `${tight.text.length} 字（不计预算 ${free.text.length}）`)
+  ok('R7 被挤掉的那条不许标成「已注入」（否则它下一轮再也不出现）',
+    tight !== null && tight.injectedIds.length === 1 && seenTight !== null &&
+      seenTight.injected.length === 1 && bumpedLong.length === 1,
+    tight === null ? 'null' : `ids=${tight.injectedIds.join(',')} seen=${seenTight?.injected.join(',')} bumped=${bumpedLong.join(',')}`)
+  // 关掉「同话题延续」再看一次：上一轮真有同话题闸也会把它挡住，这里只验 seen 账。
+  const back = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-tight', Q_SAME, { ...base, injectRepeatSim: 0 }, '.dsh-meow')
+  ok('R7 下一轮把额度放开 → 上一轮被挤掉的那条还在候选里，照常进来',
+    back !== null && back.injectedIds.includes('lg000002'), back === null ? 'null' : back.injectedIds.join(','))
+
+  const capOnly = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-cap1', Q_SAME, { ...base, injectMaxChars: 600, injectSessionBudget: 4000 }, '.dsh-meow')
+  ok('R7 单次上限 600、剩余额度 4000 → 按 600 走（更紧的那个说了算）',
+    capOnly !== null && capOnly.text.length <= 600, capOnly === null ? 'null' : `${capOnly.text.length} 字`)
+  const budOnly = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-cap2', Q_SAME, { ...base, injectMaxChars: 600, injectSessionBudget: 400 }, '.dsh-meow')
+  ok('R7 单次上限 600、剩余额度 400 → 按 400 走（额度更紧时额度说话）',
+    budOnly !== null && budOnly.text.length <= 400, budOnly === null ? 'null' : `${budOnly.text.length} 字`)
+}
+
+// ── R8 挡下也要让账本前进 / 骨架不许注入（0.6.47）──────────────────────────
+{
+  // 病根一：lastQueryTerms / lastTopScore 只在注入成功时写 → 同话题一旦被挡，
+  // 下一轮仍拿「上一次成功那一轮」的旧账来比，门槛永远够不着，整个会话从此静默。
+  const sid = 'sess-r8-repeat'
+  seed(sid, { lastQueryTerms: PREV_TERMS, lastTopScore: 9.0, injectChars: 300 })
+  const blocked = run(Q_SAME, baseOpts, sid)
+  const seen = readSeen(sid)
+  const sameTerms = V.injectTermsOf(Q_SAME).slice(0, 60)
+  ok('R8 同话题被挡下 → 仍然整轮不注入（闸的结论不变）', blocked === null, String(blocked))
+  ok('R8 被挡时把本轮词面写回账本（下一轮比「上一轮」，不是比「上一次成功那轮」）',
+    seen !== null && Array.isArray(seen.lastQueryTerms) && seen.lastQueryTerms.join() === sameTerms.join(),
+    seen === null ? '没文件' : `${seen.lastQueryTerms.length} 条`)
+  ok('R8 被挡时把「本轮最好的候选」记成下一轮基准（门槛跟着候选水平走，不被旧高位钉死）',
+    seen !== null && Number.isFinite(seen.lastTopScore) && seen.lastTopScore > 0 && seen.lastTopScore < 9.0,
+    `lastTopScore=${seen?.lastTopScore}`)
+
+  // 病根二：单次上限小到只剩骨架时，旧写法照样把「标题 + 边界句」灌进去，却一条 id 都不记，
+  // 下一轮同一批再算一遍。现在改成整轮不注入，日志里说清是哪一道上限卡住的。
+  const tiny = run(Q_SAME, { ...baseOpts, injectMaxChars: 200 }, 'sess-r8-tiny')
+  ok('R8 上限小到只剩骨架 → 整轮不注入（不灌一行没有正文的标题）', tiny === null, String(tiny))
+  const logText = readFileSync(join(wsRoot, '.dsh-meow', 'dream-debug.log'), 'utf8')
+  ok('R8 骨架挡法在日志里带 cap（与「会话额度花光」同一个出口，但看得清是哪一道）',
+    /hit-skip reason=budget .*cap=200 /.test(logText), logText.split('\n').filter((l) => l.includes('cap=200')).pop() ?? '没有 cap 行')
 }
 
 rmSync(wsRoot, { recursive: true, force: true })
