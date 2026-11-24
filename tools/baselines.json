@@ -1,9 +1,9 @@
 {
   "note": "断言数与耗时基线：counts=每支自检脚本的 PASS 条数，ms=上次实测耗时，budgetMs=超时就杀的上限（约 4×ms，最低 30s），实际耗时超过 ms 的 1.5 倍只提醒不判红。故意增减断言、或确认某支本来就该这么慢之后，跑 node tools/check-all.mjs --update-baselines 重记。",
   "generatedBy": "tools/check-all.mjs --update-baselines",
-  "version": "0.6.35",
+  "version": "0.6.37",
   "counts": {
-    "verify.mjs": 2016,
+    "verify.mjs": 2027,
     "tools/probe-fusion.mjs": 785,
     "tools/probe-graph.mjs": 65,
     "tools/probe-host.mjs": 26,
@@ -33,7 +33,7 @@
     "tools/probe-supersede.mjs": 15,
     "tools/probe-entity.mjs": 31,
     "tools/probe-cooc.mjs": 28,
-    "tools/probe-adapt.mjs": 12,
+    "tools/probe-adapt.mjs": 14,
     "tools/probe-idf.mjs": 14,
     "tools/probe-empty.mjs": 14,
     "tools/probe-determinism.mjs": 9,
@@ -53,7 +53,9 @@
     "tools/probe-sigrow.mjs": 6,
     "tools/probe-lex.mjs": 6,
     "tools/probe-cold.mjs": 10,
-    "tools/probe-docid.mjs": 8
+    "tools/probe-docid.mjs": 8,
+    "tools/probe-sigseal.mjs": 7,
+    "tools/probe-terms.mjs": 16
   },
   "ms": {
     "verify.mjs": 7084,
@@ -106,7 +108,9 @@
     "tools/probe-sigrow.mjs": 117,
     "tools/probe-lex.mjs": 308,
     "tools/probe-cold.mjs": 122,
-    "tools/probe-docid.mjs": 2732
+    "tools/probe-docid.mjs": 2732,
+    "tools/probe-sigseal.mjs": 689,
+    "tools/probe-terms.mjs": 182
   },
   "budgetMs": {
     "verify.mjs": 30000,
@@ -159,6 +163,8 @@
     "tools/probe-sigrow.mjs": 30000,
     "tools/probe-lex.mjs": 30000,
     "tools/probe-cold.mjs": 30000,
-    "tools/probe-docid.mjs": 30000
+    "tools/probe-docid.mjs": 30000,
+    "tools/probe-sigseal.mjs": 30000,
+    "tools/probe-terms.mjs": 30000
   }
 }
