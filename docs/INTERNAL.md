@@ -13701,3 +13701,25 @@ rawkTopPrev = top;
 **断言**：新探针 `tools/probe-decl.mjs`（D1 形状 / D2 平权落差 / D3 折扣 / D4 让位 / D5 唯一来路 / D6 不参与排序 / D7 门控与锚点 / D8 回旧口径，共 **23 条**）；`probe-adapt` A2 改成五档阶梯（关对照桥管 h1、关扩词管 h3、关单字桥只丢 h3、关共现允许不掉）；`probe-hotpath` H11 收成「表 + 可选声明系数」并新增 H11b（系数是「有才对」）；`probe-gold` G21 两臂都按住对照桥与单字桥（「现在主线推进到哪一版」从榜外进第 5 是对照层的账，不是同义层的）。规模 **55 支 / 4,038 条 → 56 支 / 4,066 条**。
 
 **踩坑三条**：①`searchIndexOf` 的索引缓存键是 `__sig + __opts`，**不含 `charBridge`**——用 `{charBridge:false}` 量「关桥」会复用已建好的索引，拿到「关了还 0/14」这种假读数；量开关一律走打分侧 `charBridgeW: 0`。②给引擎打补丁别用 pwsh here-string（反引号会被 PowerShell 吃掉，报 `Expected ',', got 'ident'`，而且 `node --check` 检查的可能是没改成功的文件）——一律先 `write` 到 `E:\Temp\cmp\*.cjs` 再 `node` 跑；补丁模板里的中文注释也不许含反引号。③改引擎先改装机树（`D:\dsh-home\vendor\dsh-macro-memory\`），改完立刻 `Copy-Item` 到阅读树（探针从这里 import），否则跑出来是旧引擎的读数——这一轮白跑过一次。
+
+### 9.239 0.6.40：命中闸门
+
+**症状**：记忆每轮都在注入，注入量只有一个 `hitTopK`（条数，默认 2）管着，**分数没有下限**。真库实测（本工作区活库 `D:\document\DSH Memory Macro-Regulation System\.dsh-meow\memory.db`，824 条 active）取 13 条纯操作问句（跑一下测试 / 帮我看看这个文件 / 继续 / 现在进度到哪了 / 重启一下 / 改个参数 …）走 0.6.39 的 `preStepInject`：**11 / 13 轮**都注入了内容、合计 **9,049 字**，其中绝大部分跟当前任务无关。留下的两条正当命中是「提交并推送」「把 README 里的数字改一下」。
+
+**病根**：`hitQuery` 只有两道筛选（排除本会话写入的 `source_session`、排除 `seenState.injected` 已注入的），剩下交给 `keywordHitScore(query, docs, { k: o.hitTopK })`——`bandize` 之后 `slice(0, k)` 直接返回，**一分下限都没有**。只要共享一个碎片，就进注入。库小的时候这条设计是对的（宁可多给），库到 824 条之后噪声的绝对量就不可忽略了；而**分数量级本身跨得很开**（自命中 top1 中位数 16.7、杂问句天花板 0.42），缺的不是信息，是一个「到哪里算够」的判据。
+
+**处方（`injectFloor`，默认 0.45，0 = 关）**：
+
+1. `CONFIG_DEFAULTS` 加 `injectFloor: 0.45,`（**必须字面数字**：该对象在模块求值时先于 `var INJECT_FLOOR_DEF = 0.45;`，写常量名会拿到 `undefined`，闸门静默失效且探针只显示「没挡」）。`DEFAULT_OPTS` 写 `injectFloor: INJECT_FLOOR_DEF`。
+2. `hitQuery` 返回对象多带 `score: h.score`（`renderHitEntries` 只读 id/level/content/project/updated_at，多带不改变输出）。
+3. `buildHitInjection` 先过闸再记账：`const floor = Number.isFinite(o.injectFloor) ? Math.max(0, o.injectFloor) : INJECT_FLOOR_DEF;` → `const kept = floor > 0 ? fresh.filter((h) => !(Number.isFinite(h.score) && h.score < floor)) : fresh;` → `const gated = fresh.length - kept.length;` → `if (kept.length === 0) return null;`；`renderHitEntries` / `markInjected` / `bumpHit` **全部只对 `kept`**（第一版把 `markInjected` 写在过滤前，被挡条目进了 seen 就再也回不来）。回执多 `gated` 与 `budget.floor`/`budget.gated`。
+4. 配置面六处：zod schema `injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF)`、`reqNum("injectFloor")`、`resolveConfig` 落成非负小数、`LIVE_CONFIG_KEYS` 加 `"injectFloor"`、pre-step 透传 `injectFloor: resolved.injectFloor`（只加在 `buildHitInjection` 那处）、`hit-chain` 日志行加 `floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0}`。
+5. 坏值两种待遇：非数字（`NaN` / 字符串 / `null`）→ 回默认 0.45（不许把「配置读坏了」变成「闸门悄悄关了」）；数字但为负 → `Math.max(0, …)` 夹成 0 = 显式关闸。
+
+**0.45 的标定**：真库 824 条做自命中（每条拿自己前 3 个关键词当问句），top1 分数分位 p1/p5/p10/p25/p50/p75/p90 = **2.046 / 4.601 / 6.017 / 10.248 / 16.747 / 26.23 / 38.515**；0.45 保住 **823/824 = 99.9%**（0.8 也只到 822/824）。反向 12 条杂问句最高 **0.42**，0.45 下全部 0 条过闸。→ 0.42–2.0 是一条空带，0.45 贴空带下沿：闸门的错误方向宁可「少挡」。
+
+**读数**（`E:\Temp\cmp\t40live.mjs`，真库 824 条造 stub db、project 全设 `全局` 取最坏情况）：A 组 9 条记忆相关问句——开 **9/9 轮**、**8,747 → 6,873 字（省 21.4%，挡 5 条尾巴）**；B 组 13 条操作问句——关 11/13 轮 / 9,049 字，开 **2/13 轮 / 1,668 字（省 81.6%）**。`injectFloor: 0` 时正文与 `renderHitEntries(fresh)` **逐字相同**（204 vs 204 B）。`probe-cost` 两份冻结快照不受影响（闸门不碰检索打分）。
+
+**断言**：新探针 `tools/probe-floor.mjs`（F1 形状十条 / F2 默认线下强命中照旧·弱命中被挡·无关问句 `null` / F3 关闸逐字回旧 / F4 被挡条目不进 seen 也不加 `hit_count` 且下一轮还能来 / F5 门槛 0·0.45·1.5 单调且 0.05 能让弱命中进 / F6 坏值两种待遇），共 **30 条**。规模 **56 支 / 4,066 → 57 支 / 4,096 条**。
+
+**踩坑三条**：①`CONFIG_DEFAULTS` 的字面 0.45 与 `INJECT_FLOOR_DEF` 的求值顺序（见处方 1）——写常量名不会报错，只会「没挡」。②`hitQuery` 原来把分数丢掉了，闸门要读分必须多带 `score`；少带这个字段闸门只能全放行，而全部放行的表现和「关闸」一模一样，靠读数分不出来（得靠 F2 的 `gated === 1`）。③「关闸逐字回旧」必须拿 `renderHitEntries` 的**原始输出**对拍（`len 204 vs 204`），只比条数不够——条数相同、顺序变了也是回退没做干净。

@@ -1260,6 +1260,9 @@ var CONFIG_DEFAULTS = {
   hitTopK: 2,
   titleMax: 40,
   injectMaxChars: 0,
+  // [macro-fusion 0.6.40] 命中闸门：低于此分的命中不注入（0 = 关，逐位等同旧行为）。
+  // 这里写死 0.45 而不是引 INJECT_FLOOR_DEF：本对象在模块求值时先于那一行执行。
+  injectFloor: 0.45,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -5645,7 +5648,12 @@ function topicDrift(turnText, topics) {
 }
 
 // src/inject.ts
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0 };
+// [macro-fusion 0.6.40] 命中闸门的默认分线。0.45 是实测出来的，不是拍的：
+// 真库 824 条 active 条目自命中（每条拿自己前 3 个关键词当问句）分数 p1 = 2.046，
+// 0.45 这条线保住 823/824 = 99.9%；12 条纯操作问句（跑一下测试 / 继续 / 帮我看看这个文件 …）
+// 的最高分是 0.42，全部被挡在门外。设 0 就是关闸，逐位回到 0.6.39 的「有命中就注入」。
+var INJECT_FLOOR_DEF = 0.45;
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -6389,19 +6397,32 @@ function hitQuery(db, workspace, sessionId, userText, o, dir) {
   const byId = new Map(hitRows.map((r) => [r.id, r]));
   return hits.map((h) => {
     const row = byId.get(h.id);
-    return { id: h.id, level: h.level, content: row?.content ?? h.content, project: row?.project ?? null, updated_at: row?.updated_at ?? null };
+    // [macro-fusion 0.6.40] 把分数一起带出来：闸门要在这一条上量，渲染器不看它
+    // （renderHitEntries 只读 id/level/content/project/updated_at，多带一个字段不改变输出）。
+    return { id: h.id, level: h.level, content: row?.content ?? h.content, project: row?.project ?? null, updated_at: row?.updated_at ?? null, score: h.score };
   });
 }
 function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = ".dsh-meow") {
   const o = { ...DEFAULT_OPTS, ...opts };
   const fresh = hitQuery(db, workspace, sessionId, userText, o, dir);
   if (fresh.length === 0) return null;
-  const rendered = renderHitEntries(fresh, o, userText);
+  // [macro-fusion 0.6.40] 命中闸门：分数不到 injectFloor 的命中不注入。
+  // 病根是「有命中就注入」——keywordHitScore 没有任何下限，于是「跑一下测试」「继续」
+  // 这类问句也会把 0.30~0.42 分的条目正文搬进上下文，每条被注入的正文还会留在
+  // 历史里每轮重新计费。闸门只拦注入，不拦检索：被挡的条目仍是 memory_search 的候选，
+  // 模型要它可以自己搜——这就是「省 token 不削能力」。
+  // 被挡的条目不当成「已注入」（不写 seen、不加 hit_count）：下一轮问句真问到它时还能进来。
+  // 坏值的两种待遇见 resolveConfig 的注释：非数字回默认 0.45，负数夹成 0（显式关闸）。
+  const floor = Number.isFinite(o.injectFloor) ? Math.max(0, o.injectFloor) : INJECT_FLOOR_DEF;
+  const kept = floor > 0 ? fresh.filter((h) => !(Number.isFinite(h.score) && h.score < floor)) : fresh;
+  const gated = fresh.length - kept.length;
+  if (kept.length === 0) return null;
+  const rendered = renderHitEntries(kept, o, userText);
   const text = rendered.text;
-  const ids = fresh.map((h) => h.id);
+  const ids = kept.map((h) => h.id);
   markInjected(workspace, sessionId, ids, dir);
-  for (const h of fresh) db.bumpHit(h.level, h.id);
-  return { text, injectedIds: ids, budget: { cap: o.injectMaxChars ?? 0, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped } };
+  for (const h of kept) db.bumpHit(h.level, h.id);
+  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped } };
 }
 
 // src/tools.ts
@@ -10338,6 +10359,12 @@ var config = z.object({
    *  （[项目 : level] [id] 时间）一条不丢，模型仍可 memory_read(id) 取全文。
    *  压缩会在尾巴上自述压了几条、砍了几条——不许静默变短。 */
   injectMaxChars: z.number().min(0).default(0),
+  /** [macro-fusion 0.6.40] 命中闸门：命中分数低于此值就不注入（0 = 关）。
+   *  0.45 是实测线：真库 824 条自命中 p1=2.05，0.45 保住 99.9% 的真命中；
+   *  纯操作问句（跑一下测试 / 继续 / 帮我看看这个文件）最高 0.42，全被挡掉。
+   *  只拦注入不拦检索——被挡的条目照样能 memory_search 到。
+   *  想看清省了什么：闸门挡了几条写在 dream-debug.log 的 hit-chain 行的 gated=。 */
+  injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
@@ -10410,6 +10437,7 @@ function validateConfigUserLayer(value) {
   reqNum("hitTopK");
   reqNum("titleMax");
   reqNum("injectMaxChars");
+  reqNum("injectFloor");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -10492,6 +10520,10 @@ function resolveConfig(config2) {
     hitTopK: c.hitTopK ?? 2,
     titleMax: c.titleMax ?? 40,
     injectMaxChars: Number.isFinite(c.injectMaxChars) ? Math.max(0, Math.floor(c.injectMaxChars)) : 0,
+    // [macro-fusion 0.6.40] 闸门是小数线，不能取整。写坏分两种待遇，都在文档里写明：
+    // 非数字（字符串 / NaN / null）→ 回默认 0.45（「配置读坏了」不许变成「闸门悄悄关了」）；
+    // 数字但为负 → 夹到 0 = 显式关闸（负数在语义上只能是「不要闸门」，没别的意思）。
+    injectFloor: Number.isFinite(c.injectFloor) ? Math.max(0, c.injectFloor) : INJECT_FLOOR_DEF,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -10649,7 +10681,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -11280,10 +11312,11 @@ ${e.stack ?? ""}` : String(e)}
         const hit = buildHitInjection(db, ws, sid, text, {
           hitTopK: resolved.hitTopK,
           titleMax: resolved.titleMax,
-          injectMaxChars: resolved.injectMaxChars
+          injectMaxChars: resolved.injectMaxChars,
+          injectFloor: resolved.injectFloor
         }, resolved.projectDir);
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"}
+          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0}
 `);
         } catch {
         }
