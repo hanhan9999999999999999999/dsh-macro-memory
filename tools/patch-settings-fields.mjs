@@ -32,6 +32,8 @@ export const NEW_FIELDS = [
   // 0.6.44：注入节奏两个旋钮——「一次会话一共允许多少字」与「同话题延续怎么判」。
   { key: 'injectSessionBudget', type: 'num', group: 'inject' },
   { key: 'injectRepeatSim', type: 'num', group: 'inject' },
+  // 0.6.49：本会话给过的条目隔多少轮又能重新进候选。
+  { key: 'injectReinjectTurns', type: 'num', group: 'inject' },
   { key: 'neighborInject', type: 'bool', group: 'neighbor' },
   { key: 'neighborMax', type: 'num', group: 'neighbor' },
   { key: 'neighborChars', type: 'num', group: 'neighbor' },
@@ -61,6 +63,11 @@ const TEXT = {
     [
       'settings.field.injectRepeatSim.hint',
       'When this turn’s wording overlaps the previous injection’s question this much (0–1; 1 = off, default 0.25), only hits clearly more relevant than last turn’s best are injected — follow-ups stop re-reading the same neighbourhood.',
+    ],
+    ['settings.field.injectReinjectTurns.label', 'Re-offer after turns'],
+    [
+      'settings.field.injectReinjectTurns.hint',
+      'Entries already given in this session stay out of the candidates for this many turns (0 = never re-offer). Past that, a memory you were shown earlier can come back when it is again the best match — long sessions where the topic returns stop coming up empty. Default 12.',
     ],
     ['settings.field.neighborInject.label', 'Inject graph neighbourhood'],    [
       'settings.field.neighborInject.hint',
@@ -101,6 +108,11 @@ const TEXT = {
       'settings.field.injectRepeatSim.hint',
       '这一轮的问句与上一次注入时的问句重合到这个程度（0–1，1＝关，默认 0.25），就只注入比上一轮最好那条明显更相关的条目——追问不再重复看同一批邻居。',
     ],
+    ['settings.field.injectReinjectTurns.label', '会话内重新进候选'],
+    [
+      'settings.field.injectReinjectTurns.hint',
+      '本会话已经给过的条目，隔多少轮之后可以重新进候选（0＝永不放回，默认 12）。超过这个轮数，以前给过的条目如果又是最贴问的，会再给一遍——长会话里话题绕回来时不至于空着；旧条目本来就在上下文里，多给一遍只是多花字，不给是直接丢能力。',
+    ],
     ['settings.field.neighborInject.label', '每轮带星图邻域'],
     [
       'settings.field.neighborInject.hint',
@@ -138,6 +150,11 @@ const TEXT = {
       'settings.field.injectRepeatSim.hint',
       'Quando a frase deste turno se sobrepõe à pergunta da injeção anterior neste grau (0–1; 1 = desligado, padrão 0,25), só entram acertos claramente mais relevantes que o melhor do turno anterior.',
     ],
+    ['settings.field.injectReinjectTurns.label', 'Reoferecer após turnos'],
+    [
+      'settings.field.injectReinjectTurns.hint',
+      'Entradas já dadas nesta sessão ficam fora dos candidatos por este número de turnos (0 = nunca reoferecer, padrão 12). Passado isso, uma memória mostrada antes volta quando é de novo a mais relevante — sessões longas em que o assunto retorna deixam de ficar vazias.',
+    ],
     ['settings.field.neighborInject.label', 'Injetar vizinhança do grafo'],
     [
       'settings.field.neighborInject.hint',
@@ -165,6 +182,8 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
   /** 0.6.44：注入节奏两个旋钮的出厂值＝引擎默认（0＝会话累计不限；0.25＝同话题抑制生效）。 */
   injectSessionBudget: 0,
   injectRepeatSim: 0.25,
+  /** 0.6.49：本会话给过的条目隔 12 轮又能重新进候选（＝引擎默认 INJECT_REINJECT_TURNS_DEF）。 */
+  injectReinjectTurns: 12,
   /** 0.6.42：星图邻域四个旋钮的出厂值＝融合层默认（lib/macro/neighbor.js）。 */
   neighborInject: true,
   neighborMax: 4,
@@ -175,7 +194,8 @@ const FIELDS_BLOCK = `,
       { key: "injectFloor", label: "settings.field.injectFloor.label", type: "num", hint: "settings.field.injectFloor.hint" },
       { key: "injectBodyMax", label: "settings.field.injectBodyMax.label", type: "num", hint: "settings.field.injectBodyMax.hint" },
       { key: "injectSessionBudget", label: "settings.field.injectSessionBudget.label", type: "num", hint: "settings.field.injectSessionBudget.hint" },
-      { key: "injectRepeatSim", label: "settings.field.injectRepeatSim.label", type: "num", hint: "settings.field.injectRepeatSim.hint" }`
+      { key: "injectRepeatSim", label: "settings.field.injectRepeatSim.label", type: "num", hint: "settings.field.injectRepeatSim.hint" },
+      { key: "injectReinjectTurns", label: "settings.field.injectReinjectTurns.label", type: "num", hint: "settings.field.injectReinjectTurns.hint" }`
 
 const GROUP_BLOCK = `  {
     title: "settings.group.neighbor",

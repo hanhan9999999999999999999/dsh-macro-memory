@@ -343,6 +343,62 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
     /hit-skip reason=budget .*cap=200 /.test(logText), logText.split('\n').filter((l) => l.includes('cap=200')).pop() ?? '没有 cap 行')
 }
 
+// ── R9 老条目放回：本会话给过的，隔 N 轮又能进候选（0.6.49）──────────────────
+// 病根：hitQuery 一行 `!seenState.injected.includes(r.id)` 把本会话注入过的条目**永久**拉黑。
+// 短会话没事；长会话里话题绕回来时，最贴问的那条还是它，却再也进不来——回执只能给次选或空着。
+{
+  ok('R9 五个配置面都在：常量 12 / 默认值 / schema / 校验 / resolveConfig / 热生效白名单',
+    src.includes('var INJECT_REINJECT_TURNS_DEF = 12;') &&
+      src.includes('injectReinjectTurns: INJECT_REINJECT_TURNS_DEF }') &&
+      src.includes('injectReinjectTurns: z.number().min(0).default(INJECT_REINJECT_TURNS_DEF)') &&
+      src.includes('reqNum("injectReinjectTurns")') &&
+      src.includes('injectReinjectTurns: Number.isFinite(c.injectReinjectTurns)') &&
+      src.includes('"injectRepeatSim", "injectReinjectTurns", "reflect"'))
+
+  const sid = 'sess-r9-fresh'
+  const first = run(Q_PREV, baseOpts, sid)
+  const after1 = readSeen(sid)
+  ok('R9 注入成功时给这一轮盖章（轮次 1 + 每条都盖上「给过的那一轮」）',
+    first !== null && after1 !== null && after1.injectRound === 1 &&
+      first.injectedIds.every((id) => after1.injectSeenAt?.[id] === 1),
+    first === null ? 'null' : `round=${after1?.injectRound} at=${JSON.stringify(after1?.injectSeenAt)}`)
+
+  const again = run(Q_PREV, { ...baseOpts, injectRepeatSim: 0 }, sid)
+  ok('R9 刚给过的条目不再进候选（同一问句紧接着再问，回执里没有它们）',
+    again === null || again.injectedIds.every((id) => !first.injectedIds.includes(id)),
+    again === null ? 'null' : again.injectedIds.join(','))
+  ok('R9 挡下时的回执带上 released=0 与重放窗口（读数是「没放回」，不是没写）',
+    again === null || (again.budget?.reinjectTurns === 12 && again.budget?.released === 0),
+    again === null ? 'null（整轮不注入，已由上一条覆盖）' : `released=${again.budget?.released} reinject=${again.budget?.reinjectTurns}`)
+
+  const sid2 = 'sess-r9-expire'
+  seed(sid2, { injected: ['rh000001', 'rh000003'], injectRound: 20, injectSeenAt: { rh000001: 3, rh000003: 3 } })
+  const back = run(Q_PREV, { ...baseOpts, injectRepeatSim: 0 }, sid2)
+  ok('R9 隔了 17 轮（> 12）→ 老条目重新进候选，账上记 released=2',
+    back !== null && back.injectedIds.includes('rh000001') && back.budget?.released === 2,
+    back === null ? 'null' : `ids=${back.injectedIds.join(',')} released=${back.budget?.released}`)
+  const seen2 = readSeen(sid2)
+  ok('R9 放回之后重新盖章（新轮次 21，不是留着旧章 3）',
+    seen2 !== null && seen2.injectSeenAt?.rh000001 === 21,
+    `at=${JSON.stringify(seen2?.injectSeenAt)}`)
+
+  const sid3 = 'sess-r9-off'
+  seed(sid3, { injected: ['rh000001', 'rh000003'], injectRound: 20, injectSeenAt: { rh000001: 3, rh000003: 3 } })
+  const off = run(Q_PREV, { ...baseOpts, injectRepeatSim: 0, injectReinjectTurns: 0 }, sid3)
+  ok('R9 窗口设 0 → 逐位回到「永久拉黑」（一条都不放回，也不记放回）',
+    (off === null || !off.injectedIds.includes('rh000001')) && (off?.budget?.released ?? 0) === 0,
+    off === null ? 'null' : `ids=${off.injectedIds.join(',')} released=${off.budget?.released}`)
+
+  const sid4 = 'sess-r9-legacy'
+  seed(sid4, { injected: ['rh000001', 'rh000003'] })
+  const legacy = run(Q_PREV, { ...baseOpts, injectRepeatSim: 0 }, sid4)
+  const seen4 = readSeen(sid4)
+  ok('R9 升级前的老账（没盖轮次章）这一轮仍然挡，但要补章——不是永久拉黑',
+    (legacy === null || !legacy.injectedIds.includes('rh000001')) &&
+      seen4 !== null && Number.isFinite(seen4.injectSeenAt?.rh000001),
+    `ids=${legacy === null ? 'null' : legacy.injectedIds.join(',')} at=${JSON.stringify(seen4?.injectSeenAt)}`)
+}
+
 rmSync(wsRoot, { recursive: true, force: true })
 
 console.log('')

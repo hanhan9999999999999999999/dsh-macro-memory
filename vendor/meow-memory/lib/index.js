@@ -5677,7 +5677,15 @@ var INJECT_FLOOR_DEF = 0.35;
 // 0.6.41 只是把它从「预算耗尽时才生效」提升成独立常开的第三条闸。真库标定读数：
 // A 组 9 问 7,337 → 5,485 字（省 25.2%，只摘要最长的 12 条），B 组 13 问 8,272 → 5,926 字。
 var INJECT_BODY_MAX_DEF = 240;
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF };
+// [macro-fusion 0.6.49] 会话内「给过的条目」隔多少轮之后可以重新进候选（0 = 永不，逐位回到 0.6.48）。
+// 病根：hitQuery 里一行 `!seenState.injected.includes(r.id)` 把本会话注入过的条目**永久**拉黑。
+// 短会话看不出问题；长会话里话题绕回来时，最贴问的那条明明还是它，却再也进不了候选，
+// 回执只能退而求其次或干脆空着。45 问当一个会话连跑（k=2 / floor=0 / bodyMax=240）：
+// 永久拉黑 → 78 条 / 22,247 字、5 轮整轮空、2 轮只给 1 条；窗口 12 轮 → 84 条 / 22,989 字
+// （+3.3%）、整轮空 3 轮、只给 1 条 0 轮。12 轮大致是一个话题的来回长度：过了它再被问到，
+// 宁可再给一遍，也不要空着——旧条目还在历史里，重复一遍只是多花字，不给是直接丢能力。
+var INJECT_REINJECT_TURNS_DEF = 12;
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -5701,10 +5709,14 @@ function readSeenFile(workspace, sessionId, dir) {
       // 逐位等于 0.6.43 的行为，不需要迁移。
       injectChars: Number.isFinite(parsed.injectChars) ? Math.max(0, Math.floor(parsed.injectChars)) : 0,
       lastQueryTerms: Array.isArray(parsed.lastQueryTerms) ? parsed.lastQueryTerms.filter((x) => typeof x === "string").slice(0, 60) : [],
-      lastTopScore: Number.isFinite(parsed.lastTopScore) ? parsed.lastTopScore : 0
+      lastTopScore: Number.isFinite(parsed.lastTopScore) ? parsed.lastTopScore : 0,
+      // [macro-fusion 0.6.49] 轮次章：injectRound 是判定轮次，injectSeenAt 记「哪一轮给过哪条」。
+      // 老会话文件没有这两个字段 → 0 / 空，判定时按「这一轮才给的」处理，一个窗口之后放回。
+      injectRound: Number.isFinite(parsed.injectRound) ? Math.max(0, Math.floor(parsed.injectRound)) : 0,
+      injectSeenAt: parsed.injectSeenAt && typeof parsed.injectSeenAt === "object" && !Array.isArray(parsed.injectSeenAt) ? Object.fromEntries(Object.entries(parsed.injectSeenAt).filter(([, v]) => Number.isFinite(v)).map(([k, v]) => [k, Math.max(0, Math.floor(v))])) : {}
     };
   } catch {
-    return { injected: [], searched: [], accessed: [], written: [], projectsQueried: [], reinjectPending: false, currentProject: null, injectChars: 0, lastQueryTerms: [], lastTopScore: 0 };
+    return { injected: [], searched: [], accessed: [], written: [], projectsQueried: [], reinjectPending: false, currentProject: null, injectChars: 0, lastQueryTerms: [], lastTopScore: 0, injectRound: 0, injectSeenAt: {} };
   }
 }
 function writeSeenFile(workspace, sessionId, seen, dir) {
@@ -5720,7 +5732,9 @@ function writeSeenFile(workspace, sessionId, seen, dir) {
     currentProject: seen.currentProject,
     injectChars: seen.injectChars,
     lastQueryTerms: seen.lastQueryTerms,
-    lastTopScore: seen.lastTopScore
+    lastTopScore: seen.lastTopScore,
+    injectRound: seen.injectRound ?? 0,
+    injectSeenAt: seen.injectSeenAt ?? {}
   }), "utf8");
 }
 function readInjected(workspace, sessionId, dir = ".dsh-meow") {
@@ -6643,9 +6657,41 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     logHitSkip(workspace, dir, "budget", ` spent=${spent} limit=${sessionBudget}`);
     return null;
   }
+  // [macro-fusion 0.6.49] 老条目放回：hitQuery 的排除名单是「本会话给过的永久拉黑」，
+  // 这里先把超出窗口的条目从名单里摘掉并写回盘，它们这一轮起又能进候选。
+  // 升级前注入、没盖轮次章的老账按「这一轮才给的」补章（一个窗口之后放回），不是永久拉黑。
+  const reinjectTurns = Number.isFinite(o.injectReinjectTurns) ? Math.max(0, Math.floor(o.injectReinjectTurns)) : INJECT_REINJECT_TURNS_DEF;
+  let released = 0;
+  if (reinjectTurns > 0 && seen.injected.length > 0) {
+    const round = Number.isFinite(seen.injectRound) ? seen.injectRound : 0;
+    let dirty = false;
+    const keep = [];
+    for (const id of seen.injected) {
+      const key = String(id);
+      const at = seen.injectSeenAt[key];
+      if (!Number.isFinite(at)) {
+        seen.injectSeenAt[key] = round;
+        dirty = true;
+        keep.push(id);
+        continue;
+      }
+      if (round - at <= reinjectTurns) keep.push(id);
+      else released += 1;
+    }
+    if (released > 0) {
+      seen.injected = keep;
+      dirty = true;
+    }
+    if (dirty) {
+      try {
+        writeSeenFile(workspace, sessionId, seen, dir);
+      } catch {
+      }
+    }
+  }
   const fresh = hitQuery(db, workspace, sessionId, userText, o, dir);
   if (fresh.length === 0) {
-    logHitSkip(workspace, dir, "empty");
+    logHitSkip(workspace, dir, "empty", ` released=${released} reinject=${reinjectTurns}`);
     return null;
   }
   // [macro-fusion 0.6.40] 命中闸门：分数不到 injectFloor 的命中不注入。
@@ -6734,10 +6780,23 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     after.injectChars = spent + text.length;
     after.lastQueryTerms = curTerms.slice(0, 60);
     after.lastTopScore = Number.isFinite(kept[0].score) ? kept[0].score : 0;
+    // [macro-fusion 0.6.49] 给这一轮真渲染出来的条目盖轮次章：同一轮算同一轮，
+    // 下一轮判「隔了几轮」就看这个差值；超窗口的按 3 倍窗口清掉，账本不无限长。
+    if (reinjectTurns > 0) {
+      const nextRound = (Number.isFinite(after.injectRound) ? after.injectRound : 0) + 1;
+      const at = { ...after.injectSeenAt };
+      for (const h of shown) at[String(h.id)] = nextRound;
+      const keepTurns = Math.max(24, reinjectTurns * 3);
+      for (const id of Object.keys(at)) {
+        if (nextRound - at[id] > keepTurns) delete at[id];
+      }
+      after.injectRound = nextRound;
+      after.injectSeenAt = at;
+    }
     writeSeenFile(workspace, sessionId, after, dir);
   } catch {
   }
-  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, spent: spent + text.length, sessionBudget } };
+  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
 }
 
 // src/tools.ts
@@ -10701,6 +10760,11 @@ var config = z.object({
    *  不同话题的 10 组全是 0.000，所以这个阈值不误伤。
    *  设 1 = 关（逐位回到 0.6.43）。 */
   injectRepeatSim: z.number().min(0).max(1).default(INJECT_REPEAT_SIM_DEF),
+  /** [macro-fusion 0.6.49] 会话内「给过的条目」隔多少轮可以重新进候选（0 = 永不；默认 12）。
+   *  旧行为是本会话注入过的条目**永久**拉黑，长会话里话题绕回来时最贴问的那条也进不来。
+   *  标定（45 问连跑、k=2、bodyMax 240）：永久拉黑 78 条 / 22,247 字 / 5 轮空、2 轮只给 1 条；
+   *  窗口 12 轮 → 84 条 / 22,989 字（+3.3%）/ 3 轮空、只给 1 条 0 轮。 */
+  injectReinjectTurns: z.number().min(0).default(INJECT_REINJECT_TURNS_DEF),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
@@ -10777,6 +10841,7 @@ function validateConfigUserLayer(value) {
   reqNum("injectBodyMax");
   reqNum("injectSessionBudget");
   reqNum("injectRepeatSim");
+  reqNum("injectReinjectTurns");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -10871,6 +10936,9 @@ function resolveConfig(config2) {
     // 大于 1 视为关（buildHitInjection 里 `sim <= 1` 才启用）。
     injectSessionBudget: Number.isFinite(c.injectSessionBudget) ? Math.max(0, Math.floor(c.injectSessionBudget)) : 0,
     injectRepeatSim: Number.isFinite(c.injectRepeatSim) ? Math.min(1, Math.max(0, c.injectRepeatSim)) : INJECT_REPEAT_SIM_DEF,
+    // [macro-fusion 0.6.49] 重放窗口是整数轮数：非数字回默认 12（配置读坏了不许变成「永久拉黑」），
+    // 数字取整夹到非负，0 = 显式回到「永不重放」。
+    injectReinjectTurns: Number.isFinite(c.injectReinjectTurns) ? Math.max(0, Math.floor(c.injectReinjectTurns)) : INJECT_REINJECT_TURNS_DEF,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -11028,7 +11096,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "injectReinjectTurns", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -11666,7 +11734,7 @@ ${e.stack ?? ""}` : String(e)}
           injectRepeatSim: resolved.injectRepeatSim
         }, resolved.projectDir);
         try {
-          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }

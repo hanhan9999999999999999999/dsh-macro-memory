@@ -188,6 +188,24 @@ const body = panel.body
   ok('I6.3 面板不新增文件', existsSync(LOG) && existsSync(OLD) && !existsSync(join(ws, '.dsh-meow', 'dream-debug.log.new')), 'dir ok')
 }
 
+// ── I7 老条目放回：released= / reinject= 要读得出来（0.6.49）─────────────────
+{
+  const lines = [
+    '[2026-11-25T02:00:00.000Z] hit-chain pid=1 sid=abcd1234 textLen=300 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=2 reinject=12 spent=300/∞',
+    '[2026-11-25T02:05:00.000Z] hit-skip reason=empty released=5 reinject=12',
+    '[2026-11-25T02:10:00.000Z] hit-chain pid=1 sid=abcd1234 textLen=120 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=420/∞',
+  ]
+  writeFileSync(LOG, lines.join('\n') + '\n', 'utf8')
+  const body = L.readInjectPanel({ workspace: ws, dir: '.dsh-meow', config: {} }).body
+  ok('I7.1 面板单列一行「老条目放回」（命中轮 2 条 + 挡下轮 5 条 = 7 条）',
+    /老条目放回：7 条/.test(body), (body.match(/老条目放回：[^\n]*/) ?? [''])[0])
+  ok('I7.2 这一行把窗口轮数写出来（不是只给个数字）',
+    /隔 12 轮没再给过/.test(body), (body.match(/老条目放回：[^\n]*/) ?? [''])[0])
+  ok('I7.3 闸门口径里带上重放窗口', /重放 12 轮/.test(body), (body.match(/闸门：[^\n]*/) ?? [''])[0])
+  ok('I7.4 released=0 的轮不吹成「放回了」', !/放回 0\b/.test(body) && /放回 2\b/.test(body),
+    (body.match(/放回 \d+ 条/) ?? [''])[0])
+}
+
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)

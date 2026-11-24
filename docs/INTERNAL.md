@@ -13881,3 +13881,58 @@ rawkTopPrev = top;
 **面板**：`injectBodyMax` 三语 label 改为「单条正文基准上限 / Per-entry body baseline / Base de corpo por entrada」，hint 写清「最贴问的那条给两倍基准，其余各给六成」。改的是 `tools/patch-settings-fields.mjs`（构建期真源）与 `lib/client.js`（产物，174,957 B / sha256 `1B90FDE5…`）两处，只改产物下次构建就回退。
 
 **踩坑三条**：①**两处 `per` 只改一处**——出厂默认走非预算支，第一次改完曲线一点没变，还以为比例选错了；②**探针夹具顶不穿新份额**——默认首条份额变 480，472 字的老夹具「无论怎么压都在 480 内」，B1b/`probe-digest` 会全绿但空跑，夹具必须加长到 `repeat(10)`、断言数字跟着改成 480；③**变体副本忘删**——`vendor/meow-memory/lib/__v48a.mjs` / `__v48b.mjs` 各 678 KB 被 `.gitignore:12` 的 `_*.mjs` 藏住，`git status` 看不见，doctor 却报「账本 44 文件 / 2,183,906 B ≠ 实际 46 文件 / 3,542,220 B」——删掉后重跑 `node tools/make-vendor-manifest.mjs` 才归零。
+
+### 9.248 0.6.49：本会话给过的条目隔 12 轮放回
+
+**症状**：同一个会话里，一条记忆只要被注入过一次，就**再也不会出现**。`vendor/meow-memory/lib/index.js:6588` 的候选过滤行是
+
+```js
+... && r.source_session !== sessionId && !seenState.injected.includes(r.id)
+```
+
+`seenState.injected` 是「本会话注入过的 id」清单，只增不减——会话越长，可用的条目越少。45 问同一会话连跑（k=2、`injectFloor: 0`、`injectBodyMax: 240`、夹具 project 全设 `全局`）实测：**78 条 / 22,247 字**，其中 **5 轮整轮没有可注条目**、**2 轮只剩 1 条**。这不是检索不到，是被自己挡掉了：库里明明有 30 条相关条目，问第 20 轮时前 19 轮已经把它们全拉黑。
+
+**处方（八处落点，全在 `vendor/meow-memory/lib/index.js`）**
+
+1. 常量 `var INJECT_REINJECT_TURNS_DEF = 12;`（放在 `INJECT_BODY_MAX_DEF` 之后、`DEFAULT_OPTS` 之前），`DEFAULT_OPTS` 加 `injectReinjectTurns: INJECT_REINJECT_TURNS_DEF`。
+2. `readSeenFile` 新增两个字段：`injectRound`（整轮次，非负整数）与 `injectSeenAt`（`{id: 轮次}`，用 `Object.fromEntries` 过滤掉非数字的脏值），catch 兜底写 `injectRound: 0, injectSeenAt: {}`，`writeSeenFile` 同步落盘。
+3. 在 `const fresh = hitQuery(db, workspace, sessionId, userText, o, dir);` **之前**插 release 块：
+
+```js
+const reinjectTurns = Number.isFinite(o.injectReinjectTurns) ? Math.max(0, Math.floor(o.injectReinjectTurns)) : INJECT_REINJECT_TURNS_DEF;
+const round = seen.injectRound;
+let released = 0;
+if (reinjectTurns > 0) {
+  const at = seen.injectSeenAt;
+  const keep = [];
+  for (const key of seen.injected) {
+    const stamp = Number.isFinite(at[key]) ? at[key] : null;
+    if (stamp === null) { at[key] = round; dirty = true; keep.push(key); continue; }
+    if (round - stamp <= reinjectTurns) keep.push(key); else released += 1;
+  }
+  if (released > 0) { seen.injected = keep; dirty = true; }
+  if (dirty) writeSeenFile(...);
+}
+```
+
+4. 未命中出口补账：`logHitSkip(workspace, dir, "empty", ` released=${released} reinject=${reinjectTurns}`)`。
+5. 成功路径在写 `seen` 之后盖新章：`const nextRound = after.injectRound + 1;` 给 `shown` 每条 `at[id] = nextRound`，超龄的按 `keepTurns = Math.max(24, 3 * reinjectTurns)` 清掉，`after.injectRound = nextRound`（**只在 `reinjectTurns > 0` 时走**，`0` 时账本形状与 0.6.48 完全一致）。
+6. 回执 `budget` 加 `released` / `reinjectTurns`。
+7. `hit-chain` 行加 `released=${hit?.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns}`。
+8. 配置面六处齐：zod schema（`z.number().min(0).default(INJECT_REINJECT_TURNS_DEF)`）、`reqNum("injectReinjectTurns")`、`resolveConfig`（`Number.isFinite(...) ? Math.max(0, Math.floor(...)) : DEF`）、`LIVE_CONFIG_KEYS`（插在 `"injectRepeatSim"` 之后）、构建期真源 `tools/patch-settings-fields.mjs`（`NEW_FIELDS` + 三语 label/hint + `DEFAULTS_BLOCK` + `FIELDS_BLOCK`）、产物 `lib/client.js`。
+
+**标定（为什么是 12 轮）**：走真 `buildHitInjection` 全管线、45 问同一会话连跑，逐档扫窗口：
+
+| 窗口 | 注入条数 | 注入字数 | 整轮空 | 只给 1 条 |
+|---|---|---|---|---|
+| 0（0.6.48 永久拉黑） | 78 | 22,247 | 5 | 2 |
+| 4 | 78 | 21,570 | — | — |
+| 8 | 82 | 22,140 | — | — |
+| **12** | **84** | **22,989（+3.3%）** | **3** | **0** |
+| 20 | 84 | 22,885 | 3 | 0 |
+
+另一个不进表的读数：窗口 4 时 `released=68`、窗口 12 时 `released=52`、`dupIds 19`——被放回的条目里只有 19 条真的又被选中，其余是「已经放回但这两轮没轮到」。选 12 的理由不是数字最优（窗口 20 字数几乎一样）：**12 轮约等于一个话题的来回长度**，过了它还被问到，说明那条旧记忆确实该重新出场；再长就是拿「省字」换「丢能力」，而旧条目本来就还在上下文里，多给一遍只多花字。
+
+**判据（`tools/probe-rhythm.mjs` R9 八条 + `tools/probe-injectlog.mjs` I7 四条）**：五配置面在位；首轮盖章 `round=1`、`at={"rh000001":1,"rh000003":1}`；紧接再问只给没给过的那条；seed `injectRound: 20` + `at: 3` 时「隔 17 轮」放回 2 条（`released=2`）；放回命中后重新盖章 `at=21`；`injectReinjectTurns: 0` 逐位回 0.6.48（`ids=rh000002`、`released=0`）；老账无章仍挡但补章（`at={"rh000001":0,"rh000003":0,"rh000002":1}`）；面板念出「老条目放回：7 条＝hit 2 + skip 5」「隔 12 轮没再给过」「重放 12 轮」。规模 61 支 / 4,289 → **4,301 条**。
+
+**踩坑留三条**：①**先量再动手**——第一版做的是反方向的「会话内 N 轮内不重复」（量出来能省 16.8% 字），写完仿真才发现真管线**早就永久去重**，那 34.4% 重复只是绕过过滤直接调 `renderHitEntries` 的假象；**衡量重复必须走 `buildHitInjection` 全管线**。②**`0` 必须逐位回旧**：`injectReinjectTurns: 0` 时不仅不写新字段，release 块整个不跑，`seen` 文件形状与 0.6.48 一致——这是回退性的唯一判据，也是升级兼容的底线。③**探针不能去日志里找 `reinject=`**：那些行只在 pre-step / `logHitSkip` 里写，探针直接调 `buildHitInjection` 一条都不会产生，断言只能读回执的 `budget.released` / `budget.reinjectTurns`。
