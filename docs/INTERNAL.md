@@ -12383,3 +12383,57 @@ if (candList !== null) {
 - **`setBandsByThreshold` 235.6ms / 14.0%**：`vals.sort()` 独占 **164.9ms**（`index.js:2584`）。已实测三条路（1 万值，`E:\Temp\cmp\b18.mjs` / `b18b.mjs`）：整排 `Float64Array.sort()` 0.72–0.80ms、阈值多趟全扫 0.40–0.47ms、**指数桶预筛在 `mix` 只剩 0.59ms**——因为锚点几乎全落在同一两个指数桶里，桶内续找要跑 19 趟、等于白扫；`tight` 分布下 0.741 → **0.015ms**（一次都不续找）。要真赚得「按 hi 的位模式细分桶（`valHi >>> 16` 得 1.044 倍区间，每桶最多落一个锚点）+ 计数排序」。这版不动。
 - **候选集之后是 `search` 186.6 / 11.1%**：主要是行级零散，暂不再拆。
 - **`buildSearchIndex` 138.9 / 8.3%**：只在冷建付，暂不动。
+
+## 9.218 定档不再排序：桶计数排序 + 段扫（0.6.19）
+
+### 9.218.1 症状
+
+`--cpu-prof` 第七次点名（10,000 条 / 300 问，单次 `search` 2.98ms，总采样 **1,678.4ms**，`E:\Temp\cmp\prof19\CPU.20261124.091907.2820.0.001.cpuprofile`）：`setBandsByThreshold` **235.6ms / 14.0%**（热路第二名），按行摊开，`vals.sort()` 一行 **164.9ms**，占该函数七成。
+
+### 9.218.2 病根
+
+定档只需「raw 从大到小扫一遍、遇到 < 0.85×上一锚点就开档」，锚点链只吃**排序后的不同值**；老实现却先替一万条付一整趟比较排序（`Float64Array.prototype.sort`，V8 上是 TimSort）。
+
+### 9.218.3 处方
+
+1. **桶键 = 位模式的高 32 位右移 16**：非负有限 double 的 IEEE 位模式与数值同序，`rawkBucketOf(v)` 即 `rawkBits[0] = v; rawkBitsU[1] >>> RAWK_SHIFT`。`RAWK_SHIFT = 16` → 桶宽 6.25%，同桶任意两值比值 ≥ 0.941 > `1 - IMP_BAND`，**同桶最多一个锚点**。
+2. **计数排序攒段 + 桶号从高到低走一趟**：`rawkHist = new Uint32Array(RAWK_NB)` 先计数、再前缀和，`out[rawkHist[rawkBucketOf(v)]++] = v;` 把值攒进连续区间；随后逐桶扫 `[b === 0 ? 0 : rawkHist[b - 1], rawkHist[b])`，取「`< anchor < 0 ? Infinity : IMP_BAND * anchor`」的最大值当锚点，整桶都 ≥ 阈值就跳过。
+3. **桶 0 特判**：0 与全部次正规数同落桶 0、相对跨度无上界，单独拷进 `rawkTail` 后 `sort()` 再走链。
+4. **退路**：`RAWK_LE` 为假（非小端）时 `vals.subarray(0, n).sort()` 走 `anchorChainSorted`——只排前 n 个，`rawkVals` 是复用缓冲。
+
+```js
+if (rawkVals.length < plain) rawkVals = new Float64Array(plain);
+const vals = rawkVals;
+for (let i = 0, j = 0; i < total; i++) { … vals[j++] = h[rawKey]; }
+const anchors = anchorChainOf(vals, plain);
+```
+
+定档侧 `let lo = 0; let hi = m; … h._bandTmp = m - 1 - lo;` 一个字符没动。
+
+### 9.218.4 读数
+
+| 读数 | 0.6.18 | 0.6.19 | 变化 |
+| --- | --- | --- | --- |
+| `search`（10,000 条 / 300 问，三次中位） | 2.982ms | **2.52ms** | −15.4%（相对 0.6.12 的 27.377ms 累计 −90.8%） |
+| `searchAdaptive` | 4.105ms | **3.51ms** | −14.5% |
+| `setBandsByThreshold` | 235.6ms / 14.0% | **74.0ms / 4.9%** | −68.6% |
+| `anchorChainOf`（新） | — | 28.5ms / 1.9% | 新上榜 |
+| 总采样 | 1,678.4ms | **1,520.9ms** | −9.4% |
+| 冷建 | 291–308ms | 292–299ms | 同量级 |
+
+### 9.218.5 判据
+
+`tools/probe-band.mjs` **B0–B6**：B0 源码形状（含「阈值路径里 `vals.sort();` 已退场」，只认带分号的调用）/ B1 与「全量排序 + 阈值链」500 组逐位相同 / B2 同桶比值 ≥ `IMP_BAND`（最坏 0.943627）/ B3 退化语料 / B4 定档逐条对拍 + 指认不进链 / B5 复用缓冲不串味 / B6 桶号事实。`verify.mjs` **OR079 五条**：B0–B6 标签与挂线及取根例外 / 引擎桶链七件与「无全量排序」/ 进程内三组语料对拍 / 文档四处 / 版本地板 `vNumS10 >= 619`。
+
+两次假红：B0 曾把注脚里的 `vals.sort()` 当成真调用（改查 `'vals.sort();'`）；B4 的参考实现写成「数一遍锚点 > v」，与 `m - 1 - lo` 在阈值缝里差一档——参考必须照 `setBandsBySort` 的字面语义写。
+
+### 9.218.6 账
+
+支数 46 → **47**（新增 `tools/probe-band.mjs`）；断言 3,761 → **3,773**（`probe-band` +7、`OR079` +5；`SUITE_FLOOR` 46 → **47**，`NO_ROOT` 补 `tools/probe-band.mjs`）。
+
+### 9.218.7 下一版候选（按 1,520.9ms 的榜重排）
+
+- **`sigDocOf` 249.9ms / 16.4%**：仍是第一，行级集中在缓存校验链与每问万条的 `WeakMap.get`；动混合函数会撞签名（`probe-signature` S3–S6）。
+- **`search` 178.9ms / 11.8%**、**`buildSearchIndex` 146.7ms / 9.6%**（只在冷建付）、**`scoreCandSet` 108.6ms / 7.1%**、`tokenize` 90.1ms / 5.9%、`classify` 79.8ms / 5.2%。
+- `setBandsByThreshold` 已从 14.0% 降到 4.9%，暂时不再是刀口。
+

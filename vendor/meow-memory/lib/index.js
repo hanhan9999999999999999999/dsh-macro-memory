@@ -2561,6 +2561,123 @@ function trimByBand(hits, k, opts = {}) {
 // 退回路：raw 不是有限非负数（NaN / undefined / 负数）时阈值链「锚点严格下降」的前提不成立
 // （负数时 `0.85·a_i > a_i`），此时退回 `setBandsBySort` 的老全量排序，口径一字不改。
 // 指认（`_ident` / `_subj === 1`）照旧恒 -1 档，且不进阈值链（与老代码 `continue` 同义）。
+//
+// [macro-fusion 0.6.19] 定档不再靠「全量数值排序」。
+//
+// 症状（0.6.18 之后复测 `E:\Temp\cmp\prof012b.mjs` + `--cpu-prof`，10,000 条 / 300 问）：
+// `setBandsByThreshold` 仍占 235.6ms（14.0%），其中 `vals.sort()` 一行独占 **164.9ms**——
+// 锚点链只用到「排序后的不同值」，却先替一万条付一整趟全量排序。
+//
+// 处方：桶计数排序 + 桶内分段，全程不做全量排序。
+//  ① 非负有限 double 的 IEEE 位模式与数值同序，取高 32 位再右移 16 位当桶号：同桶内最坏相差
+//     6.25%，小于 `1 - IMP_BAND = 15%`，于是「同一桶里最多一个锚点，且桶内比该桶最大值小的那些
+//     一律不够档」（0.941·a > 0.85·a）。
+//  ② 计数排序把值按桶号攒进连续区间（桶内不排），再沿桶号从高到低走一趟：每个桶扫自己的分段，
+//     取「< 0.85·上一个锚点」的最大值——那就是下一个锚点。整条链只往下走一趟，所有分段合计 n。
+//  ③ 桶 0（0 与全部次正规数）相对跨度无上界，单独把该段排一遍再走链。
+//
+// 与「`vals.sort()` 后走阈值链」逐位一致：`tools/probe-band.mjs` B1–B6 拿随机语料（含 0、重复值、
+// 次正规数、跨 1e±300 量级）与参考实现逐位对拍；`tools/probe-order.mjs` O1–O8 继续守「定档 + 定序
+// vs 全量参考」。不是小端机器时退回原生排序，口径不变。
+const RAWK_SHIFT = 16;
+const RAWK_NB = 1 << (32 - RAWK_SHIFT);
+// 1.0 的 IEEE 位模式是 0x3FF0000000000000：小端下 byte[7] = 0x3F、byte[6] = 0xF0。
+const RAWK_LE = (() => {
+  const b = new ArrayBuffer(8);
+  const u = new Uint8Array(b);
+  u[6] = 0xf0;
+  u[7] = 0x3f;
+  return new Float64Array(b)[0] === 1;
+})();
+const rawkHist = new Uint32Array(RAWK_NB);
+const rawkBits = new Float64Array(1);
+const rawkBitsU = new Uint32Array(rawkBits.buffer);
+let rawkOut = new Float64Array(0);
+let rawkTail = new Float64Array(0);
+let rawkVals = new Float64Array(0);
+
+/** 值的桶号（高 32 位右移 16 位 → 16 位桶号，桶内最坏相差 6.25%）。 */
+function rawkBucketOf(v) {
+  rawkBits[0] = v;
+  return rawkBitsU[1] >>> RAWK_SHIFT;
+}
+
+/** 排序版阈值链（0.6.12–0.6.18 的做法；小端缺席时仍用它）。 */
+function anchorChainSorted(vals, n) {
+  const anchors = []; // 先降序压进来，再翻成升序给二分用
+  let anchor = -1;
+  for (let i = n - 1; i >= 0; i--) {
+    const v = vals[i];
+    if (anchors.length === 0 || v < IMP_BAND * anchor) {
+      anchors.push(v);
+      anchor = v;
+    }
+  }
+  anchors.reverse();
+  return anchors;
+}
+
+/** 桶计数排序 + 桶内分段求锚点链（与 `anchorChainSorted` 逐位一致，但不做全量排序）。 */
+function anchorChainOf(vals, n) {
+  if (!RAWK_LE) {
+    vals.subarray(0, n).sort(); // 只排前 n 个：rawkVals 是复用缓冲，尾巴上是上一轮的残值
+    return anchorChainSorted(vals, n);
+  }
+  rawkHist.fill(0);
+  if (rawkOut.length < n) rawkOut = new Float64Array(n);
+  const out = rawkOut;
+  let top = -1;
+  for (let i = 0; i < n; i++) {
+    const b = rawkBucketOf(vals[i]);
+    rawkHist[b] += 1;
+    if (b > top) top = b;
+  }
+  let sum = 0;
+  for (let b = 0; b < RAWK_NB; b++) {
+    const c = rawkHist[b];
+    rawkHist[b] = sum;
+    sum += c;
+  }
+  for (let i = 0; i < n; i++) {
+    const v = vals[i];
+    out[rawkHist[rawkBucketOf(v)]++] = v;
+  }
+  // 此刻 rawkHist[b] = 桶 b 的结束位置；桶 b 的区间是 [b === 0 ? 0 : rawkHist[b - 1], rawkHist[b])
+  const desc = [];
+  let anchor = -1;
+  for (let b = top; b >= 0; b--) {
+    const end = rawkHist[b];
+    const begin = b === 0 ? 0 : rawkHist[b - 1];
+    if (begin === end) continue;
+    if (b === 0) {
+      const len = end - begin;
+      if (rawkTail.length < len) rawkTail = new Float64Array(len);
+      for (let i = 0; i < len; i++) rawkTail[i] = out[begin + i];
+      const seg = rawkTail.subarray(0, len);
+      seg.sort();
+      for (let i = len - 1; i >= 0; i--) {
+        const v = seg[i];
+        if (anchor < 0 || v < IMP_BAND * anchor) {
+          desc.push(v);
+          anchor = v;
+        }
+      }
+      continue;
+    }
+    const t = anchor < 0 ? Infinity : IMP_BAND * anchor;
+    let best = -1;
+    for (let i = begin; i < end; i++) {
+      const v = out[i];
+      if (v < t && v > best) best = v;
+    }
+    if (best < 0) continue; // 这一桶全部 ≥ t，没有值能当锚点
+    desc.push(best);
+    anchor = best;
+  }
+  desc.reverse();
+  return desc;
+}
+
 function setBandsByThreshold(hits, rawKey) {
   const total = hits.length;
   let plain = 0;
@@ -2575,23 +2692,14 @@ function setBandsByThreshold(hits, rawKey) {
     plain += 1;
   }
   if (plain === 0) return true;
-  const vals = new Float64Array(plain);
+  if (rawkVals.length < plain) rawkVals = new Float64Array(plain);
+  const vals = rawkVals;
   for (let i = 0, j = 0; i < total; i++) {
     const h = hits[i];
     if (h._ident === true || h._subj === 1) continue;
     vals[j++] = h[rawKey];
   }
-  vals.sort();
-  const anchors = []; // 先降序压进来，再翻成升序给二分用
-  let anchor = -1;
-  for (let i = plain - 1; i >= 0; i--) {
-    const v = vals[i];
-    if (anchors.length === 0 || v < IMP_BAND * anchor) {
-      anchors.push(v);
-      anchor = v;
-    }
-  }
-  anchors.reverse();
+  const anchors = anchorChainOf(vals, plain); // 逐位同「vals.sort() + 阈值链」，见上方 0.6.19 说明
   const m = anchors.length;
   for (let i = 0; i < total; i++) {
     const h = hits[i];

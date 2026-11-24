@@ -37,8 +37,8 @@ const VERSION_LITERAL = `export const version = '${PKG_VERSION}'`
 // 0.6.8 起 = 37（0.6.8 新增 tools/probe-monotone.mjs）；0.6.10 起 = 39（加 probe-rigor / probe-signature）；
 // 0.6.11 起 = 40（加 probe-verbatim）；0.6.12 起 = 41（加 probe-order）；0.6.13 仍 41（预算同批探针）；
 // 0.6.14 起 = 42（加 probe-hotpath）；0.6.15 起 = 43（加 probe-cover）；0.6.16 起 = 44（加 probe-score）；
-// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）。
-const SUITE_FLOOR = 46
+// 0.6.17 起 = 45（加 probe-hydrate）；0.6.18 起 = 46（加 probe-cand）；0.6.19 起 = 47（加 probe-band）。
+const SUITE_FLOOR = 47
 let failures = 0
 let passes = 0
 function check(label, ok, extra) {
@@ -949,6 +949,7 @@ function makeHostCtx() {
     'tools/probe-score.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.16），不拼仓内路径',
     'tools/probe-hydrate.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.17），不拼仓内路径',
     'tools/probe-cand.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.18），不拼仓内路径',
+    'tools/probe-band.mjs': '只经相对 import 与 import.meta.url 取引擎（0.6.19），不拼仓内路径',
   }
   const needRoot = steps.filter((f) => !(f in NO_ROOT))
   const notImported = needRoot.filter((f) => !/from '[^']*_root\.mjs'/.test(read(f)))
@@ -13250,14 +13251,17 @@ dt063: {
     oMissing2.length ? `缺 ${oMissing2.join(' ')}` : 'O9–O10 都在',
   )
   const engSrc4 = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  // 0.6.19：锚点链换成「桶计数排序 + 段扫」，这一条跟着改成新形状（老形状 = Float64Array + 原生 sort，
+  // 已退成 anchorChainSorted / 小端缺席时的退路，仍留在文件里）。
   const thrOk = engSrc4.includes('function setBandsByThreshold(hits, rawKey)') &&
-    engSrc4.includes('const vals = new Float64Array(plain);') &&
-    engSrc4.includes('vals.sort();') &&
+    engSrc4.includes('const anchors = anchorChainOf(vals, plain);') &&
+    engSrc4.includes('function anchorChainOf(vals, n) {') &&
+    engSrc4.includes('function anchorChainSorted(vals, n) {') &&
     engSrc4.includes('h._bandTmp = m - 1 - lo;')
   const fallOk = engSrc4.includes('function setBandsBySort(hits, rawKey)') &&
     engSrc4.includes('if (!setBandsByThreshold(hits, rawKey)) setBandsBySort(hits, rawKey);')
   check(
-    'OR073 引擎里定档走「Float64Array + 原生 sort + 阈值链 + 二分」，且负数/脏值退回 setBandsBySort（口径不变）',
+    'OR073 引擎里定档走「Float64Array + 阈值链 + 二分」（0.6.19 起链由桶计数排序供，排序链退成后备），且负数/脏值退回 setBandsBySort（口径不变）',
     thrOk && fallOk,
     `阈值链 ${thrOk ? 'ok' : 'miss'} / 退回路 ${fallOk ? 'ok' : 'miss'}`,
   )
@@ -13661,6 +13665,90 @@ dt063: {
   const vS9 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS9 = vS9.length === 3 ? vS9[0] * 10000 + vS9[1] * 100 + vS9[2] : 0
   check('OR078 版本号不低于 0.6.18（后续补丁不必回头改这一条）', vNumS9 >= 618, vS9.join('.'))
+}
+
+// 0.6.19：定档不再靠「全量数值排序」（桶计数排序 + 桶内分段，见 INTERNAL 9.218 / DESIGN 214）。
+{
+  const bSrc = readFileSync(new URL('./tools/probe-band.mjs', import.meta.url), 'utf8')
+  const bWired = readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-band.mjs'")
+  const bExcused = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8').includes("'tools/probe-band.mjs'")
+  const bLabels = ['B0 桶链在位', 'B1 桶链与', 'B2 同桶任意两值的比值', 'B3 退化语料', 'B4 定档逐条对拍', 'B5 复用缓冲不串味', 'B6 桶号事实'].every((t) => bSrc.includes(t))
+  check(
+    'OR079 桶链探针 B0–B6 在位，check-all 挂线且列进取根例外',
+    bLabels && bWired && bExcused,
+    `标签 ${bLabels} / 挂线 ${bWired} / 取根例外 ${bExcused}`,
+  )
+
+  const ENGINE_B = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const bBegin = ENGINE_B.indexOf('const RAWK_SHIFT = 16;')
+  const bBodyStart = ENGINE_B.indexOf('function setBandsByThreshold(hits, rawKey) {')
+  const bSeg = bBegin >= 0 && bBodyStart > bBegin ? ENGINE_B.slice(bBegin, bBodyStart) : ''
+  const bBodyEnd = ENGINE_B.indexOf('\n}', ENGINE_B.indexOf('h._bandTmp = m - 1 - lo;', bBodyStart))
+  const bBody = bBodyStart >= 0 && bBodyEnd > bBodyStart ? ENGINE_B.slice(bBodyStart, bBodyEnd) : ''
+  const parts = {
+    桶常量: bSeg.includes('const RAWK_SHIFT = 16;') && bSeg.includes('const RAWK_NB = 1 << (32 - RAWK_SHIFT);'),
+    计数: bSeg.includes('rawkHist.fill(0);') && bSeg.includes('rawkHist[b] += 1;'),
+    攒段: bSeg.includes('out[rawkHist[rawkBucketOf(v)]++] = v;'),
+    阈值: bSeg.includes('const t = anchor < 0 ? Infinity : IMP_BAND * anchor;'),
+    桶0: bSeg.includes('if (b === 0) {') && bSeg.includes('seg.sort();'),
+    退路: bSeg.includes('vals.subarray(0, n).sort();'),
+    走链: bBody.includes('const anchors = anchorChainOf(vals, plain);'),
+    老路: ENGINE_B.includes('function setBandsBySort(hits, rawKey) {'),
+  }
+  const noFullSort = bBody !== '' && bBody.includes('vals.sort();') === false
+  check(
+    'OR079 引擎里定档换成桶计数排序 + 段扫：桶常量 / 计数 / 攒段 / 阈值走链 / 桶 0 特判 / 小端退路只排前 n 个，阈值路径里全量排序已退场',
+    Object.values(parts).every(Boolean) && noFullSort,
+    `${Object.entries(parts).map(([k, v]) => `${k}=${v}`).join(' · ')} · 无全量排序=${noFullSort}`,
+  )
+
+  // 进程内对拍：把桶链那一段切出来当纯函数，与「全量排序 + 阈值链」在三组固定语料上逐位比。
+  let eqOk = false
+  let eqDetail = ''
+  try {
+    // eslint-disable-next-line no-new-func
+    const mod = new Function('IMP_BAND', `${bSeg}\nreturn { anchorChainOf };`)(0.85)
+    const refChain = (src) => {
+      const v = Float64Array.from(src)
+      v.sort()
+      const out = []
+      let anchor = -1
+      for (let i = v.length - 1; i >= 0; i--) {
+        const x = v[i]
+        if (out.length === 0 || x < 0.85 * anchor) {
+          out.push(x)
+          anchor = x
+        }
+      }
+      out.reverse()
+      return out
+    }
+    const corpora = [
+      [0.9, 0.5, 0.1, 0.5, 0.3, 0.05, 0.95, 0.7],
+      [0, 5e-324, 1e-300, 2e-300, 1, 0, 1e300],
+      [0.37, 0.37, 0.37, 0.4, 0.34, 0.25, 0.6, 0.5, 0.42],
+    ]
+    const bad = corpora.filter((c) => {
+      const vals = Float64Array.from(c)
+      return JSON.stringify(mod.anchorChainOf(vals, vals.length)) !== JSON.stringify(refChain(c))
+    })
+    eqOk = bad.length === 0
+    eqDetail = `${corpora.length} 组语料 · 不一致 ${bad.length}`
+  } catch (e) {
+    eqDetail = String(e && e.message)
+  }
+  check('OR079 进程内：桶链与「全量排序 + 阈值链」在三组固定语料（含 0、次正规数、并列）上逐位相同', eqOk, eqDetail)
+
+  const iSrc = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
+  const rSrc = readFileSync(new URL('./README.md', import.meta.url), 'utf8')
+  const dSrc = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
+  check(
+    'OR079 文档在位：INTERNAL 9.218 写了「桶计数排序」，README 写了「定档不再排序」，DESIGN 有 ## 214.，PLAN 有 0.6.19',
+    iSrc.includes('## 9.218 ') && rSrc.includes('定档不再排序') && dSrc.includes('## 214. ') && /0\.6\.19/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS10 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS10 = vS10.length === 3 ? vS10[0] * 10000 + vS10[1] * 100 + vS10[2] : 0
+  check('OR079 版本号不低于 0.6.19（后续补丁不必回头改这一条）', vNumS10 >= 619, vS10.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

@@ -83,6 +83,7 @@ const STEPS = [
   ['tools/probe-score.mjs', '打分账：顺倒排打分，不再每条×每个问句词查表（倒排记着词频与字段命中位、两条路对拍逐位相同、字段权重仍按每问参数算、换尺子那趟候选先重铺）'],
   ['tools/probe-hydrate.mjs', '水化账：扫描期只铺够定档的瘦回执，入选的 k 条截断后再水化（两条完整路对拍逐字节相同含键序、_di 不泄漏、trimmed 属性在、可选字段照旧省略）'],
   ['tools/probe-cand.mjs', '候选账：倒排下标并集不再用 Set（位图 + 首见序候选表、两处去重、与 Set 算法对拍、倒排开/关两路逐位相同、扩词那条路真的被走到）'],
+  ['tools/probe-band.mjs', '定档账：阈值定档不再全量排序（桶计数排序 + 段扫、桶 0 特判、小端退路只排前 n 个、与排序链 500 组逐位相同、同桶比值 ≥ 0.85、复用缓冲不串味）'],
   ['tools/check-client-bundle.mjs', '组合产物 11 项'],
   ['tools/probe-inject.mjs', 'nebula 常驻注入只剩稳定 RULE'],
   ['tools/check-yaml.mjs', 'profile patch 与 bundles 体检'],
