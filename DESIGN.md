@@ -7839,3 +7839,122 @@ for (const [sess, idxs] of bySess) {
 
 - **PowerShell 生成对拍脚本会把自己坑进去**。`-replace "eng0621.mjs","eng0622.mjs" -replace "eng0622.mjs","eng0623.mjs"` 是链式的——第二跳把刚换好的也换了，`OLD` 与 `NEW` 都指向新引擎，对拍「全绿」但毫无意义；顺手还把中文注释写成 mojibake。改文本一律 `write`/`edit`。
 - **「少读一遍」用眼睛看不出来，得让代码自己报数**。K7a 把 `keywords` 写成 getter 才量到「老写法 4 次 / 新写法 2 次」；否则这条判据只能读源码形状，红不红全靠猜。
+
+## 219. 建索引不再回头查第二次：倒排条目当场记住 + df 由长度摊出来 + 切词不再造字符数组（0.6.24）
+
+**症状**（0.6.23 之后，冷建专项 `--cpu-prof`：10,000 条、三轮清缓存重建 + 一趟预热，总采样 **819.6ms**，约 4 次建索引；`E:\Temp\cmp\prof23cold\CPU.20261124.114729.4304.0.001.cpuprofile`）。共现那一层收干净之后，最贵的几行全落在**建倒排主循环**和**切词的第一行**上：
+
+| 位置 | 自证 | 每次建索引折算 | 干什么 |
+| --- | --- | --- | --- |
+| `vendor/meow-memory/lib/index.js:3447` | 36.0ms | 9.0ms | `df.set(t, (df.get(t) ?? 0) + 1)` 首见时数「这个词出现在几条」 |
+| `vendor/meow-memory/lib/index.js:3474` | 26.5ms | 6.6ms | `const p = postings.get(t)` 收尾那趟回头取倒排条目 |
+| `vendor/meow-memory/lib/index.js:3476` | 22.3ms | 5.6ms | `p.t.push(...)` 逐词两趟 `Set.has` 判字段命中 |
+| `vendor/meow-memory/lib/index.js:3446` | 21.2ms | 5.3ms | `m.set(t, 1)` 首见写下词频 |
+| `vendor/meow-memory/lib/index.js:3448` | 15.9ms | 4.0ms | 首见分支里的 `postings.set(t, …)` |
+| `vendor/meow-memory/lib/index.js:3444` | 14.8ms | 3.7ms | 主循环头 |
+| `vendor/meow-memory/lib/index.js:2017` | 21.5ms | 5.4ms | 会话主题 `tf.set(t, (tf.get(t) ?? 0) + 1)` |
+| `vendor/meow-memory/lib/index.js:2018` | 16.1ms | 4.0ms | 会话主题 `if (stamp.get(t) !== ord)` 判重 |
+| `vendor/meow-memory/lib/index.js:1681` | 38.5ms | 9.6ms | 切词 `Array.from(text.normalize("NFKC"))` |
+
+函数级：`buildSearchIndex` **240.6ms / 29.4%**、`sessionTopicTerms` **83.9ms**、`tokenizeSegs` **76.9ms**、GC **73.3ms**。
+
+**病根三条**：
+
+1. **同一个「第一次见」被记了三遍**。一个（条, 词）对首见时要付 `m.get` 判首见、`df.get` + `df.set` 数条数、`postings.get` 取条目——四笔哈希。可 `df[t]` 与 `postings[t].d.length` 恒等：两边都只在「这条第一次见」时各 +1。df 是白记一遍，而且记的是同一个数。
+2. **收尾那趟又回头看第二次**。落 `p.f`（词频）与 `p.t`（字段命中位）时按词再 `postings.get(t)` 一次，只为拿到首见那一瞬间手里就已经有的指针。
+3. **切词把整串拆成一堆单字符**。`Array.from` 只为了按下标判类；一万条 × 三个字段 × 每字段三十字上下，单字符字符串对象、随后的 `slice(i, j)` 与 `join("")` 全是白造，还各自变成 GC 的账。
+
+**处方三条**：
+
+- **倒排条目当场记住**：加一只复用的 `refs` 数组，首见时把 `p` 记进去，下标正好等于 `m` 的插入序；收尾那趟按下标直接取，不回查。
+
+```js
+  const refs = postings === null ? null : [];
+  for (let di = 0; di < docToks.length; di++) {
+    const m = new Map();
+    let refN = 0;
+    …
+        m.set(t, 1);
+        if (refs === null) df.set(t, (df.get(t) ?? 0) + 1);
+        else {
+          let p = postings.get(t);
+          if (p === void 0) { p = { d: [di], f: [], t: [] }; postings.set(t, p); }
+          else p.d.push(di);
+          refs[refN++] = p;          // 首见那一刻就把指针收好
+        }
+    …
+    if (postings !== null) {
+      let k = 0;
+      for (const [t, v] of m) { const p = refs[k++]; p.f.push(v); p.t.push(…); }
+      refs.length = 0;               // 同一只数组，每换一条只把长度归零
+    }
+```
+
+- **df 由倒排长度摊出来**：有倒排时不再逐词 `df.get` + `df.set`，循环结束后一次摊平；关掉倒排（`opts.inverted === false`）那条支路保留内联计数。
+
+```js
+  if (postings !== null) for (const [t, p] of postings) df.set(t, p.d.length);
+```
+
+- **切词改成按下标走**：`codePointAt` 判码点宽度（> 0xFFFF 的星外字符占两位），段边界按「连续同类码点」推进，`s.slice(i, j)` 直接切出来；汉字段仍在段内按码点两两成词。
+
+```js
+function tokenizeSegs(text) {
+  const s = text.normalize("NFKC");
+  const out = [];
+  const nS = s.length;
+  let i = 0;
+  while (i < nS) {
+    const w0 = s.codePointAt(i) > 65535 ? 2 : 1;
+    const cls = clsCode(w0 === 1 ? s[i] : s.slice(i, i + 2));
+    if (cls === CLS_SKIP) { i += w0; continue; }
+    let j = i + w0;
+    while (j < nS && clsCode(s.codePointAt(j) > 65535 ? s.slice(j, j + 2) : s[j]) === cls) {
+      j += s.codePointAt(j) > 65535 ? 2 : 1;
+    }
+    if (cls === CLS_CJK) { /* 段内按码点两两成词 */ } else out.push(s.slice(i, j).toLowerCase());
+    i = j;
+  }
+  return out;
+}
+```
+
+顺带把会话主题那张戳表也收了：`tf` 每跨一个会话就是新的，`tf.get(t) === void 0` 本身就等于「这个词在这个会话第一次见」，一次查找兼两用，`stamp` 与 `ord` 两个变量一起消失（不足门槛的会话照样只借 tf 当判重账、不登记进 `tfBySess`）。
+
+**为什么逐位不变**：
+
+- **`refs` 的下标就是 `m` 的插入序**。`m` 的每一个键都对应一次首见，而首见必然 `refN` +1；正文支路与关键词支路共用同一只 `refN`，所以 `for (const [t, v] of m)` 走到的第 k 个键，正好是 `refs[k]`。`p.f` / `p.t` 的落盘顺序与老写法按词回查的顺序完全一致。
+- **`df[t] === postings[t].d.length` 是恒等式**。`d` 只在首见 push 一次（新条目 `d: [di]` 也算一次），df 也只在首见 +1；键序两边都是首次出现顺序，所以摊出来的 Map 逐键逐值逐序相同。
+- **切词的语义由分类函数定义，不由遍历方式定义**。`Array.from` 的每个元素是「一个码点」，下标版用 `codePointAt` 判宽 + `slice` 取同样的一段；孤立代理项在两边都是「宽度 1 的一个元素」，`> 65535` 的判断不会把它误当成两宽（0xD800–0xDFFF 的码点值是它自己，不是组合后的星外码点）。
+
+**读数**（同一台机器、同一天，先跑对拍再跑量具）：
+
+| 量具 | 0.6.23 | 0.6.24 | 变化 |
+| --- | --- | --- | --- |
+| `warmab24.mjs` 冷建中位（同进程交替 7 轮，N=10,000） | 174.46ms | **149.27ms** | **−14.4%** |
+| 热查中位（Q=300，每问） | 1.892ms | 1.916ms | 噪声内（索引内容逐位相同，工总量不变） |
+| `prof012b.mjs` `coldMs` 三趟 | 168.05 / 170.35 / 175.00 | **147.51 / 146.68 / 157.09** | −12% 上下 |
+| `prof012b.mjs` `totalMs` 三趟 | 724.2 / 785.9 / 726.5 | **637.1 / 617.1 / 622.7** | −13% 上下 |
+| `prof012b.mjs` `perMs` 三趟 | 2.414 / 2.620 / 2.422 | **2.124 / 2.057 / 2.076** | 随冷建与机器状态同步 |
+| 冷建专项总采样 | 819.6ms | **741.7ms** | −9.5% |
+
+函数级变化：`tokenizeSegs` 87.1 → **61.7ms**、`sessionTopicTerms` 83.9 → **54.7ms**、`buildSearchIndex` 240.6 → **195.8ms**；`df.set(t, p.d.length)` 那一行（`:3519`）连行视图前 34 都进不去（< 4.4ms），`postings.get` 只剩首见那一段的 25.3ms（`:3471`），收尾那趟的 26.5ms 彻底消失。
+
+**质量**：`E:\Temp\cmp\final.mjs` 与 v0.5.0 逐行一致（照抄 0.921 / 换说法 0.417 / 时间锚 0.500，两条 `#2 → #1` 不变，「0.6.0 关 与 v0.5.0 逐位相同？ true」）；`E:\Temp\cmp\ab22.mjs` 1,986 题 × 5,882 条 **0 mismatch**；`colddiff24.mjs`（0.6.23 引擎 vs 0.6.24 引擎，20 条合成 + 1,451 条 LoCoMo，11 组开关）**462 项 0 mismatch**；`tokdiff24.mjs`（切词逐位：0.6.23 的 Array.from 版当尺子）**15,810 项 0 mismatch**。
+
+**判据**：
+
+- `tools/probe-cold.mjs` 加 **C6 / C7** 两档（6 → 8 条，`8/8`）：C6 切词逐位（52 例 · 440 token，含星外字、emoji、孤立代理项、NFKC 全角合字、超长串）+ 「不再造字符数组」的形状；C7 df 摊出来（df 恒等于倒排长度、与关掉倒排那条支路逐位相同、`f`/`t` 与 `d` 同下标、每条只回查一次倒排的形状）。
+- `verify.mjs` 加 **OR084 六条**：C6/C7 在位与挂线 / 引擎五件（倒排条目只查一次、收尾按下标回填、df 由倒排长度摊出来、切词不再造字符数组、会话主题借 tf 判重）/ 进程内切词逐位（用引擎自己的 `classify` 配一份 `Array.from` 老实现当尺子，另单钉「星外二元组按码点拼」）/ 进程内 df 恒等与开合支路一致 / 文档在位 / 版本号不低于 0.6.24。
+- 顺带把 0.6.23 那条判据里跟着源码走的一处改到新形状：`会话主题一趟算完` 原来断言 `stamp.get(t) !== ord`，0.6.24 把 `stamp` 收掉了，断言改成 `const c = tf.get(t);` + `} else tf.set(t, c + 1);`——**语义（tf 与跨会话数一趟算完）没动，改的是源码形状**。
+
+**不许省的三条**：
+
+- **`refs` 必须是同一只数组、每换一条只归零**。给每条配一只小数组的话，一万次分配会把首见路径省下的查找钱吃掉一大半（省的是哈希，不是分配）。
+- **df 只能有一个来源**。开着倒排时若还在首见段里写 df，`df[t]` 与 `postings[t].d.length` 就有两个写者，关倒排与开倒排两条支路的 df 会分叉，C7 立刻红。
+- **星外字必须按码点宽走**。按 UTF-16 单元切片会把 `𠀀` 拼成半个代理项，二元组全变；`> 65535 ? 2 : 1` 这一判不能省。
+
+**踩坑两条**：
+
+- **形状判据得先剥注释**。注释里明写着「不再 `Array.from(...)`」，`includes('Array.from(')` 直接红；C6/C7 都先滤掉 `//` 开头的行再看代码。同理 `postings.get(t)` 的计数也被注释里的提及污染过。
+- **孤立代理项不能当两宽**。`'\ud800'.codePointAt(0)` 返回 `0xD800`（不是组合码点），宽度必须按 `> 65535` 判、不能按 `>= 0xD800` 判；这一条被 `tokdiff24` 的 `'\uD800\uDFFF\uD800a'` 用例钉住。

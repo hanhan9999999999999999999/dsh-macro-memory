@@ -88,6 +88,8 @@ function segsOf(text, cls) {
   // 所以形状检查盯它；tokenize 现在只是一行包装。
   const body = ENGINE.slice(ENGINE.indexOf('function tokenizeSegs(text) {'));
   const tokBody = body.slice(0, body.indexOf('\n}\n'));
+  // 形状判据要先剥注释：老写法的解释（`不再 `Array.from(normalize(...))`）仍留在 `//` 里。
+  const tokCode = tokBody.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n');
   const wrapper = ENGINE.slice(ENGINE.indexOf('function tokenize(text) {'));
   const wrapperBody = wrapper.slice(0, wrapper.indexOf('\n}\n'));
   const cjkLine = (seg.match(/^var CJK = (.*)$/m) || ['', ''])[1];
@@ -101,10 +103,12 @@ function segsOf(text, cls) {
     fastPath: seg.includes('if (cp.length === 1) {') && seg.includes('return t[cp.charCodeAt(0)];'),
     fallback: seg.includes('if (CJK.test(cp)) return CLS_CJK;'),
     wrapper: /function classify\(cp\) \{\n {2}var k = clsCode\(cp\);/.test(seg),
-    tokNumeric: tokBody.includes('const cls = clsCode(cps[i]);') && tokBody.includes('if (cls === CLS_SKIP) {') && tokBody.includes('while (j < nCp && clsCode(cps[j]) === cls) j++;') && tokBody.includes('if (cls === CLS_CJK) {'),
-    tokNoRegex: tokBody.includes('classify(') === false,
+    // [0.6.24] 切段循环从「先 Array.from 成码点数组、再按下标比」改成在归一后的字符串上按下标走，
+    // 形状关键词随之从 `cps[i]` / `nCp` 变成 `s.codePointAt(i)` / `nS`；守的仍是「数值比较、不调 classify」。
+    tokNumeric: tokCode.includes('const cls = clsCode(') && tokCode.includes('if (cls === CLS_SKIP) {') && tokCode.includes('=== cls)') && tokCode.includes('if (cls === CLS_CJK) {'),
+    tokNoRegex: tokCode.includes('classify(') === false,
     tokWrap: wrapperBody.includes('return finishToks(tokenizeSegs(text));'),
-    nCp: tokBody.includes('const nCp = cps.length;'),
+    strIndex: tokCode.includes('const nS = s.length;') && tokCode.includes('Array.from(') === false,
     regeces: cjkLine.includes('\\p{Script=Han}') && wordLine.includes('\\p{L}'),
   };
   const bad = Object.keys(shape).filter((k) => !shape[k]);

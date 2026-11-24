@@ -9141,7 +9141,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     '检索自答: 判据取「多数」（latin*2 >= tokens），夹一个 RRF 不该触发 Porter；CJK 二元组不动',
     meowSrc121.includes('latin * 2 >= tokens.length') &&
       meowSrc121.includes('/^[a-z]+$/.test(t)') &&
-      meowSrc121.includes('out.push(run[k] + run[k + 1]);'),
+      // [0.6.24] 切词改按下标走之后，二元组那句从 `out.push(run[k] + run[k + 1]);` 变成
+      // 「上一字 + 这一字」两个游标（`out.push(prev + cur);` + `prev = cur;`）——串相同，守的是同一件事。
+      meowSrc121.includes('out.push(prev + cur);') &&
+      meowSrc121.includes('prev = cur;'),
   )
   check(
     '检索自答: 元数据透传是「有才带」（老调用方没这些字段时不许硬塞 undefined）',
@@ -12723,7 +12726,12 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       MWz.includes('plainToks[i] = kwSep') &&
       MWz.includes(': finishToks(ts.concat(cs, kwList(d).flatMap((w) => tokenizeSegs(String(w ?? \'\')))));'),
   )
-  check('WZ3 关键词计数按 kwTfW 打折写进同一张 df 表（候选资格不掉）', MWz.includes('m.set(t, (m.get(t) ?? 0) + kwTfW);'))
+  // [0.6.24] 首见判据统一到 `const cur = m.get(t)` 之后，这条写入变成「首见写 kwTfW / 再见累加 cur」
+  // 两句——守的仍是「关键词按 kwTfW 打折、且进的是同一张 m（进而同一张 df），候选资格不掉」。
+  check(
+    'WZ3 关键词计数按 kwTfW 打折写进同一张 df 表（候选资格不掉）',
+    MWz.includes('m.set(t, kwTfW);') && MWz.includes('m.set(t, cur + kwTfW);') && MWz.includes('const cur = m.get(t);'),
+  )
   check(
     'WZ4 0.2.133 的字段加成还在（FIELD_KW_W 可调，默认读 FIELD_KW_W_DEF = 0.6）',
     MWz.includes('const FIELD_KW_W = Number.isFinite(opts.fieldKwW) ? opts.fieldKwW : FIELD_KW_W_DEF;') &&
@@ -13881,8 +13889,11 @@ dt063: {
     单码点快路: ENGINE_L.includes('if (cp.length === 1) {') && ENGINE_L.includes('return t[cp.charCodeAt(0)];'),
     星外退路: ENGINE_L.includes('if (CJK.test(cp)) return CLS_CJK;') && ENGINE_L.includes('if (WORD.test(cp)) return CLS_WORD;'),
     包装仍在: /function classify\(cp\) \{\n {2}var k = clsCode\(cp\);/.test(ENGINE_L),
-    切段数值比较: tokBodyL.includes('const cls = clsCode(cps[i]);') && tokBodyL.includes('if (cls === CLS_SKIP) {') &&
-      tokBodyL.includes('while (j < nCp && clsCode(cps[j]) === cls) j++;') && tokBodyL.includes('if (cls === CLS_CJK) {'),
+    // [0.6.24] 切段循环从「先 Array.from 成码点数组、再按下标比」改成在归一后的字符串上按下标走
+    // （`cps[i]` / `clsCode(cps[j]) === cls` 随之消失）。这里守的仍是一件事：**段边界用数值比较推进**，
+    // 不是字符串比较、也不是再调 classify；切词那段的具体形状由 OR084 的 `切词不再造字符数组` 兜。
+    切段数值比较: tokBodyL.includes('const cls = clsCode(') && tokBodyL.includes('if (cls === CLS_SKIP) {') &&
+      tokBodyL.includes('=== cls)') && tokBodyL.includes('if (cls === CLS_CJK) {'),
     不再走字符串: tokBodyL !== '' && tokBodyL.includes('classify(') === false,
   }
   const missL = Object.keys(partsL).filter((k) => !partsL[k])
@@ -14105,7 +14116,7 @@ dt063: {
       coocD.includes('} else rowA.set(b, (rowA.get(b) ?? 0) + ww);') &&
       coocD.includes('bumpIn(projPairs, b, a, ww);'),
     会话主题一趟算完: sessD.includes('const tfBySess = /* @__PURE__ */ new Map();') &&
-      sessD.includes('const stamp = /* @__PURE__ */ new Map();') && sessD.includes('if (stamp.get(t) !== ord) {'),
+      sessD.includes('const c = tf.get(t);') && sessD.includes('} else tf.set(t, c + 1);'),
     每会话不再造Set: sessD.includes('new Set()') === false && sessD.includes('for (const t of seen) sessDf.set') === false,
     排名口径字面不变: sessD.includes('f * Math.log(1 + total / (sessDf.get(t) ?? 1))'),
   }
@@ -14172,6 +14183,147 @@ dt063: {
   const vS14 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS14 = vS14.length === 3 ? vS14[0] * 10000 + vS14[1] * 100 + vS14[2] : 0
   check('OR083 版本号不低于 0.6.23（后续补丁不必回头改这一条）', vNumS14 >= 623, vS14.join('.'))
+}
+
+// 0.6.24：建索引不再「回头查第二次」，切词不再造一堆单字符（见 INTERNAL 9.223 / DESIGN 219）。
+// 注：0.6.23 那条判据里的「会话主题一趟算完」跟着源码走到 0.6.24 的形状（tf 兼作判重账、
+// 判据本身没提的「stamp」不再存在），语义仍是「tf 与跨会话数一趟算完」。
+{
+  const MvE = await import('./vendor/meow-memory/lib/index.js')
+  const ENGINE_E = readFileSync(new URL('./vendor/meow-memory/lib/index.js', import.meta.url), 'utf8')
+  const PROBE_E = readFileSync(new URL('./tools/probe-cold.mjs', import.meta.url), 'utf8')
+  const eLabels = PROBE_E.includes('C6 切词逐位') && PROBE_E.includes('C7 df 摊出来')
+  check(
+    'OR084 冷建探针 C6/C7 在位（切词逐位对拍 / df 由倒排长度摊出来），与 C0–C5 同支同挂线',
+    eLabels && readFileSync(new URL('./tools/check-all.mjs', import.meta.url), 'utf8').includes("'tools/probe-cold.mjs'"),
+    `标签 ${eLabels}`,
+  )
+
+  const iBegin = ENGINE_E.indexOf('function buildSearchIndex(docs, opts = {}, sig = null) {')
+  const iBody = iBegin < 0 ? '' : ENGINE_E.slice(iBegin, ENGINE_E.indexOf('\n}\n', iBegin))
+  const iCode = iBody.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+  const segBody = (() => {
+    const a = ENGINE_E.indexOf('function tokenizeSegs(text) {')
+    return a < 0 ? '' : ENGINE_E.slice(a, ENGINE_E.indexOf('function finishToks(out) {', a))
+  })()
+  const segCode = segBody.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+  const sessE = (() => {
+    const a = ENGINE_E.indexOf('function sessionTopicTerms(docs, docToks) {')
+    return a < 0 ? '' : ENGINE_E.slice(a, ENGINE_E.indexOf('\nfunction recencyWeight', a))
+  })()
+  // [0.6.24] 形状判据必须先剥注释：老戳表的解释仍留在 `//` 里（`stamp.get(t) !== ord`），
+  // 不剥就会拿「注释里提过 stamp」当成「代码里还有 stamp」。
+  const sessCode = sessE.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n')
+  const partsE = {
+    倒排条目只查一次: iCode.includes('const refs = postings === null ? null : [];') &&
+      iCode.includes('refs[refN++] = p;') && (iCode.match(/postings\.get\(t\)/g) ?? []).length === 2 &&
+      iCode.includes('postings?.get(') === false,
+    收尾按下标回填: iCode.includes('let refN = 0;') && iCode.includes('const p = refs[k++];') &&
+      iCode.includes('refs.length = 0;'),
+    df由倒排长度摊出来: iCode.includes('if (postings !== null) for (const [t, p] of postings) df.set(t, p.d.length);') &&
+      (iCode.match(/df\.set\(t, \(df\.get\(t\) \?\? 0\) \+ 1\)/g) ?? []).length === 2,
+    切词不再造字符数组: segCode.includes('Array.from(') === false && segCode.includes('const s = text.normalize("NFKC");') &&
+      segCode.includes('const w0 = s.codePointAt(i) > 65535 ? 2 : 1;') && segCode.includes('out.push(prev + cur);'),
+    会话主题借tf判重: sessCode.includes('const tf = /* @__PURE__ */ new Map();') && sessCode.includes('const c = tf.get(t);') &&
+      sessCode.includes('if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);') && sessCode.includes('stamp') === false,
+  }
+  const missE = Object.keys(partsE).filter((k) => !partsE[k])
+  check(
+    'OR084 引擎里建索引不再回头查第二次：倒排条目随首见记进 refs、收尾按下标回填；df 由倒排长度摊出来；切词改成下标走、不再 Array.from',
+    missE.length === 0,
+    missE.length === 0 ? `${Object.keys(partsE).length} 件在位` : `缺 ${missE.join(' / ')}`,
+  )
+
+  // 进程内：切词逐位——用引擎自己的分类函数配一份 Array.from 老实现当尺子
+  let segOkE = false
+  let segDetailE = ''
+  try {
+    const segSrc = (() => {
+      const a = ENGINE_E.indexOf('var CJK = ')
+      const b = ENGINE_E.indexOf('function docText(d) {')
+      return a < 0 || b <= a ? '' : ENGINE_E.slice(a, b)
+    })()
+    const LEX = new Function(`${segSrc}\nreturn { classify, tokenizeSegs };`)()
+    const refSegs = (text) => {
+      const cps = Array.from(text.normalize('NFKC'))
+      const out = []
+      let i = 0
+      while (i < cps.length) {
+        const c = LEX.classify(cps[i])
+        if (c === 'skip') {
+          i += 1
+          continue
+        }
+        let j = i + 1
+        while (j < cps.length && LEX.classify(cps[j]) === c) j += 1
+        const run = cps.slice(i, j)
+        if (c === 'cjk') {
+          if (run.length >= 2) for (let k = 0; k + 1 < run.length; k += 1) out.push(run[k] + run[k + 1])
+        } else out.push(run.join('').toLowerCase())
+        i = j
+      }
+      return out
+    }
+    const corpusE = [
+      '', ' ', '中', 'a', '中文分词测试', 'the quick brown fox', '中英混 mixed 123 abc',
+      '𠀀𪚥𠀀𪚥 astral 中文', '😀😀 emoji 中文', '\uD800\uDFFF\uD800a 孤立代理项',
+      'ＡＢＣ ａｂｃ １２３ 全角', 'ﬁ ﬀ ﬁne 合字', '日本語のテキスト ｶﾀｶﾅ', '한국어 텍스트',
+      'x'.repeat(200) + '中文'.repeat(80), '零宽\u200B字符\u200D混排', '中文，标点。English. test；；分号',
+    ]
+    let badE = 0
+    for (const s of corpusE) {
+      if (JSON.stringify(refSegs(s)) !== JSON.stringify(LEX.tokenizeSegs(s))) badE += 1
+    }
+    // 星外字的二元组必须按码点拼（拼成单个代理项就是错的），单独钉一条
+    const astralOk = JSON.stringify(LEX.tokenizeSegs('中文𠀀𪚥')) === JSON.stringify(['中文', '文𠀀', '𠀀𪚥'])
+    segOkE = badE === 0 && astralOk
+    segDetailE = `${corpusE.length} 串 · 不一致 ${badE} · 星外二元组 ${astralOk}`
+  } catch (e) {
+    segDetailE = String(e && e.message)
+  }
+  check('OR084 进程内：切词与 Array.from 老实现逐 token 相同（星外字按码点成词、孤立代理项不抛、NFKC 全角合字先归一）', segOkE, segDetailE)
+
+  // 进程内：df 恒等于倒排长度，且与关掉倒排那条支路逐位相同（键序也同）
+  let dfOkE = false
+  let dfDetailE = ''
+  try {
+    const edoc = (id, title, content, keywords) => ({
+      id, project: 'pe', title, content, keywords, level: 'fact', importance: 2,
+      created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z',
+      last_accessed_at: '2026-11-20T00:00:00Z', status: 'active', source_session: 'se',
+    })
+    const eds = [
+      edoc('d1', '基线要跑几轮才收敛', '自检基线 跑两趟 三趟 才收敛 收敛 收敛', ['基线', '收敛']),
+      edoc('d2', '', '', []),
+      edoc('d3', '同一个词重复很多次', '重复 重复 重复 重复 重复', ['重复', '重复']),
+      edoc('d4', 'KvNet probe', 'kvnet 😀𠀀𪚥 astral 全角ＡＢＣ', '逗号,分隔'),
+    ]
+    MvE.clearSearchIndexCache()
+    const on = MvE.searchIndexOf(eds, {})
+    MvE.clearSearchIndexCache()
+    const off = MvE.searchIndexOf(eds, { inverted: false })
+    let badDf = 0
+    for (const [t, p] of on.postings) if (on.df.get(t) !== p.d.length) badDf += 1
+    let misalign = 0
+    for (const [, p] of on.postings) if (p.d.length !== p.f.length || p.d.length !== p.t.length) misalign += 1
+    const sameDf = off.postings === null && JSON.stringify([...on.df]) === JSON.stringify([...off.df])
+    dfOkE = badDf === 0 && misalign === 0 && sameDf
+    dfDetailE = `df ${on.df.size} 词 · 不等 ${badDf} · 错位 ${misalign} · 关倒排同序同值 ${sameDf}`
+  } catch (e) {
+    dfDetailE = String(e && e.message)
+  }
+  check('OR084 进程内：df 恒等于倒排长度（f/t 与 d 对齐）、与关掉倒排那条支路逐位相同（键序同）', dfOkE, dfDetailE)
+
+  check(
+    'OR084 文档在位：INTERNAL 9.223 写了「建索引不再回头查第二次」，README 写了「建索引不再回头查第二次」，DESIGN 有 ## 219.，PLAN 有 0.6.24',
+    readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.223 ') &&
+      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('建索引不再回头查第二次') &&
+      readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 219. ') &&
+      /0\.6\.24/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
+  )
+  const vS15 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS15 = vS15.length === 3 ? vS15[0] * 10000 + vS15[1] * 100 + vS15[2] : 0
+  check('OR084 版本号不低于 0.6.24（后续补丁不必回头改这一条）', vNumS15 >= 624, vS15.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）

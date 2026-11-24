@@ -12729,3 +12729,97 @@ if (stamp.get(t) !== ord) { stamp.set(t, ord); sessDf.set(t, (sessDf.get(t) ?? 0
 ### 9.222.7 下一版候选
 
 `search` 227.3 / 17.5%、`buildSearchIndex` 131.0、`indexSignature` 127.3、GC 123.5、`scoreCandSet` 117.8、`setBandsByThreshold` 104.9、`buildCoocSyn` 44.5、`tokenizeSegs` 44.4、`sessionTopicTerms` 40.0。
+
+## 9.223 0.6.24：建索引不再回头查第二次
+
+### 9.223.1 症状
+
+- 读数来源：冷建专项 `E:\Temp\cmp\prof23cold\CPU.20261124.114729.4304.0.001.cpuprofile`（10,000 条、三轮清缓存重建 + 一趟预热，约 4 次建索引，总采样 **819.6ms**）。共现层（0.6.23）收干净之后，贵处挪到了倒排主循环与切词的第一行。
+- 函数级：`buildSearchIndex` **240.6ms / 29.4%**、`sessionTopicTerms` **83.9ms**、`tokenizeSegs` **76.9ms**、GC **73.3ms**、`buildCoocSyn` 71.4ms。
+- 行级（`vendor/meow-memory/lib/index.js`）：`:3447` **36.0ms**（`df.set(t, (df.get(t) ?? 0) + 1)`）、`:3474` **26.5ms**（收尾那趟 `const p = postings.get(t)`）、`:3476` **22.3ms**（`p.t.push(...)` 里两趟 `Set.has`）、`:3446` **21.2ms**（`m.set(t, 1)`）、`:2017` **21.5ms**（会话主题 `tf.set`）、`:2018` **16.1ms**（`if (stamp.get(t) !== ord)`）、`:3448` **15.9ms**、`:3444` **14.8ms**、`:1681` **38.5ms**（切词 `Array.from(text.normalize("NFKC"))`）。
+
+### 9.223.2 病根
+
+1. **「第一次见」被记三遍**：一个（条, 词）对首见要付 `m.get` 判首见、`df.get` + `df.set` 数条数、`postings.get` 取条目——四笔哈希。而 `df[t]` 与 `postings[t].d.length` 是同一个数（两边都只在首见 +1），df 是白记一遍。
+2. **收尾那趟回头看第二次**：落 `p.f`（词频）与 `p.t`（字段命中位）时按词再 `postings.get(t)` 一次，只为拿首见那一瞬间手里就已经有的指针。
+3. **切词把整串拆成一堆单字符**：`Array.from` 只为按下标判类；一万条 × 三个字段 × 每字段三十字上下，单字符字符串、随后的 `slice` 与 `join("")` 全是白造，还都变成 GC 的账。
+4. **会话主题的戳表是第二本账**：`tf` 每跨一个会话就是新的，再单独维护 `stamp` + `ord` 判「这个词这个会话第一次见」，每个 token 多付一次哈希。
+
+### 9.223.3 处方
+
+倒排条目当场记住——`refs` 是同一只数组、每换一条只把长度归零，下标正好等于 `m` 的插入序：
+
+```js
+const refs = postings === null ? null : [];
+…
+    m.set(t, 1);
+    if (refs === null) df.set(t, (df.get(t) ?? 0) + 1);
+    else {
+      let p = postings.get(t);
+      if (p === void 0) { p = { d: [di], f: [], t: [] }; postings.set(t, p); }
+      else p.d.push(di);
+      refs[refN++] = p;
+    }
+…
+      let k = 0;
+      for (const [t, v] of m) { const p = refs[k++]; p.f.push(v); p.t.push(…); }
+      refs.length = 0;
+```
+
+df 由倒排长度摊出来（关掉倒排那条支路保留内联计数）：
+
+```js
+if (postings !== null) for (const [t, p] of postings) df.set(t, p.d.length);
+```
+
+切词改成按下标走（码点宽度按 `> 65535` 判，段边界按「连续同类码点」推进，`slice` 直接切）：
+
+```js
+const s = text.normalize("NFKC");
+const w0 = s.codePointAt(i) > 65535 ? 2 : 1;
+const cls = clsCode(w0 === 1 ? s[i] : s.slice(i, i + 2));
+```
+
+会话主题借 `tf` 判重（`stamp` / `ord` 一起消失，不足门槛的会话只借 tf 当判重账、不登记进 `tfBySess`）：
+
+```js
+const c = tf.get(t);
+if (c === void 0) { tf.set(t, 1); sessDf.set(t, (sessDf.get(t) ?? 0) + 1); }
+else tf.set(t, c + 1);
+…
+if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);
+```
+
+### 9.223.4 读数
+
+| 项 | 0.6.23 | 0.6.24 | 变化 |
+| --- | --- | --- | --- |
+| 冷建专项总采样（4 次重建） | 819.6ms | **741.7ms** | **−9.5%** |
+| 冷建（同进程 7 轮交替中位） | 174.46ms | **149.27ms** | **−14.4%** |
+| 热查（同进程） | 1.892ms | 1.916ms | 噪声内（索引逐位相同） |
+| 官方表 `coldMs` 三趟 | 168.05 / 170.35 / 175.00 | **147.51 / 146.68 / 157.09** | −12% 上下 |
+| 官方表 `totalMs` 三趟 | 724.2 / 785.9 / 726.5 | **637.1 / 617.1 / 622.7** | −13% 上下 |
+| `tokenizeSegs` 自证 | 87.1ms | **61.7ms** | −29% |
+| `sessionTopicTerms` 自证 | 83.9ms | **54.7ms** | −35% |
+| `buildSearchIndex` 自证 | 240.6ms | **195.8ms** | −19% |
+| `postings.get` 收尾那趟 | 26.5ms | 0（只剩首见那一段 25.3ms） | 消失 |
+| `df.set` 逐词记数 | 36.0ms | 0（改成一次摊，落点 < 4.4ms） | 消失 |
+
+### 9.223.5 判据
+
+- `tools/probe-cold.mjs` 加 **C6 / C7**（6 → 8 条，`8/8`）：C6 切词逐位（52 例 · 440 token，含星外字 / emoji / 孤立代理项 / NFKC 全角合字 / 超长串）+ 「不再造字符数组」的形状；C7 df 摊出来（df 恒等于倒排长度、与关掉倒排那条支路逐位相同、`f`/`t` 与 `d` 同下标、每条只回查一次倒排的形状）。
+- `verify.mjs` 加 **OR084 六条**：C6/C7 在位与挂线 / 引擎五件（倒排条目只查一次、收尾按下标回填、df 由倒排长度摊出来、切词不再造字符数组、会话主题借 tf 判重）/ 进程内切词逐位（引擎自己的 `classify` 配一份 `Array.from` 老实现当尺子 + 星外二元组单钉）/ 进程内 df 恒等与开合支路一致 / 文档在位 / 版本号不低于 0.6.24。
+- `verify.mjs` OR083 里跟着源码走的一处改到新形状：`会话主题一趟算完` 从断言 `stamp.get(t) !== ord` 改成 `const c = tf.get(t);` + `} else tf.set(t, c + 1);`——语义（tf 与跨会话数一趟算完）没动。
+- 对拍：`colddiff24.mjs` **462 项 0 mismatch**（`coocSyn` 键序、`docToks`、`postings`、`tf`、`df`、`titleSets`、`kwSets`、`hayAt`）；`tokdiff24.mjs` **15,810 项 0 mismatch**（37 条刁钻串 + 7,868 条 LoCoMo 真语料，`tokenizeSegs` 与 `tokenize` 两条路）。
+
+### 9.223.6 账
+
+- 断言：3,819 → **3,827**（`probe-cold` 6 → 8 计 +2，`verify` 新增 OR084 六条计 +6；以 MT068 实测为准）。
+- 文档：`DESIGN.md` 加 `## 219.`（+6,264 字符，305,531 → 311,795）、本段 `## 9.223`、`README.md` 里程碑段与自证规模行、`docs/PLAN-0.6.md` 0.6.24 行、`docs/EVAL-CLAIMS.md` 的数字与「关于「3,827」的来路」。
+- 备份：`D:\备份\20261124-1230-0.6.24引擎\`（引擎、`verify.mjs`、`probe-cold.mjs`、`probe-cooc.mjs`、`package.json` 与四份文档）。还原办法：`.bak` 按同名拷回 `D:\dsh-home\vendor\dsh-macro-memory\` 对应路径。
+
+### 9.223.7 下一版候选
+
+- **字段命中位那两趟 `Set.has`**（0.6.24 之后 `:3510` 仍有 18.7ms）：标题集与关键词集都只有两三个词，却要对这一条的每个词各查两个 `Set`；可先把两个小集并成一张「词 → 位」的小表，落盘时每词只查一次。
+- **`bumpIn :3307` 45.9ms**（共现权重累加）与 `shareHan :3297` 22.0ms：已经是「一对词一次」的口径，下一步只能动数据结构（例如按项目批量把 `Map` 换成扁平数组再合并）。
+- **`sigDocHash` 20.4ms**：每次建索引对每条算一次 FNV 九段，签名比对已在 0.6.19–0.6.20 收过；若继续压，得考虑「内容没变就沿用上一条的哈希」。

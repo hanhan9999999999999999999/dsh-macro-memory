@@ -1678,25 +1678,41 @@ function isMostlyLatin(tokens) {
 // （isMostlyLatin → normalizeEn）看的是整张词表的成分比例。分开之后建索引时一个字段只分段一遍，
 // 需要成词的地方再各自补一次英文化——原来 content 段两遍、title 段两遍、keywords 段两遍，白付。
 function tokenizeSegs(text) {
-  const cps = Array.from(text.normalize("NFKC"));
+  // [macro-fusion 0.6.24] 不再 `Array.from(normalize(...))` 把整串拆成一堆单字符：
+  // 那一步在 --cpu-prof 里独占 39.8ms/5.4%（一万条正文 × 标题 × 关键词，每条 30 字上下，
+  // 每字一个字符串对象，切完还各自 slice / join 回去）。改成在归一后的字符串上按下标走：
+  // 码点宽度用 codePointAt 判（>0xFFFF 的星外字符占两位），段边界按「连续同类码点」推进，
+  // 切出来照样是字符串。逐位结果与 Array.from 版相同（probe-lex 与 colddiff 都钉这一条）。
+  const s = text.normalize("NFKC");
   const out = [];
-  const nCp = cps.length;
+  const nS = s.length;
   let i = 0;
-  while (i < nCp) {
-    const cls = clsCode(cps[i]);
+  while (i < nS) {
+    const w0 = s.codePointAt(i) > 65535 ? 2 : 1;
+    const cls = clsCode(w0 === 1 ? s[i] : s.slice(i, i + 2));
     if (cls === CLS_SKIP) {
-      i++;
+      i += w0;
       continue;
     }
-    let j = i + 1;
-    while (j < nCp && clsCode(cps[j]) === cls) j++;
-    const run = cps.slice(i, j);
+    let j = i + w0;
+    while (j < nS && clsCode(s.codePointAt(j) > 65535 ? s.slice(j, j + 2) : s[j]) === cls) {
+      j += s.codePointAt(j) > 65535 ? 2 : 1;
+    }
     if (cls === CLS_CJK) {
-      if (run.length >= 2) {
-        for (let k = 0; k + 1 < run.length; k++) out.push(run[k] + run[k + 1]);
+      // 汉字段按码点两两成词（与老写法的 run[k] + run[k + 1] 同序同串）
+      let k = i;
+      let w = s.codePointAt(k) > 65535 ? 2 : 1;
+      let prev = s.slice(k, k + w);
+      k += w;
+      while (k < j) {
+        w = s.codePointAt(k) > 65535 ? 2 : 1;
+        const cur = s.slice(k, k + w);
+        out.push(prev + cur);
+        prev = cur;
+        k += w;
       }
     } else {
-      out.push(run.join("").toLowerCase());
+      out.push(s.slice(i, j).toLowerCase());
     }
     i = j;
   }
@@ -2005,23 +2021,23 @@ function sessionTopicTerms(docs, docToks) {
   // 吃的是同一批 token，原来为 sessDf 单独走一遍全部 token、还每个会话造一个 Set。
   // 判重改用一张带会话序号的戳表：`stamp.get(t) !== ord` 就等于「这个词这个会话第一次见」，
   // 一个 Map 顶掉 N 个 Set，逐值结果与老写法相同（sessDf 的键集合、每个词的会话数都不变）。
-  const stamp = /* @__PURE__ */ new Map();
-  let ord = 0;
+  // [macro-fusion 0.6.24] 判重不再另立一张戳表：tf 每跨一个会话就是新的，
+  // `tf.get(t) === void 0` 本身就等于「这个词在这个会话第一次见」——一次查找兼两用，
+  // 每个 token 少付一次哈希。（不足门槛的会话只借 tf 当判重账、不登记进 tfBySess。）
   for (const [sess, idxs] of bySess) {
-    ord++;
-    const tf = idxs.length < SESS_TOPIC_MIN ? null : /* @__PURE__ */ new Map();
+    const tf = /* @__PURE__ */ new Map();
     for (const i of idxs) {
       const toks = docToks[i];
       for (let k = 0; k < toks.length; k++) {
         const t = toks[k];
-        if (tf !== null) tf.set(t, (tf.get(t) ?? 0) + 1);
-        if (stamp.get(t) !== ord) {
-          stamp.set(t, ord);
+        const c = tf.get(t);
+        if (c === void 0) {
+          tf.set(t, 1);
           sessDf.set(t, (sessDf.get(t) ?? 0) + 1);
-        }
+        } else tf.set(t, c + 1);
       }
     }
-    if (tf !== null) tfBySess.set(sess, tf);
+    if (idxs.length >= SESS_TOPIC_MIN) tfBySess.set(sess, tf);
   }
   const out = /* @__PURE__ */ new Map();
   for (const [sess, idxs] of bySess) {
@@ -3436,18 +3452,29 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
   // [macro-fusion 0.6.22] 不再给每条配一个 seen Set：`m` 里「键还不存在」本身就等价于
   // 「这个词这条第一次出现」（两次写入都是 m.set，从来只增不减），一次 m.get 就判完了。
   // 原来每个（条, 词）对要付 m.get + m.set + seen.has + seen.add 四次哈希查找，现在两次。
+  // [macro-fusion 0.6.24] 收尾那趟不再「回头看第二次」：首见时就把倒排条目本身记进 refs
+  // （一条一个位置，下标正好等于 m 的插入序），落词频与命中位时按下标直接取，省掉
+  // `postings.get(t)` 这第二次哈希查找。refs 是同一只数组、每换一条只把 length 归零——
+  // 不为一万条各配一只小数组（那笔 GC 会把省下的钱吃掉）。
+  const refs = postings === null ? null : [];
   for (let di = 0; di < docToks.length; di++) {
     const m = new Map();
     const toks = docToks[di];
+    let refN = 0;
     for (let ti = 0; ti < toks.length; ti++) {
       const t = toks[ti];
       const cur = m.get(t);
       if (cur === void 0) {
         m.set(t, 1);
-        df.set(t, (df.get(t) ?? 0) + 1);
-        const p = postings?.get(t);
-        if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
-        else p.d.push(di);
+        if (refs === null) df.set(t, (df.get(t) ?? 0) + 1);
+        else {
+          let p = postings.get(t);
+          if (p === void 0) {
+            p = { d: [di], f: [], t: [] };
+            postings.set(t, p);
+          } else p.d.push(di);
+          refs[refN++] = p;
+        }
       } else m.set(t, cur + 1);
     }
     if (kwToks !== null) {
@@ -3456,28 +3483,40 @@ function buildSearchIndex(docs, opts = {}, sig = null) {
         const t = kts[ti];
         // 关键词支路只在首见时记 df / 倒排；词频照老口径一行写成「打折后累加」，
         // 与正文支路的 cur + 1 同义（0.6.22 起正文支路才走 `m.get` 首见判据）。
-        if (m.get(t) === void 0) {
-          df.set(t, (df.get(t) ?? 0) + 1);
-          const p = postings?.get(t);
-          if (p === void 0) postings?.set(t, { d: [di], f: [], t: [] });
-          else p.d.push(di);
-        }
-        m.set(t, (m.get(t) ?? 0) + kwTfW);
+        const cur = m.get(t);
+        if (cur === void 0) {
+          if (refs === null) df.set(t, (df.get(t) ?? 0) + 1);
+          else {
+            let p = postings.get(t);
+            if (p === void 0) {
+              p = { d: [di], f: [], t: [] };
+              postings.set(t, p);
+            } else p.d.push(di);
+            refs[refN++] = p;
+          }
+          m.set(t, kwTfW);
+        } else m.set(t, cur + kwTfW);
       }
     }
     if (postings !== null) {
-      // 这一条的最终词频（含 kwTfW 加成）与字段命中位一次落进倒排；`m` 的插入序与上方
-      // 首见序一致，所以 `f`/`t` 与 `d` 同下标对齐。
+      // 这一条的最终词频（含 kwTfW 加成）与字段命中位一次落进倒排；`m` 的插入序与 refs、
+      // 与 `p.d` 同下标对齐。
       const ts = titleSets === null ? null : titleSets[di];
       const ks = kwSets === null ? null : kwSets[di];
+      let k = 0;
       for (const [t, v] of m) {
-        const p = postings.get(t);
+        const p = refs[k++];
         p.f.push(v);
         p.t.push((ts !== null && ts.has(t) ? 1 : 0) | (ks !== null && ks.has(t) ? 2 : 0));
       }
+      refs.length = 0;
     }
     tf.push(m);
   }
+  // [macro-fusion 0.6.24] df 就是「这个词出现在几条里」，而倒排的 `d` 正好一条一个下标：
+  // 有倒排时按 `d.length` 一次摊出来，首见那一段不再每次 df.get + df.set。
+  // 键序仍是各词首次出现的顺序，与老写法逐位相同（判据 probe-cold C3 钉这一条）。
+  if (postings !== null) for (const [t, p] of postings) df.set(t, p.d.length);
   // [macro-fusion 0.4.0 · P5] 共现表跟索引一起建（库一变就重算，不需要额外失效逻辑）。
   // coocLearn:false 一键回到「只有手工表」的旧口径，用来做开/关对照。
   const coocSyn = opts.coocLearn === false ? null : buildCoocSyn(docs, n, opts);

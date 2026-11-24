@@ -23,7 +23,7 @@
 //   C4 确定性：同一批库连建两次、cache:false 与缓存两条路，检索回执逐位相同
 //   C5 退化：空 title/content、null、emoji、星外字、全角、关键词全是停用词、关键词是逗号串
 import { readFileSync } from 'node:fs';
-import { search } from '../vendor/meow-memory/lib/index.js';
+import { search, searchIndexOf, clearSearchIndexCache } from '../vendor/meow-memory/lib/index.js';
 
 let pass = 0;
 let fail = 0;
@@ -265,6 +265,102 @@ const DOCS = [
     'C5 退化：空/null/emoji/星外字/全角/纯停用词/逗号串与 JSON 串关键词，与「拼起来再一次成词」逐 token 相同',
     bad === 0 && empties && stopOnly,
     bad === 0 ? `${cases.length} 例 ok · 空表 0 token · 纯停用词 0 token` : `${bad} 例不一致 · 首例 ${first}`,
+  );
+}
+
+// ── C6 切词逐位：下标版 vs 0.6.23 的 Array.from 版 ────────────────────────────
+{
+  // 老实现（0.6.23 原文，逐字抄下来当尺子；分类仍用引擎自己的 clsCode）
+  const refSegs = (text) => {
+    const cps = Array.from(text.normalize('NFKC'));
+    const out = [];
+    const nCp = cps.length;
+    let i = 0;
+    while (i < nCp) {
+      const cls = LEX.clsCode(cps[i]);
+      if (cls === 0) {
+        i += 1;
+        continue;
+      }
+      let j = i + 1;
+      while (j < nCp && LEX.clsCode(cps[j]) === cls) j += 1;
+      const run = cps.slice(i, j);
+      if (cls === 1) {
+        if (run.length >= 2) for (let k = 0; k + 1 < run.length; k += 1) out.push(run[k] + run[k + 1]);
+      } else out.push(run.join('').toLowerCase());
+      i = j;
+    }
+    return out;
+  };
+  const CASES = [
+    ...PAIRS.flat(),
+    '', ' ', '中', 'a', '中文分词测试', 'the quick brown fox',
+    '𠀀𪚥𠀀𪚥 astral 中文', '😀😀 emoji 中文', '\ud800 孤立代理项 \udfff 中文',
+    'ＡＢＣ ａｂｃ １２３ 全角', 'ﬁ ﬀ ﬁne 合字', 'İstanbul ıI', 'e\u0301 combining',
+    '日本語のテキスト カタカナ ひらがな 漢字', '한국어 텍스트 테스트',
+    '零宽\u200b字符\u200d混排', 'x'.repeat(300) + '中文'.repeat(120),
+    '中英混 mixed 123 abc', '㍿㌔㌀ 半角ｶﾀｶﾅ', 'αβγ Ωμέγα', '  多个   空格    中文  ',
+    '换行\n回车\r\n制表\t中文', '中文，标点。英文. test；分号：冒号', 'x'.repeat(400),
+  ];
+  let bad = 0;
+  let first = '';
+  let tokens = 0;
+  for (const s of CASES) {
+    const x = String(s ?? '');
+    const want = refSegs(x);
+    const got = LEX.tokenizeSegs(x);
+    tokens += want.length;
+    if (JSON.stringify(want) !== JSON.stringify(got)) {
+      bad += 1;
+      if (first === '') first = `${JSON.stringify(x).slice(0, 18)} want ${JSON.stringify(want).slice(0, 70)} got ${JSON.stringify(got).slice(0, 70)}`;
+    }
+  }
+  const body = ENGINE.slice(ENGINE.indexOf('function tokenizeSegs(text) {'), ENGINE.indexOf('function finishToks(out) {'));
+  // 注释里会提到形状本身（比如「不再 Array.from(...)」），形状判据只看代码行
+  const code = body.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n');
+  const shape = {
+    noArrayFrom: code.includes('Array.from(') === false,
+    normalizeInPlace: code.includes('const s = text.normalize("NFKC");'),
+    cpWidth: code.includes('const w0 = s.codePointAt(i) > 65535 ? 2 : 1;'),
+    bigramBySlice: code.includes('out.push(prev + cur);'),
+  };
+  const miss = Object.keys(shape).filter((k) => !shape[k]);
+  ok(
+    'C6 切词逐位：下标版与 Array.from 版逐 token 相同（星外字 / emoji / 孤立代理项 / NFKC 全角合字 / 超长串），且不再造字符数组',
+    bad === 0 && miss.length === 0,
+    bad === 0 ? `${CASES.length} 例 · ${tokens} token · 0 不一致${miss.length === 0 ? '' : ` · 形状缺 ${miss.join(',')}`}` : `${bad} 例不一致 · 首例 ${first}`,
+  );
+}
+
+// ── C7 df 摊出来 / 倒排条目只查一次 ──────────────────────────────────────────
+{
+  const begin = ENGINE.indexOf('function buildSearchIndex(docs, opts = {}, sig = null) {');
+  const body = begin < 0 ? '' : ENGINE.slice(begin, ENGINE.indexOf('\n}\n', begin));
+  const code = body.split('\n').filter((l) => l.trim().startsWith('//') === false).join('\n');
+  const shape = {
+    refsOneArray: code.includes('const refs = postings === null ? null : [];'),
+    refsPerDoc: code.includes('let refN = 0;') && code.includes('refs[refN++] = p;') && code.includes('refs.length = 0;'),
+    dfFromD: code.includes('if (postings !== null) for (const [t, p] of postings) df.set(t, p.d.length);'),
+    twoLookups: (code.match(/postings\.get\(t\)/g) || []).length === 2,
+    noOptionalChain: code.includes('postings?.get(') === false,
+    dfInlineFallback: (code.match(/df\.set\(t, \(df\.get\(t\) \?\? 0\) \+ 1\)/g) || []).length === 2,
+  };
+  const miss = Object.keys(shape).filter((k) => !shape[k]);
+  clearSearchIndexCache();
+  const idx = searchIndexOf(DOCS, {});
+  let bad = 0;
+  for (const [t, p] of idx.postings) if (idx.df.get(t) !== p.d.length) bad += 1;
+  const invisible = [...idx.df.keys()].filter((t) => !idx.postings.has(t)).length;
+  clearSearchIndexCache();
+  const noInv = searchIndexOf(DOCS, { inverted: false });
+  const sameDf = noInv.postings === null && JSON.stringify([...idx.df]) === JSON.stringify([...noInv.df]);
+  // 倒排里 f / t 与 d 同下标对齐（收尾那趟按下标回填，错位就会撞这条）
+  let misalign = 0;
+  for (const [, p] of idx.postings) if (p.d.length !== p.f.length || p.d.length !== p.t.length) misalign += 1;
+  ok(
+    'C7 df 摊出来：df 恒等于倒排长度、与关掉倒排那条支路逐位相同（键序同），且每条只回查一次倒排（f/t 与 d 对齐）',
+    miss.length === 0 && bad === 0 && invisible === 0 && sameDf && misalign === 0,
+    `df ${idx.df.size} 词 · 倒排 ${idx.postings.size} 词 · 不等 ${bad} · 缺键 ${invisible} · 关倒排同名同值 ${sameDf} · 错位 ${misalign}${miss.length === 0 ? '' : ` · 形状缺 ${miss.join(',')}`}`,
   );
 }
 
