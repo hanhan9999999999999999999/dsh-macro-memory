@@ -101,6 +101,7 @@ const STEPS = [
   ['tools/probe-floor.mjs', '命中闸门账：默认 0.45 线下弱命中被挡而强命中照旧注入、关闸逐字回到 0.6.39、被挡的条目不进 seen 也不加 hit_count（下一轮还能来）、门槛可调且方向单调、非数字回默认/负数夹成 0、回执与日志都看得见 floor 与挡了几条'],
   ['tools/probe-digest.mjs', '条内摘要账：默认 240 只压超长条目、短条目逐字不动、首句必留且与问句重合的中段句能被选出来（中文按 2-gram 切词，不再是「只留首句」）、硬信息句保底、0＝不限时逐位回到 0.6.40 且无指路行、与 injectMaxChars 叠加取较小者、坏值非数字回 240/负数夹成 0'],
   ['tools/probe-neighbor.mjs', '邻域纠错账：弱邻居（<0.35）不注入也不硬凑、强邻居与卡门槛的一条不少、尾部教 nebula_link(path→mute) 断错边、尾部不挤掉条目、minScore 调 0 弱邻居回来（阴性对照）、配置面 schema/白名单/注入器一路接上'],
+  ['tools/probe-settings.mjs', '设置面板账：六个注入/邻域旋钮真的进 FIELDS（分组、bool/num、不带 sub）、出厂值与引擎和融合层默认逐个相等、三语文案齐全且 zh 没被双转义、UI_KEYS 一条不少、写根键能被 resolveConfig 读回（旧嵌套段铺底、根键覆盖）'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 

@@ -48,9 +48,13 @@ const manual = new Map(MANUAL_TOOLS.map((m) => [m.file, m]))
 const importedBy = new Map()
 const sources = new Map(files.map((f) => [f, read(f)]))
 sources.set('verify.mjs', verifySrc)
+// 根目录的 build.mjs 也算「谁 import 了 tools/ 下的脚本」：0.6.42 起
+// `tools/patch-settings-fields.mjs` 是构建期补丁，只有 build.mjs 会 import 它。
+sources.set('build.mjs', read('build.mjs'))
 for (const [f, src] of sources) {
   const add = (dep) => importedBy.set(dep, [...(importedBy.get(dep) ?? []), f])
   for (const m of src.matchAll(/from '\.\/([A-Za-z0-9_.-]+\.mjs)'/g)) add('tools/' + m[1])
+  for (const m of src.matchAll(/from '\.\/tools\/([A-Za-z0-9_.-]+\.mjs)'/g)) add('tools/' + m[1])
   for (const m of src.matchAll(/import\('\.\/([A-Za-z0-9_.-]+\.mjs)'\)/g)) add('tools/' + m[1])
   for (const m of src.matchAll(/join\([^)]{0,40}'tools', '([A-Za-z0-9_.-]+\.mjs)'\)/g)) add('tools/' + m[1])
 }

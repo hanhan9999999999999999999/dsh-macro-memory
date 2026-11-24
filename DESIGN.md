@@ -9644,3 +9644,66 @@ if (kept.length === 0) return null;
 - `tools/probe-digest.mjs`（D1–D7，36 条）：D1 形状十二处（常量、两处默认、schema、`reqNum`、`resolveConfig`、`LIVE_CONFIG_KEYS`、透传、日志、三份标签、2-gram、`contentLen > per` 只出现一次）；D2 默认 240 下长条目被压到 240 + 指路行、短条目逐字不动；D3 `0` ＝不限与直接渲染逐字相同；D4 中段句真被选中（0.6.40 之前恒只留首句）；D5 问句词不指向任何句子时硬信息句仍留一句；D6 与 `injectMaxChars` 叠加取小；D7 坏值两种待遇。
 - `probe-budget` 34/34、`probe-floor` 30/30 不受影响：前者量的是总预算路（`per` 取小后仍满足「一律不超 cap」），后者量的是闸门（渲染器变更不改变「挡没挡」）。
 
+## 237. 注入旋钮进设置面板（0.6.42）
+
+### 237.1 症状
+
+决定「每轮灌多少记忆」的六个数，只能改配置文件：
+
+| 旋钮 | 语义 | 默认 | 加进来的版本 | 面板里 |
+| --- | --- | --- | --- | --- |
+| `injectFloor` | 命中相关度闸 | 0.45 | 0.6.40 | 无 |
+| `injectBodyMax` | 单条正文上限（字） | 240 | 0.6.41 | 无 |
+| `neighborInject` | 每轮带星图邻域 | true | 0.2.145 | 无 |
+| `neighborMax` | 每轮邻居条数 | 4 | 0.2.145 | 无 |
+| `neighborChars` | 邻域块字符上限 | 420 | 0.2.145 | 无 |
+| `neighborMinScore` | 邻居强度下限 | 0.35 | 0.6.38 | 无 |
+
+面板 inject 组只有 `hitTopK` / `titleMax` / `injectMaxChars` 三项，星图邻域连分组都没有。用户要省 token 只能去翻 `config.json` —— 实际使用里等于不存在。
+
+### 237.2 病根
+
+不是「漏写一处」，是**三轮增量各自只补了下游**：每个旋钮进来时都完成了引擎默认值、`CONFIG_DEFAULTS`、zod schema、`resolveConfig`、`LIVE_CONFIG_KEYS`、探针六件事，唯独没人回头看面板；`probe-budget` / `probe-floor` / `probe-digest` 量的都是「引擎拿到这个值怎么算」，量的不是「用户能不能把值递进去」。
+
+而面板代码是 `vendor/meow-memory/lib/client.js`——上游产物（`vendor/VENDOR.json` 记哈希，上游升级整份覆盖）。手改它：①不进本仓 diff 的可审范围；②下一次 `sync` 就丢；③探针写的锚点也在它里面，改一处要改两处。
+
+### 237.3 处方：构建期补丁
+
+新增 `tools/patch-settings-fields.mjs`，由 `build.mjs` 在拼 `lib/client.js` 时调用（`meow = applySettingsFields(meow)`），**锚点对不上就抛错**，不静默跳过；每个锚点带 `expect()` 计数守卫（字典锚点必须恰好命中 3 处＝en/zh/pt-br）。四处落点：
+
+1. **三语 13 条文案**：六个字段各 `label` + `hint`，外加分组名 `settings.group.neighbor`（zh「星图邻域」）。zh 侧按仓里既有口径转 `\uXXXX`，**不能先转义再过 `JSON.stringify`**（会得到 `\\u661F` 六个字面字符，界面显示乱码）——必须手拼 `'"' + escZh(value) + '"'`。
+2. **六个出厂值**进面板的 `CONFIG_DEFAULTS`：`0.45` / `240` / `true` / `4` / `420` / `0.35`。这几个数**不许手抄**：`probe-settings` S2 逐条比对它们等于引擎 `ENG.CONFIG_DEFAULTS.injectFloor/injectBodyMax` 与 `NB.NEIGHBOR_DEFAULT_MAX/CHARS/MIN_SCORE`。
+3. **两个字段进 inject 组 + 一个新组「星图邻域」**：`injectFloor` / `injectBodyMax` 是 `num`，`neighborInject` 是 `bool`，其余三个 `num`；六个都**不带 `sub:`**——带 `sub` 写的是嵌套段，而融合层读的是根键（`Config` 的顶层），写了也会被 `resolveConfig` 当 legacy 处理。新组插在「反思」组之前，锚点必须带上「反思」组对象前面那行 `{`，否则插进旧对象体内部、产出语法错误 bundle。
+4. **`UI_KEYS` 补齐 13 条**：少了它，面板会把原始 key 当文案渲染出来。
+
+面板写入走根键：`scope.set('neighborMax', 2)`，随后 `loader/volatile-update` → 150ms 去抖 → `syncSurface()` 重建邻域注入器（`createNeighborInjector({config: macro})`）。整条链 `probe-settings` S5 逐段钉住（schema、`MACRO_KEYS`、引擎 schema、volatile-update→syncSurface、注入器读 `config.*`）。
+
+### 237.4 顺手修的覆盖顺序
+
+`resolveConfig(raw)` 原写法把「旧嵌套 `macro:` 段」写在根键之后：
+
+```js
+if (src[key] !== undefined) macro[key] = src[key]
+if (nested[key] !== undefined) macro[key] = nested[key]   // 嵌套段反过来盖住根键
+```
+
+与函数注释（「`macro:` 段铺底，根上四个键覆盖」）、与 meow 段的既有正确写法（legacy 铺底、根键覆盖）都相反。后果：profile 里只要残留一份 `macro: { neighborMax: 3 }`，用户在面板改的 `neighborMax` 就被静默顶掉，看起来「设置不生效」——而且不报错、不写日志，是最难查的一类。修法＝交换两句顺序。S6 两条对照钉住：`resolveConfig({macro:{neighborMax:3}}).macro.neighborMax === 3`；`resolveConfig({macro:{neighborMax:3}, neighborMax:1}).macro.neighborMax === 1`。
+
+### 237.5 读数与判据
+
+- `tools/probe-settings.mjs` **27 条**：S0 产物有六个 key + vendored 源未被手改 + `CONFIG_DEFAULTS` 可解析；S1 字段形状 / 分组 / `bool`·`num` / 不带 `sub` / 新组位置；S2 六个出厂值逐个相等；S3 三语齐全、zh 解回汉字、无双转义；S4 `UI_KEYS` 13 条；S5 融合层五处接线；S6 `resolveConfig` 根键优先。
+- `tools/probe-client-ui.mjs` **19 条**（原 12 条文本结构断言 + 7 条真渲染）：react stub 补 `useSyncExternalStore: (sub, get) => get()`，`slots.register` 记下 `component` 与 `inject`，造 `scopeStub`（`subscribe/getSnapshot/set/unset/bind`）让 `MemorySettingsSection` 真跑一遍，`collectText()` 遍历元素树收文本。**这条是 0.6.42 的关键判据**：语法错误只有真执行才会暴露（`check-client-bundle` 只做文本断言）。
+- 规模：**59 支 / 4,166 条可执行断言**。
+
+### 237.6 回退性与边界
+
+- 面板不写这六个键 → `resolveConfig` 落默认 → 与 0.6.41 逐位相同；「恢复默认」写回 `factoryDefaultOf(spec)`，也就是引擎默认，不存在「重置后反而变了」。
+- 这一版只开面板口子，**不改注入行为**：注入条数、闸门、单条上限、邻域预算全按 0.6.41 的算法走。
+- 邻域层的两个缺口（`seen` 是内存态、重启即丢；不看 meow 命中注入当轮已带的 id → 同条可一轮注两次）押后到 0.6.43，与「邻域相关度闸」一起做。
+
+### 237.7 判据之外的三条踩坑
+
+1. 只锚 `title: "settings.group.reflect",` 会把新组插进旧对象体内部，产出 `SyntaxError: Unexpected token '{'`；`check-client-bundle` 全程只读文本，绿着。→ 锚点带 `{`，并且必须有「执行代码」的探针。
+2. `escZh` 之后再 `JSON.stringify` 会二次转义成 `\\u661F`。→ 手拼引号。
+3. `probe-tools` 的 importer 扫描只读 `tools/*.mjs` 与 `verify.mjs`，**不含根目录 `build.mjs`**，构建期补丁脚本被判「未归类」。→ sources 加 `build.mjs`，并识别 `from './tools/…'` 这种写法。
+

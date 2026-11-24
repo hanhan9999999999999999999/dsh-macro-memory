@@ -19,6 +19,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { applySettingsFields } from './tools/patch-settings-fields.mjs'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const MEOW_ID = 'dsh-macro-memory-meow'
@@ -61,6 +62,12 @@ if (!meow.includes('return module.exports;')) throw new Error('meow client bundl
 // 词典结构、key、其它文案全部不动（zh 在 bundle 里是 \u 转义，所以按转义串替换）。
 meow = once(meow, '"settings.title": "\\u55B5\\u8BB0\\u5FC6"', '"settings.title": "\\u5B8F\\u8BB0\\u5FC6"')
 meow = replaceN(meow, '"settings.title": "Meow memory"', '"settings.title": "Macro Memory"', 2)
+
+// ── 注入与星图邻域的旋钮搬进面板（0.6.42）──────────────────────────────────
+// 六个旋钮（injectFloor / injectBodyMax / neighborInject / neighborMax /
+// neighborChars / neighborMinScore）引擎与融合层都认，但面板里一个都没有。
+// 补丁与文案在 tools/patch-settings-fields.mjs 里，锚点对不上会抛错。
+meow = applySettingsFields(meow)
 
 let nebula = readFileSync(nebulaPath, 'utf8')
 nebula = replaceLoadId(nebula, 'dsh-memory-nebula', NEBULA_ID)

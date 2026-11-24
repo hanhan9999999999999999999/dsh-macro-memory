@@ -63,6 +63,7 @@ const react = {
   useState: (v) => [typeof v === 'function' ? v() : v, noop],
   useEffect: noop, useLayoutEffect: noop, useInsertionEffect: noop,
   useMemo: (f) => f(), useCallback: (f) => f, useRef: (v) => ({ current: v }),
+  useSyncExternalStore: (sub, get) => get(),
   useContext: () => ({}), createContext: (v) => ({ Provider: null, Consumer: null, _currentValue: v }),
   memo: (c) => c, forwardRef: (f) => f, cloneElement: (x) => x,
   Children: { map: () => [], toArray: () => [], forEach: noop },
@@ -96,7 +97,7 @@ const slots = {
     } catch (err) {
       label = `ERR:${err && err.message}`
     }
-    this.registers.push({ name: meta.name, key: meta.key, id: meta.id, label, comp: typeof comp })
+    this.registers.push({ name: meta.name, key: meta.key, id: meta.id, label, comp: typeof comp, component: comp, inject: meta.inject })
     return () => {}
   },
   inject(name, cb) {
@@ -184,6 +185,48 @@ const strayLabels = slots.registers
   .filter((l) => typeof l === 'string' && /喵记忆|记忆星图|Memory Nebula|Meow Memory/.test(l))
 check('口径: 没有任何入口还留着旧名字', strayLabels.length === 0, strayLabels.join(' | ') || undefined)
 check('口径: 面板 id 未被改写（宿主/书签认 id）', mainReg?.key === 'memory-nebula' && navReg?.id === 'memory-nebula')
+
+// ── 0.6.42：设置页真的把六个旋钮渲染出来了（不是只写进 FIELDS 就算） ────────
+// 用 host 那一侧的注入结果当 props（真实宿主也是这么传的：inject() 给什么，组件收到什么），
+// 把组件跑一遍，收集整棵树里的文本节点，再逐条断言中文字面量。
+const scopeStub = {
+  subscribe: () => () => {},
+  getSnapshot: () => ({ status: 'ready', mode: 'local', writable: true, user: {}, defaults: {} }),
+  set: async () => true,
+  unset: async () => true,
+  bind: () => scopeStub,
+}
+const collectText = (node, out = []) => {
+  if (node === null || node === undefined) return out
+  if (typeof node === 'string' || typeof node === 'number') {
+    out.push(String(node))
+    return out
+  }
+  if (Array.isArray(node)) {
+    for (const one of node) collectText(one, out)
+    return out
+  }
+  if (typeof node === 'object') {
+    if (node.props !== undefined && node.props !== null) {
+      for (const v of Object.values(node.props)) {
+        if (typeof v === 'string' || typeof v === 'number') out.push(String(v))
+      }
+    }
+    collectText(node.children, out)
+  }
+  return out
+}
+let panelText = ''
+try {
+  const props = { ...(typeof setReg?.inject === 'function' ? setReg.inject() : {}), scope: scopeStub }
+  panelText = collectText(setReg.component(props)).join(' | ')
+} catch (err) {
+  panelText = `ERR:${err && err.message}`
+}
+for (const label of ['单条正文上限', '命中相关度闸', '每轮带星图邻域', '每轮邻居条数', '邻域块字符上限', '邻居强度下限']) {
+  check(`0.6.42 面板渲染出「${label}」`, panelText.includes(label), panelText.startsWith('ERR:') ? panelText.slice(0, 120) : undefined)
+}
+check('0.6.42 面板里有「星图邻域」分组标题', panelText.includes('星图邻域'))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

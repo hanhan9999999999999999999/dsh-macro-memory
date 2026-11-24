@@ -13748,3 +13748,21 @@ rawkTopPrev = top;
 
 **踩坑三条**：①**压缩器「能不能选句」必须用中文语料验证**——0.6.38 那版在英文上完全正常，中文静默退化成「只留首句」，不报错、不写日志，看起来只是「压得狠一点」。②**「0 = 关」与「坏值」要分开测**：负数原样进 `squeezeBody` 会得到「正文空 + 指路行」的条目，比整条灌进来更坏，而 `bodyCut === 1` 的断言照样绿（假绿），必须同时钉 `budget.bodyMax === 0` 与正文非空。③**兜底要放在最后一层**（渲染器），只放在 `resolveConfig` 会让内部调用方与探针走另一条路——`probe-digest` 用 `buildHitInjection(db, ws, sid, q, { injectBodyMax: NaN })` 直接调用，正是为了钉这一层。
 
+### 9.241 0.6.42：注入与邻域旋钮进设置面板
+
+**症状**：六个数决定每轮灌多少记忆，面板里一个都调不到。`injectFloor`（0.45，0.6.40）、`injectBodyMax`（240，0.6.41）、`neighborInject`（true）、`neighborMax`（4）、`neighborChars`（420）、`neighborMinScore`（0.35，0.6.38）——面板 inject 组只有 `hitTopK` / `titleMax` / `injectMaxChars`，星图邻域没有分组。
+
+**病根**：增量开发只补下游。每加一个旋钮都做了「引擎默认值 + `CONFIG_DEFAULTS` + zod schema + `resolveConfig` + `LIVE_CONFIG_KEYS` + 探针」，没人回头改面板；而面板是 `vendor/meow-memory/lib/client.js`（上游产物），手改既不进 diff 也不抗升级。
+
+**处方**：
+
+1. `tools/patch-settings-fields.mjs`（导出 `NEW_FIELDS` / `escZh` / `applySettingsFields`）由 `build.mjs` 调用，四处确定性插入 + `expect()` 计数守卫（字典锚点须恰好 3 处 = en/zh/pt-br）。
+2. 三语 13 条：六字段 `label`/`hint` + `settings.group.neighbor`（zh「星图邻域」）。zh 转 `\uXXXX` 后**手拼引号**，不能过 `JSON.stringify`。
+3. 面板 `CONFIG_DEFAULTS` 补六值；`FIELDS` 的 inject 组补 `injectFloor`/`injectBodyMax`（`num`，不带 `sub`），新组「星图邻域」放 inject 与 reflect 之间（`neighborInject` 为 `bool`，其余 `num`）；`UI_KEYS` 补 13 条。
+4. `lib/index.js` 的 `resolveConfig` 交换两句顺序：旧嵌套 `macro:` 段铺底、根键覆盖（原来嵌套段反盖根键，面板写入被静默顶掉）。
+5. `probe-client-ui` 升级成真渲染；`probe-tools` 的 importer 扫描补根目录 `build.mjs` 与 `from './tools/…'` 写法。
+
+**读数**：`probe-settings` 27 条（S0–S6）；`probe-client-ui` 19 条；规模 59 支 / 4,166 断言（0.6.41 是 58 支 / 4,132）。
+
+**踩坑三条**：①只锚 `title: "settings.group.reflect",` 会把新组插进旧对象体内部，bundle 语法错误；`check-client-bundle` 只读文本、全程绿着，只有真执行 client.js 的探针能抓到。②`escZh` 之后再 `JSON.stringify` 得到 `\\u661F`（六个字面字符）。③`probe-tools` 的归类扫描不含根目录 `build.mjs`，构建期补丁脚本被判「未归类」。另：`package.json` / `lib/index.js` 的版本号只能用 .NET UTF8 读写，禁 PowerShell `Get-Content`/`Set-Content`（0.6.41 踩过 GBK 事故）。
+
