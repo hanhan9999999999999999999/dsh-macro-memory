@@ -303,5 +303,183 @@ const plain = [
   );
 }
 
+// ── H14 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.30] 定档的定位从「每条从头二分」改成「先按比例猜一个下标，再在猜出来的那一半里二分」。
+// 这条探针把 `anchorChainOf` / `setBandsByThreshold` 连同它们的桶表从引擎原文抠出来跑（探针不另写
+// 一份逻辑），再拿「每条都从头二分」的参考实现逐条对档号：必须逐位同档，且与分布无关。
+{
+  const iA = ENGINE.indexOf('const RAWK_SHIFT = 16;');
+  const iC = ENGINE.indexOf('function setBandsBySort(hits, rawKey) {');
+  const src = iA >= 0 && iC > iA ? ENGINE.slice(iA, iC) : '';
+  let sand = null;
+  try {
+    sand = src === ''
+      ? null
+      : new Function(`var IMP_BAND = 0.85;\n${src}\nreturn { setBandsByThreshold, anchorChainOf };`)();
+  } catch {
+    sand = null;
+  }
+  const lcg = (seed0) => {
+    let s = seed0;
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648;
+      return s / 2147483648;
+    };
+  };
+  const r1 = lcg(7);
+  const r2 = lcg(11);
+  const r3 = lcg(13);
+  const r4 = lcg(17);
+  const r5 = lcg(19);
+  const r6 = lcg(23);
+  const cases = [
+    { name: '均匀', vals: Array.from({ length: 300 }, () => r1()) },
+    { name: '同分', vals: Array.from({ length: 300 }, () => Math.round(r2() * 20) / 20) },
+    { name: '偏斜', vals: Array.from({ length: 300 }, () => Math.exp(-r3() * 8) * 1000) },
+    { name: '两值', vals: Array.from({ length: 300 }, () => (r4() < 0.5 ? 1 : 2)) },
+    { name: '全等', vals: new Array(300).fill(5) },
+    { name: '巨跨', vals: Array.from({ length: 300 }, () => r5() * 1e12) },
+    { name: '微跨', vals: Array.from({ length: 300 }, (_, i) => 1e15 + i) },
+    { name: '含零', vals: Array.from({ length: 300 }, () => (r6() < 0.3 ? 0 : r6())) },
+  ];
+  const refBand = (anchors, m, v) => {
+    let lo = 0;
+    let hi = m;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (anchors[mid] >= v) hi = mid;
+      else lo = mid + 1;
+    }
+    return m - 1 - lo;
+  };
+  let ran = 0;
+  let rows = 0;
+  let bad = 0;
+  if (sand !== null) {
+    for (const c of cases) {
+      const hits = c.vals.map((v) => ({ _raw: v }));
+      hits.push({ _raw: 3, _ident: true }, { _raw: 4, _subj: 1 });
+      const okRet = sand.setBandsByThreshold(hits, '_raw') === true;
+      const anchors = sand.anchorChainOf(Float64Array.from(c.vals), c.vals.length);
+      const m = anchors.length;
+      ran += 1;
+      if (!okRet) bad += 1;
+      for (let i = 0; i < c.vals.length; i++) {
+        rows += 1;
+        if (!Object.is(hits[i]._bandTmp, refBand(anchors, m, c.vals[i]))) bad += 1;
+      }
+      // 指认项 / 主语项固定 -1（与 raw 大小无关）
+      if (hits[c.vals.length]._bandTmp !== -1 || hits[c.vals.length + 1]._bandTmp !== -1) bad += 1;
+    }
+    // 复用缓冲：换一份更短的数组再跑，不许残留上一趟的值
+    const two = [{ _raw: 0.5 }, { _raw: 2.5 }];
+    const ok2 = sand.setBandsByThreshold(two, '_raw') === true;
+    const an2 = sand.anchorChainOf(Float64Array.from([0.5, 2.5]), 2);
+    if (!ok2 || !Object.is(two[0]._bandTmp, refBand(an2, an2.length, 0.5)) ||
+      !Object.is(two[1]._bandTmp, refBand(an2, an2.length, 2.5))) bad += 1;
+  }
+  ok(
+    'H14 定档定位：猜位 + 半区间二分与「每条从头二分」逐位同档（均匀 / 同分 / 偏斜 / 两值 / 全等 / 巨跨 / 微跨 / 含零）',
+    sand !== null && ran === 8 && bad === 0,
+    `从引擎抠函数=${sand !== null} · 分布 ${ran}/8 · 对档 ${rows} 条 · 不符 ${bad}`,
+  );
+}
+
+// ── H15 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.30] `impOf(dOf)` 这个小闭包摊平进扫描循环（`impRaw` + 内联 clamp）。
+// `now: null` 关掉时间衰减，分数就只剩「词分 × impW」这一个随重要性变化的因子：
+// 逐档对 `1 + (min(4, max(1, round(Number(imp)))) - 1) * 0.25` 的比值，逐位相同才算过。
+{
+  const shape = ENGINE.includes('const impRaw = Math.round(Number(dOf.importance));') &&
+    ENGINE.includes('const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;') &&
+    ENGINE.includes('const impOf = (d) => {') === false;
+  const impOld = (v) => {
+    const r = Math.round(Number(v));
+    const c = Number.isFinite(r) ? Math.min(4, Math.max(1, r)) : 1;
+    return 1 + (c - 1) * 0.25;
+  };
+  const imps = [1, 2, 3, 4, 9, 0, 0.4, 2.6, NaN, '2', null, void 0, -3];
+  const docs = imps.map((v, i) => ({
+    id: '0mz' + String(i).padStart(5, '0'),
+    level: 'fact',
+    title: 't',
+    content: 'alpha beta gamma',
+    importance: v,
+    updated_at: '2026-01-01T00:00:00Z',
+    keywords: ['alpha'],
+    project: 'p',
+  }));
+  const r = search('alpha beta gamma', docs, { k: 20, now: null });
+  const base = r.find((h) => h.id === '0mz00000'); // importance 1 → impW 1
+  let checked = 0;
+  let bad = 0;
+  if (base !== void 0 && base.score > 0) {
+    for (let i = 0; i < imps.length; i++) {
+      const h = r.find((x) => x.id === '0mz' + String(i).padStart(5, '0'));
+      if (h === void 0) continue;
+      checked += 1;
+      if (!Object.is(Math.round((h.score / base.score) * 1e9) / 1e9, Math.round(impOld(imps[i]) * 1e9) / 1e9)) bad += 1;
+    }
+  }
+  ok(
+    'H15 重要性权重：摊平后的 impW 与老闭包逐档同值（含越界 / 小数 / NaN / 字符串 / null / 负数），闭包已退休',
+    shape && checked === imps.length && bad === 0,
+    `形状=${shape} · 逐档 ${checked}/${imps.length} · 不符 ${bad}`,
+  );
+}
+
+// ── H16 ──────────────────────────────────────────────────────────────────
+// [macro-fusion 0.6.30] `verbatimInputs` 里两张同值铺表（`docs.map(() => null)` / `(() => 0)`）换成
+// `new Array(n).fill(...)`；`lvTmp` 复用循环外的 `lvOn`。这两处都不能改值，所以除了形状，还钉一枚
+// 回执指纹：固定语料 + 固定问句的 `id@score` 与 0.6.29 引擎逐位相同（发版前两条引擎跑过对照）。
+{
+  // 形状只看 `verbatimInputs` 的**代码行**（注释里提到老写法是正常的，不能拿全局 includes 判）
+  const iV = ENGINE.indexOf('function verbatimInputs(query, docs, opts, textOf');
+  const iVEnd = iV > 0 ? ENGINE.indexOf('\nfunction ', iV + 10) : -1;
+  const vbCode = iV > 0 && iVEnd > iV
+    ? ENGINE.slice(iV, iVEnd).split('\n').filter((ln) => !ln.trim().startsWith('//')).join('\n')
+    : '';
+  const shape = vbCode.includes('rawVerbatim: new Array(docs.length).fill(null),') &&
+    vbCode.includes('subjRatio: new Array(docs.length).fill(0)') &&
+    vbCode.includes('docs.map(') === false &&
+    ENGINE.includes('lvTmp.push(lvHit && lvOn ? 1 : 0);') &&
+    ENGINE.includes('lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0);') === false;
+  const lcg = (seed0) => {
+    let s = seed0;
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648;
+      return s / 2147483648;
+    };
+  };
+  const r = lcg(97);
+  const w = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图'];
+  const corpus = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((r() * 5) | 0);
+    const words = Array.from({ length: n }, () => w[(r() * w.length) | 0]);
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(r() * 4) | 0],
+      title: words[0],
+      content: words.join(' '),
+      importance: 1 + ((r() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: r() < 0.2 ? null : [w[(r() * w.length) | 0]],
+      project: 'p',
+    };
+  });
+  const qs = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha'];
+  const runs = qs.map((q) => search(q, corpus, { k: 8, now: NOW }));
+  const digestOf = (rs) => rs.map((x) => x.map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|');
+  const d = digestOf(runs);
+  const GOLDEN = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025';
+  ok(
+    'H16 同值铺表走原生 fill、层级意图复用循环外判据：回执指纹与 0.6.29 引擎逐位相同',
+    shape && d === GOLDEN,
+    `形状=${shape} · 指纹 ${d === GOLDEN ? '同' : '不同'}`,
+  );
+  if (d !== GOLDEN) console.log('DIGEST ' + d);
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'}  probe-hotpath：${pass}/${pass + fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

@@ -8447,3 +8447,130 @@ const lvOn = opts.levelIntent !== false;
 3. `search:4132`（147.6ms）与 `:4378` 近分带衰减：把 `lvHit` / `trOf` / `foldOf` 三个小函数就地展开。
 4. `weakHitOf` 的 `Math.round(cover*1e3)/1e3` 与 `pct` 计算：只在真的要出 `weak` 结论时算。
 5. `indexSignature` 既然证伪，下一版别再回头碰它；真要动就动 `SIG_DOC_CACHE` 的键（`WeakMap` 换「文档版本号数组 + 一次比较」）。
+
+## 225. 热查里「每问铺一遍表」「每候选一次小调用」「定档的定位梯子」（0.6.30）
+
+0.6.29 收尾把 `indexSignature` 用微基准钉死（每字段约 1.1ns，砍字段上限 ≈3% 且破 S5 判据），这一版顺着剖面往下走，专挑三类「跟问句无关、却每条候选都在付」的钱。分成四笔，全部是常量/快路的改写，**回执逐位不变**（三把对拍尺子 0 不一致，另钉一枚固定语料指纹）。
+
+### 225.1 选材：0.6.29 剖面的行级账
+
+剖面 `E:\Temp\cmp\wfix29\CPU.20261124.152238.4252.0.001.cpuprofile`（10,000 条 / 3,000 问，总采样 6,454.0ms）：
+
+| 位置 | 行 | 毫秒 | 占比 | 判定 |
+| --- | --- | --- | --- | --- |
+| `verbatimInputs` | `:3061` 两张 `docs.map(...)` 铺表 | 262.3 | 4.1% | 可改（同值铺表有原生快路） |
+| `search` | `:4406` `lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0)` | 166.7 | 2.6% | 可改（判据已在循环外） |
+| `search` | `:4331` `impOf` 闭包（round + min/max + `?.`） | 138.0 | 2.2% | 可改（摊平进循环） |
+| `setBandsByThreshold` | 六行合计 | 568.0 | 9.4% | 可改（位置可估，不必从头二分） |
+| `search` | `:4409` `hits.push({...})` | 203.9 | 3.2% | 不动（已经是最小对象） |
+| `indexSignature` | `:3228` / `:3164` / `:3229` | 1,133.0 | 17.6% | 不动（0.6.29 微基准已证伪） |
+
+`(anon):30` 那 161.4ms 是压测脚手架 `warmprof28.mjs` 自己的循环，不是引擎，剔除后再谈占比。
+
+### 225.2 病根四条
+
+1. **「每问一次铺整库」也走回调**：`rawVerbatim: docs.map(() => null)` 与 `subjRatio: docs.map(() => 0)` 要的是一张铺满同值的定长表，10,000 条的库就是 20,000 次空回调（两次分配 + 两次遍历）。
+2. **「每条候选一次小闭包」**：`const impOf = (d) => { const v = Math.round(Number(d?.importance)); return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1; }`——为读一个 `importance` 付一次函数调用、一次 optional chaining、一次 round、两次 min/max。
+3. **「每候选重读 opts 属性」**：`opts.levelIntent !== false` 在 `lvTmp.push(...)` 里逐条重算，而它整趟是同一个值。行级读数里这句话六成的钱花在属性表读上。
+4. **「定档定位是固定梯子」**：`anchors` 是升序去重表、`raw` 与它同源，`(v - anchors[0]) / (anchors[m-1] - anchors[0])` 大体就是 `v` 在表里的相对位置；老实现每条候选都从 `[0, m]` 从头二分，走十几轮比较。
+
+### 225.3 处方四笔
+
+① **同值铺表走原生 `fill`**（`vendor/meow-memory/lib/index.js:3101-3102`）：
+
+```js
+rawVerbatim: new Array(docs.length).fill(null),
+subjRatio: new Array(docs.length).fill(0)
+```
+
+同长度、同下标、同值；`new Array(n).fill(v)` 是引擎内的原生填充，不为每个下标调一次 JS 函数。
+
+② **`impOf` 闭包退休、摊平进扫描循环**（`:4429-4430`）：
+
+```js
+const impRaw = Math.round(Number(dOf.importance));
+const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;
+```
+
+`dOf` 在这一行之前已经被读过 `.level` / `.importance`，必然非空，所以 `d?.importance` 与 `d.importance` 同值；clamp 用嵌套三元代替 `Math.min(4, Math.max(1, v))`（对 `NaN` 两种情况都走 `Number.isFinite` 的 fallback，次序一格没改）。
+
+③ **层级判据复用循环外的 `lvOn`**（`:4442`）：
+
+```js
+lvTmp.push(lvHit && lvOn ? 1 : 0);
+```
+
+`const lvOn = opts.levelIntent !== false;` 早在 `:4383` 算好；布尔值逐位相同，只是不再逐条读属性表。
+
+④ **定档定位：先按比例猜下标，再在猜出来的那一半里二分**（`:2852-2890`）：
+
+```js
+const a0v = anchors[0];
+const aLv = anchors[m - 1];
+const spanV = aLv - a0v;
+const posScale = spanV > 0 ? (m - 1) / spanV : 0;
+// ...
+if (!(v > a0v)) lo = 0;
+else if (v > aLv) lo = m;
+else {
+  let est = ((v - a0v) * posScale) | 0;
+  if (est > m - 1) est = m - 1;
+  else if (est < 0) est = 0;
+  let loI;
+  let hiI;
+  if (anchors[est] >= v) { loI = 0; hiI = est; }
+  else { loI = est + 1; hiI = m - 1; }
+  while (loI < hiI) { const mid = (loI + hiI) >> 1; if (anchors[mid] >= v) hiI = mid; else loI = mid + 1; }
+  lo = loI;
+}
+```
+
+两个区间都由 `anchors[est] >= v` 这一次比较保证「里面一定有解」：`>=` 说明答案是 `est` 或更左（`[0, est]`），否则答案严格在 `est` 右边（`[est+1, m-1]`）。区间内二分与全量二分求的是同一个「第一个 `>= v` 的下标」，所以 `lo` 逐位相同、`m - 1 - lo` 也逐位相同。猜偏了只是区间变大，最坏退回全量，仍然有界。同分抄档（`lastV` / `lastBand`）原样保留。
+
+### 225.4 读数（固定 3,000 问，两代引擎交替跑）
+
+| 量 | 0.6.29 | 0.6.30 | 变化 |
+| --- | --- | --- | --- |
+| 热查/问（A/B 中位，`warmprof28.mjs`） | 1.6806 ms | 1.5273 ms | **−9.1%** |
+| 热查/问（21 轮交替，`warmab30.mjs`） | 1.764 | 1.585 | −10.1% |
+| 冷建（同 21 轮） | 137.02 ms | 137.41 ms | 噪声 |
+| 定档六行（行级，各自剖面） | 568.0 ms | 380 ms | −33% |
+| `verbatimInputs` 铺表那行 | 262.3 ms | 69.6 ms（换到 `:3088` 的常量读） | 大头消失 |
+
+> 跨剖面的毫秒不许直接比（总采样不同：6,454.0 vs 6,093.0），上表的行级数字只用来说明「这一格变轻了」，提速幅度一律以交替 A/B 为准。
+
+### 225.5 等价性：三把尺子 + 一枚指纹
+
+| 尺子 | 项数 | 不一致 |
+| --- | --- | --- |
+| `colddiff30.mjs`（冷建 / 索引 / 回执全字段） | 462 | 0 |
+| `tokdiff30.mjs`（切词 / 分段 / tf-df / 签名） | 15,810 | 0 |
+| `searchdiff30.mjs`（32 组选项 × 语料逐位） | 2,462 | 0 |
+
+另外把「固定语料（120 条）× 八个问句」的 `id@score` 指纹钉进判据：发版前用 0.6.29 与 0.6.30 两条引擎各跑一遍，字符串完全相同（`tools/probe-hotpath.mjs` H16 / `verify.mjs` OR090 第五条的 `GOLD30`）。
+
+### 225.6 判据（OR090 七条 + 探针 H14–H16）
+
+- **探针在位**：`probe-hotpath` 有 H14/H15/H16，`check-all` 挂了它，引擎里能抠出桶表常量 `const RAWK_SHIFT = 16;`。
+- **引擎形状**：`verbatimInputs` 的**代码行**里有 `new Array(docs.length).fill(null)` / `.fill(0)`、没有 `docs.map(`；`const impOf = (d) => {` 已不在；`impRaw` + 新 `impW` 在位；`lvTmp.push(lvHit && lvOn ? 1 : 0);` 在位、`opts.levelIntent !== false` 那版不在；`posScale` / `est` / `anchors[est] >= v` / `hiI = est` / `loI = est + 1` 五处形状在位。
+- **定档等价（进程内）**：把引擎的桶表 + `anchorChainOf` + `setBandsByThreshold` 原文抠出来（`new Function` + `var IMP_BAND = 0.85;`），八种分布（均匀 / 同分 / 偏斜 / 两值 / 全等 / 巨跨 1e12 / 微跨 1e15+i / 含零）各 300 条，逐条与「从头二分」的参考实现比 `_bandTmp`：2,400 条全对，指认项 `_ident` / 主语项 `_subj` 仍固定 -1。
+- **重要性权重（进程内）**：`now: null` 关掉时间衰减，分数比值只剩 `impW`，13 档（1 / 2 / 3 / 4 / 9 / 0 / 0.4 / 2.6 / `NaN` / `'2'` / `null` / `undefined` / -3）逐档与老公式 `1 + (min(4, max(1, round(Number(imp)))) - 1) * 0.25` 同值。
+- **回执指纹**：固定语料 × 八个问句的 `id@score` 与 0.6.29 逐位相同。
+- **文档在位**：INTERNAL `## 9.229 `、README 写「猜位定档」、DESIGN `## 225. `、PLAN 有 `0.6.30`。
+- **版本号**不低于 `0.6.30`。
+
+### 225.7 踩坑
+
+- **判据别拿全局 `includes` 判「老写法不在」**：我在引擎里留的注释里就写着 `docs.map(() => null)` 和 `impOf(d)`，全局搜会自己撞自己。探针与判据都改成「先切出函数体、再剔掉整行注释」再判。
+- **`setBandsByThreshold` 抠出来跑要带桶表**：`anchorChainOf` 依赖 `RAWK_SHIFT` / `RAWK_NB` / `RAWK_LE` / `rawkHist` / `rawkOut` / `rawkTail` / `rawkVals` / `rawkBucketOf` / `anchorChainSorted` / `IMP_BAND`，从 `const RAWK_SHIFT = 16;` 切到 `function setBandsBySort` 才是一段能独立跑的代码块。
+- **`now: null` 才是「关掉时间衰减」**：重要性 1/2 的条目会走 `recencyWeight`，不关掉的话分数比值里混着时间因子，判据会误红。
+- **抄档哨兵不能省**：`lastV = -1` 的哨兵依赖「非指认的 raw 都是有限非负数」这条前置（函数的第一个循环就会 `return false` 挡掉负数 / `NaN` / `Infinity`）。
+- **猜位不是「一定更快」**：偏斜分布下猜偏得多，区间变大；收益来自「平分布命中」，所以判据只钉等价、不钉加速，速度靠 A/B 量。
+
+### 225.8 下一版候选
+
+1. `search:4445` `hits.push({...})`（217.3ms）：瘦对象已经是五个字段，再省只能改成平行数组，但那要把 `bandize` / `trimByBand` / `matHitOf` 三处读点一起改，收益/风险比不划算——先记着。
+2. `search:4167`（candAt 位图）117.1ms：每候选一次 `candAt[di] === 0` 判断 + 一次写，已经是下标级操作，要省得换数据结构（例如按 posting 有序归并），改动面过大。
+3. `scoreCandSet:4209` / `:4224` 合计 321.8ms：`raw[di] += idf0 * fw * (f * k1p1 / (f + kDen[di]))` 是 BM25 本体，只剩「`fw` 已查表、`k1p1` 已提常量」这一步，进一步要动公式本身（不许）。
+4. `liveDocs:2021` 93.9ms：每问对整库做一遍 `typeof` 校验。用 WeakSet 记忆化会破「就地改数组」可见性（S5 判据），不动。
+5. `setBandsByThreshold:2882` 145.6ms（区间内二分本体）：真要再压只能把定档换成「按桶直接给档」（桶号本身就是位置），但档号语义是「不同值链上的名次」，改成桶号会改 band 数值——属于行为变更，不在此列。

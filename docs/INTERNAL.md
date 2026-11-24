@@ -13289,3 +13289,67 @@ _raw: raw[di] * (1 + (vbOf === void 0 || !bandWOn ? 0 : identBandW * vbOf.ratio)
 3. `search:4132`（147.6ms）与 `:4378` 近分带衰减：三个小函数就地展开。
 4. `weakHitOf` 的 `cover` 取整与 `pct` 只在出结论时算。
 5. `SIG_DOC_CACHE` 键换成「版本号数组 + 一次比较」——只在那张表真的成了瓶颈时才动。
+
+## 9.229 0.6.30：同值铺表走原生 fill、小闭包摊平、定档改「猜位 + 半区间」
+
+### 9.229.1 症状（0.6.29 剖面，10,000 条 / 3,000 问，总采样 6,454.0ms）
+
+| 位置 | 行 | 毫秒 | 占比 |
+| --- | --- | --- | --- |
+| `verbatimInputs` 两张铺表 | `vendor/meow-memory/lib/index.js:3061`（改后 `:3101-3102`） | 262.3 | 4.1% |
+| `search` 里 `lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0)` | `:4406`（改后 `:4442`） | 166.7 | 2.6% |
+| `impOf` 闭包（round + min/max + `?.`） | `:4331`（改后摊平到 `:4429-4430`） | 138.0 | 2.2% |
+| `setBandsByThreshold` 六行合计 | `:2857/2855/2862/2858/2821/2847`（改后 `:2882/2889/2880/2883` 等） | 568.0 | 9.4% |
+| `search` `hits.push` | `:4409`（改后 `:4445`） | 203.9 | 3.2% |
+| `indexSignature` | `:3228/3164/3229`（改后 `:3259/3195/3260`） | 1,133.0 | 17.6% |
+
+`(anon):30` 的 161.4ms 是脚手架 `warmprof28.mjs` 自己的循环，不是引擎。
+
+### 9.229.2 病根
+
+1. `rawVerbatim: docs.map(() => null)` / `subjRatio: docs.map(() => 0)` 要的只是一张同值定长表，却为每个下标调一次空闭包（10,000 条 = 20,000 次调用 + 两次额外遍历）。
+2. `impOf` 是每条候选一次的小函数调用，里面 `d?.importance` 的 optional chaining 在 `dOf` 已确定非空时纯属陪跑。
+3. `opts.levelIntent !== false` 在循环里逐条重读属性表，而 `lvOn` 早在循环外算好。
+4. 定档定位：`anchors` 升序且与 `raw` 同源，位置可估，却每条从 `[0, m]` 从头二分十几轮。
+
+### 9.229.3 处方（改后行号）
+
+- `vendor/meow-memory/lib/index.js:3101-3102`（`verbatimInputs` 返回对象）：
+  `rawVerbatim: new Array(docs.length).fill(null),` / `subjRatio: new Array(docs.length).fill(0)`；
+  上面 `:3097-3100` 是 `// [macro-fusion 0.6.30]` 说明（这四行注释里提到老写法是正常的，判据要先剔注释再判）。
+- `:4429` `const impRaw = Math.round(Number(dOf.importance));`
+  `:4430` `const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;`
+  `:4426-4428` 是说明注释；`const impOf = (d) => {` 已整条删除。
+- `:4442` `lvTmp.push(lvHit && lvOn ? 1 : 0);`（`const lvOn = opts.levelIntent !== false;` 在 `:4383`）。
+- `setBandsByThreshold`：`:2852` `const a0v = anchors[0];` / `:2853` `const aLv = anchors[m - 1];` / `:2854` `const spanV = aLv - a0v;` / `:2855` `const posScale = spanV > 0 ? (m - 1) / spanV : 0;`；循环内 `:2865` `if (!(v > a0v)) lo = 0;` / `:2866` `else if (v > aLv) lo = m;` / `:2868` `let est = ((v - a0v) * posScale) | 0;`（`:2869-2870` clamp） / `:2873` `if (anchors[est] >= v) {` → `:2874-2875` `loI = 0; hiI = est;` / `:2877-2878` `loI = est + 1; hiI = m - 1;` / `:2880-2884` 区间内二分 / `:2885` `lo = loI;`；`lastV` / `lastBand` 抄档逻辑（`:2843-2844`、`:2860-2863`、`:2887-2889`）原样保留。
+
+### 9.229.4 读数
+
+| 量 | 0.6.29 | 0.6.30 |
+| --- | --- | --- |
+| 热查/问（A/B 中位，`warmprof28.mjs`，3,000 问） | 1.6806 ms | 1.5273 ms（**−9.1%**） |
+| 热查/问（`warmab30.mjs` 5 轮交替） | 1.764 ms | 1.585 ms（−10.1%） |
+| 冷建 | 137.02 ms | 137.41 ms（噪声） |
+| `setBandsByThreshold` 行级合计 | 568.0 ms | ≈380 ms |
+| `verbatimInputs` 铺表 | 262.3 ms | 69.6 ms |
+
+新剖面 `E:\Temp\cmp\wfix30b\CPU.20261124.160545.9092.0.001.cpuprofile`（6,093ms，含脚手架 238ms）：`indexSignature:3259` 661.5 / `:3195` 461.1 / `:3260` 130.8；`search:4445` 217.3；`scoreCandSet:4209` 194.1 / `:4224` 127.7 / `:4203` 81.2；`setBandsByThreshold:2882` 145.6 / `:2889` 85.5 / `:2880` 71.7 / `:2883` 65.4；`search:4167` 117.1；`search:4423` 100.2；`liveDocs:2021` 93.9。跨剖面毫秒不可直接比，幅度一律以交替 A/B 为准。
+
+### 9.229.5 判据
+
+- `verify.mjs` OR090 七条：探针在位（H14–H16）/ 引擎形状（铺表 / `impOf` 退休 / `lvOn` 复用 / 猜位五处）/ 定档等价（八种分布 × 300 条对参考）/ 重要性 13 档同值 / 回执指纹 / 文档在位 / 版本 ≥ 0.6.30。
+- `tools/probe-hotpath.mjs` H14：把引擎 `const RAWK_SHIFT = 16;` 到 `function setBandsBySort` 的整段抠出来跑（带 `var IMP_BAND = 0.85;`），八种分布 2,400 条对档 + 复用缓冲复跑。
+- H15：`now: null` 关时间衰减后，13 档重要性对 `1 + (clamp(round(Number(imp))) - 1) * 0.25` 的比值逐档同值。
+- H16：`verbatimInputs` 代码行（剔注释）形状 + `lvTmp` 复用 `lvOn` + 固定语料 120 条 × 八问的 `id@score` 指纹（`GOLDEN`）。
+- 三把对拍尺子：`colddiff30` 462 / `tokdiff30` 15,810 / `searchdiff30` 2,462，全 0 不一致。
+
+### 9.229.6 踩坑
+
+- **注释会撞判据**：引擎注释里写着老写法（`docs.map(() => null)`、`impOf(d)`），全局 `includes` 判「老写法不在」必红。统一做法：`indexOf('function verbatimInputs(...')` 切函数体 → 按行剔 `//` → 再判。
+- **抠函数要连桶表一起**：`anchorChainOf` 依赖 `RAWK_SHIFT` / `RAWK_NB` / `RAWK_LE` / `rawkHist` / `rawkOut` / `rawkTail` / `rawkVals` / `rawkBucketOf` / `anchorChainSorted` / `IMP_BAND`，切片起点必须早于 `:2717` 的 `const RAWK_SHIFT = 16;`。
+- **`now: null` 是真开关**：不传或传具体时间戳时，`importance < 3` 的条目会多乘一个 `recencyWeight`，比值判据会被时间因子污染。
+- **猜位不影响正确性只影响区间**：`anchors[est] >= v` 那次比较同时决定「有解区间」，窄/宽都不改结果；所以判据只钉同档，不钉命中率。
+
+### 9.229.7 候选（未做）
+
+`hits.push`（217.3）/ `candAt`（117.1）/ `scoreCandSet` BM25 本体（321.8）/ `liveDocs` 校验（93.9，WeakSet 记忆化会破 S5）/ 定档区间内二分本体（145.6）。前四条要么收益/风险比不划算，要么会改语义。

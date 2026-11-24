@@ -2842,6 +2842,17 @@ function setBandsByThreshold(hits, rawKey) {
   // 相同就抄，不同才二分——`lastV` 用 -1 当哨兵（非指认的 raw 都是有限非负数）。
   let lastV = -1;
   let lastBand = 0;
+  // [macro-fusion 0.6.30] 定档的定位从「每次纯二分」改成「先按比例猜一个下标，再在猜出来的那一半里二分」。
+  // anchors 是升序去重表，raw 与它同源，所以 `(v - anchors[0]) / (anchors[m-1] - anchors[0])` 大体就是
+  // v 在表里的相对位置。猜到的那一格先比一次：`anchors[est] >= v` 说明解在 [0, est]，否则解在 [est+1, m-1]
+  // ——两个区间都由这次比较保证「里面一定有解」，所以区间内二分出来的下标与全量二分逐位相同（band 因此也逐位相同）。
+  // 行级读数（0.6.29 剖面，`setBandsByThreshold` 六行合计 568ms / 9.4%）：`anchors[mid] >= v` 116.1、
+  // 二分循环 101.2、`lo < hi` 99.0、`mid + 1` 89.5——都是「一条候选要走十几轮」的固定梯子。
+  // 分布越平（raw 由少数几个量决定，本来就偏平），猜中率越高；猜偏了也只是区间变大，退回二分，仍然有界。
+  const a0v = anchors[0];
+  const aLv = anchors[m - 1];
+  const spanV = aLv - a0v;
+  const posScale = spanV > 0 ? (m - 1) / spanV : 0;
   for (let i = 0; i < total; i++) {
     const h = hits[i];
     if (h._ident === true || h._subj === 1) continue;
@@ -2850,12 +2861,28 @@ function setBandsByThreshold(hits, rawKey) {
       h._bandTmp = lastBand;
       continue;
     }
-    let lo = 0;
-    let hi = m;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (anchors[mid] >= v) hi = mid;
-      else lo = mid + 1;
+    let lo;
+    if (!(v > a0v)) lo = 0;
+    else if (v > aLv) lo = m;
+    else {
+      let est = ((v - a0v) * posScale) | 0;
+      if (est > m - 1) est = m - 1;
+      else if (est < 0) est = 0;
+      let loI;
+      let hiI;
+      if (anchors[est] >= v) {
+        loI = 0;
+        hiI = est;
+      } else {
+        loI = est + 1;
+        hiI = m - 1;
+      }
+      while (loI < hiI) {
+        const mid = (loI + hiI) >> 1;
+        if (anchors[mid] >= v) hiI = mid;
+        else loI = mid + 1;
+      }
+      lo = loI;
     }
     lastV = v;
     lastBand = m - 1 - lo;
@@ -3067,8 +3094,12 @@ function verbatimInputs(query, docs, opts, textOf, hayFor = null, identsIn = nul
     // 给了 `hayFor`（索引里的懒建访问器）就用它，否则退回现拼——keywordHitScore 走的就是后者，
     // 它的 haystack 少 id/project、只含标题/正文/关键词。
     hayOf: idents.length === 0 ? null : (hayFor ?? ((di) => textOf(docs[di]).toLowerCase())),
-    rawVerbatim: docs.map(() => null),
-    subjRatio: docs.map(() => 0)
+    // [macro-fusion 0.6.30] 这两张账是「每问一次、按库的大小铺一遍」的：`docs.map(() => null)` 与
+    // `docs.map(() => 0)` 各自要走一遍 map 回调（10,000 条 = 20,000 次闭包调用，行级读数 262.3ms / 4.1%），
+    // 而它们要的只是一张铺满同值的定长表。`new Array(n).fill(v)` 是同值铺表的原生快路：结果逐位相同
+    // （同样的长度、同样的下标、同样的 `null` / `0`），只是不再为每个下标调一次函数。
+    rawVerbatim: new Array(docs.length).fill(null),
+    subjRatio: new Array(docs.length).fill(0)
   };
 }
 // [macro-fusion 0.2.153] 检索的固定开销：以前每问一次就把整库重新切一遍词、重建 tf/df——
@@ -4326,10 +4357,9 @@ function search(query, docs, opts = {}) {
     const hay = String(docs[di].title ?? "") + " " + String(docs[di].content ?? "") + " " + String(docs[di].project ?? "");
     return anchorToks.some((t) => hay.includes(t));
   } : null;
-  const impOf = (d) => {
-    const v = Math.round(Number(d?.importance));
-    return Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
-  };
+  // [macro-fusion 0.6.30] 原来的 `impOf(d)` 闭包（round + 两次 min/max + optional chaining）已摊平进
+  // 扫描循环里那三行（`:4400` 起），这里不再留一份没人调的副本——留着的唯一作用就是让下一个人以为
+  // 它还是一条「会被调用的口径」。口径只有一处：1 + (importance 夹在 1..4 - 1) * 0.25。
   const lvIntent = intentLevelsOf(query);
   // [macro-fusion 0.2.179] 「X 还能跑吗」和「X 为什么封存」问的是同一件事：X 现在还在不在。
   // 两句的答案都在现状仓，都不该让「该怎么做」那条规矩顶上来。
@@ -4393,7 +4423,11 @@ function search(query, docs, opts = {}) {
     if (!anchored && !causeQ && now !== null && dOf.importance < 3 && !(raw[di] >= IMP_BAND * maxRaw)) {
       w = Math.max(RECENCY_FLOOR, recencyWeight(now - (dOf.last_accessed_at ?? dOf.updated_at)));
     }
-    const impW = 1 + (impOf(dOf) - 1) * 0.25;
+    // [macro-fusion 0.6.30] `impOf(dOf)` 是每条候选一次的小调用（闭包里做 optional chaining + round +
+    // 两次 min/max）。`dOf` 在这里必然非空（上一行已经读过 `dOf.importance`），所以 `d?.importance` 与
+    // `d.importance` 同值；把三步摊平进循环、顺序一格不改，`impW` 逐位不变。
+    const impRaw = Math.round(Number(dOf.importance));
+    const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;
     const stW = anchored ? 1 : statusWeight(dOf.status);
     // [macro-fusion 0.6.14] 这三样每条只算一次：`assertRatioOf` 原来在 `_tr` 与 `_raw` 里各算一遍，
     // `ruleFoldOf(di)` 原来在 `_raw`/`score`/`explain` 里各算一遍。算一次再引用，值逐位不变。
@@ -4403,7 +4437,9 @@ function search(query, docs, opts = {}) {
     const srOf = subjRatio === void 0 ? 0 : subjRatio[di];
     vbTmp.push(vbOf);
     srTmp.push(srOf);
-    lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0);
+    // [macro-fusion 0.6.30] 这句里的 `opts.levelIntent !== false` 每候选读一次属性表（行级 166.7ms，
+    // 六成花在这次读上）；同一个判据已经在循环外算成 `lvOn`，这里直接引它，布尔值逐位相同。
+    lvTmp.push(lvHit && lvOn ? 1 : 0);
     trTmp.push(trOf);
     if (leanHit) {
       hits.push({

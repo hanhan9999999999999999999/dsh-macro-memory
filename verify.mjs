@@ -6567,7 +6567,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
 
   check(
     '召回: 重要度乘数进了打分（score = raw × w × impW，且 impW 与 keywordHitScore 同口径 0.25；0.2.179 起缘由问句再乘一层规矩折价，0.2.180 起分档与排序吃同一个乘子）',
-    meowSrc.includes('const impW = 1 + (impOf(dOf) - 1) * 0.25;') &&
+    meowSrc.includes('const impW = 1 + (impOf(dOf) - 1) * 0.25;') ||
+      // [0.6.30] 同一个乘子摊平进扫描循环（`impOf` 闭包退休）：先 round 取整、再夹到 1..4、再乘 0.25。
+      // 断言钉的是「口径没变」，不是「它非得走一次函数调用」——所以认这两种写法里的任一种。
+      (meowSrc.includes('const impRaw = Math.round(Number(dOf.importance));') &&
+        meowSrc.includes('const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;')) &&
       // [0.2.180] 折价改走 ruleFoldOf(di)：分档用的 _raw 与排序用的 score 吃同一个乘子。
       // 只折 score 的话，规矩条仍在最高档里当第一名（bandize 按 _raw 分档、档位优先于分数），折到 0.1 也翻不过去。
       // [0.6.14] 这个乘子每条只算一次落进 `foldOf`（原来 _raw/score/explain 各调一遍 ruleFoldOf(di)），
@@ -14875,6 +14879,160 @@ dt063: {
   const vS29 = (readS29('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNumS29 = vS29.length === 3 ? vS29[0] * 10000 + vS29[1] * 100 + vS29[2] : 0
   check('OR089 版本号不低于 0.6.29（后续补丁不必回头改这一条）', vNumS29 >= 629, vS29.join('.'))
+}
+
+// ═══════════════ [macro-fusion 0.6.30] OR090：猜位定档 + 小闭包摊平 + 同值铺表走 fill ═══════════════
+{
+  const readS30 = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const stripS30 = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const rawS30 = readS30('./vendor/meow-memory/lib/index.js')
+  const engS30 = stripS30(rawS30)
+  const hotS30 = readS30('./tools/probe-hotpath.mjs')
+  const allS30 = readS30('./tools/check-all.mjs')
+  check('OR090 探针在位：probe-hotpath 有 H14–H16 三条（定档定位 / 重要性权重 / 同值铺表指纹），check-all 挂了它',
+    ['H14 ', 'H15 ', 'H16 '].every((t) => hotS30.includes(t)) &&
+      allS30.includes('probe-hotpath') &&
+      rawS30.includes('const RAWK_SHIFT = 16;'))
+  const iV30 = rawS30.indexOf('function verbatimInputs(query, docs, opts, textOf')
+  const iVEnd30 = iV30 > 0 ? rawS30.indexOf('\nfunction ', iV30 + 10) : -1
+  const vbCode30 = iV30 > 0 && iVEnd30 > iV30
+    ? rawS30.slice(iV30, iVEnd30).split('\n').filter((ln) => !ln.trim().startsWith('//')).join('\n')
+    : ''
+  const fillOk30 = vbCode30.includes('rawVerbatim: new Array(docs.length).fill(null),') &&
+    vbCode30.includes('subjRatio: new Array(docs.length).fill(0)') &&
+    vbCode30.includes('docs.map(') === false
+  const impOk30 = engS30.includes('const impOf = (d) => {') === false &&
+    engS30.includes('const impRaw = Math.round(Number(dOf.importance));') &&
+    engS30.includes('const impW = 1 + ((Number.isFinite(impRaw) ? (impRaw < 1 ? 1 : impRaw > 4 ? 4 : impRaw) : 1) - 1) * 0.25;')
+  const lvOk30 = engS30.includes('lvTmp.push(lvHit && lvOn ? 1 : 0);') &&
+    engS30.includes('lvTmp.push(lvHit && opts.levelIntent !== false ? 1 : 0);') === false
+  const bandOk30 = engS30.includes('const posScale = spanV > 0 ? (m - 1) / spanV : 0;') &&
+    engS30.includes('let est = ((v - a0v) * posScale) | 0;') &&
+    engS30.includes('if (anchors[est] >= v) {') &&
+    engS30.includes('hiI = est;') &&
+    engS30.includes('loI = est + 1;')
+  check('OR090 引擎形状：同值铺表走原生 fill、impOf 闭包退休、层级判据复用 lvOn、定档改猜位 + 半区间',
+    fillOk30 && impOk30 && lvOk30 && bandOk30,
+    `铺表=${fillOk30} impW=${impOk30} lvOn=${lvOk30} 猜位=${bandOk30}`)
+  // 定档定位等价：把引擎的桶表 + `anchorChainOf` + `setBandsByThreshold` 原文抠出来跑，
+  // 再与「每条从头二分」的参考逐条对档号（分布：均匀 / 同分 / 偏斜 / 两值 / 全等 / 巨跨 / 微跨 / 含零）。
+  const iA30 = rawS30.indexOf('const RAWK_SHIFT = 16;')
+  const iC30 = rawS30.indexOf('function setBandsBySort(hits, rawKey) {')
+  let sand30 = null
+  try {
+    sand30 = iA30 >= 0 && iC30 > iA30
+      ? new Function(`var IMP_BAND = 0.85;\n${rawS30.slice(iA30, iC30)}\nreturn { setBandsByThreshold, anchorChainOf };`)()
+      : null
+  } catch {
+    sand30 = null
+  }
+  const lcg30 = (seed0) => {
+    let s = seed0
+    return () => {
+      s = (s * 1103515245 + 12345) % 2147483648
+      return s / 2147483648
+    }
+  }
+  const g1 = lcg30(7), g2 = lcg30(11), g3 = lcg30(13), g4 = lcg30(17), g5 = lcg30(19), g6 = lcg30(23)
+  const dist30 = [
+    Array.from({ length: 300 }, () => g1()),
+    Array.from({ length: 300 }, () => Math.round(g2() * 20) / 20),
+    Array.from({ length: 300 }, () => Math.exp(-g3() * 8) * 1000),
+    Array.from({ length: 300 }, () => (g4() < 0.5 ? 1 : 2)),
+    new Array(300).fill(5),
+    Array.from({ length: 300 }, () => g5() * 1e12),
+    Array.from({ length: 300 }, (_, i) => 1e15 + i),
+    Array.from({ length: 300 }, () => (g6() < 0.3 ? 0 : g6())),
+  ]
+  const refBand30 = (anchors, m, v) => {
+    let lo = 0
+    let hi = m
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (anchors[mid] >= v) hi = mid
+      else lo = mid + 1
+    }
+    return m - 1 - lo
+  }
+  let bandBad30 = 0
+  let bandRows30 = 0
+  if (sand30 !== null) {
+    for (const vals of dist30) {
+      const hits = vals.map((v) => ({ _raw: v }))
+      hits.push({ _raw: 3, _ident: true }, { _raw: 4, _subj: 1 })
+      if (sand30.setBandsByThreshold(hits, '_raw') !== true) bandBad30 += 1
+      const anchors = sand30.anchorChainOf(Float64Array.from(vals), vals.length)
+      const m = anchors.length
+      for (let i = 0; i < vals.length; i++) {
+        bandRows30 += 1
+        if (!Object.is(hits[i]._bandTmp, refBand30(anchors, m, vals[i]))) bandBad30 += 1
+      }
+      if (hits[vals.length]._bandTmp !== -1 || hits[vals.length + 1]._bandTmp !== -1) bandBad30 += 1
+    }
+  }
+  check('OR090 进程内：猜位 + 半区间二分与「每条从头二分」逐位同档（八种分布 2,400 条全对，指认 / 主语项仍 -1）',
+    sand30 !== null && bandBad30 === 0 && bandRows30 === 2400,
+    `对档 ${bandRows30} 条 · 不符 ${bandBad30}`)
+  // 重要性权重：`now: null` 关掉时间衰减，分数比值就只剩 impW，逐档对老公式（越界 / 小数 / NaN / 字符串 / null / 负数）
+  const Mv30 = await import('./vendor/meow-memory/lib/index.js')
+  const impOld30 = (v) => {
+    const r = Math.round(Number(v))
+    const c = Number.isFinite(r) ? Math.min(4, Math.max(1, r)) : 1
+    return 1 + (c - 1) * 0.25
+  }
+  const imps30 = [1, 2, 3, 4, 9, 0, 0.4, 2.6, NaN, '2', null, void 0, -3]
+  const impDocs30 = imps30.map((v, i) => ({
+    id: '0mz' + String(i).padStart(5, '0'), level: 'fact', title: 't', content: 'alpha beta gamma',
+    importance: v, updated_at: '2026-01-01T00:00:00Z', keywords: ['alpha'], project: 'p',
+  }))
+  const impRes30 = Mv30.search('alpha beta gamma', impDocs30, { k: 20, now: null })
+  const impBase30 = impRes30.find((h) => h.id === '0mz00000')
+  let impBad30 = 0
+  let impChecked30 = 0
+  if (impBase30 !== void 0 && impBase30.score > 0) {
+    for (let i = 0; i < imps30.length; i += 1) {
+      const h = impRes30.find((x) => x.id === '0mz' + String(i).padStart(5, '0'))
+      if (h === void 0) continue
+      impChecked30 += 1
+      if (!Object.is(Math.round((h.score / impBase30.score) * 1e9) / 1e9, Math.round(impOld30(imps30[i]) * 1e9) / 1e9)) impBad30 += 1
+    }
+  }
+  check('OR090 进程内：重要性权重逐档与老闭包同值（含越界 / 小数 / NaN / 字符串 / null / 负数）',
+    impChecked30 === imps30.length && impBad30 === 0,
+    `逐档 ${impChecked30}/${imps30.length} · 不符 ${impBad30}`)
+  // 回执指纹：与 0.6.29 引擎逐位相同（发版前两条引擎跑过对照，见 DESIGN 225 / INTERNAL 9.229）
+  const NOW30 = 1795470000000
+  const lcgG = lcg30(97)
+  const wordsG = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', '一律', '必须', '先', '记忆', '星图']
+  const corpusG = Array.from({ length: 120 }, (_, i) => {
+    const n = 3 + ((lcgG() * 5) | 0)
+    const ws = Array.from({ length: n }, () => wordsG[(lcgG() * wordsG.length) | 0])
+    return {
+      id: '0mg' + String(i).padStart(6, '0'),
+      level: ['fact', 'lesson', 'rules', 'topic'][(lcgG() * 4) | 0],
+      title: ws[0],
+      content: ws.join(' '),
+      importance: 1 + ((lcgG() * 4) | 0),
+      updated_at: '2026-01-01T00:00:00Z',
+      keywords: lcgG() < 0.2 ? null : [wordsG[(lcgG() * wordsG.length) | 0]],
+      project: 'p',
+    }
+  })
+  const qsG = ['alpha beta', '必须 先 记忆', '星图 一律', 'gamma delta epsilon', '规则 是什么',
+    '为什么 要 先', 'alpha gamma 记忆', '0mg000012 alpha']
+  const digestG = qsG.map((q) => Mv30.search(q, corpusG, { k: 8, now: NOW30 })
+    .map((h) => `${h.id}@${h.score.toFixed(12)}`).join(',')).join('|')
+  const GOLD30 = '0mg000005@3.664628057107,0mg000038@5.102523846806,0mg000061@4.788643770374,0mg000006@3.925122785034,0mg000074@2.232920822271|0mg000023@6.732283929790,0mg000108@5.065968177695,0mg000076@4.106832745439,0mg000104@4.756171212734,0mg000117@4.580868819911|0mg000100@5.906625216656,0mg000067@3.975949441312,0mg000115@3.760224920935,0mg000015@3.579293550671,0mg000047@3.464398706423|0mg000101@5.989226322228,0mg000037@4.382801980391,0mg000105@6.132937947203,0mg000016@5.714996394708,0mg000089@5.278362858510|||0mg000023@7.099164514106,0mg000108@5.912829410853,0mg000005@4.615892988676,0mg000084@3.935034576993,0mg000058@6.160437605175|0mg000012@3.148175340076,0mg000083@1.863256160943,0mg000005@1.755985977713,0mg000109@2.098783560051,0mg000073@1.049391780025'
+  check('OR090 进程内：固定语料 × 八个问句的回执指纹与 0.6.29 逐位相同（同值铺表 / 循环外判据都没改值）',
+    digestG === GOLD30, digestG === GOLD30 ? '指纹同' : '指纹不同')
+  check('OR090 文档在位：INTERNAL 9.229、README 写「猜位定档」、DESIGN 有 ## 225.、PLAN 有 0.6.30',
+    readS30('./docs/INTERNAL.md').includes('## 9.229 ') &&
+      readS30('./README.md').includes('猜位定档') &&
+      readS30('./DESIGN.md').includes('## 225. ') &&
+      /0\.6\.30/.test(readS30('./docs/PLAN-0.6.md')))
+  const vS30 = (readS30('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
+  const vNumS30 = vS30.length === 3 ? vS30[0] * 10000 + vS30[1] * 100 + vS30[2] : 0
+  check('OR090 版本号不低于 0.6.30（后续补丁不必回头改这一条）', vNumS30 >= 630, vS30.join('.'))
 }
 
 // 0.6.8：文档「现在」的断言总数由事实拼出来（环的最后一块，见上面 MT068 的注释）
