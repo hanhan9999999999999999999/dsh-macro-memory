@@ -6870,8 +6870,30 @@ function logHitSkip(workspace, dir, reason, extra = "") {
   }
 }
 
+/**
+ * [macro-fusion 0.6.72] 落选名单：这一轮被挡在门外的条目，`id8:score:reason`，一次最多 8 条。
+ * 与 0.6.71 的 `picks=` 正好对称——那边记「进了谁、各占多少字」，这边记「谁没进、为什么」。
+ * 没有这一栏时，用户看到一条记忆从不出现只能猜：分数不够？只对上单字？上一轮刚给过？
+ * 被这一轮的字数上限挤掉？四种原因的对策完全不同，猜错就白改。
+ * reason 四态：`literal`（只对上单字，字面兜底不算证据）/ `floor`（词面对上了但分数不到门槛）/
+ * `repeat`（同话题抑制：上一轮刚给过同一批）/ `cap`（这一轮字数上限把它挤掉了）。
+ * 字段缺席 = 0.6.72 以前的老日志；`-` = 这一轮没人落选，或还没走到检索就整轮放弃了。
+ */
+function dropsTail(drops) {
+  const list = Array.isArray(drops) ? drops.filter((d) => d !== null && d !== void 0 && d.id !== null && d.id !== void 0) : [];
+  if (list.length === 0) return " drops=-";
+  const shown = list.slice(0, 8).map((d) => {
+    const score = Number.isFinite(d.score) ? d.score.toFixed(2) : "-";
+    return `${String(d.id).slice(0, 8)}:${score}:${String(d.reason || "-")}`;
+  });
+  return ` drops=${shown.join(",")}`;
+}
+
 function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = ".dsh-meow") {
   const o = { ...DEFAULT_OPTS, ...opts };
+  // [macro-fusion 0.6.72] 这一轮落选的条目（{ id, level, score, reason }）。四道闸各往里放一笔，
+  // 最后由 dropsTail 写进日志：注入成功的轮写进 hit-chain，整轮被挡的轮写进 hit-skip。
+  const drops = [];
   // [macro-fusion 0.6.44] 会话账本：累计注入字数 + 上一轮的词面与最高分。
   // 这里单独读一次（hitQuery 内部也读），因为要在**检索之前**判预算：到顶了就别白检索一遍。
   const seen = readSeenFile(workspace, sessionId, dir);
@@ -6880,7 +6902,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   // 到顶之后整轮不注入——账已经花完，再灌就是纯消耗。模型仍然可以自己 memory_search。
   const sessionBudget = Number.isFinite(o.injectSessionBudget) ? Math.max(0, Math.floor(o.injectSessionBudget)) : 0;
   if (sessionBudget > 0 && spent >= sessionBudget) {
-    logHitSkip(workspace, dir, "budget", ` spent=${spent} limit=${sessionBudget}`);
+    logHitSkip(workspace, dir, "budget", ` spent=${spent} limit=${sessionBudget}${dropsTail(drops)}`);
     return null;
   }
   // [macro-fusion 0.6.49] 老条目放回：hitQuery 的排除名单是「本会话给过的永久拉黑」，
@@ -6917,7 +6939,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   }
   const fresh = hitQuery(db, workspace, sessionId, userText, o, dir);
   if (fresh.length === 0) {
-    logHitSkip(workspace, dir, "empty", ` released=${released} reinject=${reinjectTurns}`);
+    logHitSkip(workspace, dir, "empty", ` released=${released} reinject=${reinjectTurns}${dropsTail(drops)}`);
     return null;
   }
   // [macro-fusion 0.6.60] 字面兜底不算证据：单字问句（「好」「嗯」）在 keywordHitScore 里
@@ -6925,8 +6947,13 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   // （bench28），而这 236 字每轮都在历史里重新计费。这类命中一条 ≥2 字的问句词都没对上
   // （evidence.n === 0），进上下文只会误导。标识符原样命中不算字面，n 按 1 记，照常放行。
   const lexical = fresh.filter((h) => h.evidence && h.evidence.n > 0);
+  // [macro-fusion 0.6.72] 落选的第一种：只对上单字（字面兜底）。它们不是「分数不够」，
+  // 是根本没进分数比较——对策也不同（补两字以上的词，而不是调门槛或提重要度）。
+  for (const h of fresh) {
+    if (!(h.evidence && h.evidence.n > 0)) drops.push({ id: h.id, level: h.level, score: h.score, reason: "literal" });
+  }
   if (lexical.length === 0) {
-    logHitSkip(workspace, dir, "literal", ` hits=${fresh.length}`);
+    logHitSkip(workspace, dir, "literal", ` hits=${fresh.length}${dropsTail(drops)}`);
     return null;
   }
   // [macro-fusion 0.6.40] 命中闸门：分数不到 injectFloor 的命中不注入。
@@ -6949,7 +6976,15 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   const qRatio = Number.isFinite(o.injectQuestionFloor) ? Math.max(0, Math.min(1, o.injectQuestionFloor)) : INJECT_QUESTION_FLOOR_RATIO;
   const asked = qRatio < 1 && stripQuestionFrame(String(userText ?? "")).stripped.length > 0;
   const effFloor = asked ? floor * qRatio : floor;
-  let kept = effFloor > 0 ? lexical.filter((h) => !(Number.isFinite(h.score) && h.score < effFloor)) : lexical;
+  // [macro-fusion 0.6.72] 落选的第二种：词面对上了（至少两条实词或一个标识符），
+  // 但分数不到这一轮的门槛。`asked` 那一档门槛是打过折的，记的是真用的那个数，
+  // 否则用户按 0.35 去算对不上账。
+  // 门槛比较只在这里做一次：先算出「线下那批」，记账与分流都用这一份——
+  // 两处各写一遍比较，就是「账上记 X 条、实际挡 Y 条」的老毛病。
+  const below = effFloor > 0 ? lexical.filter((h) => Number.isFinite(h.score) && h.score < effFloor) : [];
+  for (const h of below) drops.push({ id: h.id, level: h.level, score: h.score, reason: "floor" });
+  const belowSet = new Set(below);
+  let kept = below.length === 0 ? lexical : lexical.filter((h) => !belowSet.has(h));
   const gated = lexical.length - kept.length;
   if (kept.length === 0) {
     // 挡下也把「差多远」留下：报被挡条目里分最高的那一条的证据读数（n/cover/share），
@@ -6958,7 +6993,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     for (const h of lexical) if (best === null || (Number.isFinite(h.score) ? h.score : 0) > (Number.isFinite(best.score) ? best.score : 0)) best = h;
     const ev = best && best.evidence ? best.evidence : null;
     const tail = ev ? ` best=${ev.n}/${ev.cover.toFixed(2)}/share=${ev.share.toFixed(2)} score=${Number.isFinite(best.score) ? best.score.toFixed(3) : "-"}` : "";
-    logHitSkip(workspace, dir, "floor", ` gated=${gated} floor=${effFloor.toFixed(2)}${asked ? " asked=1" : ""}${tail}`);
+    logHitSkip(workspace, dir, "floor", ` gated=${gated} floor=${effFloor.toFixed(2)}${asked ? " asked=1" : ""}${tail}${dropsTail(drops)}`);
     return null;
   }
   // 闸 ②：同话题延续（0.6.44）。上一轮问句与本轮词面 Jaccard ≥ injectRepeatSim 时，
@@ -6975,7 +7010,13 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
       const boost = Number.isFinite(o.injectRepeatBoost) && o.injectRepeatBoost >= 1 ? o.injectRepeatBoost : INJECT_REPEAT_BOOST_DEF;
       const bar = Math.max(floor, prevTop * boost);
       const before = kept.length;
-      kept = kept.filter((h) => Number.isFinite(h.score) && h.score >= bar);
+      // [macro-fusion 0.6.72] 落选的第三种：同话题抑制。这一批上一轮刚给过同一批，
+      // 再灌一遍是白花——但它也是最容易被误读成「这条记忆坏了」的那种落选，必须点名。
+      kept = kept.filter((h) => {
+        const ok = Number.isFinite(h.score) && h.score >= bar;
+        if (!ok) drops.push({ id: h.id, level: h.level, score: h.score, reason: "repeat" });
+        return ok;
+      });
       repeated = before - kept.length;
     }
   }
@@ -6992,16 +7033,23 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
       writeSeenFile(workspace, sessionId, after, dir);
     } catch {
     }
-    logHitSkip(workspace, dir, "repeat", ` repeated=${repeated} sim=${sim} prevTop=${seen.lastTopScore}`);
+    logHitSkip(workspace, dir, "repeat", ` repeated=${repeated} sim=${sim} prevTop=${seen.lastTopScore}${dropsTail(drops)}`);
     return null;
   }
+  // [macro-fusion 0.6.72] 落选的第四种要在渲染之后才能算：这一轮的字数上限把排在后面
+  // 的几条挤掉了（`modes` 一格一条，长度就是真渲染出来的条数）。被挤掉的那几条不是「分数
+  // 不够」也不是「看过」——它只是排在这一轮后面，调大一点额度或把条目压短就能进来。
+  const pushCapped = (r) => {
+    for (const h of kept.slice(r.modes.length)) drops.push({ id: h.id, level: h.level, score: h.score, reason: "cap" });
+  };
   let rendered = renderHitEntries(kept, o, userText);
   // [macro-fusion 0.6.47] 骨架路径（单次上限小到连一条「像样的正文」都排不下）不再注入：
   // 只灌一行标题加一句边界句，等于每轮白烧一次上下文；而且那条路上 modes 是空数组，
   // 一条 id 都不会被记成「已注入」，下一轮把同一批再算一遍。跟「额度花光」同一个出口，
   // 日志带 cap / spent / limit，看得清是哪一道上限卡住的。
   if (kept.length > 0 && rendered.modes.length === 0) {
-    logHitSkip(workspace, dir, "budget", ` cap=${Number.isFinite(o.injectMaxChars) ? o.injectMaxChars : 0} spent=${spent} limit=${sessionBudget}`);
+    pushCapped(rendered);
+    logHitSkip(workspace, dir, "budget", ` cap=${Number.isFinite(o.injectMaxChars) ? o.injectMaxChars : 0} spent=${spent} limit=${sessionBudget}${dropsTail(drops)}`);
     return null;
   }
   // [macro-fusion 0.6.47] 闸①过去只判「进门」不判「出门」：预算没花完、但只剩一点点的
@@ -7013,11 +7061,14 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     const remain = sessionBudget - spent;
     const clamped = renderHitEntries(kept, { ...o, injectMaxChars: remain }, userText);
     if (clamped.modes.length === 0) {
-      logHitSkip(workspace, dir, "budget", ` remain=${remain} spent=${spent} limit=${sessionBudget}`);
+      pushCapped(clamped);
+      logHitSkip(workspace, dir, "budget", ` remain=${remain} spent=${spent} limit=${sessionBudget}${dropsTail(drops)}`);
       return null;
     }
     rendered = clamped;
   }
+  // [macro-fusion 0.6.72] 渲染定稿之后才数得清被挤掉的是谁（modes 的长度就是真进去的条数）。
+  pushCapped(rendered);
   const text = rendered.text;
   // [macro-fusion 0.6.47] 只标「真渲染出来的那几条」：预算把后面几条挤掉时（dropped>0），
   // 旧写法照样把它们写进 seen、还照样 bumpHit——被挤掉的条目下一轮再也不出现，hit_count
@@ -7049,7 +7100,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     writeSeenFile(workspace, sessionId, after, dir);
   } catch {
   }
-  return { text, injectedIds: ids, gated, picks: shown.map((h, i) => ({ id: h.id, level: h.level, chars: Number.isFinite(rendered.sizes?.[i]) ? rendered.sizes[i] : 0, mode: rendered.modes[i] ?? "full" })), budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
+  return { text, injectedIds: ids, gated, picks: shown.map((h, i) => ({ id: h.id, level: h.level, chars: Number.isFinite(rendered.sizes?.[i]) ? rendered.sizes[i] : 0, mode: rendered.modes[i] ?? "full" })), drops, budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
 }
 
 // src/tools.ts
@@ -12001,8 +12052,11 @@ ${e.stack ?? ""}` : String(e)}
           injectRepeatSim: resolved.injectRepeatSim
         }, resolved.projectDir);
         const picksStr = hit === null || !Array.isArray(hit.picks) || hit.picks.length === 0 ? "-" : hit.picks.slice(0, 8).map((p) => `${String(p.id).slice(0, 8)}:${p.chars}:${p.mode}`).join(",");
+        // [macro-fusion 0.6.72] 落选名单与 picks 同一行：格式只有 dropsTail 一处定义，
+        // 这里把 ` drops=` 前缀摘掉再拼回模板，免得两处各写一套（写法一分叉，读日志的人就要猜）。
+        const dropsStr = hit === null ? "-" : dropsTail(hit.drops).replace(/^ drops=/, "");
         try {
-          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} picks=${picksStr} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} picks=${picksStr} drops=${dropsStr} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }
