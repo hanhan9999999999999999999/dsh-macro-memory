@@ -223,7 +223,7 @@ function makeCorpus(n) {
     bad.length === 0, bad.length === 0 ? '6 个问句逐条一致' : bad.slice(0, 2).join(' | '))
 }
 
-// ── V7：10,000 条：原样匹配通道的固定开销 ≤ 7ms（份额降级成旁证） ────────────────
+// ── V7：10,000 条：热问句不许重拼 haystack（计数器判红；毫秒只作读数） ────────────
 {
   const docs = makeCorpus(10000)
   const q = 'how do I fix the timeout in kv_store.ts when rename is slow'
@@ -235,10 +235,7 @@ function makeCorpus(n) {
     for (let i = 0; i < rounds; i++) fn()
     return Number(process.hrtime.bigint() - t0) / 1e6 / rounds
   }
-  // 三次取最小：这条判据量的是「这笔固定开销到底多贵」，调度噪声只会把它抬高、不会压低，
-  // 所以最小值才是那个数；真退化（多扫一遍、退化成 O(n)）在最小值上照样现形。
-  // 2026-11-24 二连假红的来历：单跑 6.32–6.63ms 绿，在 check-all 里撞上 7ms 就红一次，
-  // 绝对毫秒判据在忙机器上不可靠——别调阈值，调测法。
+  // 三次取最小：读数是「这笔固定开销多贵」，调度噪声只会抬不会压，最小值才是那个数。
   const best = (fn, tries = 3) => {
     let m = Infinity
     for (let i = 0; i < tries; i++) m = Math.min(m, bench(fn))
@@ -248,14 +245,30 @@ function makeCorpus(n) {
   const noVerb = best(() => V.search(q, docs, { k: 5, verbatim: false }))
   const verbCost = Math.max(0, all - noVerb)
   const share = verbCost / all
-  // 0.6.15 起改口径：份额的分母（其它通道）在 0.6.12→0.6.15 之间掉了约六成，同一个固定开销摊在
-  // 更小的分母上，25% 这条线必然假红（2026-11-24 实测 30.1%，而绝对开销 4.93ms 与 0.6.10 同级）。
-  // 0.6.17 又把分母砍掉一半（`search` 8.35 → 3.5ms，回执对象先瘦后水化），份额升到 54.4% —— 同一笔
-  // 固定开销、同样的绝对数，只因别的通道变快而「占比失控」。这笔账真正要守的始终是「固定开销不涨」，
-  // 所以份额彻底降级成旁证（只打印，不参与判定）；拿分母变小说事会让优化越成功越红。
-  check('V7 10,000 条：原样匹配通道的固定开销 ≤ 7ms（三轮取最小；份额只作旁证，不参与判定；分母在 0.6.12→0.6.17 掉了约八成）',
-    verbCost <= 7,
-    `开销 ${verbCost.toFixed(2)}ms / 总 ${all.toFixed(2)}ms（${(share * 100).toFixed(1)}%）`)
+  /*
+   * 判据从「毫秒」改成「计数器」（0.6.74，2026-11-25）。
+   *
+   * 三次假红的账：0.6.10 起这条线画在 7ms；0.6.11 单跑 6.32–6.63ms 绿，进 check-all 撞一次红；
+   * 2026-11-25 重启后又在整套里红一次（单跑 6.46ms、整批 7.45ms，**同一份代码**）。
+   * 试过的两条岔路都不通：①调阈值——只是把红点往后挪，忙到 8ms 还会红；
+   * ②换成「相对现拼一遍的比值」——实测比值 1.02–1.08，本来就在 1 附近，没有余量可言
+   * （这条通道的固定开销本来就跟现拼一遍同量级：省下的是内容变了才重拼，不是每次都便宜）。
+   * 真正该守的不变量从来不是「几毫秒」，而是「**库没变时不许重拼**」——那是个计数器能数清的事实，
+   * 跟机器忙闲无关。毫秒与份额继续打印，当读数看、不当判据（真退化在读数上照样看得见）。
+   *
+   * 份额（verbCost / 总）另有一段来历，别再把判据搬回去：0.6.12→0.6.15 其它通道掉了约六成，
+   * 同一笔固定开销摊在更小的分母上，25% 那条线必然假红（实测 30.1%，而绝对开销与 0.6.10 同级）；
+   * 0.6.17 又把分母砍半（`search` 8.35 → 3.5ms），份额升到 54.4%。越优化越红——所以份额永远只是读数。
+   */
+  V.clearSearchIndexCache()
+  V.resetVerbatimHayStats()
+  V.search(q, docs, { k: 5 })
+  const first = V.verbatimHayStats()
+  for (let i = 0; i < 3; i++) V.search(q, docs, { k: 5 })
+  const later = V.verbatimHayStats()
+  check('V7 10,000 条：连问 4 次，第 2 次起不许再重拼 haystack（计数器判红；毫秒与份额只作读数）',
+    later.built === first.built && later.reused > first.reused && verbCost <= 40,
+    `现拼 ${first.built} → 再问三遍仍是 ${later.built}（复用 ${first.reused} → ${later.reused}）· 开销 ${verbCost.toFixed(2)}ms / 总 ${all.toFixed(2)}ms（${(share * 100).toFixed(1)}%，只作读数）`)
 }
 
 // ── V8：没有标识符的问句一条 haystack 都不建 ─────────────────────────────────

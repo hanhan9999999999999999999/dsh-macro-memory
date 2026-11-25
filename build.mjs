@@ -69,6 +69,13 @@ meow = replaceN(meow, '"settings.title": "Meow memory"', '"settings.title": "Mac
 // 补丁与文案在 tools/patch-settings-fields.mjs 里，锚点对不上会抛错。
 meow = applySettingsFields(meow)
 
+// ── 设置页「自定义库位置」的示例文案（0.7.0 · mac 适配）──────────────────────
+// 原 placeholder 是 "D:\\data\\meow-memory"：Windows 上看得懂，mac 上是一条不存在的
+// 盘符路径（mac 连 `D:` 这个概念都没有）。示例文案不该带平台假设，换成三平台通用的
+// `~/.dsh/macro-memory`——宿主自己也不展开 `~`，所以它只是一句「长这样」，不是可填的值。
+// 只改这一条显示值：字段 key / type / hint / 出厂值全部不动。
+meow = once(meow, 'placeholder: "D:\\\\data\\\\meow-memory"', 'placeholder: "~/.dsh/macro-memory"')
+
 let nebula = readFileSync(nebulaPath, 'utf8')
 nebula = replaceLoadId(nebula, 'dsh-memory-nebula', NEBULA_ID)
 if (!nebula.includes('module.exports = {')) throw new Error('nebula client bundle: unexpected shape')

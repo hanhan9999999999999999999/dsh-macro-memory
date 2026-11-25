@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { width:1600px; height:620px; overflow:hidden;
+    background:
+      radial-gradient(900px 520px at 78% 18%, rgba(59,174,240,.30), transparent 62%),
+      radial-gradient(700px 460px at 92% 88%, rgba(43,217,195,.16), transparent 60%),
+      linear-gradient(140deg, #071522 0%, #0B1B2B 46%, #08131d 100%);
+    font-family:"Microsoft YaHei","Segoe UI",sans-serif; color:#E8F2FA; position:relative; }
+  .dots { position:absolute; inset:0; opacity:.5; }
+  .dots i { position:absolute; display:block; border-radius:50%; background:#7FD4FF; }
+  .edge { position:absolute; height:1px; background:linear-gradient(90deg, rgba(127,212,255,.55), rgba(127,212,255,0)); transform-origin:left center; }
+  .wrap { position:relative; display:flex; height:100%; padding:64px 76px; align-items:center; gap:40px; }
+  .left { width:960px; }
+  .kicker { font-size:19px; letter-spacing:.34em; color:#5FC8F5; text-transform:uppercase; margin-bottom:22px; }
+  h1 { font-size:96px; line-height:1.02; letter-spacing:-2px; font-weight:800;
+       background:linear-gradient(120deg,#FFFFFF 0%,#BEE9FF 52%,#6FD3F7 100%);
+       -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  h1 small { display:block; font-size:40px; font-weight:600; letter-spacing:.02em; margin-top:14px;
+       background:linear-gradient(120deg,#9FE0FF,#5FC8F5); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  p.sub { margin-top:30px; font-size:26px; line-height:1.66; color:#A9C6DA; width:930px; }
+  p.sub b { color:#EAF6FF; font-weight:700; }
+  .chips { display:flex; gap:16px; margin-top:44px; }
+  .chip { padding:16px 22px; border-radius:16px; background:rgba(19,42,60,.72);
+     border:1px solid rgba(95,200,245,.28); box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
+  .chip .n { font-size:34px; font-weight:800; color:#FFFFFF; letter-spacing:-.5px; }
+  .chip .n em { font-size:19px; font-style:normal; color:#7FD4FF; margin-left:4px; }
+  .chip .t { margin-top:6px; font-size:16px; color:#8FAEC2; letter-spacing:.04em; }
+  .right { position:relative; width:520px; height:520px; flex:none; }
+  .ring { position:absolute; border-radius:50%; border:1px solid rgba(127,212,255,.20); }
+  .core { position:absolute; left:50%; top:50%; width:150px; height:150px; margin:-75px 0 0 -75px;
+     border-radius:50%; background:radial-gradient(circle at 34% 30%, #7FE3FF, #2A9BD6 45%, #135A85 100%);
+     box-shadow:0 0 60px rgba(95,200,245,.55), inset 0 0 30px rgba(255,255,255,.35); }
+  .core span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+     font-size:40px; font-weight:800; color:#04202F; }
+  .tag { position:absolute; font-size:15px; color:#9FD9F7; background:rgba(9,29,44,.86);
+     border:1px solid rgba(95,200,245,.22); border-radius:999px; padding:7px 14px; white-space:nowrap; }
+</style></head>
+<body>
+  <div class="dots" id="dots"></div>
+  <div class="wrap">
+    <div class="left">
+      <div class="kicker">dsh · macro memory</div>
+      <h1>宏记忆<small>Macro Memory</small></h1>
+      <p class="sub">一个插件接管全部记忆：<b>8 个工具</b>、常驻注入只占 <b>1,266 字符</b>、检索 <b>2.9 毫秒</b>。<br>记得住事，也记得住分寸——该进的进来，不该进的写明为什么。</p>
+      <div class="chips">
+        <div class="chip"><div class="n">8<em>个</em></div><div class="t">统一工具（原来是 17 个）</div></div>
+        <div class="chip"><div class="n">−85<em>%</em></div><div class="t">每轮固定开销</div></div>
+        <div class="chip"><div class="n">2.9<em>ms</em></div><div class="t">单次检索 p50</div></div>
+      </div>
+    </div>
+    <div class="right" id="graph">
+      <div class="ring" style="left:50%;top:50%;width:520px;height:520px;margin:-260px 0 0 -260px"></div>
+      <div class="ring" style="left:50%;top:50%;width:390px;height:390px;margin:-195px 0 0 -195px"></div>
+      <div class="ring" style="left:50%;top:50%;width:270px;height:270px;margin:-135px 0 0 -135px"></div>
+      <div class="core"><span>记</span></div>
+    </div>
+  </div>
+<script>
+  function rng(seed){ let s=seed; return () => (s = (s*1103515245+12345) & 0x7fffffff) / 0x7fffffff; }
+  const R = rng(20261125);
+  const dots = document.getElementById('dots');
+  const pts = [];
+  for (let i=0;i<150;i++){
+    const x = Math.round(R()*1580), y = Math.round(R()*600), r = +(R()*2.1+0.7).toFixed(1);
+    const o = +(R()*0.55+0.18).toFixed(2);
+    const d = document.createElement('i');
+    d.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+(r*2)+'px;height:'+(r*2)+'px;opacity:'+o;
+    dots.appendChild(d); pts.push([x,y]);
+  }
+  for (let i=0;i<pts.length;i+=3){
+    const a = pts[i], b = pts[(i*7+11)%pts.length];
+    const len = Math.hypot(b[0]-a[0], b[1]-a[1]);
+    if (len > 230) continue;
+    const e = document.createElement('div');
+    e.className = 'edge';
+    e.style.cssText = 'left:'+a[0]+'px;top:'+a[1]+'px;width:'+len+'px;transform:rotate('+Math.atan2(b[1]-a[1],b[0]-a[0])+'rad);opacity:.22';
+    dots.appendChild(e);
+  }
+  const tags = [['七层记忆', 306, 8], ['星图邻域', 6, 150], ['注入账', 348, 286], ['快照', 40, 402], ['共现学习', 300, 468]];
+  const g = document.getElementById('graph');
+  for (const t of tags){
+    const d = document.createElement('div'); d.className='tag'; d.textContent = t[0];
+    d.style.left = t[1] + 'px'; d.style.top = t[2] + 'px'; g.appendChild(d);
+  }
+</script>
+</body></html>

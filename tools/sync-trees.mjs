@@ -13,7 +13,7 @@
  *
  * 用法：
  *   node tools/sync-trees.mjs            # 只体检：三棵树差多少文件，不写盘（默认）
- *   node tools/sync-trees.mjs --apply    # 真同步（robocopy /E，只增改，**从不删**）
+ *   node tools/sync-trees.mjs --apply    # 真同步（Windows: robocopy /E；mac/Linux: fs.cpSync；只增改，**从不删**）
  *   node tools/sync-trees.mjs --apply --target=inst   # 只同步装机树（doc / inst / all）
  *
  * 纪律：
@@ -24,6 +24,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { homedir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -32,9 +33,18 @@ const ROOT = path.resolve(HERE, '..')
 const APPLY = process.argv.includes('--apply')
 const targetArg = (process.argv.find((a) => a.startsWith('--target=')) || '').slice('--target='.length) || 'all'
 
-const DSH_HOME = process.env.DSH_HOME || 'D:\\dsh-home'
+// [0.7.0 · mac 适配] 路径与复制实现都按平台走：
+//   - DSH_HOME 没设时，Windows 沿用 D:\dsh-home，mac/Linux 落到 `<home>/.dsh`（与宿主同一套规则）；
+//   - 阅读树默认值也随之平台化，可整体用 DSH_MACRO_DOC 覆盖；
+//   - 复制：Windows 仍是 robocopy /E（成熟、快、能跳过被占用的库），其它平台用 node 自带
+//     `fs.cpSync`——过滤表与 walk()/diffOf() 同源，语义同样是「只增改，从不删」。
+const IS_WIN = process.platform === 'win32'
+const DSH_HOME = process.env.DSH_HOME || (IS_WIN ? 'D:\\dsh-home' : path.join(homedir(), '.dsh'))
+const DOC_DIR =
+  process.env.DSH_MACRO_DOC ||
+  (IS_WIN ? 'D:\\document\\DSH Memory Macro-Regulation System' : path.join(homedir(), 'DSH Memory Macro-Regulation System'))
 const TARGETS = [
-  { key: 'doc', label: '阅读树', dir: 'D:\\document\\DSH Memory Macro-Regulation System' },
+  { key: 'doc', label: '阅读树', dir: DOC_DIR },
   { key: 'inst', label: '装机树', dir: path.join(DSH_HOME, 'profiles', 'desktop', 'node_modules', 'dsh-macro-memory') },
 ].filter((t) => targetArg === 'all' || targetArg === t.key)
 
@@ -124,7 +134,46 @@ function robocopy(src, dst) {
   // 用源树里的 fixture 空壳库盖掉了阅读树的活库。所以这里既排目录也排文件。
   // robocopy：0 = 没变化，1 = 有复制，2/3 = 有额外/复制+额外，>=8 = 出错
   const code = r.status === null ? 16 : r.status
-  return { code, ok: code < 8 }
+  return { code, ok: code < 8, how: `robocopy exit=${code}` }
+}
+
+/**
+ * [0.7.0 · mac 适配] 非 Windows 的复制：`fs.cpSync` 递归、覆盖同名、**不删目标多余文件**。
+ *
+ * 为什么不用 `cp -R`：过滤规则是我们自己的（SKIP_DIRS / SKIP_FILES / RUNTIME_FILE_RE），
+ * 交给 shell 就得再拼一遍排除参数，两套规则迟早分叉。cpSync 的 `filter` 能直接复用
+ * 上面那三张表——**和 walk() 同源**这件事在这里比速度重要：2026-11-25 的事故就是
+ * 「复制器碰了运行时数据库」。
+ */
+function cpTree(src, dst) {
+  fs.mkdirSync(dst, { recursive: true })
+  let kept = 0
+  try {
+    fs.cpSync(src, dst, {
+      recursive: true,
+      force: true,
+      errorOnExist: false,
+      filter: (from) => {
+        const rel = path.relative(src, from)
+        if (rel === '') return true
+        const parts = rel.split(path.sep)
+        if (parts.some((p) => SKIP_DIRS.has(p))) return false
+        const base = parts[parts.length - 1]
+        if (SKIP_FILES.has(base)) return false
+        if (RUNTIME_FILE_RE.test(base)) return false
+        kept += 1
+        return true
+      },
+    })
+    return { code: 0, ok: true, how: `cpSync 收了 ${kept} 项` }
+  } catch (err) {
+    return { code: 1, ok: false, how: 'cpSync', error: String(err?.message ?? err) }
+  }
+}
+
+/** 按平台选复制实现；两边对外形状一致（code / ok / how）。 */
+function copyTree(src, dst) {
+  return IS_WIN ? robocopy(src, dst) : cpTree(src, dst)
 }
 
 /**
@@ -200,8 +249,8 @@ for (const t of TARGETS) {
     if (d.changed + d.missing > 0) console.log('       （未写盘；加 --apply 才复制）')
     continue
   }
-  const r = robocopy(ROOT, t.dir)
-  console.log(`       robocopy exit=${r.code} ${r.ok ? '已同步（/E，只增改，不删除）' : '失败'}`)
+  const r = copyTree(ROOT, t.dir)
+  console.log(`       ${r.how} ${r.ok ? '已同步（只增改，不删除）' : `失败：${r.error ?? ''}`}`)
   if (!r.ok) bad++
   const afterRt = runtimeSnapshot(t.dir)
   const touched = [...new Set([...Object.keys(beforeRt), ...Object.keys(afterRt)])].filter(

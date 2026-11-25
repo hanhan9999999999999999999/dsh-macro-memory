@@ -17,7 +17,17 @@ import { spawnSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const APP = process.env.DSH_APP || 'D:\\DSH\\DSH NEXT\\resources\\app'
+// [0.7.0 · mac 适配] 宿主目录按平台给默认值，DSH_APP 仍然优先。
+// mac 上 DSH 装在 /Applications 里，`resources/app` 在 .app 包内——写死 Windows 路径
+// 会让这支体检在 mac 上直接「找不到宿主」，而它本来只是想 import 宿主的市场校验器。
+const IS_WIN = process.platform === 'win32'
+const APP =
+  process.env.DSH_APP ||
+  (IS_WIN
+    ? 'D:\\DSH\\DSH NEXT\\resources\\app'
+    : process.platform === 'darwin'
+      ? '/Applications/DSH NEXT.app/Contents/Resources/app'
+      : '/opt/DSH NEXT/resources/app')
 const NM = join(APP, 'node_modules')
 const INDEX_FILE = join(root, 'plugin-market', 'index.json')
 /** 索引最终会被放在仓库的这个位置；相对 icon 就是相对它解析的。 */

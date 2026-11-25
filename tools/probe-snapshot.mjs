@@ -8,7 +8,7 @@
  *  - 快照必须是**一致**的（`VACUUM INTO`，不是文件复制）：拿快照库数得出原来的条数；
  *  - 便宜：库没变、或距上一份没满间隔，就不写盘（`fresh/unchanged`、`fresh/gap`）；
  *  - 会轮转：只留最近 `keep` 份，删的是最老的；
- *  - 读得出来：面板给份数、大小、复原命令（且指向 `tools\restore-live-db.ps1 -Source`）；
+ *  - 读得出来：面板给份数、大小、复原命令（且指向 `node tools/restore-live-db.mjs --source`）；
  *  - 不反咬：坏库时只回 `error` 不抛，面板照常念出旧快照；
  *  - 不越界：快照落在 `$DSH_HOME/macro-memory/snapshots/`，一个字节都不写进 `.dsh-meow`；
  *  - 守卫：`agent/pre-step` 透传 decision，并按 payload 的工作区存快照。
@@ -106,7 +106,7 @@ ok(
     'S8 面板念出库大小、份数与复原入口',
     panel.body.includes('快照（1/1 份') &&
       panel.body.includes('复原（先退出 DSH') &&
-      panel.body.includes('tools\\restore-live-db.ps1 -Source'),
+      panel.body.includes('restore-live-db.mjs --source'),
     panel.body.split('\n').slice(0, 2).join(' | '),
   )
   ok('S9 口径尾注带「最多留 N 份」与间隔', panel.scope.includes('最多留 7 份') && panel.scope.includes('间隔 60 分钟'), panel.scope)
@@ -243,8 +243,8 @@ ok('S11 拿不到工作区 → no-ws', S.takeSnapshot({ workspace: '   ' }).stat
   )
   ok(
     'S24 面板点名哪份读不出来、复原命令不指向它',
-    panel3.body.includes('已跳过') && panel3.body.includes('（读不出来）') && panel3.body.includes('copy "') && !/copy "[^"]*memory-2099/.test(panel3.body),
-    panel3.body.split('\n').filter((l) => l.includes('已跳过') || l.includes('copy "')).join(' | ').slice(0, 200),
+    panel3.body.includes('已跳过') && panel3.body.includes('（读不出来）') && panel3.body.includes('拷回快照：') && !/拷回快照：[^\n]*memory-2099/.test(panel3.body),
+    panel3.body.split('\n').filter((l) => l.includes('已跳过') || l.includes('拷回快照：')).join(' | ').slice(0, 200),
   )
 
   // 4,096 字节的合法空库（9.267 现场那种空壳）：读得动但一条都没有
@@ -271,7 +271,7 @@ ok('S11 拿不到工作区 → no-ws', S.takeSnapshot({ workspace: '   ' }).stat
   const jpanel = S.readSnapshotPanel({ workspace: jws, dir: '.dsh-meow' })
   ok(
     'S27 快照全坏 → no-usable-snapshot，面板直说「没有能退的东西」且不给命令',
-    jcmp.status === 'no-usable-snapshot' && jpanel.body.includes('一份都打不开') && !jpanel.body.includes('copy "'),
+    jcmp.status === 'no-usable-snapshot' && jpanel.body.includes('一份都打不开') && !jpanel.body.includes('拷回快照：'),
     String(jcmp.status),
   )
 }

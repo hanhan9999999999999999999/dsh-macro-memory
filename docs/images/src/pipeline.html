@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { width:1600px; height:760px; overflow:hidden; color:#E8F2FA;
+    font-family:"Microsoft YaHei","Segoe UI",sans-serif;
+    background:
+      radial-gradient(1100px 520px at 20% 0%, rgba(59,174,240,.16), transparent 60%),
+      radial-gradient(900px 500px at 88% 100%, rgba(43,217,195,.12), transparent 62%),
+      linear-gradient(160deg, #08131d 0%, #0B1B2B 55%, #071320 100%); }
+  .head { padding:52px 76px 0; }
+  .kicker { font-size:17px; letter-spacing:.3em; color:#5FC8F5; }
+  h2 { margin-top:14px; font-size:46px; font-weight:800; letter-spacing:-.6px; }
+  h2 span { color:#7FD4FF; }
+  .note { margin-top:14px; font-size:20px; color:#93B0C4; }
+  .flow { display:flex; align-items:stretch; gap:0; padding:44px 60px 0; }
+  .card { position:relative; flex:1; background:rgba(15,34,50,.82); border:1px solid rgba(95,200,245,.20);
+    border-radius:20px; padding:26px 24px 22px; box-shadow:0 18px 40px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05); }
+  .card.hot { border-color:rgba(95,200,245,.55); box-shadow:0 0 0 1px rgba(95,200,245,.25), 0 18px 46px rgba(21,120,180,.32); }
+  .idx { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:10px;
+    background:linear-gradient(140deg,#3BAEF0,#1E7BB8); color:#04121C; font-weight:800; font-size:18px; }
+  .st { margin-top:16px; font-size:25px; font-weight:800; }
+  .desc { margin-top:12px; font-size:17px; line-height:1.62; color:#A6C3D7; }
+  .desc em { color:#E9F6FF; font-style:normal; font-weight:700; }
+  ul { margin-top:14px; padding-left:0; list-style:none; }
+  li { font-size:16px; color:#9DBACD; line-height:1.85; padding-left:16px; position:relative; }
+  li::before { content:""; position:absolute; left:0; top:11px; width:7px; height:7px; border-radius:2px;
+    background:#2BD9C3; }
+  li b { color:#DCEFFB; font-weight:700; }
+  .arrow { align-self:center; width:52px; height:2px; background:linear-gradient(90deg, rgba(95,200,245,.15), rgba(95,200,245,.75));
+    position:relative; flex:none; }
+  .arrow::after { content:""; position:absolute; right:-1px; top:-4px; border-left:9px solid rgba(95,200,245,.9);
+    border-top:5px solid transparent; border-bottom:5px solid transparent; }
+  .foot { display:flex; gap:18px; padding:34px 68px 0; }
+  .pill { font-size:16px; color:#9FD9F7; border:1px solid rgba(95,200,245,.24); background:rgba(9,29,44,.7);
+    border-radius:999px; padding:9px 16px; }
+  .pill b { color:#FFFFFF; }
+</style></head>
+<body>
+  <div class="head">
+    <div class="kicker">how a turn works</div>
+    <h2>一轮对话里，记忆只做四件事：<span>取候选 · 过闸 · 注入 · 落账</span></h2>
+    <div class="note">每一步都有数字，每一步都能回查——不靠感觉，靠账。</div>
+  </div>
+  <div class="flow">
+    <div class="card">
+      <div class="idx">1</div>
+      <div class="st">取候选</div>
+      <div class="desc">七层库里按<em>关键词 × 重要度 × 时间</em>打分，星图补上邻域，共现自学习把你自己用过的新词扩进来。</div>
+      <ul>
+        <li>本地检索 <b>2.9ms</b>（1200 条库）</li>
+        <li>星图邻域：按强度闸取 <b>≤4 条</b></li>
+        <li>共现扩词，词源取你自己的 keywords</li>
+      </ul>
+    </div>
+    <div class="arrow"></div>
+    <div class="card hot">
+      <div class="idx">2</div>
+      <div class="st">过闸</div>
+      <div class="desc">四道闸各管一段：<em>够不够格</em>、<em>是不是同一轮的话</em>、<em>离第一名多远</em>、<em>额度还够不够</em>。</div>
+      <ul>
+        <li>字面兜底：只对上单字，整轮不注入</li>
+        <li>问句降档：真问句走 0.21 的线</li>
+        <li>陪跑线：不到第一名 ×0.2 的不占名额</li>
+      </ul>
+    </div>
+    <div class="arrow"></div>
+    <div class="card">
+      <div class="idx">3</div>
+      <div class="st">注入</div>
+      <div class="desc">常驻手册只 1,266 字符；命中条目按你给的额度<em>整句挤压</em>，长句咬断接上，宁可少说一句空话。</div>
+      <ul>
+        <li>每轮总额可调，默认不限</li>
+        <li>单条上限 + 会话预算双层保险</li>
+        <li>头行、尾巴按余额自动降档</li>
+      </ul>
+    </div>
+    <div class="arrow"></div>
+    <div class="card">
+      <div class="idx">4</div>
+      <div class="st">落账</div>
+      <div class="desc">进了哪几条、每条多少字、被挡的<em>为什么被挡</em>——都写进同一份日志，面板照旧念得出。</div>
+      <ul>
+        <li><b>picks=</b> 每条真实写入的字数</li>
+        <li><b>drops=</b> 五种落选原因 + 分数</li>
+        <li>面板给能照做的对策</li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot">
+    <div class="pill">常驻注入 <b>1,266 字符</b></div>
+    <div class="pill">工具 schema <b>14,494 B</b></div>
+    <div class="pill">每轮固定开销 <b>约 2.2K token</b></div>
+    <div class="pill">单次检索 <b>2.9ms p50</b></div>
+    <div class="pill">67 支自检 / <b>4,616 条断言</b></div>
+  </div>
+</body></html>

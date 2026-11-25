@@ -14,12 +14,18 @@ import { root } from './_root.mjs'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join, relative } from 'node:path'
+import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { makeVerdict } from './doctor-verdict.mjs'
 import * as criteria from './criteria.mjs'
 
-const VENDOR = 'D:\\dsh-home\\vendor\\dsh-macro-memory'
-const PROFILE_HOME = 'D:\\dsh-home\\profiles\\desktop'
+// [0.7.0 · mac 适配] 两棵树的根从 $DSH_HOME 推：Windows 沿用 D:\dsh-home，
+// mac / Linux 落到 `<home>/.dsh`（与宿主同一套规则）。想指到别处（CI、移动过的安装）
+// 用 DSH_MACRO_VENDOR / DSH_MACRO_PROFILE_HOME 单独覆盖，不必改代码。
+const IS_WIN = process.platform === 'win32'
+const DSH_HOME = process.env.DSH_HOME || (IS_WIN ? 'D:\\dsh-home' : join(homedir(), '.dsh'))
+const VENDOR = process.env.DSH_MACRO_VENDOR || join(DSH_HOME, 'vendor', 'dsh-macro-memory')
+const PROFILE_HOME = process.env.DSH_MACRO_PROFILE_HOME || join(DSH_HOME, 'profiles', 'desktop')
 const PROFILE = join(PROFILE_HOME, 'node_modules', 'dsh-macro-memory')
 const OLD_IDS = ['meow-memory', 'dsh-memory-nebula']
 const STRICT = process.argv.includes('--strict')
@@ -868,12 +874,14 @@ console.log('\n== 存储层 ==')
     }
   }
   walkJs(libRoot)
-  const readers = jsFiles.filter((f) => readFileSync(f, 'utf8').includes('process.env.DSH_HOME'))
+  // 认「取值」不认「提到」：注释里的 `$DSH_HOME/macro-memory` 是文档口径，不是第二处读环境。
+  const HOME_READ = /env\??\.DSH_HOME|process\.env\[["']DSH_HOME["']\]/
+  const readers = jsFiles.filter((f) => HOME_READ.test(readFileSync(f, 'utf8')))
   const rel = readers.map((f) => f.slice(root.length + 1).replace(/\\/g, '/'))
   line(
-    rel.length === 1 && rel[0] === 'lib/macro/store.js' ? 'PASS' : 'FAIL',
+    rel.length === 1 && rel[0] === 'lib/macro/platform.js' ? 'PASS' : 'FAIL',
     true,
-    '路径只有一个出处（lib/macro/store.js）',
+    '路径只有一个出处（lib/macro/platform.js）',
     rel.join(',') || '没人读 DSH_HOME',
   )
   const parsers = jsFiles.filter((f) => /JSON\.parse\(line\)/.test(readFileSync(f, 'utf8')))
@@ -1169,7 +1177,7 @@ else fail('找不到 plugin-market/index.json', indexPath)
 console.log('\n== 备份 ==')
 // 这一条刻意两种结果都走 pass：断言条数必须稳定（0.2.86 踩过——备份建成之前走 warn、建成之后走 pass，
 // 于是 doctor 的 PASS 条数在 120/121 之间跳，基线就一直是「少 1 条」的假红）。备份有无不是体检结论，只是信息。
-const backupRoot = 'D:\\备份'
+const backupRoot = process.env.DSH_BACKUP || (IS_WIN ? 'D:\\备份' : join(homedir(), 'DSH-备份'))
 const hasBackupRoot = existsSync(backupRoot)
 const latestBackup = hasBackupRoot
   ? readdirSync(backupRoot)

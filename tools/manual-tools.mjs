@@ -59,4 +59,9 @@ export const MANUAL_TOOLS = [
     smoke: false,
     why: '英文独立量尺：数据集（LoCoMo locomo10.json）在仓库外，没有 --data 时按设计 exit=2 打用法——自动冒烟必然报「跑不起来」，与脚本好坏无关',
   },
+  {
+    file: 'tools/restore-live-db.mjs',
+    smoke: false,
+    why: '把快照库覆盖回活动库并清掉 -wal/-shm：宿主在跑时会拒绝，真跑一次就改写用户的库，只能主人点名跑（--dry-run 可先看）',
+  },
 ]

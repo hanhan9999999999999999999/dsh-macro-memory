@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { width:1600px; height:720px; overflow:hidden; color:#E8F2FA;
+    font-family:"Microsoft YaHei","Segoe UI",sans-serif;
+    background: radial-gradient(1000px 520px at 15% 0%, rgba(59,174,240,.16), transparent 62%),
+      radial-gradient(820px 480px at 90% 92%, rgba(43,217,195,.12), transparent 60%),
+      linear-gradient(150deg,#08131d,#0b1b2b 58%,#071320); }
+  .head { padding:46px 72px 0; }
+  .kicker { font-size:17px; letter-spacing:.3em; color:#5FC8F5; }
+  h2 { margin-top:12px; font-size:44px; font-weight:800; letter-spacing:-.6px; }
+  h2 span { color:#7FD4FF; }
+  .row { display:flex; align-items:stretch; gap:0; padding:38px 64px 0; }
+  .box { flex:1; background:rgba(14,33,49,.84); border:1px solid rgba(95,200,245,.20); border-radius:20px;
+    padding:26px 26px 24px; box-shadow:0 20px 46px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.05); }
+  .box.primary { border-color:rgba(95,200,245,.5); box-shadow:0 0 0 1px rgba(95,200,245,.2), 0 22px 50px rgba(21,120,180,.30); }
+  .tag { display:inline-block; font-size:14px; letter-spacing:.16em; color:#8FE3FF; border:1px solid rgba(95,200,245,.3);
+    border-radius:999px; padding:5px 12px; }
+  .ttl { margin-top:16px; font-size:26px; font-weight:800; }
+  .d { margin-top:10px; font-size:16.5px; line-height:1.66; color:#A6C3D7; }
+  .d b { color:#EAF6FF; }
+  .levels { display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
+  .lv { font-size:15px; color:#CDE9F9; background:rgba(59,174,240,.12); border:1px solid rgba(95,200,245,.24);
+    border-radius:10px; padding:7px 12px; }
+  .lv b { color:#8FE3FF; font-weight:700; }
+  .arrow { align-self:center; width:56px; height:2px; flex:none; position:relative;
+    background:linear-gradient(90deg, rgba(95,200,245,.12), rgba(95,200,245,.8)); }
+  .arrow::after { content:""; position:absolute; right:-1px; top:-4px; border-left:9px solid rgba(95,200,245,.9);
+    border-top:5px solid transparent; border-bottom:5px solid transparent; }
+  .mini { margin-top:16px; font-size:15.5px; color:#8FB2C8; line-height:1.9; }
+  .mini i { font-style:normal; color:#2BD9C3; }
+  .foot { display:flex; gap:16px; padding:30px 64px 0; }
+  .pill { font-size:15.5px; color:#9FD9F7; border:1px solid rgba(95,200,245,.22); background:rgba(9,29,44,.72);
+    border-radius:999px; padding:8px 15px; }
+  .pill b { color:#fff; }
+</style></head>
+<body>
+  <div class="head">
+    <div class="kicker">one source of truth</div>
+    <h2>只有一份真身：<span>主库是唯一真源，星图随时可重建</span></h2>
+  </div>
+  <div class="row">
+    <div class="box primary">
+      <span class="tag">真源</span>
+      <div class="ttl">七层主库 · SQLite</div>
+      <div class="d">所有记忆都只有一个家。分层不是装饰，是<b>读取顺序与取舍的口径</b>：先问准则，再问人，最后问细节。</div>
+      <div class="levels">
+        <div class="lv"><b>soul</b> 自我</div><div class="lv"><b>rules</b> 准则</div><div class="lv"><b>user</b> 主人</div>
+        <div class="lv"><b>project</b> 项目</div><div class="lv"><b>topic</b> 来龙去脉</div><div class="lv"><b>fact</b> 事实</div>
+        <div class="lv"><b>lesson</b> 教训</div>
+      </div>
+      <div class="mini">读不出就明说「读不出来」，<i>不猜、不编</i>。</div>
+    </div>
+    <div class="arrow"></div>
+    <div class="box">
+      <span class="tag">索引</span>
+      <div class="ttl">星图 · 可删可重建</div>
+      <div class="d">邻居关系、共现、实体提及都在这里。它坏了<b>删掉重算</b>就行——真身一个字不动。</div>
+      <div class="mini">连线类型：<i>keyword · entity · hebbian · project · semantic · explicit</i></div>
+      <div class="mini">错的连线能一键摘掉，重建也不会再连回来。</div>
+    </div>
+    <div class="arrow"></div>
+    <div class="box">
+      <span class="tag">兜底</span>
+      <div class="ttl">快照 · 复原</div>
+      <div class="d">开工前自动存一致副本（每小时最多一份，留 7 份）；退之前先只读比一次：<b>会丢几条、能找回几条</b>。</div>
+      <div class="mini">4 KB 空壳快照会单独警告：<i>退它等于清库</i>。</div>
+    </div>
+  </div>
+  <div class="foot">
+    <div class="pill">8 个工具 · 一个插件</div>
+    <div class="pill">注入常驻 <b>1,266 字符</b></div>
+    <div class="pill">工具 schema <b>14,494 B</b></div>
+    <div class="pill">67 支自检 / <b>4,616 条断言</b></div>
+    <div class="pill">无 LLM 参与检索</div>
+  </div>
+</body></html>

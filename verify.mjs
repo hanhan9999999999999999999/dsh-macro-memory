@@ -19,6 +19,12 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { root } from './tools/_root.mjs'
+
+// 0.6.74：里程碑搬到 docs/CHANGELOG.md（README 只留产品页）。逐版「文档在位」判据照旧，
+// 但读面改成 README + CHANGELOG 的并集——文案落在哪一份都算在位；判据认话在不在，不认文件位置。
+const DOC_TEXT = ['README.md', 'docs/CHANGELOG.md']
+  .map((f) => readFileSync(new URL('./' + f, import.meta.url), 'utf8'))
+  .join('\n')
 const noop = () => {}
 // [0.3.0] 版本下限不许把主版本写死：`v[0] === 0 && v[1] === 2 && v[2] >= N` 这种写法
 // 在 0.3.0 会整片假红（47 条），而它想说的只是「不早于 0.2.N」。主版本更高一律算过。
@@ -697,9 +703,11 @@ function makeHostCtx() {
     ),
   )
 
-  // 路径唯一出处：整个 lib 只有 store.js 读 DSH_HOME
-  const homeReaders = [...src.entries()].filter(([, t]) => t.includes('process.env.DSH_HOME')).map(([f]) => f)
-  check('存储: 只有 store.js 读 DSH_HOME', homeReaders.length === 1 && homeReaders[0] === 'lib/macro/store.js', homeReaders.join(','))
+  // 路径唯一出处：整个 lib 只有 platform.js 真读 DSH_HOME（0.7.0 起 store 经它推宏目录）。
+  // 判据认「取值」不认「提到」：注释里的 `$DSH_HOME/macro-memory` 是文档，不是第二处读环境。
+  const HOME_READ = /env\??\.DSH_HOME|process\.env\[["']DSH_HOME["']\]/
+  const homeReaders = [...src.entries()].filter(([, t]) => HOME_READ.test(t)).map(([f]) => f)
+  check('存储: 只有 platform.js 读 DSH_HOME', homeReaders.length === 1 && homeReaders[0] === 'lib/macro/platform.js', homeReaders.join(',') || '没人读 DSH_HOME')
 
   // jsonl 解析唯一出处：逐行 JSON.parse 只允许出现在 store.js
   const lineParsers = [...src.entries()].filter(([, t]) => /JSON\.parse\(line\)/.test(t)).map(([f]) => f)
@@ -11766,6 +11774,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     const selfSrc = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8')
     const pkg030 = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
     const readme030 = readFileSync(new URL('./README.md', import.meta.url), 'utf8')
+    const changelog030 = readFileSync(new URL('./docs/CHANGELOG.md', import.meta.url), 'utf8')
     const internal030 = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
     const design030 = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
     const countOf030 = (hay, needle) => hay.split(needle).length - 1
@@ -11801,19 +11810,21 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       pkg030.repository?.url ?? '(缺 repository)',
     )
     check(
-      'HZ16 npm 包只发运行面：files 白名单四项，verify.mjs 与 tools/ 不进包',
-      JSON.stringify(pkg030.files) === JSON.stringify(['lib', 'vendor', 'cordis.patch.yml', 'README.md']) &&
-        !pkg030.files.some((f) => f === 'tools' || f === 'verify.mjs') &&
+      'HZ16 npm 包只发运行面：files 白名单只放运行面 + 门面图 + 单篇文档（docs/*.md），verify.mjs 与 tools/ 不进包',
+      JSON.stringify(
+        pkg030.files.filter((f) => f !== 'docs/images' && !/^docs\/[A-Za-z0-9._-]+\.md$/.test(f)),
+      ) === JSON.stringify(['lib', 'vendor', 'cordis.patch.yml', 'README.md']) &&
+        !pkg030.files.some((f) => f === 'tools' || f === 'verify.mjs' || f === 'docs') &&
         pkg030.dsh?.bundle?.patch === './cordis.patch.yml' &&
         pkg030.dsh?.client?.platform === 'web',
       JSON.stringify(pkg030.files),
     )
     check(
-      'HZ16 README 有 0.3.0 里程碑段与 0.3.0 的逐版条目（版本号跳了，说明也要跟着跳）',
-      readme030.includes('**0.3.0 里程碑**') &&
-        readme030.includes('- **0.3.0：把「能自证」收成可发布的东西**（0.3.0）') &&
-        /24 支自检 \/ 3,\d{3} 条可执行断言/.test(readme030),
-      `里程碑=${readme030.includes('**0.3.0 里程碑**')} 条目=${readme030.includes('收成可发布的东西')}`,
+      'HZ16 CHANGELOG 有 0.3.0 里程碑段与 0.3.0 的逐版条目（版本号跳了，说明也要跟着跳）',
+      changelog030.includes('**0.3.0 里程碑**') &&
+        changelog030.includes('- **0.3.0：把「能自证」收成可发布的东西**（0.3.0）') &&
+        /24 支自检 \/ 3,\d{3} 条可执行断言/.test(changelog030),
+      `里程碑=${changelog030.includes('**0.3.0 里程碑**')} 条目=${changelog030.includes('收成可发布的东西')}`,
     )
     check(
       'HZ16 文档在位：INTERNAL 9.188 记「版本下限不许写死主版本」，DESIGN 193 记「0.3 的承诺只加不删」',
@@ -12763,7 +12774,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     `VY15 版本三处一致 ${PKG_VERSION}`,
     JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version === PKG_VERSION &&
       readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(VERSION_LITERAL) &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes(PKG_VERSION),
+      DOC_TEXT.includes(PKG_VERSION),
   )
 }
 
@@ -12821,7 +12832,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     `WZ9 版本已到 ${PKG_VERSION}（三处一致）`,
     pkgWz.version === PKG_VERSION &&
       readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').includes(VERSION_LITERAL) &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes(PKG_VERSION),
+      DOC_TEXT.includes(PKG_VERSION),
   )
 }
 
@@ -12930,7 +12941,7 @@ dt063: {
   check(
     'DT063 文档在位：INTERNAL 9.202 写了病根与梯子，README 里程碑写了「同一问句同一答案」',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.202 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('同一问句同一答案'),
+      DOC_TEXT.includes('同一问句同一答案'),
   )
 }
 
@@ -12964,7 +12975,7 @@ dt063: {
   check(
     'LT064 文档在位：INTERNAL 9.203 写了病根与闸门，README 里程碑写了「切不出词 ≠ 库里没有」',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.203 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('切不出词 ≠ 库里没有'),
+      DOC_TEXT.includes('切不出词 ≠ 库里没有'),
   )
   const ltVer = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const ltVerNum = ltVer.length === 3 ? ltVer[0] * 10000 + ltVer[1] * 100 + ltVer[2] : 0
@@ -12994,7 +13005,7 @@ dt063: {
   check(
     'LT065 文档在位：INTERNAL 9.204 写了「标点是外壳」，README 里程碑写了「标点也是人打的」',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.204 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('标点也是人打的'),
+      DOC_TEXT.includes('标点也是人打的'),
   )
   const ltVer5 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const ltVerNum5 = ltVer5.length === 3 ? ltVer5[0] * 10000 + ltVer5[1] * 100 + ltVer5[2] : 0
@@ -13051,7 +13062,7 @@ dt063: {
   check(
     'DT066 文档在位：INTERNAL 9.205 写了病根，README 里程碑写了「脏记忆不许把整次检索打成异常」',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.205 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('脏记忆不许把整次检索打成异常'),
+      DOC_TEXT.includes('脏记忆不许把整次检索打成异常'),
   )
   const dtVer = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const dtVerNum = dtVer.length === 3 ? dtVer[0] * 10000 + dtVer[1] * 100 + dtVer[2] : 0
@@ -13089,7 +13100,7 @@ dt063: {
   check(
     'DT067 文档在位：INTERNAL 9.206 写了「元素本身也可能是坏的」，README 里程碑写了「一条坏行不许把整次检索打成异常」',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.206 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('一条坏行不许把整次检索打成异常'),
+      DOC_TEXT.includes('一条坏行不许把整次检索打成异常'),
   )
   const v = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
   const vNum = v.length === 3 ? v[0] * 10000 + v[1] * 100 + v[2] : 0
@@ -13119,7 +13130,7 @@ dt063: {
   check(
     'MT068 文档在位：INTERNAL 9.207 写了判据自己的寿命，README 写了「会随时间前进的量」，DESIGN 有 ## 203.',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.207 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('会随时间前进的量') &&
+      DOC_TEXT.includes('会随时间前进的量') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 203. '),
   )
   // 「文档里的总数 = 基线合计」这条偏偏不能写在这里：本支套件自己的条数也要
@@ -13154,7 +13165,7 @@ dt063: {
   check(
     'RT069 文档在位：INTERNAL 9.208 写了量尺的三次与互换，README 写了「量尺自己也得先量」，DESIGN 有 ## 204.，PLAN §12 #2 标了已做',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.208 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('量尺自己也得先量') &&
+      DOC_TEXT.includes('量尺自己也得先量') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 204. ') &&
       readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('已做（0.6.9'),
   )
@@ -13198,7 +13209,7 @@ dt063: {
   check(
     'SG070 文档在位：INTERNAL 9.209 写了签名的账，README 写了「签名自己也要记账」，DESIGN 有 ## 205.，PLAN §11 有 0.6.10 行',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.209 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('签名自己也要记账') &&
+      DOC_TEXT.includes('签名自己也要记账') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 205. ') &&
       readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('签名自己也要记账') &&
       /0\.6\.10/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
@@ -13256,7 +13267,7 @@ dt063: {
   check(
     'VV071 文档在位：INTERNAL 9.210 写了原样匹配的账，README 写了「原样匹配也要记账」，DESIGN 有 ## 206.，PLAN §11 有 0.6.11 行',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.210 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('原样匹配也要记账') &&
+      DOC_TEXT.includes('原样匹配也要记账') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 206. ') &&
       readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('原样匹配也要记账') &&
       /0\.6\.11/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
@@ -13312,7 +13323,7 @@ dt063: {
   check(
     'OR072 文档在位：INTERNAL 9.211 写了定序的账，README 写了「定序只排前 k」，DESIGN 有 ## 207.，PLAN §11 有 0.6.12 行',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.211 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('定序只排前 k') &&
+      DOC_TEXT.includes('定序只排前 k') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 207. ') &&
       readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8').includes('定序只排前 k') &&
       /0\.6\.12/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
@@ -13383,7 +13394,7 @@ dt063: {
   check(
     'OR073 文档在位：INTERNAL 9.212 写了「定档不靠排序」，README 写了「定档不再靠全量排序」，DESIGN 有 ## 208.，PLAN §11 有 0.6.13 行',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.212 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('定档不再靠全量排序') &&
+      DOC_TEXT.includes('定档不再靠全量排序') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 208. ') &&
       /0\.6\.13/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -13443,7 +13454,7 @@ dt063: {
   check(
     'OR074 文档在位：INTERNAL 9.213 写了「热路不许先挂后摘」，README 写了「热路上不留痕」，DESIGN 有 ## 209.，PLAN 有 0.6.14',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.213 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('热路上不留痕') &&
+      DOC_TEXT.includes('热路上不留痕') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 209. ') &&
       /0\.6\.14/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -13514,7 +13525,7 @@ dt063: {
   check(
     'OR075 文档在位：INTERNAL 9.214 写了「覆盖度顺着倒排记一遍账」，README 写了「覆盖度不再逐条重算」，DESIGN 有 ## 210.，PLAN 有 0.6.15',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.214 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('覆盖度不再逐条重算') &&
+      DOC_TEXT.includes('覆盖度不再逐条重算') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 210. ') &&
       /0\.6\.15/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -13599,7 +13610,7 @@ dt063: {
   check(
     'OR076 文档在位：INTERNAL 9.215 写了「打分顺着倒排累加」，README 写了「打分不再逐条查表」，DESIGN 有 ## 211.，PLAN 有 0.6.16',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.215 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('打分不再逐条查表') &&
+      DOC_TEXT.includes('打分不再逐条查表') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 211. ') &&
       /0\.6\.16/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -13686,7 +13697,7 @@ dt063: {
   check(
     'OR077 文档在位：INTERNAL 9.216 写了「命中对象先瘦后水化」，README 写了「先瘦后水化」，DESIGN 有 ## 212.，PLAN 有 0.6.17',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.216 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('先瘦后水化') &&
+      DOC_TEXT.includes('先瘦后水化') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 212. ') &&
       /0\.6\.17/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -13767,7 +13778,7 @@ dt063: {
   check(
     'OR078 文档在位：INTERNAL 9.217 写了「位图 + 首见序候选表」，README 写了「候选集不再用 Set」，DESIGN 有 ## 213.，PLAN 有 0.6.18',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.217 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('候选集不再用 Set') &&
+      DOC_TEXT.includes('候选集不再用 Set') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 213. ') &&
       /0\.6\.18/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -13851,7 +13862,7 @@ dt063: {
   check('OR079 进程内：桶链与「全量排序 + 阈值链」在三组固定语料（含 0、次正规数、并列）上逐位相同', eqOk, eqDetail)
 
   const iSrc = readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8')
-  const rSrc = readFileSync(new URL('./README.md', import.meta.url), 'utf8')
+  const rSrc = DOC_TEXT // 0.6.74：README 只留产品页，逐版文案在 docs/CHANGELOG.md，判据读并集
   const dSrc = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8')
   check(
     'OR079 文档在位：INTERNAL 9.218 写了「桶计数排序」，README 写了「定档不再排序」，DESIGN 有 ## 214.，PLAN 有 0.6.19',
@@ -13946,7 +13957,7 @@ dt063: {
   check(
     'OR080 文档在位：INTERNAL 9.219 写了「对齐行缓存」，README 写了「签名校验不再查 WeakMap」，DESIGN 有 ## 215.，PLAN 有 0.6.20',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.219 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('签名校验不再查 WeakMap') &&
+      DOC_TEXT.includes('签名校验不再查 WeakMap') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 215. ') &&
       /0\.6\.20/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14068,7 +14079,7 @@ dt063: {
   check(
     'OR081 文档在位：INTERNAL 9.220 写了「词法分类」，README 写了「词法分类不再逐字符跑正则」，DESIGN 有 ## 216.，PLAN 有 0.6.21',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.220 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('词法分类不再逐字符跑正则') &&
+      DOC_TEXT.includes('词法分类不再逐字符跑正则') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 216. ') &&
       /0\.6\.21/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14168,7 +14179,7 @@ dt063: {
   check(
     'OR082 文档在位：INTERNAL 9.221 写了「同一批字段不再切两遍」，README 写了「同一批字段不再切两遍」，DESIGN 有 ## 217.，PLAN 有 0.6.22',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.221 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('同一批字段不再切两遍') &&
+      DOC_TEXT.includes('同一批字段不再切两遍') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 217. ') &&
       /0\.6\.22/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14271,7 +14282,7 @@ dt063: {
   check(
     'OR083 文档在位：INTERNAL 9.222 写了「共现层不再白跑」，README 写了「共现表与会话主题不再白跑」，DESIGN 有 ## 218.，PLAN 有 0.6.23',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.222 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('共现表与会话主题不再白跑') &&
+      DOC_TEXT.includes('共现表与会话主题不再白跑') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 218. ') &&
       /0\.6\.23/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14412,7 +14423,7 @@ dt063: {
   check(
     'OR084 文档在位：INTERNAL 9.223 写了「建索引不再回头查第二次」，README 写了「建索引不再回头查第二次」，DESIGN 有 ## 219.，PLAN 有 0.6.24',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.223 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('建索引不再回头查第二次') &&
+      DOC_TEXT.includes('建索引不再回头查第二次') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 219. ') &&
       /0\.6\.24/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14542,7 +14553,7 @@ dt063: {
   check(
     'OR085 文档在位：INTERNAL 9.224 写了「共现内层不再回表」，README 写了「共现内层不再回表」，DESIGN 有 ## 220.，PLAN 有 0.6.25',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.224 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('共现内层不再回表') &&
+      DOC_TEXT.includes('共现内层不再回表') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 220. ') &&
       /0\.6\.25/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14624,7 +14635,7 @@ dt063: {
   check(
     'OR086 文档在位：INTERNAL 9.225 写了「层内只认词号」，README 写了「共现层内部只认词号」，DESIGN 有 ## 221.，PLAN 有 0.6.26',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.225 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('共现层内部只认词号') &&
+      DOC_TEXT.includes('共现层内部只认词号') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 221. ') &&
       /0\.6\.26/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14802,7 +14813,7 @@ dt063: {
   check(
     'OR087 文档在位：INTERNAL 9.226 写了「按下标分类」，README 写了「不再为每个码点造字符串」，DESIGN 有 ## 222.，PLAN 有 0.6.27',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.226 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('不再为每个码点造字符串') &&
+      DOC_TEXT.includes('不再为每个码点造字符串') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 222. ') &&
       /0\.6\.27/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')),
   )
@@ -14856,7 +14867,7 @@ dt063: {
     b1H === b2H && b2H === b3H && b3H === b4H, `${b1H.length} 字符`)
   check('OR088 文档在位：INTERNAL 9.227、README 写「一次幂运算」、DESIGN 有 ## 223.、PLAN 有 0.6.28',
     readS28('./docs/INTERNAL.md').includes('## 9.227 ') &&
-      readS28('./README.md').includes('一次幂运算') &&
+      DOC_TEXT.includes('一次幂运算') &&
       readS28('./DESIGN.md').includes('## 223. ') &&
       /0\.6\.28/.test(readS28('./docs/PLAN-0.6.md')))
   const vS28 = (readS28('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -14924,7 +14935,7 @@ dt063: {
     `_raw ${kbOnX?._raw}→${kbOffX?._raw} · _subj ${kbOnX?._subj}→${kbSubjX?._subj} · levelIntent ${lvHiX?.score}→${lvLoX?.score}`)
   check('OR089 文档在位：INTERNAL 9.228、README 写「字段权重查表」、DESIGN 有 ## 224.、PLAN 有 0.6.29',
     readS29('./docs/INTERNAL.md').includes('## 9.228 ') &&
-      readS29('./README.md').includes('字段权重查表') &&
+      DOC_TEXT.includes('字段权重查表') &&
       readS29('./DESIGN.md').includes('## 224. ') &&
       /0\.6\.29/.test(readS29('./docs/PLAN-0.6.md')))
   const vS29 = (readS29('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15078,7 +15089,7 @@ dt063: {
     digestG === GOLD30, digestG === GOLD30 ? '指纹同' : '指纹不同')
   check('OR090 文档在位：INTERNAL 9.229、README 写「猜位定档」、DESIGN 有 ## 225.、PLAN 有 0.6.30',
     readS30('./docs/INTERNAL.md').includes('## 9.229 ') &&
-      readS30('./README.md').includes('猜位定档') &&
+      DOC_TEXT.includes('猜位定档') &&
       readS30('./DESIGN.md').includes('## 225. ') &&
       /0\.6\.30/.test(readS30('./docs/PLAN-0.6.md')))
   const vS30 = (readS30('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15241,7 +15252,7 @@ dt063: {
     digestG31 === GOLD31, digestG31 === GOLD31 ? '指纹同' : '指纹不同')
   check('OR091 文档在位：INTERNAL 9.230、README 写「定档合成一趟」、DESIGN 有 ## 226.、PLAN 有 0.6.31',
     readS31('./docs/INTERNAL.md').includes('## 9.230 ') &&
-      readS31('./README.md').includes('定档合成一趟') &&
+      DOC_TEXT.includes('定档合成一趟') &&
       readS31('./DESIGN.md').includes('## 226. ') &&
       /0\.6\.31/.test(readS31('./docs/PLAN-0.6.md')))
   const vS31 = (readS31('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15385,7 +15396,7 @@ dt063: {
     digestG32 === GOLD32, digestG32 === GOLD32 ? '指纹同' : '指纹不同')
   check('OR092 文档在位：INTERNAL 9.231、README 写「只物化前 k 条」、DESIGN 有 ## 227.、PLAN 有 0.6.32',
     readS32('./docs/INTERNAL.md').includes('## 9.231 ') &&
-      readS32('./README.md').includes('只物化前 k 条') &&
+      DOC_TEXT.includes('只物化前 k 条') &&
       readS32('./DESIGN.md').includes('## 227. ') &&
       /0\.6\.32/.test(readS32('./docs/PLAN-0.6.md')))
   const vS32 = (readS32('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15522,7 +15533,7 @@ dt063: {
   // ⑥ 文档在位 + ⑦ 版本
   check('OR093 文档在位：INTERNAL 9.232、README 写「对数刻度」、DESIGN 有 ## 228.、PLAN 有 0.6.33',
     readS33('./docs/INTERNAL.md').includes('## 9.232 ') &&
-      readS33('./README.md').includes('对数刻度') &&
+      DOC_TEXT.includes('对数刻度') &&
       readS33('./DESIGN.md').includes('## 228. ') &&
       /0\.6\.33/.test(readS33('./docs/PLAN-0.6.md')))
   const vS33 = (readS33('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15660,7 +15671,7 @@ dt063: {
   // ⑥ 文档在位 + ⑦ 版本
   check('OR094 文档在位：INTERNAL 9.233、README 写「候选表」、DESIGN 有 ## 229.、PLAN 有 0.6.34',
     readS34('./docs/INTERNAL.md').includes('## 9.233 ') &&
-      readS34('./README.md').includes('候选表') &&
+      DOC_TEXT.includes('候选表') &&
       readS34('./DESIGN.md').includes('## 229. ') &&
       /0\.6\.34/.test(readS34('./docs/PLAN-0.6.md')))
   const vS34 = (readS34('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15833,7 +15844,7 @@ dt063: {
   // ⑦ 文档在位 + ⑧ 版本
   check('OR095 文档在位：INTERNAL 9.234、README 写「文档身份」、DESIGN 有 ## 230.、PLAN 有 0.6.35',
     readS35('./docs/INTERNAL.md').includes('## 9.234 ') &&
-      readS35('./README.md').includes('文档身份') &&
+      DOC_TEXT.includes('文档身份') &&
       readS35('./DESIGN.md').includes('## 230. ') &&
       /0\.6\.35/.test(readS35('./docs/PLAN-0.6.md')))
   const vS35 = (readS35('./lib/index.js').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15878,7 +15889,7 @@ const Veng37 = await import(new URL('./vendor/meow-memory/lib/index.js', import.
     'la 不影响、正文影响、稳定后逐位相同')
   check('OR096 文档在位：INTERNAL 9.235、README 写「签名」、DESIGN 有 ## 231.、PLAN 有 0.6.36',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.235 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('签名') &&
+      DOC_TEXT.includes('签名') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 231. ') &&
       /0\.6\.36/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')))
   const vS36 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)
@@ -15936,7 +15947,7 @@ const Veng37 = await import(new URL('./vendor/meow-memory/lib/index.js', import.
     '开 70% / 关 0%')
   check('OR097 文档在位：INTERNAL 9.236、README 写「术语对照桥」、DESIGN 有 ## 232.、PLAN 有 0.6.37',
     readFileSync(new URL('./docs/INTERNAL.md', import.meta.url), 'utf8').includes('## 9.236 ') &&
-      readFileSync(new URL('./README.md', import.meta.url), 'utf8').includes('术语对照桥') &&
+      DOC_TEXT.includes('术语对照桥') &&
       readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8').includes('## 232. ') &&
       /0\.6\.37/.test(readFileSync(new URL('./docs/PLAN-0.6.md', import.meta.url), 'utf8')))
   const vS37 = (readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8').match(/export const version = '(\d+)\.(\d+)\.(\d+)'/) ?? []).slice(1).map(Number)

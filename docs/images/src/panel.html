@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { width:1600px; height:820px; overflow:hidden; color:#DCEBF6;
+    font-family:"Microsoft YaHei","Segoe UI",sans-serif;
+    background: radial-gradient(1000px 560px at 78% 8%, rgba(59,174,240,.18), transparent 60%),
+      linear-gradient(155deg,#08131d,#0b1b2b 60%,#071320); }
+  .head { padding:48px 72px 26px; }
+  .kicker { font-size:17px; letter-spacing:.3em; color:#5FC8F5; }
+  h2 { margin-top:12px; font-size:44px; font-weight:800; letter-spacing:-.6px; }
+  h2 span { color:#7FD4FF; }
+  .sub { margin-top:12px; font-size:19px; color:#93B0C4; }
+  .win { margin:24px 72px 0; border-radius:18px; overflow:hidden; border:1px solid rgba(95,200,245,.22);
+    box-shadow:0 30px 70px rgba(0,0,0,.45); background:#08151f; }
+  .bar { display:flex; align-items:center; gap:10px; padding:13px 18px; background:linear-gradient(180deg,#0f2131,#0b1a27);
+    border-bottom:1px solid rgba(95,200,245,.16); }
+  .bar i { width:11px; height:11px; border-radius:50%; display:block; }
+  .bar .t { margin-left:12px; font-size:15px; color:#8FB2C8; letter-spacing:.02em; }
+  .body { padding:22px 26px 26px; font-family:"Cascadia Mono","Consolas",monospace; font-size:17.5px; line-height:1.78; }
+  .ln { white-space:pre; }
+  .dim { color:#6E8FA6; }
+  .k { color:#8FE3FF; }
+  .n { color:#FFD79A; }
+  .g { color:#7BE3B0; }
+  .r { color:#FFA1A1; }
+  .w { color:#FFFFFF; }
+  .hl { background:rgba(59,174,240,.10); border-left:2px solid rgba(95,200,245,.55); padding:2px 0 2px 14px; margin:6px 0 6px -16px; }
+  .cap { display:flex; gap:16px; padding:22px 72px 0; }
+  .pill { font-size:15px; color:#9FD9F7; border:1px solid rgba(95,200,245,.24); background:rgba(9,29,44,.7);
+    border-radius:999px; padding:8px 15px; }
+</style></head>
+<body>
+  <div class="head">
+    <div class="kicker">the ledger</div>
+    <h2>它不只记得，还<u style="text-decoration:none;color:#7FD4FF">给你一本账</u></h2>
+    <div class="sub">进了哪几条、每条多少字、谁被挡在门外、为什么——一句话问出来就能看见（下面是示意）。</div>
+  </div>
+  <div class="win">
+    <div class="bar">
+      <i style="background:#f26d6d"></i><i style="background:#f2c14e"></i><i style="background:#5fd3a1"></i>
+      <span class="t">memory_admin(action="inject") · 宏记忆 · 注入账</span>
+    </div>
+    <div class="body">
+      <div class="ln hl"><span class="k">注入账</span> <span class="dim">·</span> 最近 40 轮：注入 <span class="n">27</span> 轮 / 挡下 <span class="n">13</span> 轮 · 共 <span class="n">5,022</span> 字</div>
+      <div class="ln"><span class="dim">  上一轮：</span><span class="g">280 字</span> <span class="dim">· 挡 1 条 · 落选</span> <span class="r">cccccccc</span> <span class="dim">floor 0.19</span></div>
+      <div class="ln"><span class="k">按条流水</span><span class="dim">：12 轮有记录，37 条次共 </span><span class="n">4,182 字</span><span class="dim">（占这些轮注入字数的 78%）</span></div>
+      <div class="ln"><span class="dim">  吃额度最多：</span><span class="w">1f2e3d4c</span> <span class="dim">6 次 / 720 字 ·</span> <span class="w">9a8b7c6d</span> <span class="dim">4 次 / 380 字</span></div>
+      <div class="ln" style="margin-top:8px"><span class="k">落选名单</span><span class="dim">：9 轮记下 21 条次，去重 </span><span class="n">11</span> <span class="dim">条（floor 6 · cap 3 · literal 1 · margin 1）</span></div>
+      <div class="ln"><span class="dim">  - </span><span class="w">cccccccc</span><span class="dim"> 挡了 2 次（floor 2），最近分数 0.20 → 补 keywords</span></div>
+      <div class="ln"><span class="dim">  - </span><span class="w">dddddddd</span><span class="dim"> 挡了 1 次（margin），最近分数 0.06 → 陪跑：第一名比它强太多</span></div>
+      <div class="ln"><span class="dim">  - </span><span class="w">eeeeeeee</span><span class="dim"> 挡了 1 次（cap），最近分数 0.71 → 压短这一条，或调大每轮额度</span></div>
+      <div class="ln" style="margin-top:8px"><span class="k">陪跑线</span><span class="dim">：0.2 · 第一名 0.83 → 线画在 0.17；0.19 进来，0.06 不占名额</span></div>
+      <div class="ln"><span class="k">老条目放回</span><span class="dim">：12 轮窗口 · 本轮放回 2 条（隔久了还问你，就是它该重新出场）</span></div>
+      <div class="ln" style="margin-top:8px"><span class="dim">被挡的条目没有被删：它还在 </span><span class="k">memory_search</span><span class="dim"> 的候选里，只是这一轮没写进上下文。</span></div>
+    </div>
+  </div>
+  <div class="cap">
+    <div class="pill">只读面板 · 不写库</div>
+    <div class="pill">坏库只报「读不出来」并指去看快照</div>
+    <div class="pill">同一份日志，两个面板都念得出</div>
+  </div>
+</body></html>

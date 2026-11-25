@@ -111,6 +111,9 @@ const checkAllSrc = read('tools/check-all.mjs')
 const suiteSteps = [...checkAllSrc.matchAll(/\[\s*'(verify\.mjs|tools\/[\w-]+\.mjs)'/g)].map((m) => m[1])
 const absent = suiteSteps.filter((f) => !registered.includes(f))
 const readme = read('README.md')
+// 里程碑从 README 搬到了 docs/CHANGELOG.md（0.6.74）：README 是产品页，只讲现在能做什么；
+// 历史阶梯留在 CHANGELOG，判据照样守着——「新版本的支数与条数不许少于旧版本」这条不放松。
+const changelog = read('docs/CHANGELOG.md')
 const scaleRow = (readme.match(/^\| 自证规模 \| \*\*(\d+) 支自检 \/ ([\d,]+) 条可执行断言\*\*/m) ?? []).slice(1)
 const rowSuites = Number(scaleRow[0])
 const rowTotal = Number((scaleRow[1] ?? '').replace(/,/g, ''))
@@ -130,11 +133,11 @@ check(
   `EVAL-CLAIMS ${claimRow[0] ?? '?'} 支 / ${claimRow[1] ?? '?'} 条`,
 )
 
-// ── M5：README 的版本阶梯按「版本号」单调（新版本条数不许少于旧版本） ───────────
+// ── M5：CHANGELOG 的版本阶梯按「版本号」单调（新版本条数不许少于旧版本） ───────────
 // 按版面顺序扫会被里程碑的排版顺序绊倒（历史上有把 0.4.0 里程碑排到 0.6.x 上面的时候），
 // 所以只认「同一条里既有版本号又有条数」的行，再按版本号两两比较——这才是单调式的本意。
 const ladder = []
-for (const line of readme.split('\n')) {
+for (const line of changelog.split('\n')) {
   const v = line.match(/(0\.\d+\.\d+) 里程碑/)
   const n = line.match(/(\d+) 支自检 \/ ([\d,]+) 条/)
   if (v && n) ladder.push({ v: v[1], suites: Number(n[1]), n: Number(n[2].replace(/,/g, '')) })
@@ -153,17 +156,17 @@ for (const hi of ladder) {
   }
 }
 check(
-  'M5 README 的版本阶梯单调：新版本的支数与条数都不许少于旧版本',
+  'M5 CHANGELOG 的版本阶梯单调：新版本的支数与条数都不许少于旧版本',
   ladder.length >= 3 && undone.length === 0,
   `${ladder.length} 级 ${undone.join(',')}`,
 )
 
 // ── M6：历史里程碑保留自己那版的数字 ──────────────────────────────────────────
 // 只能按「那一行」取：里程碑都是单行长文，跨行抓会把后面几版的数字一起吞进来。
-const m066Line = readme.split('\n').find((l) => l.startsWith('> **0.6.6 里程碑**')) ?? ''
+const m066Line = changelog.split('\n').find((l) => l.startsWith('> **0.6.6 里程碑**')) ?? ''
 const m066 = (m066Line.match(/\*\*(\d+) 支自检 \/ ([\d,]+) 条断言\*\*/) ?? []).slice(1)
 check(
-  'M6 0.6.6 里程碑保留自己那版的数字（不被连带改成当前数）',
+  'M6 CHANGELOG 里的 0.6.6 里程碑保留自己那版的数字（不被连带改成当前数）',
   m066.length === 2 && Number(m066[1].replace(/,/g, '')) === 3616,
   m066.length === 2 ? `${m066[0]} 支 / ${m066[1]} 条` : '(没找到)',
 )

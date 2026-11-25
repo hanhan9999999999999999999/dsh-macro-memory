@@ -47,13 +47,27 @@ else fail('宿主还活着', `日志 ${ageMin.toFixed(0)} 分钟没动了 ——
 // 「这次运行的起点」：不能拿日志文件的创建时间——日志会轮转/重写，那样算出来的起点是
 // 上一次轮转的时间（实测过：进程 22:48 起，日志文件 03:37 才建，直接判成「跑的比改动新」）。
 // 问操作系统的进程创建时间，问不到就老实说查不到，不猜。
-const hostStartedAt = (() => {
-  const name = process.env.DSH_LIVE_PROCESS || 'DSH NEXT'
+/**
+ * [0.7.0 · mac 适配] 问操作系统的「宿主进程创建时间」：Windows 走 PowerShell，
+ * mac / Linux 走 `ps -o lstart=`（pid 用 `pgrep -n -f` 找最近启动的那个）。
+ * 两边都问不到就回 null——这条只影响 INFO 的措辞，从不判红。
+ */
+function hostStartTimeOf(name) {
   try {
+    if (process.platform === 'win32') {
+      const out = execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command',
+          `$p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`],
+        { encoding: 'utf8', timeout: 15000 },
+      ).trim()
+      if (!out) return null
+      const t = new Date(out)
+      return Number.isNaN(t.getTime()) ? null : t
+    }
     const out = execFileSync(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command',
-        `$p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`],
+      '/bin/sh',
+      ['-c', `ps -o lstart= -p "$(pgrep -n -f '${name}' 2>/dev/null)" 2>/dev/null`],
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
     if (!out) return null
@@ -62,7 +76,8 @@ const hostStartedAt = (() => {
   } catch {
     return null
   }
-})()
+}
+const hostStartedAt = hostStartTimeOf(process.env.DSH_LIVE_PROCESS || 'DSH NEXT')
 if (hostStartedAt) info('这次运行的起点', `${hostStartedAt.toLocaleString()}（宿主进程的创建时间）`)
 else info('这次运行的起点', '查不到宿主进程（换个名字可用 DSH_LIVE_PROCESS 指定）——下面两条会因此保守处理')
 
