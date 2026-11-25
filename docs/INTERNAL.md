@@ -14340,3 +14340,35 @@ const soloEdge = edgeScore > 0 && block.ids.length === 1 && block.scores[0] < ed
 判据：`probe-project` 23 → **29 条**（P2 从「必须是完整 id」改成「撞车的必须加长、唯一的才缩」，新增 P13 五条：`0mprojdec1` 原样 10 位、唯一的那条缩到 `0mprojru`、短 id `0mprojdec` 撞车退回 8 位、短 id `0mprojr` 解析回唯一那条、`shortenId(null, …)` 退回 8 位）；`probe-neighbor` 91 → **94 条**（N16：换一把 `shorten` 时行首与 `memory_read("…")` 一起换、不传就仍是 `[0mwq3aa9]`、尾注命令能照抄）。同一版顺手修了探针自己的坑：注入器现在 `Meow.getDb` 会缓存句柄并占住 Windows 临时目录，收尾 `rmSync` 报 `EPERM`，所以 `probe-neighbor.mjs` 结束前补一句 `MeowMod.closeAllDbs()`。
 
 留着的口子：`lib/macro/defs/search.js:703` 的 `id8()`（子问句拆解的补充段行首）还是 8 位，`memory_search` 的融合回执也没接这个索引 —— 那一支的回执里 id 用得少，本轮不动，留着下一轮按同样的判据收。
+
+### 9.264 0.6.65：一次摘一批错边
+
+0.6.54 给错边加了闭环（`mute` 顺手销账），0.6.61 又把尾注从 180 字压到 70–125 字。两件对的事撞在一起出了个副作用：尾注只装得下**第一跳**的现成命令。于是账上压着 4 跳时，模型看见的是一句 `memory_link(action="mute", a="…", b="…")` 加一句「另有 3 跳先不带了」——那 3 跳的 id 得从块里自己抄、命令得自己拼。实际观测就是没人拼：错边留在图上，每轮继续占 20–40 字上下文，`suspect` 账越攒越长。主人目标④的原话是「发现无关时顺手修，别将错就错」，只修第一跳等于把「顺手」变成了「逐跳台账」。
+
+这一版把「顺手」压回到一次调用。
+
+`lib/macro/defs/link.js` 的改动：
+
+- `const MUTE_PAIRS_MAX = 20`；`function mutePairsOf(action, args)` 只认 `action === 'mute'` 时的 `pairs`（`[[a1,b1],[a2,b2]]`），逐组要求「恰好两个非空字符串」，坏组计数成一句话，超 20 对截断并说明「这次只做前 20 对」。它返回 `{ pairs, notes }`，`notes` 与 `linkNotes()` 的提示一起拼在回执尾部。
+- schema：`required` 从 `['action','a','b']` 放宽成 `['action']`，新增 `pairs`（`type:'array'`、`items:{type:'array',items:{type:'string'}}`）。**这一步只放宽不放宽语义**：没给 `pairs` 又缺 a/b 的老路径一字未改，`A56` 钉着的门序（`act.bad` → `ends.length > 0` → `runLink`）原样保留。
+- `missingEnds(args)` 增一格：`pairs` 给了但不是数组时 push `{ key:'pairs', hint: … }`，`missingEndsText` 按 key 分流。原先这种输入只会回「缺 a（起点记忆的 id）；缺 b（终点记忆的 id）」，真正的问题（形状给错）被吞掉。
+- `execute` 里 `const batch = mutePairsOf(act.name, args)`；`batch.pairs.length > 0` 时跳过 `missingEnds`（批量本来就不带 a/b），`notes = [...linkNotes(...), ...batch.notes]`。
+- `runLink` 顶部三行分流：`pairs.length > 1` → `runMuteBatch`；`=== 1` → 折叠回单对（`args = { ...args, a, b, pairs: undefined }`）；`=== 0` → 什么都不变。**折叠而不是另写一条路径**，是为了让 `flow.resolveIdDetail` 的歧义/不可用两支、`nebula_link` 的调用、超时排队、`noteSuspectCleared` 销账这些老逻辑一行都不用复制。
+- `runMuteBatch(flow, pairs, args, exec)` 串行逐对调 `runLink(flow,'mute',{...})`（= 每对独立 resolve、独立销账、独立留 `neighbor-fix` 日志），用 `muteVerdict(text)` 判成败：空回执、「内没回应」超时、以及 `MUTE_FAIL_HEADS`（`星图连线这次没做：` / `这个工作区里没有这条记忆：` / `星图这次没接上，` / `星图还没建到这两条记忆`）开头都算失败，失败原话取首行 70 字。回执三种头部：全成 `摘掉 N 跳：a ↔ b、…`、部分 `摘掉 N 跳，M 跳没成（一共给了 K 对）：…`、全败 `这批 K 跳一条都没摘掉。`；失败明细最多 8 条，更多写「…还有 N 跳没列」；只要有成功就补一句「断掉的这些不会再出现在邻域注入里，账上的观察记录也一起销了（重建也不会再连）」。
+- `presentCall`：mute + `pairs` ≥ 1 对 → 卡片标题 `星图连线：一次摘 N 跳`、kind `write`。
+- `linkNotes` 增一句：`pairs` 用在 mute 以外的动作上 → 「pairs 只在 mute 生效（这次是 path），这几对一条都没动。」（不静默丢——丢了会被读成「那几对也动了」）。
+
+`lib/macro/neighbor.js` 的改动：
+
+- 尾注候选从「一维选一句」改成**两维**：外层 `supCands`（`supMany` 批量命令 / `supOne` 老的单跳命令 / `''`）× 内层 `baseCands`（`flaggedTail` / `shortTail` / `genericTail`），按信息最全的组合先试，装不下逐档退，`room = chars - lines.join('\n').length - 1` 现算。**指导句不许挤掉条目**是 0.6.44 定下的规矩，这里继续守。
+- `supMany` 文案：「另有 N 跳连续 X 轮标了「未沾词」、先不带了：确认无关就一次摘掉 nebula_link(action="mute", pairs=[…最多 3 对…])（还有 N-3 跳用 memory_admin(action="suspect") 看）。」——压住 1 跳时仍走 `supOne`，逐字保持 0.6.61 的老话术；只有 ≥2 跳才升级成批量，因为那时「一次调用」的收益才真的存在。
+- 原计划「块里多条 flagged → 批量」的分支**删掉了**：`NEIGHBOR_OFFTOPIC_KEEP = 1` 决定一块里最多留 1 条未沾词邻居，多条永远凑不出来，那分支是死代码。`flaggedTail` 恢复成 `flaggedEdges.length > 0` 单数，注释写明「要一次摘好几跳的是 `supMany` 那一段」。
+- 新导出 `readSuspectPanel({ workspace, limit = 12, turns } = {})`：拿不到工作区 → 「错边账按工作区分开记，这次拿不到工作区——不是「账是空的」。」；账空 → 「错边账是空的：目前还没有哪条自动关联被判过「未沾词」（连标 N 轮才压住）。」；有记录但一条都没压住 → 「现在没有压着的跳（账上还留着 N 跳观察记录，都没到连标 N 轮，或已经三轮没再被标）。」；否则逐跳列 `- a ↔ b（连标 n 轮，最近第 last 轮）` 并给一条整批命令（最多 8 对），尾巴一句「确认确实无关再摘；这一轮只是用不上就别动——断的是错边，不是记忆」。`scope` = `压着 X 跳 / 账上 Y 跳 · 第 R 轮`。
+
+`lib/macro/defs/admin.js`：`ACTIONS` 加第 11 行 `suspect: { kind:'local', label:'错边账', hint:'错边账：被判无关压住的跳', params:['limit'], defaultLimit:12 }`，`const local` 加 `suspect(args, exec)` 调 `readSuspectPanel({ workspace: workspaceOfExec(exec), limit: lim.value, turns: config.neighborSuspectTurns })`，`limit` 的 description 补 `suspect`（默认 12）。`PANEL_SUMMARY` / `strayNote` 都是从 `ACTIONS` **动态**生成的，所以 `probe-fusion` 里那些「limit 是 hygiene / cost / inject / dream / links 的」「九个统计面板」「动作表十行」的断言必须跟着改——它们本来就是过期断言，不是新 bug。
+
+判据：`tools/probe-neighbor.mjs` 94 → **113 条**。N17 十九条覆盖：4 跳压住 → 尾注含「另有 4 跳连续 3 轮标了「未沾词」」且 `pairs=[["0msrc001","0msup001"],…]` 只列 3 对、第 4 跳只指路 `memory_admin(action="suspect")` 且**不出现** `0msup004`、`memory_read("0mwit001")` 仍在（指导句没挤掉条目）；`readSuspectPanel` 四态（空账 / 无工作区 / 攒两跳各连标 3 轮并给整批命令 / `turns:9` 时降级成「没有压着的跳」）；真 `createLink` 批量一成一败（回执 `摘掉 1 跳，1 跳没成（一共给了 2 对）`、失败行带星图原话、`calls7.length === 1` 证明查不存在的跳**没白打星图**、账上只剩失败那跳、日志末行 `a=0msusa01 b=0msusa01 via=mute cleared=1`）；21 对封顶；只剩一对时归回单对路径（回执 `已屏蔽这一跳` + 「有 1 对形状不对…」）；`pairs` 非数组；`path` 传 `pairs`；卡片标题 `一次摘 2 跳`。`probe-fusion` 四处（K2 十一行、L1 十个面板、AY2/AY3/AY5 的动态串）、`param-audit` 登记 `memory_link: [… 'pairs']` 后回绿；规模 **62 支 / 4,453 条可执行断言**。
+
+探针自己的坑（不是插件 bug）：断言里的 id 必须写成 `slice(0,8)` 之后的 8 位——回执给的现在是「最短唯一前缀」，9 位的写进断言就会被切掉；`node()` 返回数组时要 `.flat()`，否则 `[...witness, ...sups]` 得到嵌套数组、`l.replace is not a function`；断言正则别写 `"0ms.."`（只吃两字符），要 `[a-z0-9]+`。
+
+留着的口子：`lib/macro/defs/search.js:703` 的 `id8()`（子问句拆解补充段的行首）仍是 8 位，`memory_search` 的融合回执也没接 `shortid.js` 的索引——那一支的回执里 id 用得少，本轮不动，下一轮按同一判据收。

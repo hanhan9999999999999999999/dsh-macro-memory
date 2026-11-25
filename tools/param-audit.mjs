@@ -129,7 +129,7 @@ const EXTRA = {
   'memory_search': ['mode', 'expand', 'id', 'memory_ids', 'limit', 'hops', 'chars', 'min_weight', 'budget'],
   // [macro-fusion 0.2.112] budget：读这一支也吃预算——不给=不限额，给了就先砍邻居条数，正文一字不截。
   'memory_read': ['neighbors', 'budget'],
-  'memory_link': ['action', 'a', 'b', 'note', 'maxHops'],
+  'memory_link': ['action', 'a', 'b', 'note', 'maxHops', 'pairs'],
   // [macro-fusion 0.2.105] since / until：按日期筛 dream 账本，是统一工具自己加的能力
   // （vendor 的 dream 读口原来只有 limit/offset/project），登记在这里才算「有出处」。
   'memory_admin': ['action', 'target', 'limit', 'kind', 'hubs', 'verbose', 'provider', 'items', 'page', 'since', 'until'],
@@ -216,6 +216,10 @@ for (const [vendorTool, entry] of vendorDefs) {
     'memory_find_similar.id': 'mode=similar 在 execute 里守',
     'nebula_ingest.provider': 'action=ingest 在 execute 里守',
     'nebula_ingest.items': 'action=ingest 在 execute 里守',
+    'nebula_link.a': 'mute 可以改用 pairs 批量；没给 pairs 时由 missingEnds 在 execute 里守',
+    'nebula_link.b': '同上（mute + pairs 时不需要 a/b）',
+    'nebula_path.a': 'path 仍要两端，missingEnds 在 execute 里守（pairs 只对 mute 生效，所以这里没让步）',
+    'nebula_path.b': '同上',
   }
   for (const req of vendorRequired) {
     const mapped = paramMap[req] ?? req
@@ -262,6 +266,28 @@ for (const [toolName, args, keyword, label] of [
   if (bad) guardFails.push(`${label}：${bad}`)
 }
 check(guardFails.length === 0, '1.2b 按 action 才必填的字段在运行时守住了', guardFails.join('；') || '4 条全报错')
+
+// 1.2c 0.6.65：memory_link 的 schema 从 required:['action','a','b'] 放宽成 ['action']，
+// 让步只在「mute 给了 pairs」这一种情形。没有 pairs 时必须退回老门：一句「缺 a…缺 b…」。
+// 这一条钉住的是「放宽 schema 不等于放过两端」——少了它，上面 1.2 的 RUNTIME_GUARDED 就是空口。
+const linkGuard = []
+for (const [label, args, must, mustNot] of [
+  ['mute 没给 pairs 也没给两端', { action: 'mute' }, ['缺 a（起点记忆的 id）', '缺 b（终点记忆的 id'], []],
+  ['只给了一端', { action: 'mute', a: 'x' }, ['缺 b（终点记忆的 id'], ['缺 a']],
+  ['pairs 给了不是数组', { action: 'mute', pairs: 'x' }, ['[[a1,b1],[a2,b2]]', '缺 a（起点记忆的 id）'], []],
+  ['link 拿 pairs 顶两端', { action: 'link', pairs: [['x', 'y']] }, ['缺 a（起点记忆的 id）'], []],
+]) {
+  const tool = unifiedByName.get('memory_link')
+  let text = ''
+  try {
+    text = String(await tool.execute(args, {}))
+  } catch (err) {
+    text = `（抛了 ${String(err?.message ?? err)}）`
+  }
+  for (const m of must) if (!text.includes(m)) linkGuard.push(`${label}：回执里没有「${m}」，实际「${text.slice(0, 80)}」`)
+  for (const m of mustNot) if (text.includes(m)) linkGuard.push(`${label}：不该出现「${m}」，实际「${text.slice(0, 80)}」`)
+}
+check(linkGuard.length === 0, '1.2c memory_link 放宽 schema 后两端仍在运行时守', linkGuard.join('；') || '4 种情形都对')
 
 // 统一工具不能有「没人用的空壳参数」：每个参数要么来自某个 vendor，要么在 EXTRA 里声明
 const vendorParams = new Set()

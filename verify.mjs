@@ -744,7 +744,7 @@ function makeHostCtx() {
   check('动作表: 每行都有名字（call/graph 或 local 分支）', (() => {
     const body = adminSrc.slice(adminSrc.indexOf('export const ACTIONS'), adminSrc.indexOf('function guardIngest'))
     const rows = [...body.matchAll(/^\s{2}(\w+): \{([^}]*)\}/gm)]
-    return rows.length === 10 && rows.every(([, , spec]) => /kind: '(call|graph|local)'/.test(spec))
+    return rows.length === 11 && rows.every(([, , spec]) => /kind: '(call|graph|local)'/.test(spec))
   })())
   // ingest 的运行时守卫还在（schema 收不住必填）
   check('动作表: ingest 仍守 provider/items', adminSrc.includes('action="ingest" 需要 provider') && adminSrc.includes('action="ingest" 需要 items'))
@@ -838,7 +838,7 @@ function makeHostCtx() {
   // 2) 名字只有一份：动作表的 label，八行都要有且两两不同
   const table = adminSrc.slice(adminSrc.indexOf('export const ACTIONS'), adminSrc.indexOf('export const PANEL_SUMMARY'))
   const rowLabels = [...table.matchAll(/label: '([^']+)'/g)].map((m) => m[1])
-  check('口径: 十个面板名都在动作表里', rowLabels.length === 10 && new Set(rowLabels).size === 10, rowLabels.join('/'))
+  check('口径: 十一个面板名都在动作表里', rowLabels.length === 11 && new Set(rowLabels).size === 11, rowLabels.join('/'))
   // 3) 三种 kind 走同一个 wrap：正文原样、抬头统一
   check('口径: 三种 kind 都过同一个 wrap', /const wrap = \(spec, \{ body, note \}\) => \{[\s\S]{0,400}?return panelText\(spec\.label, body, note\)\n      \}/.test(adminSrc) && (adminSrc.match(/wrap\(spec, /g) ?? []).length === 3)
   check('口径: 手册那行明确豁免（wrap: false + 理由）', /guide: \{ kind: 'local', label: '完整手册'[^}]*wrap: false \}/.test(adminSrc) && adminSrc.includes('唯一豁免'))
@@ -850,7 +850,7 @@ function makeHostCtx() {
   check('口径: 条数默认值只写在表里', /defaultLimit: 200/.test(adminSrc) && /defaultLimit: 20/.test(adminSrc) && !/\? 200 :/.test(adminSrc) && !/\? 20 :/.test(adminSrc))
   check('口径: 默认值读取只有 limitOf 一条路径', /export function limitOf/.test(panelSrc) && /limitOf\(ACTIONS\.(cost|links), args\)/.test(adminSrc))
   // 7) 参数说明与实际读参数的落点对得上（limit 以前漏了 links）
-  check('口径: limit 的说明包含了真正会用它的面板', adminSrc.includes('action=hygiene/cost/dream/links/inject 的条数'))
+  check('口径: limit 的说明包含了真正会用它的面板', adminSrc.includes('action=hygiene/cost/dream/links/inject/suspect 的条数'))
   // 9) 抬头是契约，不是排版：剥抬头的函数只有一份，按行读数据的探针必须用它
   const graphProbe = read(join('tools', 'probe-graph.mjs'))
   check('口径: 按行读正文的探针用 stripHead 剥抬头，不靠猜行号', /export function stripHead/.test(panelSrc) && graphProbe.includes('panelMod.stripHead(') && !/text\(await run\('memory_admin', \{ action: 'stats' \}\)\)\.split/.test(graphProbe))
@@ -858,7 +858,7 @@ function makeHostCtx() {
   check('口径: 成本账本的正文没被抬头顶掉', !costSrc.includes('# macro-memory 成本账本') && costSrc.includes('合计：入参'))
   // 9) 证据 + 文档出处
   const probe = read(join('tools', 'probe-fusion.mjs'))
-  check('口径: 探针实测九个抬头一致、手册豁免', probe.includes('L1 九个统计面板的抬头同一个样') && probe.includes('L3 手册不加抬头') && probe.includes('L5 条数上限有口径说明'))
+  check('口径: 探针实测十个抬头一致、手册豁免', probe.includes('L1 十个统计面板的抬头同一个样') && probe.includes('L3 手册不加抬头') && probe.includes('L5 条数上限有口径说明'))
   check('口径: README 有出处与 0.2.25', readme.includes('panel.js') && readme.includes('0.2.25'))
   check('口径: DESIGN 记了抬头与豁免', design.includes('抬头') && design.includes('为什么手册不加抬头') && design.includes('wrap: false'))
 }
@@ -4407,7 +4407,7 @@ function makeHostCtx() {
     'link: 参数给错动作要带尾注（maxHops 只 path 用、note 只 link/mute 存），且只在薄壳里拼一次',
     linkSrc59.includes('maxHops 只在 path 这个动作生效') &&
       linkSrc59.includes('note 只有 link / mute 会存下来') &&
-      /const notes = linkNotes\(act\.name, args\)/.test(linkSrc59) &&
+      /const notes = \[\.\.\.linkNotes\(act\.name, args\), \.\.\.batch\.notes\]/.test(linkSrc59) &&
       /notes\.length > 0 \? `\$\{text\}\\n\\n\$\{notes\.join\('\\n'\)\}` : text/.test(linkSrc59),
     'linkNotes',
   )

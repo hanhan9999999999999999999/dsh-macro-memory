@@ -633,7 +633,7 @@ export function contractChecklist({
         linkDefSrcL.includes('缺 ${e.key}') &&
         /if \(ends\.length > 0\) return missingEndsText\(act, ends\)/.test(linkDefSrcL) &&
         /async function runLink\(flow, action, args, exec\)/.test(linkDefSrcL) &&
-        /const notes = linkNotes\(act\.name, args\)/.test(linkDefSrcL) &&
+        /const notes = \[\.\.\.linkNotes\(act\.name, args\), \.\.\.batch\.notes\]/.test(linkDefSrcL) &&
         linkDefSrcL.includes('maxHops 只在 path 这个动作生效') &&
         linkDefSrcL.includes('note 只有 link / mute 会存下来') &&
         /if \(act\.bad\) return badActionText\(act\)/.test(linkDefSrcL),
@@ -1001,7 +1001,7 @@ export function readAnswerKind(text) { return 'ok' }`,
         '缺 ${e.key}',
         'if (ends.length > 0) return missingEndsText(act, ends)',
         'async function runLink(flow, action, args, exec) {',
-        'const notes = linkNotes(act.name, args)',
+        'const notes = [...linkNotes(act.name, args), ...batch.notes]',
         'maxHops 只在 path 这个动作生效',
         'note 只有 link / mute 会存下来',
         'if (act.bad) return badActionText(act)',

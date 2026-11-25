@@ -855,6 +855,144 @@ const recall = [
 }
 
 
+// ── N17 [0.6.65] 一次摘一批：压住好几跳时给一条批量命令，错边账能自己翻出来 ──────
+// 病根：0.6.61 的尾注只给**第一跳**的现成命令，账上攒下的第 2～N 跳谁也没提；
+// 模型想清干净得自己拼 id，实际就是不清——错边留在图上继续每轮占上下文。
+// 这一块守四件事：压住 ≥2 跳时尾注一次给全（≤3 对，剩下的指路）、
+// memory_link(pairs=…) 逐对做且逐对报成败（一成一半也照样把成的那些摘掉）、
+// 断掉的那几跳当场销账（不留到过期）、错边账有面板可翻（不是只能从注入块里猜）。
+{
+  // 一条邻居的召回文本形状（与 nebula_recall 一致：编号行 / id / why 带来源 id）。
+  // id 一律 8 位：回执里的 id 本来就是最短唯一前缀（0.6.64 起），超过 8 位会被切，夹具跟着这个口径。
+  const node = (n, label, id, src, score) => [
+    `${n}. [fact] ${label}     强度 ${score} ${label}的描述`,
+    `  id: ws:${id}`,
+    `  为什么：经由「${label}」 (${src}) 的cooc关联扩散而来`,
+  ]
+  const text = [
+    '星图邻域（1 跳，5 条）：',
+    '',
+    ...node(1, '写入节流', '0mwit001', '0mwit000', '0.82'),
+    ...[1, 2, 3, 4].map((i) => node(i + 1, '别的线' + i, '0msup00' + i, '0msrc00' + i, '0.40')).flat(),
+  ].join('\n')
+  const blk = NB.neighborBlockOf(text, {
+    max: 6,
+    chars: 3000,
+    query: '写入节流那个窗口后来怎么定的',
+    suspect: new Set(['0msup001', '0msup002', '0msup003', '0msup004']),
+    suspectTurns: 3,
+  })
+  const bt = blk?.text ?? ''
+  ok('N17 压住 4 跳时尾注一次给 3 对现成命令（不再只提第一跳）',
+    blk !== null && blk.suspect === 4 && bt.includes('另有 4 跳连续 3 轮标了「未沾词」') &&
+      bt.includes('pairs=[["0msrc001","0msup001"],["0msrc002","0msup002"],["0msrc003","0msup003"]]'),
+    (bt.match(/另有[^\n]*/) ?? [''])[0].slice(0, 200))
+  ok('N17 剩下那 1 跳指路到面板（不是静默丢掉，也不是硬塞第 4 对）',
+    bt.includes('（还有 1 跳用 memory_admin(action="suspect") 看）') && !bt.includes('0msup004'))
+  ok('N17 批量尾注没把 read 命令挤掉（条目 + 命令都还在）',
+    blk !== null && blk.ids.length === 1 && bt.includes('memory_read("0mwit001")'),
+    bt.split('\n').slice(0, 3).join(' / '))
+
+  // 面板：空账 / 拿不到工作区 / 有压着，三种都要说人话
+  const empty = NB.readSuspectPanel({ workspace: join(tmpHome, 'ws-n17-empty') })
+  ok('N17 空账念「错边账是空的」并解释什么才算（不是一句 None）',
+    /错边账是空的/.test(empty.body) && /账上 0 跳/.test(empty.scope), empty.scope)
+  const noWs = NB.readSuspectPanel({ workspace: '' })
+  ok('N17 拿不到工作区时明说「不是账空」（别让人以为错边账没了）',
+    /拿不到工作区/.test(noWs.body), noWs.body.slice(0, 40))
+
+  // 账上攒两跳（各连标 3 轮）→ 面板把两跳都摆出来，并给一条两对的命令
+  const ws7 = join(tmpHome, 'ws-n17')
+  const LOG7 = join(ws7, '.dsh-meow', 'dream-debug.log')
+  const only = (label, id, src, score) => ['星图邻域（1 跳，1 条）：', '', ...node(1, label, id, src, score)].join('\n')
+  let body7 = only('另一条线甲', '0msusa01', '0msusa01', '0.42')
+  const inj7 = NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: body7 }) },
+    config: {},
+    meowDir: () => '.dsh-meow',
+    logger: () => {},
+    loadLlm: async () => ({ createUserMessage: (o) => o }),
+  })
+  const ask7 = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '今天这个天气真好啊' }] }
+  const pl7 = (sid) => ({ agent: { session: { id: sid, header: { cwd: ws7 } } } })
+  for (const sid of ['n17-a1', 'n17-a2', 'n17-a3']) await inj7.decide(pl7(sid), { kind: 'enter', messages: [ask7] })
+  body7 = only('另一条线乙', '0msusb01', '0msusb01', '0.42')
+  for (const sid of ['n17-b1', 'n17-b2', 'n17-b3']) await inj7.decide(pl7(sid), { kind: 'enter', messages: [ask7] })
+  const panel7 = NB.readSuspectPanel({ workspace: ws7 })
+  ok('N17 面板列得出压着的每一跳（不是只报个数）',
+    /现在压着 2 跳/.test(panel7.body) && /0msusa01 ↔ 0msusa01/.test(panel7.body) &&
+      /0msusb01 ↔ 0msusb01/.test(panel7.body) && /账上 2 跳/.test(panel7.scope),
+    panel7.scope)
+  ok('N17 面板顺手给一条能整批摘掉的命令（模型不用自己拼 id）',
+    /memory_link\(action="mute", pairs=\[\["0ms[a-z0-9]+","0ms[a-z0-9]+"\],\["0ms[a-z0-9]+","0ms[a-z0-9]+"\]\]\)/.test(panel7.body),
+    (panel7.body.match(/一次摘掉：[^\n]*/) ?? [''])[0].slice(0, 120))
+
+  // 真走 memory_link(pairs=…)：一支能断、一支不存在 → 逐对报成败，成的那跳当场销账
+  const LINK7 = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', 'link.js')).href)
+  const calls7 = []
+  const exec7 = { agent: { session: { header: { cwd: ws7 } } } }
+  const link7 = LINK7.createLink({
+    flow: {
+      resolveIdDetail: async (id) => (/^0msusa/.test(String(id)) ? { kind: 'ok', id } : { kind: 'missing', id }),
+      tryCall: async (name, payload) => {
+        calls7.push(payload)
+        return { entry: true, text: '已屏蔽这一跳（重建也不会再连）' }
+      },
+      flushLinks: async () => {},
+    },
+    meowDir: () => '.dsh-meow',
+  })
+  const out7 = await link7.execute({ action: 'mute', pairs: [['0msusa01', '0msusa01'], ['0msusb01', '0msusb01']] }, exec7)
+  ok('N17 批量回执先说清成了几跳、给了几对（一眼看得出有没漏）',
+    out7.startsWith('摘掉 1 跳，1 跳没成（一共给了 2 对）：0msusa01 ↔ 0msusa01'), out7.split('\n')[0])
+  ok('N17 没成的那跳带星图原话（重试时只给它们就行）',
+    /- 0msusb01 ↔ 0msusb01：这个工作区里没有这条记忆：/.test(out7),
+    (out7.match(/^- 0msusb01[^\n]*/m) ?? [''])[0].slice(0, 80))
+  ok('N17 只对真能断的那跳打星图（查不存在的跳不再白打一次）', calls7.length === 1, String(calls7.length))
+  ok('N17 断掉的当场销账、没断的留在账上（不留到过期，也不假装清空）',
+    !Object.keys(NB.readSuspectLedger(ws7).edges).some((k) => k.includes('msusa')) &&
+      Object.keys(NB.readSuspectLedger(ws7).edges).some((k) => k.includes('msusb')),
+    JSON.stringify(Object.keys(NB.readSuspectLedger(ws7).edges)))
+  ok('N17 销账那几跳在邻域账里留一行痕（面板念得出「AI 已断」）',
+    /a=0msusa01 b=0msusa01 via=mute cleared=1$/.test(readFileSync(LOG7, 'utf8').trim().split('\n').slice(-1)[0] ?? ''),
+    readFileSync(LOG7, 'utf8').trim().split('\n').slice(-1)[0] ?? '')
+
+  // 越界与形状：不静默丢（丢掉会被读成「那几对也摘了」）
+  const many = Array.from({ length: 21 }, (_, i) => ['0msusa' + String(i).padStart(2, '0'), '0msusa99'])
+  const cap7 = await link7.execute({ action: 'mute', pairs: many }, exec7)
+  ok('N17 一次 20 跳封顶：超了只做前 20 对并说明剩下怎么再来一次',
+    /摘掉 20 跳/.test(cap7) && /一次最多 20 对（给了 21 对）/.test(cap7), cap7.split('\n')[0])
+  const badShape = await link7.execute({ action: 'mute', pairs: [['0msusa01'], ['0msusa02', '0msusa02']] }, exec7)
+  ok('N17 形状不对的那组单独说出来（能做的照做，不整批作废）',
+    /有 1 对形状不对（每组要两个 id，空值也算没给），这几对没动。/.test(badShape) &&
+      badShape.includes('已屏蔽这一跳'),
+    badShape.replace(/\n/g, ' / ').slice(0, 120))
+  const notArray = await link7.execute({ action: 'mute', pairs: '0msusa01|0msusa01' }, exec7)
+  ok('N17 pairs 不是数组时也交代清楚（不是一句「缺 a」把人引去补 a/b）',
+    /要给成 \[\[a1,b1\],\[a2,b2\]\] 这种「一对一组」的数组（这次给的不是数组），这几对没动/.test(notArray),
+    notArray.split('\n')[0].slice(0, 80))
+
+  ok('N17 只给一对 pairs 时归一回单对路径（回执里没有批量抬头）',
+    await (async () => {
+      const t = await link7.execute({ action: 'mute', pairs: [['0msusa01', '0msusa01']] }, exec7)
+      return t.includes('已屏蔽这一跳') && !/摘掉 \d+ 跳/.test(t)
+    })())
+  ok('N17 pairs 用在 mute 以外的动作上时明确说没动（不静默忽略）',
+    await (async () => {
+      const t = await link7.execute({ action: 'path', a: '0msusa01', b: '0msusa01', pairs: [['0msusa01', '0msusa01']] }, exec7)
+      return /pairs 只在 mute 生效（这次是 path），这几对一条都没动。/.test(t)
+    })())
+  ok('N17 卡片标题念成「一次摘 N 跳」（写操作，不再是单个动作名）',
+    /一次摘 2 跳/.test(link7.presentCall({ action: 'mute', pairs: [['a', 'b'], ['c', 'd']] }).title),
+    link7.presentCall({ action: 'mute', pairs: [['a', 'b'], ['c', 'd']] }).title)
+
+  // 过期放回：连标轮数调到 9 时账上那跳就不算压着了（「有记录」≠「压住」）
+  ok('N17 面板对「有记录但没压住」也解释得清（不把观察记录说成压住）',
+    /都没到连标|已经三轮没再被标/.test(NB.readSuspectPanel({ workspace: ws7, turns: 9 }).body),
+    NB.readSuspectPanel({ workspace: ws7, turns: 9 }).body.split('\n')[0].slice(0, 60))
+}
+
 // 那个句柄在 Windows 上会占住临时工作区，不关就删不掉（EPERM）。收尾前统一关掉。
 const MeowMod = await import(pathToFileURL(join(root, 'vendor/meow-memory/lib/index.js')).href)
 MeowMod.closeAllDbs()
