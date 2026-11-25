@@ -181,6 +181,36 @@ const Q = '降糖药 剂量'
   ok('B9 300 档把省做到一半以上', r300.text.length <= r0.text.length * 0.5, `${r300.text.length} ≤ ${Math.round(r0.text.length * 0.5)}`)
 }
 
+// ── B10 上限就是上限（0.6.57）：极端正文也不许「说好 N 实际 N+1」 ────────────
+// 旧记账少算了「块间空行」与拼装换行，cap 240 上实测吐出 241——差 1 个字看起来无所谓，
+// 但用户按 240 调的就是要 240；这一支把边缘钉死，别再回退。
+{
+  const flat = { id: '0mprobe001', content: 'a'.repeat(2000), level: 'fact', project: null, title: null, importance: 3, status: 'active', keywords: [], updatedAt: Date.now() }
+  const over = []
+  for (const cap of [200, 240, 300, 480, 600]) {
+    for (const bodyMax of [0, cap, Math.floor(cap / 2)]) {
+      const r = V.renderHitEntries([flat], { injectMaxChars: cap, injectBodyMax: bodyMax }, Q)
+      if (r.text.length > cap) over.push(`cap ${cap}/body ${bodyMax} → ${r.text.length}`)
+    }
+  }
+  ok('B10 无标点长正文：任何上限都不许多吐一个字', over.length === 0, over.join(' · ') || '5 档 × 3 种单条上限全部 ≤ cap')
+}
+
+// ── B11 同一句话只说一遍（0.6.57）：模板化长文里整句重复不许占两份预算 ──────
+{
+  // 正文要够长才会走压缩：满编（full）时一律原样呈现，去重只管压缩态。
+  const dup = {
+    id: '0mprobe002',
+    content: '开头一句铺垫，说的是别的事情，只是把上下文铺开而已。' + 'injectBodyMax 是 240 字。'.repeat(6) + '收尾一句，讲的是还要补一句别人不关心的背景，凑长度用。',
+    level: 'fact', project: null, title: null, importance: 3, status: 'active', keywords: [], updatedAt: Date.now(),
+  }
+  const r = V.renderHitEntries([dup], { injectMaxChars: 240, injectBodyMax: 240 }, 'injectBodyMax 是多少')
+  const body = r.text.split('\n').filter((l) => !l.startsWith('[') && !/本条还有/.test(l) && !/^（以上为长期记忆/.test(l) && !/^…（本次注入按上限/.test(l)).join(' ')
+  const twice = (body.match(/injectBodyMax 是 240 字/g) ?? []).length
+  ok('B11 重复句在正文里只出现一次', twice <= 1, `出现 ${twice} 次 · 正文 ${body.trim().length} 字`)
+  ok('B11 去重后仍留住正题句（不是靠少说话省字）', body.includes('240'))
+}
+
 console.log('')
 if (fail > 0) {
   console.log(`FAILED  passed ${pass} / failed ${fail}`)

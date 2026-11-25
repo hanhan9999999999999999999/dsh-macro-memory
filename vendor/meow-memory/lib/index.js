@@ -6433,24 +6433,34 @@ function squeezeBody(body, cap, qTerms) {
   // 现在的次序：正分句按分从高到低依次塞进预算；首句是上下文锚，装得下就留，
   // 但它会把**唯一**一句正分句挤出去时让位——铺垫句不该挤掉答案。
   const sc = sents.map((s, i) => (i === 0 ? 0 : sentPickScore(s, qTerms)))
+  // [macro-fusion 0.6.57] 同一句话只说一遍：模板化长文（代码块、日志块、清单）里
+  // 常出现整句重复，旧写法按「分数 × 预算」照样把同一句塞两三遍——字花了，信息没多。
+  // 判重只看「去掉空白与标点之后是否逐字相同」，不做模糊合并：改写过的句子是另一句信息。
+  const sentKey = (s) => s.replace(/[\s，、；：。！？,.;:!?()（）"'“”‘’《》\[\]【】]/g, '')
   const cand = []
+  const taken = new Set()
   for (let i = 1; i < sents.length; i += 1) if (sc[i] > 0) cand.push(i)
   cand.sort((a, b) => sc[b] - sc[a] || a - b)
   const pick = []
   let used = 0
+  const firstKey = sentKey(sents[0])
   if (sents[0].length <= cap) {
     const best = cand[0]
     const crowded = best !== undefined && sents[0].length + 1 + sents[best].length > cap
     if (!crowded) {
       pick.push(0)
       used = sents[0].length
+      if (firstKey !== '') taken.add(firstKey)
     }
   }
   for (const i of cand) {
+    const key = sentKey(sents[i])
+    if (key === '' || taken.has(key)) continue
     const add = sents[i].length + (used > 0 ? 1 : 0)
     if (used + add > cap) continue
     pick.push(i)
     used += add
+    taken.add(key)
   }
   if (pick.length === 0) return { text: clipChars(sents[0], cap), mode: 'clip' }
   pick.sort((a, b) => a - b)
@@ -6534,7 +6544,9 @@ function renderHitEntries(entries, o, query) {
   const qTerms = injectTermsOf(query)
   const budgeted = cap > 0
   let bodyCut = 0
-  const fixed = header.length + boundary.length + 4
+  // [macro-fusion 0.6.57] 拼装时的换行也要算：header\\n … + 每条块内 3 个换行 + 空块 + boundary\\n。
+  // 旧值 +4 少算 2 个字，cap 240 上实测吐出 241（上限差 1 就不是上限），改 +6 留 2 字余量。
+  const fixed = header.length + boundary.length + 6
   // 上限小到连「头 + 边界句 + 一句自述」都放不下：只给骨架，绝不假装注入完整。
   if (budgeted && cap <= fixed + 40) {
     return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
@@ -6582,7 +6594,9 @@ function renderHitEntries(entries, o, query) {
         dropped = entries.length - i
         break
       }
-      rest -= head.length + 1
+      // [macro-fusion 0.6.57] 每条正文后面那一个空块（join 成 \n\n）也是 1 个字，
+      // 旧写法只扣「头 + 换行」，cap 240 上实测吐出 241——上限差 1 就不是上限。
+      rest -= head.length + 2
     } else {
       // [macro-fusion 0.6.48] 只开单条上限（不设总上限）时同样按名次分配。
       per = bodyMax > 0 ? rankBodyMax(bodyMax, i) : 0
