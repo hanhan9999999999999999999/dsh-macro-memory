@@ -6638,7 +6638,10 @@ function renderHitEntries(entries, o, query) {
       lines.push('')
     }
     lines.push(boundary)
-    return { text: lines.join('\n').trimEnd(), modes: entries.map(() => 'full'), dropped: 0, squeezed: 0, heads: 0, bodyCut: 0, bodyMax: 0 }
+    // [macro-fusion 0.6.71] sizes：这一条正文自己占了多少字。旧写法只回「总共多少字」，
+    // 于是一轮进两条时，日志能说「这一轮 240 字」，说不出「哪一条吃掉了大半」——
+    // 省额度只能靠估。带上它，hit-chain 行才能按条结账（picks=id:chars:mode）。
+    return { text: lines.join('\n').trimEnd(), modes: entries.map(() => 'full'), sizes: entries.map((e) => String(e.content ?? '').length), dropped: 0, squeezed: 0, heads: 0, bodyCut: 0, bodyMax: 0 }
   }
   const qTerms = injectTermsOf(query)
   const budgeted = cap > 0
@@ -6648,7 +6651,7 @@ function renderHitEntries(entries, o, query) {
   const fixed = header.length + boundary.length + 6
   // 上限小到连「头 + 边界句 + 一句自述」都放不下：只给骨架，绝不假装注入完整。
   if (budgeted && cap <= fixed + 40) {
-    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
+    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], sizes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
   }
   // 自述尾巴也算在上限里：先扣掉，宁可正文少留一句，也不许「说好 300 实际 420」。
   // [macro-fusion 0.6.56] 自述尾巴的位置也从「死留 120」改成现场量：尾巴要等正文排完
@@ -6686,10 +6689,13 @@ function renderHitEntries(entries, o, query) {
   let rest = budgeted ? cap - fixed - tailWorst : 0
   const blocks = []
   const modes = []
+  // [macro-fusion 0.6.71] 与 modes 逐格对齐：这一条正文实际进了多少字（压过就是压后的长度，
+  // 只给头行就是 0）。日志按条结账只用得到这个数，头行/说明行的固定开销不摊到条目头上。
+  const sizes = []
   let dropped = 0
   if (budgeted && rest <= 0) {
     // 连「头 + 边界句 + 自述」都排不下：只给骨架，绝不假装注入完整。
-    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
+    return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], sizes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
   }
   // 单条正文上限：既要防「一条超长条目吃掉全部预算」，又不能在上限本身很宽时
   // 把每条都按 240 字硬压（那样用户调大上限也换不回正文）。所以取「上限的一半」
@@ -6763,6 +6769,7 @@ function renderHitEntries(entries, o, query) {
     }
     const sq = squeezeBody(left.content, per, qTerms)
     modes.push(sq.mode)
+    sizes.push(sq.text.length)
     blocks.push(head)
     if (sq.text !== '') blocks.push(sq.text)
     if (willCut) {
@@ -6788,7 +6795,7 @@ function renderHitEntries(entries, o, query) {
     if (squeezed + heads > 0) lines.push(pick('inject.budgetTailShort', 'inject.budgetTail', { cap, squeezed, heads, dropped, id: String(firstId ?? '') }))
     else if (dropped > 0) lines.push(pick('inject.budgetTailDropOnlyShort', 'inject.budgetTailDropOnly', { cap, dropped }))
   }
-  return { text: lines.join('\n').trimEnd(), modes, dropped, squeezed, heads, bodyCut, bodyMax }
+  return { text: lines.join('\n').trimEnd(), modes, sizes, dropped, squeezed, heads, bodyCut, bodyMax }
 }
 
 function hitQuery(db, workspace, sessionId, userText, o, dir) {
@@ -7042,7 +7049,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     writeSeenFile(workspace, sessionId, after, dir);
   } catch {
   }
-  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
+  return { text, injectedIds: ids, gated, picks: shown.map((h, i) => ({ id: h.id, level: h.level, chars: Number.isFinite(rendered.sizes?.[i]) ? rendered.sizes[i] : 0, mode: rendered.modes[i] ?? "full" })), budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
 }
 
 // src/tools.ts
@@ -11993,8 +12000,9 @@ ${e.stack ?? ""}` : String(e)}
           injectSessionBudget: resolved.injectSessionBudget,
           injectRepeatSim: resolved.injectRepeatSim
         }, resolved.projectDir);
+        const picksStr = hit === null || !Array.isArray(hit.picks) || hit.picks.length === 0 ? "-" : hit.picks.slice(0, 8).map((p) => `${String(p.id).slice(0, 8)}:${p.chars}:${p.mode}`).join(",");
         try {
-          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} picks=${picksStr} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }
