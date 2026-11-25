@@ -14372,3 +14372,54 @@ const soloEdge = edgeScore > 0 && block.ids.length === 1 && block.scores[0] < ed
 探针自己的坑（不是插件 bug）：断言里的 id 必须写成 `slice(0,8)` 之后的 8 位——回执给的现在是「最短唯一前缀」，9 位的写进断言就会被切掉；`node()` 返回数组时要 `.flat()`，否则 `[...witness, ...sups]` 得到嵌套数组、`l.replace is not a function`；断言正则别写 `"0ms.."`（只吃两字符），要 `[a-z0-9]+`。
 
 留着的口子：`lib/macro/defs/search.js:703` 的 `id8()`（子问句拆解补充段的行首）仍是 8 位，`memory_search` 的融合回执也没接 `shortid.js` 的索引——那一支的回执里 id 用得少，本轮不动，下一轮按同一判据收。
+
+### 9.265 0.6.66：摘掉的边要留得住
+
+0.6.54 的闭环只走了一半：`mute` 成功 → `clearSuspectEdge` 清观察账 + 一行 `neighbor-fix` 日志。边断了，本地却什么都不剩。三处后果都不响但有代价：面板念不出「修过几跳」；下个会话把已断的边当还连着（或反过来把还连着的边当成断过——见下面 `unmute`）；摘错了没有回头路，`unmute` 需要两端 id，而 id 就在刚被清掉的那份账里。
+
+**账的形状**（`lib/macro/store.js` + `lib/macro/neighbor.js`）
+
+`neighborFixesPath(workspace)` 与错边账同 home、同工作区键规：`<macroHome>/neighbor-fixes/<safe>.json`，内容 `{v:1, at, fixes: {"a8|b8": {a, b, at, round, cleared, times, note}}}`。三个出口：
+
+- `recordNeighborFix(ws, {a,b,note,round,cleared,now})`：a/b 各 ≥8 位才记，键取 8 位前缀；已有条目只累加 `times` 并用最新 `at`/`round`，`note` 为空则沿用旧值（新的一笔没给理由，不该把已有理由抹掉）。返回 boolean。
+- `readNeighborFixes(ws, limit=8)`：按 `at` 倒序。
+- `dropNeighborFix(ws, a, b)`：删掉一条，返回原来有没有。
+- 私有 `writeNeighborFixLedger`：按 `NEIGHBOR_FIX_KEEP_DAYS = 90` 丢过期的、按 `at` 倒序 `slice(0, NEIGHBOR_FIX_MAX = 60)`，写失败静默——账是解释用的，不是功能的一部分。
+
+**接在哪儿**（`lib/macro/defs/link.js`）
+
+`noteSuspectCleared(exec, action, ra, rb, meowDir, note)` 从「只管 mute」变成「管 mute 与 unmute 两种结局」：
+
+```js
+if (action === 'unmute') { dropNeighborFix(ws, ra, rb); return }
+const cleared = clearSuspectEdge(ws, ra, rb)
+const round = readSuspectLedger(ws).round
+recordNeighborFix(ws, { a: ra, b: rb, note, round, cleared })
+if (cleared <= 0) return
+appendNeighborLog(..., 'neighbor-fix', `a=… b=… via=mute cleared=${cleared}`)
+```
+
+三处要点：
+
+1. **`recordNeighborFix` 在 `cleared` 判断之前**——mute 成功就记，不管观察账里有没有到压住门槛。模型常常直接从邻域尾注那条现成命令动手，那时账里也许才标了一轮；也常见隔很久才回头清一条老账。按「真清掉才记」写，面板就会长期空着。
+2. **`unmute` 撤账而不是留痕**——面板那句字面写着「星图那边已经断了，重建也不会再自动连回来」。留一条实际连着的边，下一个会话会拿一份过期账把活边当死边处理。图的状态是唯一事实，反悔不留痕。
+3. **调用点仍在 `return r2.text` 那一行之前**，`runLink` 的入口结构没变（verify A34 钉着「gate 顺序 → 一次 `runLink` → `linkNotes` 拼接」）。
+
+**面板**（`readSuspectPanel`）
+
+在原有「空账 / 拿不到工作区 / 没压住 / 压着 N 跳」四态之外，body 末尾追加一段（四种态都追加，只有 `workspace === ''` 那句不加——那时连账都读不到）：
+
+```
+最近摘过 2 跳（星图那边已经断了，重建也不会再自动连回来）：
+- 0mfixa01 ↔ 0mfixb02（第 9 轮摘的，2026-11-22，摘过 2 次；理由：跟写入节流无关）
+- …还有 3 跳更早摘的没列
+摘错了想反悔：memory_link(action="unmute", a="0mfixa01", b="0mfixb02")（一次一条，id 照抄）。
+```
+
+最多列 `min(limit, 6)` 条（面板是「一眼看个大概」，不是全量清单；要更多就看 60 条封顶的那本账）。`scope` 在末尾追加 ` · 修过 N 跳`，**只在 N>0 时加**——没修过的账读数与 0.6.65 逐字相同，老断言与老日志都不受影响。
+
+**判据**：`tools/probe-neighbor.mjs` 113 → **133 条**（N18 二十条）。N18 覆盖：记一笔字段齐全 / 只落在自己的工作区文件 / 重复记只累加次数且理由不丢 / 半截 id 不记 / 无工作区静默 / 坏文件当空账 / 攒 70 跳裁到 60 且丢最老留最近 / 90 天前的当场不收 / 90 天内的照留 / 面板念条目与理由 / 反悔命令与 id / `scope` 带修过数 / 未修过的账原样 / 真 `mute` 无门槛也记 / 记在当前轮次 / `unmute` 撤一笔 / 撤完面板不再念「最近摘过」/ 只撤这一对不整本清空。
+
+**探针自己的两个坑**（不是插件 bug）：①`recordNeighborFix` 的 `now` 参数决定 `at`，写一条 90 天前的时间戳会**在落盘时被当场裁掉**——第一版断言写的是「90 天前先还在」，那是把「读取时过滤」当成「写入时过滤」；②同一对 id 的 8 位前缀相同时（`0mkeep001|0mkeep002` 两个都切到 `0mkeep00`）会撞成一个键，夹具必须给两端**不同的 8 位前缀**，否则「只撤这一对」的断言测的是空集。
+
+**留着的口子**：`times` 只记次数不记每轮的明细（要看每一轮的顺序得翻 `dream-debug.log`）；修过账不参与检索/注入，它只服务面板与反悔。

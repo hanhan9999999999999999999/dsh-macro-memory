@@ -20,7 +20,7 @@
 import { root } from './_root.mjs'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const NB = await import(pathToFileURL(join(root, 'lib', 'macro', 'neighbor.js')).href)
@@ -991,6 +991,147 @@ const recall = [
   ok('N17 面板对「有记录但没压住」也解释得清（不把观察记录说成压住）',
     /都没到连标|已经三轮没再被标/.test(NB.readSuspectPanel({ workspace: ws7, turns: 9 }).body),
     NB.readSuspectPanel({ workspace: ws7, turns: 9 }).body.split('\n')[0].slice(0, 60))
+}
+
+// ── N18 [0.6.66] 修过账：摘掉的边要留得住「谁/何时/为什么」，面板才念得出修过什么 ──
+// 病根：0.6.54 起 mute 成功只清观察账 + 写一行 debug 日志。断完之后本地一个字都不剩，
+// 于是 ①面板永远看不出「已经修过几跳」；②下一会话看到同一条边又想摘一遍；
+// ③真摘错了没有回头路——unmute 要两端 id，而 id 只存在被清掉的那份账里。
+// 这一块守五件事：记一笔 / 重复记累加次数 / 裁剪（60 条、90 天）/ 面板念得出来 /
+// 真走 memory_link(mute) 时**账里有没有到门槛都记**（模型常常直接从尾注那条命令动手）。
+{
+  const STORE = await import(pathToFileURL(join(root, 'lib', 'macro', 'store.js')).href)
+  const ws8 = join(tmpHome, 'ws-n18')
+  const A8 = '0mfixa01'
+  const B8 = '0mfixb02'
+
+  // ① 记一笔、读得回来（形状要对：a/b 8 位、round、cleared、note）
+  ok('N18 摘掉后记一笔（a/b 各留 8 位，round/cleared/note 一起落盘）',
+    NB.recordNeighborFix(ws8, { a: A8 + 'aaaa', b: B8 + 'bbbb', round: 7, cleared: 2, note: '跟写入节流无关', now: new Date('2026-11-20T10:00:00Z') }) === true)
+  const row1 = NB.readNeighborFixes(ws8, 8)[0]
+  ok('N18 读回来的那一笔字段齐全（面板不用自己补默认值）',
+    row1 !== undefined && row1.a === A8 && row1.b === B8 &&
+      row1.round === 7 && row1.cleared === 2 && row1.times === 1 && row1.note === '跟写入节流无关',
+    JSON.stringify(row1 ?? null))
+  ok('N18 修过账落在自己的工作区文件里（不是塞进观察账里改形状）',
+    existsSync(STORE.neighborFixesPath(ws8)) && readFileSync(STORE.neighborFixesPath(ws8), 'utf8').includes(A8),
+    STORE.neighborFixesPath(ws8).replace(tmpHome, '<tmp>'))
+
+  // ② 同一条边再摘一次：累加次数，理由沿用旧的（新的一笔没给理由不该把它抹掉）
+  NB.recordNeighborFix(ws8, { a: A8 + 'aaaa', b: B8 + 'bbbb', round: 9, cleared: 0, note: '', now: new Date('2026-11-22T10:00:00Z') })
+  const row2 = NB.readNeighborFixes(ws8, 8)[0]
+  ok('N18 同一条边再摘一次只累加次数（面板念「摘过 N 次」而不是变成两条）',
+    NB.readNeighborFixes(ws8, 8).length === 1 && row2.times === 2 && row2.round === 9 &&
+      row2.note === '跟写入节流无关', JSON.stringify(row2))
+
+  // ③ id 太短不记（半截 id 认不出是谁；记了反而会让人照着 unmute 到别的边）
+  ok('N18 只有半截 id 时不记（半截 id 反悔时指不准是哪一条）',
+    NB.recordNeighborFix(ws8, { a: '0mfix', b: B8 + 'bbbb' }) === false &&
+      NB.readNeighborFixes(ws8, 40).length === 1)
+  ok('N18 拿不到工作区时静默不记（不是崩，也不是写到公共账上）',
+    NB.recordNeighborFix('', { a: A8 + 'aaaa', b: B8 + 'bbbb' }) === false)
+
+  // ④ 坏文件当空账（面板少一条历史，不该让整个面板报错）
+  const wsBad = join(tmpHome, 'ws-n18-bad')
+  mkdirSync(dirname(STORE.neighborFixesPath(wsBad)), { recursive: true })
+  writeFileSync(STORE.neighborFixesPath(wsBad), '{ 这不是 json', 'utf8')
+  const panelBad = NB.readSuspectPanel({ workspace: wsBad })
+  ok('N18 修过账文件坏掉时按空账处理（面板照念错边账，不抛错）',
+    /错边账是空的/.test(panelBad.body) && !/修过/.test(panelBad.scope), panelBad.scope)
+
+  // ⑤ 条数封顶：攒 70 跳只留最近 60 跳（回看的意义在最近，不是全部历史）
+  const wsCap = join(tmpHome, 'ws-n18-cap')
+  const base8 = Date.parse('2026-10-01T00:00:00Z')
+  for (let i = 0; i < 70; i += 1) {
+    const id = String(i).padStart(3, '0')
+    NB.recordNeighborFix(wsCap, {
+      a: `0mcap${id}a`,
+      b: `0mcap${id}b`,
+      round: i,
+      now: new Date(base8 + i * 60000),
+    })
+  }
+  const capped = NB.readNeighborFixes(wsCap, 200)
+  ok('N18 修过账最多留 60 跳（攒太多就丢最老的那几条）',
+    capped.length === 60 && NB.NEIGHBOR_FIX_MAX === 60, String(capped.length))
+  ok('N18 裁剪丢的是最老的、留的是最近的（不是把新摘的挤掉）',
+    !capped.some((r) => r.round < 10) && capped.some((r) => r.round === 69) && capped[0].round === 69,
+    `rounds ${capped[0]?.round}..${capped[capped.length - 1]?.round}`)
+
+  // ⑥ 天数封顶：超过 90 天的账不再进（落盘时就丢，不会攒成一本没人看的旧账）
+  const wsOld = join(tmpHome, 'ws-n18-old')
+  NB.recordNeighborFix(wsOld, { a: '0mold0001', b: '0mold0002', now: new Date('2026-01-01T00:00:00Z') })
+  ok('N18 90 天前的旧账不收了（早过期的记进来第二天也没人看）',
+    NB.readNeighborFixes(wsOld, 8).length === 0)
+  NB.recordNeighborFix(wsOld, { a: '0mnew0001', b: '0mnew0002', now: new Date('2026-11-25T00:00:00Z') })
+  ok('N18 90 天内的照留（规则说 90 天，不是一写就清）',
+    NB.readNeighborFixes(wsOld, 8).length === 1 && NB.readNeighborFixes(wsOld, 8)[0].a === '0mnew000',
+    JSON.stringify(NB.readNeighborFixes(wsOld, 8).map((r) => r.a)))
+
+  // ⑦ 面板念得出来：条目 + 「摘过 N 次」+ 理由 + 反悔命令（id 照抄）
+  const panel8 = NB.readSuspectPanel({ workspace: ws8 })
+  ok('N18 面板把修过的那跳念出来（说清星图那边已经断了，重建也不会再连）',
+    /最近摘过 1 跳（星图那边已经断了，重建也不会再自动连回来）：/.test(panel8.body) &&
+      new RegExp(`- ${A8} ↔ ${B8}（第 9 轮摘的，2026-11-22，摘过 2 次；理由：跟写入节流无关）`).test(panel8.body),
+    (panel8.body.match(/最近摘过[^\n]*\n[^\n]*/) ?? [''])[0].replace(/\n/g, ' / '))
+  ok('N18 面板顺手给反悔命令（摘错了有回头路，不用去翻日志找 id）',
+    new RegExp(`摘错了想反悔：memory_link\\(action="unmute", a="${A8}", b="${B8}"\\)（一次一条，id 照抄）。`).test(panel8.body))
+  ok('N18 scope 也带上「修过 N 跳」（列表页不用点开就知道修过几个）',
+    /· 修过 1 跳/.test(panel8.scope), panel8.scope)
+  ok('N18 没修过的账 scope 保持原样（老断言与老读数不受影响）',
+    !/修过/.test(NB.readSuspectPanel({ workspace: join(tmpHome, 'ws-n18-clean') }).scope),
+    NB.readSuspectPanel({ workspace: join(tmpHome, 'ws-n18-clean') }).scope)
+
+  // ⑧ 真走 memory_link(mute)：账里**没有**到压住门槛也照样记（模型常直接从尾注那条命令动手）
+  // 轮次要真的取到：先让注入器跑一轮，观察账的 round 起来，mute 记的才是「第 N 轮摘的」。
+  const linkWs = join(tmpHome, 'ws-n18-live')
+  const liveBody = ['星图邻域（1 跳，1 条）：', '', '1. [fact] 另一条线丙     强度 0.42 丙的描述',
+    '  id: ws:0mliv001', '  为什么：经由「另一条线丙」 (0mliv002) 的cooc关联扩散而来'].join('\n')
+  const inj8 = NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: liveBody }) },
+    config: {},
+    meowDir: () => '.dsh-meow',
+    logger: () => {},
+    loadLlm: async () => ({ createUserMessage: (o) => o }),
+  })
+  await inj8.decide({ agent: { session: { id: 'n18-live1', header: { cwd: linkWs } } } },
+    { kind: 'enter', messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '今天这个天气真好啊' }] }] })
+  const LINK8 = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', 'link.js')).href)
+  const link8 = LINK8.createLink({
+    flow: {
+      resolveIdDetail: async (id) => ({ kind: 'ok', id }),
+      tryCall: async () => ({ entry: true, text: '已屏蔽这一跳（重建也不会再连）' }),
+      flushLinks: async () => {},
+    },
+    meowDir: () => '.dsh-meow',
+  })
+  const exec8 = { agent: { session: { header: { cwd: linkWs } } } }
+  await link8.execute({ action: 'mute', a: '0mliv001', b: '0mliv002', note: '确认无关' }, exec8)
+  const live = NB.readNeighborFixes(linkWs, 8)
+  ok('N18 真 mute 成功后落进修过账（哪怕观察账里才标过一轮、根本没到门槛）',
+    live.length === 1 && live[0].a === '0mliv001' && live[0].b === '0mliv002' && live[0].cleared === 0 &&
+      live[0].note === '确认无关', JSON.stringify(live[0] ?? null))
+  ok('N18 这一笔记在当前轮次上（面板能说「第 N 轮摘的」，而不是第 0 轮）',
+    live[0]?.round > 0 && new RegExp(`第 ${live[0]?.round} 轮摘的`).test(NB.readSuspectPanel({ workspace: linkWs }).body),
+    String(live[0]?.round))
+
+  // ⑨ 反悔：unmute 之后这条边又回到图里，修过账里那笔必须撤（留着就是拿过期账骗下一个会话）
+  const un8 = await link8.execute({ action: 'unmute', a: '0mliv001', b: '0mliv002' }, exec8)
+  ok('N18 unmute 成功时把修过账里那笔撤掉（账上说「已经断了」而实际连着最坑人）',
+    /星图连线/.test(un8) === false && NB.readNeighborFixes(linkWs, 8).length === 0,
+    JSON.stringify(NB.readNeighborFixes(linkWs, 8)))
+  ok('N18 撤掉之后面板不再念「最近摘过」（scope 也回到原样）',
+    !/最近摘过/.test(NB.readSuspectPanel({ workspace: linkWs }).body) &&
+      !/修过/.test(NB.readSuspectPanel({ workspace: linkWs }).scope))
+  ok('N18 撤一笔不影响别的跳（只动这一对，不整本清空）',
+    await (async () => {
+      NB.recordNeighborFix(linkWs, { a: '0mkeepa1', b: '0mkeepb2', round: 3 })
+      NB.recordNeighborFix(linkWs, { a: '0mkeepc3', b: '0mkeepd4', round: 3 })
+      await link8.execute({ action: 'unmute', a: '0mkeepa1', b: '0mkeepb2' }, exec8)
+      const left = NB.readNeighborFixes(linkWs, 8)
+      return left.length === 1 && left[0].a === '0mkeepc3'
+    })())
 }
 
 // 那个句柄在 Windows 上会占住临时工作区，不关就删不掉（EPERM）。收尾前统一关掉。
