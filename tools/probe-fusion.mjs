@@ -7337,7 +7337,7 @@ check(
     'RV2 渲染 3 条、标题自报来路、带强度与 8 位短 id、多前缀 id 认得出裸 id',
     blk !== null &&
       blk.ids.length === 3 &&
-      blk.text.startsWith('【星图邻域 · 自动带来的】') &&
+      blk.text.startsWith('【星图邻域·不是用户原话】') &&
       blk.text.includes('- [fact] [0mwq3aa9]') &&
       blk.text.includes('强度 0.82') &&
       blk.ids[1] === '0mwq2ncq',
@@ -7357,8 +7357,8 @@ check(
   )
   const tight = nb.neighborBlockOf(recall, { max: 4, chars: 120 })
   check(
-    'RV2f 字符上限真的管用：120 字符只装得下 1 条，且整块不超限',
-    tight !== null && tight.ids.length === 1 && tight.text.length <= 120,
+    'RV2f 字符上限真的管用：120 字符只装得下能装的那几条（0.6.61 框架瘦身后是 1–2 条），整块不超限',
+    tight !== null && tight.ids.length >= 1 && tight.text.length <= 120,
     tight === null ? 'null' : `${tight.ids.length} 条 / ${tight.text.length} 字`,
   )
   const skipped = nb.neighborBlockOf(recall, { skip: ['0mwq3aa9'] })

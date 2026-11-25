@@ -67,9 +67,9 @@ const recall = [
 
 // ── N0 形状：常量与导出 ────────────────────────────────────────────────────
 {
-  ok('N0 常量：门槛 0.35 / 尾部预留 170 / 原有四条没被挪动',
+  ok('N0 常量：门槛 0.35 / 尾部预留 130（0.6.61 随尾注一起瘦）/ 原有四条没被挪动',
     NB.NEIGHBOR_MIN_SCORE === 0.35 &&
-      NB.NEIGHBOR_TAIL_RESERVE === 170 &&
+      NB.NEIGHBOR_TAIL_RESERVE === 130 &&
       NB.NEIGHBOR_DEFAULT_MAX === 4 &&
       NB.NEIGHBOR_DEFAULT_CHARS === 420 &&
       NB.NEIGHBOR_MIN_QUERY === 6,
@@ -114,11 +114,11 @@ const recall = [
   ok('N4 尾部直接教 nebula_link(action="mute")，不再绕两步去 path',
     t.includes('nebula_link(action="mute"') && !t.includes('action="path"'), tail.slice(0, 70))
   ok('N4 尾部交代 a/b 两端各填什么（a=why 里的来源 id / b=行首那 8 位）',
-    t.includes('它 why 里') && t.includes('行首') && t.includes('8 位'), tail.slice(0, 90))
+    t.includes('why 里那个来源 id') && t.includes('行首那 8 位'), tail.slice(0, 90))
   ok('N4 尾部仍保留读全文的办法（原有能力不许因为加指引而丢）',
     t.includes('memory_read("0mwq3aa9")') && t.includes('看全文'))
   ok('N4 尾部把判断标准写清：断的是错边，不是「这轮用不上」',
-    t.includes('断的是错边') && t.includes('忽略即可'), tail.slice(-60))
+    t.includes('断的是错边') && t.includes('不用问用户') && t.includes('这轮用不上就别动'), tail.slice(-70))
   ok('N4 不给 query 时没有任何条被打标记（词面闸没开就不该有「未沾词」）',
     blk !== null && blk.flagged === 0 && !t.includes(NB.NEIGHBOR_UNRELATED_MARK), `flagged=${blk?.flagged}`)
   ok('N4 neighborSourceIdOf 能从「经由…(8 位)」抠出 a 端；直接命中档返回空串',
@@ -127,7 +127,32 @@ const recall = [
       NB.neighborSourceIdOf(undefined) === '')
 }
 
-// ── N5 预算：尾部不能挤掉条目；预算太小先保条目 ────────────────────────────
+// ── N4b 框架瘦身（0.6.61）：头 + 尾不许比条目还长 ────────────────────────────
+{
+  const blk = NB.neighborBlockOf(recall, { max: 4, chars: 420 })
+  const rows = String(blk?.text ?? '').split('\n')
+  const head = rows[0] ?? ''
+  const tail = rows.length > 1 ? rows[rows.length - 1] : ''
+  const body = rows.filter((l) => l.startsWith('- [')).join('\n')
+  ok('N4b 头句压到 19 字上下，但「不是用户原话」这条归属护栏不许丢',
+    head.length <= 22 && head.includes('不是用户原话'), `${head.length} 字：${head}`)
+  ok('N4b 三条目时尾注 ≤ 130 字（0.6.60 是 160 字的长教学）',
+    tail.length <= 130 && tail.includes('nebula_link(action="mute"'), `${tail.length} 字`)
+  const single = ['1. [fact] dsh-macro-memory     强度 0.82 只有一条强邻居', '  id: ws:0mwq3aa9'].join('\n')
+  const one = NB.neighborBlockOf(single, { max: 4, chars: 420 })
+  const oneTail = String(one?.text ?? '').split('\n').pop() ?? ''
+  ok('N4b 只有一条邻居且无可疑跳时走短尾注（≤ 95 字），命令格式一字不少',
+    one !== null &&
+      oneTail.length <= 95 &&
+      oneTail.includes('nebula_link(action="mute"') &&
+      oneTail.includes('不用问用户'),
+    `${oneTail.length} 字`)
+  ok('N4b 整块不再头重脚轻：头 + 尾 ≤ 条目长度 × 2（三条目这一档）',
+    head.length + tail.length <= body.length * 2,
+    `头 ${head.length} + 尾 ${tail.length} vs 条目 ${body.length}`)
+}
+
+
 {
   const wide = NB.neighborBlockOf(recall, { max: 4, chars: 420 })
   ok('N5 默认 420 字符内：条目 + 尾部都在，且整块不超限',

@@ -12196,8 +12196,8 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     gvOut.messages.length === 2 && gvOut.messages[0] === gvUser,
   )
   check(
-    'GV 行为: 注入块开头就说「自动带来的」，收尾给读全文的办法',
-    String(gvOut.messages[1]?.content?.[0]?.text ?? '').includes('自动带来的') &&
+    'GV 行为: 注入块开头自报「不是用户原话」，收尾给读全文的办法',
+    String(gvOut.messages[1]?.content?.[0]?.text ?? '').includes('不是用户原话') &&
       String(gvOut.messages[1]?.content?.[0]?.text ?? '').includes('memory_read('),
   )
   const gvOff = nbMod.createNeighborInjector({
