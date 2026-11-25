@@ -18,7 +18,8 @@
  * 谁都不在中途关库：句柄一直开到脚本末尾，只有 S16 要覆写坏库那一步才关。
  */
 import { root } from './_root.mjs'
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -196,6 +197,82 @@ ok('S11 拿不到工作区 → no-ws', S.takeSnapshot({ workspace: '   ' }).stat
     'S18 memory_admin(snapshot)：出正文，并写明这次有没有存',
     body.includes('库：') && body.includes('快照（') && /这次存了一份|这次没多存|这次没存/.test(body),
     body.split('\n').slice(0, 2).join(' | '),
+  )
+}
+
+// ── S19–S25 退之前先看清楚要退掉什么（0.6.69 对比） ───────────────────────
+{
+  const { ws: cws, db: cdb } = wsWith(2)
+  S.takeSnapshot({ workspace: cws, dir: '.dsh-meow' })
+  cdb.insert({ level: 'fact', content: '快照之后新写的 fact', project: '全局' })
+  cdb.insert({ level: 'lesson', content: '快照之后新写的 lesson', project: '全局' })
+  const cmp = S.compareWithLive({ workspace: cws, dir: '.dsh-meow' })
+  const lines = S.compareLines(cmp, { stamp: '2026-11-25 18:50' })
+  ok(
+    'S19 对比：快照 2 条 → 现库 4 条，新写 2 条并按层分开数',
+    cmp.status === 'ok' && cmp.added.total === 2 && cmp.removed.total === 0 && cmp.added.byLevel.fact === 1 && cmp.added.byLevel.lesson === 1,
+    JSON.stringify({ s: cmp.status, a: cmp.added?.byLevel, r: cmp.removed?.total }),
+  )
+  ok('S20 新写的那几条给得出标题（不然读者还得自己去翻）', lines.some((l) => l.includes('新写的例如：') && l.includes('fact')), lines.join(' | '))
+
+  // 面板：只读地比一次，库的 mtime 不能动
+  const before = statSync(join(cws, '.dsh-meow', 'memory.db')).mtimeMs
+  const panel = S.readSnapshotPanel({ workspace: cws, dir: '.dsh-meow' })
+  ok('S21 面板出对比行，且对比不写库（mtime 没变）', panel.body.includes('快照 2 条 → 现库 4 条') && statSync(join(cws, '.dsh-meow', 'memory.db')).mtimeMs === before)
+
+  // 丢了一条：退回去会把它带回来
+  const row = cdb.db.prepare('SELECT id FROM fact LIMIT 1').all()
+  cdb.db.prepare('DELETE FROM fact WHERE id = ?').run(row[0].id)
+  const cmp2 = S.compareWithLive({ workspace: cws, dir: '.dsh-meow' })
+  const lines2 = S.compareLines(cmp2)
+  ok(
+    'S22 现库丢了一条 → 对比说出来「退回去会带回来」',
+    cmp2.removed.total === 1 && cmp2.removed.byLevel.fact === 1 && lines2.some((l) => l.includes('退到这一份会把它们带回来')),
+    lines2.join(' | '),
+  )
+
+  // 坏的那份正好是最新的：跳过它，复原命令指向还读得动的那一份
+  const fake = join(S.snapshotDir(cws), 'memory-20990101-000000.db')
+  writeFileSync(fake, Buffer.alloc(2048, 0x42))
+  const cmp3 = S.compareWithLive({ workspace: cws, dir: '.dsh-meow' })
+  const panel3 = S.readSnapshotPanel({ workspace: cws, dir: '.dsh-meow' })
+  ok(
+    'S23 最新那份坏了 → 自动跳过，仍能拿旧的那份做对比',
+    cmp3.status === 'ok' && cmp3.skipped.length === 1 && cmp3.file.endsWith('.db') && !cmp3.file.includes('2099'),
+    JSON.stringify({ s: cmp3.status, skip: cmp3.skipped?.length }),
+  )
+  ok(
+    'S24 面板点名哪份读不出来、复原命令不指向它',
+    panel3.body.includes('已跳过') && panel3.body.includes('（读不出来）') && panel3.body.includes('copy "') && !/copy "[^"]*memory-2099/.test(panel3.body),
+    panel3.body.split('\n').filter((l) => l.includes('已跳过') || l.includes('copy "')).join(' | ').slice(0, 200),
+  )
+
+  // 4,096 字节的合法空库（9.267 现场那种空壳）：读得动但一条都没有
+  const emptyDb = join(tmpRoot, 'empty-shape.db')
+  {
+    const h = new DatabaseSync(emptyDb)
+    h.exec('PRAGMA user_version = 0')
+    h.close()
+  }
+  const cmp4 = S.compareWithLive({ workspace: cws, dir: '.dsh-meow', file: emptyDb })
+  ok(
+    'S25 空 schema 的快照 → 单独报 snapshot-empty（退它等于清库），不报成「之后新写 N 条」',
+    cmp4.status === 'snapshot-empty' && S.compareLines(cmp4).some((l) => l.includes('退它等于把现库')),
+    String(cmp4.status),
+  )
+
+  // 一份都没有 / 一份都打不开
+  const { ws: nws } = wsWith(1)
+  ok('S26 没有快照的工作区 → no-snapshot，不出对比行', S.compareWithLive({ workspace: nws, dir: '.dsh-meow' }).status === 'no-snapshot')
+  const { ws: jws } = wsWith(1)
+  mkdirSync(S.snapshotDir(jws), { recursive: true })
+  writeFileSync(join(S.snapshotDir(jws), 'memory-20200101-000000.db'), Buffer.alloc(1024, 0x7a))
+  const jcmp = S.compareWithLive({ workspace: jws, dir: '.dsh-meow' })
+  const jpanel = S.readSnapshotPanel({ workspace: jws, dir: '.dsh-meow' })
+  ok(
+    'S27 快照全坏 → no-usable-snapshot，面板直说「没有能退的东西」且不给命令',
+    jcmp.status === 'no-usable-snapshot' && jpanel.body.includes('一份都打不开') && !jpanel.body.includes('copy "'),
+    String(jcmp.status),
   )
 }
 

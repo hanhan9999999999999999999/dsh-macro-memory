@@ -105,7 +105,7 @@ const STEPS = [
   ['tools/probe-neighbor.mjs', '邻域纠错账：弱邻居（<0.35）不注入也不硬凑、强邻居与卡门槛的一条不少、尾部给出**现成**的 nebula_link(mute) 命令、未沾词的条目打标并点出来、尾部不挤掉条目、minScore 调 0 弱邻居回来（阴性对照）、配置面 schema/白名单/注入器一路接上、账本目录按天/按数清理且写盘按 400 条裁剪'],
   ['tools/probe-settings.mjs', '设置面板账：六个注入/邻域旋钮真的进 FIELDS（分组、bool/num、不带 sub）、出厂值与引擎和融合层默认逐个相等、三语文案齐全且 zh 没被双转义、UI_KEYS 一条不少、写根键能被 resolveConfig 读回（旧嵌套段铺底、根键覆盖）'],
   ['tools/probe-injectlog.mjs', '注入账本：memory_admin(action="inject") 念 dream-debug.log——六个闸门读数逐键读到、spent 取除号前那一半、hit 三态（yes/null/缺字段）、四种挡下出口各归位且坏行不算账、两代日志连读、字数合计能验算、「没账/读不出/旧格式不全」三态分开说、limit=0 只关明细、闸门读 config 不写死、面板只读字节不变'],
-  ['tools/probe-snapshot.mjs', '库快照账：首份是一致副本（拿快照数得出原条数）、库没变/没到间隔两条闸就不写盘、真存时新→旧并按 keep 轮转、面板念份数与 tools\\restore-live-db.ps1 复原命令、没有库/没有工作区各有独立出口、一个字节都不写进 .dsh-meow、守卫透传 decision 且按 cwd 存、坏库只回 error 不抛且旧快照仍能退、admin(snapshot) 出正文'],
+  ['tools/probe-snapshot.mjs', '库快照账：首份是一致副本（拿快照数得出原条数）、库没变/没到间隔两条闸就不写盘、真存时新→旧并按 keep 轮转、面板念份数与 tools\\restore-live-db.ps1 复原命令、没有库/没有工作区各有独立出口、一个字节都不写进 .dsh-meow、守卫透传 decision 且按 cwd 存、坏库只回 error 不抛且旧快照仍能退、admin(snapshot) 出正文、对比念得出「之后新写几条 / 丢了几条会带回来」、坏的最新那份被跳过且复原命令不指向它、空壳快照单独报 snapshot-empty'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 
