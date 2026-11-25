@@ -6242,6 +6242,9 @@ function buildReinjection(db, workspace, sessionId, projects, opts = {}, dir = "
 //   3. **砍了必须自己说出来**：尾巴自述压了几条、只留头几条、没列出几条。静默变短会让模型
 //      以为库里就这么多——比多花几百 token 更贵。
 var INJECT_BODY_MIN = 60;
+// [macro-fusion 0.6.56] 自述行让位之后，正文最低还能留多少：低于这个数就不是「一句预览」
+// 而是半截字，整条不列更诚实（尾巴会报「N 条没列出」）。
+var INJECT_BODY_AFTER_NOTE_MIN = 24;
 var INJECT_BODY_CAP = 240;
 // [macro-fusion 0.6.48] injectBodyMax 现在说得更细：它是「基准上限」，按名次分配——
 // 本轮第一名拿两倍基准，其余各拿一半基准（且不低于 INJECT_BODY_MIN，否则会被整条丢掉）。
@@ -6288,6 +6291,11 @@ var INJECT_SENT_KEEP = 2;
 // 硬信息句的加权：等于「命中两三个双字词」的量级，够把纯数字句顶进候选，又不至于压过
 // 真正词面重合的句子。
 var INJECT_HARD_BONUS = 4;
+// [macro-fusion 0.6.56] 硬切兜底：切点往回收，最多退这么多字，找一个能读断的地方。
+var INJECT_CLIP_BACK = 20;
+// 能当作断点的字符：中英文标点、空白。切在「，」之后比切在「{value,」中间强得多，
+// 而代价只是少留十来个字——预算上限没变，只是不再把半截 token 当正文。
+var INJECT_CLIP_BOUNDARY = /[，、；：。！？,.;:!?\s]/;
 
 /**
  * 从一句话里取打分用的词。
@@ -6377,7 +6385,17 @@ function clipChars(text, cap) {
   const s = String(text ?? '')
   if (cap <= 0) return ''
   if (s.length <= cap) return s
-  const cut = s.slice(0, Math.max(0, cap - 1))
+  const limit = Math.max(1, cap - 1)
+  let cut = s.slice(0, limit)
+  // [macro-fusion 0.6.56] 硬切不许落在词中间：往回收，最多 INJECT_CLIP_BACK 字。
+  const back = Math.min(cut.length - 1, INJECT_CLIP_BACK)
+  for (let k = 0; k < back; k += 1) {
+    if (INJECT_CLIP_BOUNDARY.test(cut[cut.length - 1 - k])) {
+      cut = cut.slice(0, cut.length - k)
+      break
+    }
+  }
+  if (cut.length === 0) cut = s.slice(0, limit)
   return `${cut}…`
 }
 
@@ -6409,28 +6427,34 @@ function squeezeBody(body, cap, qTerms) {
   if (text.length <= cap) return { text, mode: 'full' }
   const sents = splitSentsOf(text)
   if (sents.length <= 1) return { text: clipChars(text, cap), mode: 'clip' }
-  const ranked = []
-  for (let i = 1; i < sents.length; i += 1) {
-    const sc = sentPickScore(sents[i], qTerms)
-    if (sc > 0) ranked.push([i, sc])
+  // [macro-fusion 0.6.56] 按预算贪心，不再「首句钉子 + 最多 INJECT_SENT_KEEP 句」。
+  // 真库量出来的两个病：① 分到 88 字时，80–120 字的铺垫首句把预算吃光，正题句一句都进不来；
+  // ② 分到 424 字时仍只留 3 句，**预算空着一半，内容却丢了**。
+  // 现在的次序：正分句按分从高到低依次塞进预算；首句是上下文锚，装得下就留，
+  // 但它会把**唯一**一句正分句挤出去时让位——铺垫句不该挤掉答案。
+  const sc = sents.map((s, i) => (i === 0 ? 0 : sentPickScore(s, qTerms)))
+  const cand = []
+  for (let i = 1; i < sents.length; i += 1) if (sc[i] > 0) cand.push(i)
+  cand.sort((a, b) => sc[b] - sc[a] || a - b)
+  const pick = []
+  let used = 0
+  if (sents[0].length <= cap) {
+    const best = cand[0]
+    const crowded = best !== undefined && sents[0].length + 1 + sents[best].length > cap
+    if (!crowded) {
+      pick.push(0)
+      used = sents[0].length
+    }
   }
-  ranked.sort((a, b) => b[1] - a[1] || a[0] - b[0])
-  const pick = [0]
-  for (const [i] of ranked.slice(0, INJECT_SENT_KEEP)) pick.push(i)
+  for (const i of cand) {
+    const add = sents[i].length + (used > 0 ? 1 : 0)
+    if (used + add > cap) continue
+    pick.push(i)
+    used += add
+  }
+  if (pick.length === 0) return { text: clipChars(sents[0], cap), mode: 'clip' }
   pick.sort((a, b) => a - b)
-  // 从最不值的开始丢（ranked 末尾），直到塞进上限；首句不在丢弃范围内。
-  const order = pick.slice().sort((a, b) => {
-    const sa = a === 0 ? Infinity : sentPickScore(sents[a], qTerms)
-    const sb = b === 0 ? Infinity : sentPickScore(sents[b], qTerms)
-    return sa - sb
-  })
   let out = pick.map((i) => sents[i]).join(' ')
-  while (out.length > cap && order.length > 1) {
-    const drop = order.shift()
-    const at = pick.indexOf(drop)
-    if (at > 0) pick.splice(at, 1)
-    out = pick.map((i) => sents[i]).join(' ')
-  }
   if (out.length > cap) out = clipChars(out, cap)
   return { text: out, mode: pick.length > 1 ? 'squeeze' : 'head' }
 }
@@ -6516,7 +6540,23 @@ function renderHitEntries(entries, o, query) {
     return { text: clipChars(`${header}\n${boundary}`, cap), modes: [], dropped: entries.length, squeezed: 0, heads: 0, bodyCut: 0, bodyMax, tooSmall: true }
   }
   // 自述尾巴也算在上限里：先扣掉，宁可正文少留一句，也不许「说好 300 实际 420」。
-  let rest = budgeted ? cap - fixed - INJECT_NOTE_RESERVE : 0
+  // [macro-fusion 0.6.56] 自述尾巴的位置也从「死留 120」改成现场量：尾巴要等正文排完
+  // 才知道压了几条，所以按「条数都取最大位数」量一遍（squeezed / heads / dropped 都不会
+  // 超过条数），两种尾巴取长的那条。覆盖写长了自动多留、写短了就省给正文；只有标签丢了
+  // 才回 INJECT_NOTE_RESERVE 兜底——留一段没人用的预算，等于每轮白扔几十字。
+  const tailWorst = budgeted
+    ? Math.max(
+        lbl2('inject.budgetTail', {
+          cap,
+          squeezed: entries.length,
+          heads: entries.length,
+          dropped: entries.length,
+          id: String(entries[0]?.id ?? ''),
+        }).length,
+        lbl2('inject.budgetTailDropOnly', { cap, dropped: entries.length }).length,
+      ) || INJECT_NOTE_RESERVE
+    : 0
+  let rest = budgeted ? cap - fixed - tailWorst : 0
   const blocks = []
   const modes = []
   let dropped = 0
@@ -6548,8 +6588,28 @@ function renderHitEntries(entries, o, query) {
       per = bodyMax > 0 ? rankBodyMax(bodyMax, i) : 0
     }
     // 要摘要的条目先扣掉「全文在哪」那一行的位置，别让它把上限顶爆。
+    // [macro-fusion 0.6.56] 自述行的位置以前按常量 INJECT_BODY_NOTE_MAX(56) 预留，两处都不对：
+    // ①默认文案带全 id 就有 76 字，说好 300 实际 320——上限不是上限；②文案又能被
+    // $DSH_HOME/prompts/<lang>/labels.md 覆盖，写得再长也还是 56 在记账。
+    // 现在现场量：rest 的上界就是 contentLen（剪得再狠也剩不下更多），按「本条最坏情况」
+    // 量一次；再用「最多吃掉本条一半预算」封顶，覆盖写得离谱也不会把正文挤没。
     const willCut = contentLen > per
-    if (willCut) per = Math.max(INJECT_BODY_MIN, per - INJECT_BODY_NOTE_MAX)
+    const noteLen = willCut
+      ? Math.min(
+          lbl2('inject.bodyNote', { id: String(left.id ?? ''), rest: contentLen }).length,
+          Math.max(INJECT_BODY_NOTE_MAX, Math.floor(per / 2))
+        )
+      : 0
+    if (willCut) {
+      const room = per - noteLen
+      // 一句都装不下 → 整条不列。旧写法在这里 Math.max(INJECT_BODY_MIN, …) 保底，
+      // 保底一抬就把本条推到预算之外（说好 240 实际 245）。
+      if (room < INJECT_BODY_AFTER_NOTE_MIN) {
+        dropped = entries.length - i
+        break
+      }
+      per = room
+    }
     const sq = squeezeBody(left.content, per, qTerms)
     modes.push(sq.mode)
     blocks.push(head)
@@ -6561,7 +6621,7 @@ function renderHitEntries(entries, o, query) {
     blocks.push('')
     if (budgeted) {
       rest -= sq.text.length + 1
-      if (willCut) rest -= INJECT_BODY_NOTE_MAX + 1
+      if (willCut) rest -= noteLen + 1
       if (rest < 0) rest = 0
     }
   }

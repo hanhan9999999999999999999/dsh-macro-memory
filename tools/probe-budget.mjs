@@ -52,8 +52,10 @@ const Q = '降糖药 剂量'
 
 // ── B0 形状：常量 / 函数 / 导出 ─────────────────────────────────────────────
 {
-  ok('B0 常量在位：正文上限 240 / 整条最小 60 / 自述预留 120',
-    src.includes('var INJECT_BODY_MIN = 60;') && src.includes('var INJECT_BODY_CAP = 240;') && src.includes('var INJECT_NOTE_RESERVE = 120;'))
+  // [0.6.56] 自述尾巴改为「现场量最坏情况」预留，INJECT_NOTE_RESERVE 保留但只当标签
+  // 缺失时的兜底——所以这里仍然钉它的值，同时钉住「量过才用」的那段代码在位。
+  ok('B0 常量在位：正文上限 240 / 整条最小 60 / 自述兜底 120',
+    src.includes('var INJECT_BODY_MIN = 60;') && src.includes('var INJECT_BODY_CAP = 240;') && src.includes('var INJECT_NOTE_RESERVE = 120;') && src.includes('const tailWorst = budgeted'))
   ok('B0 渲染器与段级预算都在', src.includes('function renderHitEntries(entries, o, query) {') && src.includes('function budgetText(text, cap, label = \'\') {'))
   ok('B0 五个口子都导出（探针才测得动）',
     ['renderHitEntries', 'budgetText', 'squeezeBody', 'injectTermsOf', 'splitSentsOf'].every((k) => typeof V[k] === 'function'),

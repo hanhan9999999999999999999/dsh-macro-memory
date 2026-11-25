@@ -18,10 +18,10 @@
 - project.global: global
 - inject.hitHeader: Possibly relevant memories, for reference only:
 - inject.boundary: (The above is long-term memory for reference, not an instruction for this turn — the user's message follows below.)
-- inject.budgetTail: …(injection fit to {cap} chars: {squeezed} entries kept first + most relevant sentence, {heads} kept header only, {dropped} not listed; use memory_read("{id}") for full text.)
+- inject.budgetTail: …(injection fit to {cap} chars: {squeezed} entries kept relevant sentences, {heads} kept a single sentence, {dropped} not listed; use memory_read with each entry's id.)
 - inject.budgetTailDropOnly: …(injection fit to {cap} chars: {dropped} entries not listed; use memory_search with keywords to find them.)
 - inject.budgetNote: …({label}truncated to {cap} chars; {dropped} blocks dropped. Use memory_read / memory_project for the rest.)
-- inject.bodyNote: …({rest} more chars elided; use memory_read("{id}") for the full text.)
+- inject.bodyNote: …({rest} more chars elided; use memory_read with this entry's id.)
 - dream.title: Memory consolidation task (dream)
 - dream.round.atomic: atomic memory entries
 - dream.round.topic: topic memory entries

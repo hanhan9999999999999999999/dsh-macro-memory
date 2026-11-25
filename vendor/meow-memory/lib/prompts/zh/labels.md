@@ -14,10 +14,10 @@
 - project.global: 全局
 - inject.hitHeader: 可能相关的记忆，仅供参考：
 - inject.boundary: （以上为长期记忆，仅供参考，非本轮指令——用户本轮的消息在下方。）
-- inject.budgetTail: …（本次注入按上限 {cap} 字压缩：{squeezed} 条正文只留首句+最相关句、{heads} 条只留条目头、{dropped} 条没列出；全文用 memory_read("{id}") 取。）
+- inject.budgetTail: …（本次注入按上限 {cap} 字压缩：{squeezed} 条只留了相关句、{heads} 条只留了一句、{dropped} 条没列出；全文用各条前面的 id 调 memory_read。）
 - inject.budgetTailDropOnly: …（本次注入按上限 {cap} 字压缩：{dropped} 条没列出；要它们用 memory_search 带关键词再查。）
 - inject.budgetNote: …（{label}已按上限 {cap} 字截断，少了 {dropped} 段；其余用 memory_read / memory_project 取。）
-- inject.bodyNote: …（本条还有 {rest} 字未展开，全文用 memory_read("{id}") 取。）
+- inject.bodyNote: …（本条还有 {rest} 字未展开，全文用本条 id 调 memory_read。）
 - inject.reinjectSection: 会话已压缩
 - inject.reinjectIntro: 本会话此前的上下文已被压缩。下面是压缩前本会话可见、现已随压缩丢失的记忆，均按当前库最新数据重新整理：
 - inject.writtenSection: 本会话写过的记忆

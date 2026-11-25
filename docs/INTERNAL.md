@@ -14115,3 +14115,26 @@ function pairRounds(hits, chains) {
 3. **设置 hint 里别写双引号**：`nebula_link(action="mute")` 这种句子被原样拼进生成器的双引号字符串，`build.mjs` 出来的 `client.js` 直接 `SyntaxError: Unexpected identifier 'mute'`（`probe-client-ui` 一跑就炸）。三语都改写成「用 nebula_link 的 mute（a、b 写两端 id）」。
 
 **顺手补的一口**：`clearSuspectEdge` / `readSuspectLedger` 都导出给探针与工具面用；`appendNeighborLog` 由私有转导出，供 `link.js` 写 `neighbor-fix`——三条路径写同一份 `dream-debug.log`、同一种行格式，面板一个解析器读完。
+
+### 9.255 0.6.56：预算说塞几句，位置说切在哪
+
+**症状三问**：一条 774 字的长条目，为什么在 424 字的预算下只交出 250 字？为什么预算只够 88 字时，注入出来的正文只有一句铺垫？为什么一段路径会被切成 `…lib/macro/prompt.js 新增 guideBudget(raw)→{value,…` 这种断在 token 中间的样子？
+
+**病根**：`squeezeBody` 从 0.6.41 起就写着「首句必留 + 再挑 `INJECT_SENT_KEEP` = 2 句」，丢弃顺序里 `a === 0 ? Infinity` 把首句钉死。于是①预算小的时候，一条 80–120 字的铺垫首句就能把 88 字吃光，能答问句的句子一句都进不来（`mode: 'head'` 里那唯一一句还不是正题）；②预算大的时候也只留 3 句，剩下一半预算白扔——**上限抬上去，正题句不会跟着变多**；③`clipChars` 是 `s.slice(0, cap - 1) + '…'` 的纯硬切，切点落哪算哪。
+
+**处方三刀**：
+
+1. **按预算贪心选句**（`squeezeBody`）：除首句外的每句先算 `sentPickScore`，只把 `sc > 0` 的按分降序进候选，然后按 `used + add <= cap` 依次塞满；首句只在「装得下、且不把唯一那个正分句挤出去」时保留——`crowded = sents[0].length + 1 + sents[best].length > cap`。一句都塞不进才退回 `clipChars(sents[0], cap)` + `mode: 'clip'`。
+2. **硬切回边界**（`clipChars`）：切点往前回退最多 `INJECT_CLIP_BACK = 20` 字找 `INJECT_CLIP_BOUNDARY = /[，、；：。！？,.;:!?\s]/`；退不到就还按原位切，绝不为好看多吐字。
+3. **样板开销按实量预留**：`INJECT_BODY_NOTE_MAX = 56` 与 `INJECT_NOTE_RESERVE = 120` 都是手抄的数——带全 id 的 `inject.bodyNote` 默认文案本身 76 字（说好 300、实际 320），而标签还能被 `$DSH_HOME/prompts/<lang>/labels.md` 覆盖得比默认更长。现在两处都在渲染时用 `lbl2` 现场量最坏情况：`noteLen` 取 `min(实测长度, max(56, per / 2))`，尾巴取 `tailWorst = max(`inject.budgetTail` 全填充, `inject.budgetTailDropOnly`)` 再扣；正文只让位一次（`room = per - noteLen`），`room < INJECT_BODY_AFTER_NOTE_MIN = 24` 就整条不列、由尾巴报「N 条没列出」。
+
+**读数与判据**（台架 `E:\Temp\cmp\bench2.mjs`，读真库 `D:\document\DSH Memory Macro-Regulation System\.dsh-meow\memory.db`，10 个真实问句 / top-3 / 单条上限 240）：总注入 9,230 → **8,870 字（−360，−3.9%）**，平均每轮 923 → **887**，关键句召回 **16/89 = 18.0% → 42/89 = 47.2%（+29.2 点）**，首句样板浪费 41 → **0**，硬切 2 → 3 条（都是单句条目，无处可选）。叠一道 `injectMaxChars: 600` 的总上限后每轮 495 字 / 召回 45.5%（只掉 1.7 点），`injectMaxChars: 1200` 是 960 字 / 47.2%，全不限 1,616 字 / 93.3%。上限诚实性（`bench4.mjs`，4 条 12 句长条目，cap 200→2000 十档）全部 `ok` 不超限，cap ≥ 1600 后饱和于 1,133。
+
+**踩坑（三条，都是「数字看着对、其实在骗人」）**：
+
+1. **「首句必留」与「预算优先」是两条打架的规矩**：写成绝对保底就退回原来那个病（首句独占）。判据只能是「首句装得下、且不挤掉唯一能答问句的那句」——`crowded` 这个名字就是为了提醒：首句是**竞争者**，不是**特权**。
+2. **预留必须按最坏情况量，不能按当前值量**：`inject.bodyNote` 的 `rest` 上界是 `contentLen`，真按当前 `rest` 量出来的长度会随正文长度抖动，同一批条目里有的超、有的不超，记账（`rest -= noteLen + 1`）与渲染两处就对不上。
+3. **保底一抬就把条目推出上限**：`per = Math.max(INJECT_BODY_MIN, per - noteLen)` 在 cap 240 上实测吐出 245 字——保底值比余额大。改成「余额不足 24 就整条不列」，让上限真的是上限，代价由尾巴的「N 条没列出」承认。
+
+**顺手补的一口**：三语 `labels.md` 的 `inject.bodyNote` 去掉了重复抄写的 id（正文上方每行已经有一个），`inject.budgetTail` 的措辞从「只留首句+最相关句 / 只留条目头」改成「只留了相关句 / 只留了一句 / 没列出」——贪心之后 `head` 那唯一一句不一定是首句，旧措辞在自述里说了假话。`probe-budget` B0 相应改成钉 `const tailWorst = budgeted` 这行源码（「自述兜底 120」），`probe-digest` D2/D3 改钉「`本条还有 N 字未展开` + `memory_read` + 条目头 id」这一组事实而不是整句文案。
+

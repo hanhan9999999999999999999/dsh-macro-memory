@@ -110,13 +110,15 @@ const blockOf = (text, id) => {
   ok('D2 单条正文被压到首条份额 480 字以内（基准 240 × 2）', body.length > 0 && body.replace(/\n.*memory_read.*$/, '').length <= 480 + 60, 'body ' + body.length + ' 字')
   ok('D2 首句必留', body.includes(S_HEAD))
   ok('D2 与问句重合的那句被捞出来了', body.includes('邻域默认最多 4 条'))
-  ok('D2 正文后面跟着 memory_read 指路行', /memory_read\("digest001"\)/.test(text))
+  // [0.6.56] 指路行不再重复写 id（那条 37 字，条目头紧邻上一行就有）；改成钉三件事：
+  // 自述行在、还剩多少字在、取全文的办法在，且它指的就是头上那一行的 id。
+  ok('D2 正文后面跟着自述行（还剩 N 字 + 用本条 id 取全文）', /本条还有 \d+ 字未展开/.test(text) && text.includes('memory_read') && text.includes('[全局 : topic] [digest001]'))
   ok('D2 条目头（id / 项目 / level）一条不丢', text.includes('[全局 : topic] [digest001]'))
 
   const rs = runOn(ROWS_SHORT, '备份放在哪', { injectFloor: 0 })
   const stext = rs === null ? '' : rs.text
   ok('D2 短条目逐字不动', stext.includes(SHORT))
-  ok('D2 短条目不加指路行', !/memory_read\("digest002"\)/.test(stext))
+  ok('D2 短条目不加自述行', !/本条还有 \d+ 字未展开/.test(stext))
   ok('D2 短条目不记 bodyCut', rs !== null && rs.budget.bodyCut === 0)
 }
 
@@ -125,7 +127,7 @@ const blockOf = (text, id) => {
   const r = runOn(ROWS_LONG, Q_LONG, { injectBodyMax: 0, injectFloor: 0 })
   const direct = V.renderHitEntries(ROWS_LONG.map((x) => ({ id: x.id, level: x.level, content: x.content, project: x.project, updated_at: x.updated_at })), { injectMaxChars: 0, injectBodyMax: 0 }, Q_LONG)
   ok('D3 关掉后与渲染器直接渲染逐字相同（len 相等）', r !== null && r.text === direct.text, (r?.text.length ?? -1) + ' vs ' + direct.text.length)
-  ok('D3 关掉后没有指路行', r !== null && !r.text.includes('memory_read("digest001")'))
+  ok('D3 关掉后没有自述行', r !== null && !/本条还有 \d+ 字未展开/.test(r.text))
   ok('D3 关掉后 bodyCut 是 0', r !== null && r.budget.bodyCut === 0)
 }
 
