@@ -105,6 +105,7 @@ const STEPS = [
   ['tools/probe-neighbor.mjs', '邻域纠错账：弱邻居（<0.35）不注入也不硬凑、强邻居与卡门槛的一条不少、尾部给出**现成**的 nebula_link(mute) 命令、未沾词的条目打标并点出来、尾部不挤掉条目、minScore 调 0 弱邻居回来（阴性对照）、配置面 schema/白名单/注入器一路接上、账本目录按天/按数清理且写盘按 400 条裁剪'],
   ['tools/probe-settings.mjs', '设置面板账：六个注入/邻域旋钮真的进 FIELDS（分组、bool/num、不带 sub）、出厂值与引擎和融合层默认逐个相等、三语文案齐全且 zh 没被双转义、UI_KEYS 一条不少、写根键能被 resolveConfig 读回（旧嵌套段铺底、根键覆盖）'],
   ['tools/probe-injectlog.mjs', '注入账本：memory_admin(action="inject") 念 dream-debug.log——六个闸门读数逐键读到、spent 取除号前那一半、hit 三态（yes/null/缺字段）、四种挡下出口各归位且坏行不算账、两代日志连读、字数合计能验算、「没账/读不出/旧格式不全」三态分开说、limit=0 只关明细、闸门读 config 不写死、面板只读字节不变'],
+  ['tools/probe-snapshot.mjs', '库快照账：首份是一致副本（拿快照数得出原条数）、库没变/没到间隔两条闸就不写盘、真存时新→旧并按 keep 轮转、面板念份数与 tools\\restore-live-db.ps1 复原命令、没有库/没有工作区各有独立出口、一个字节都不写进 .dsh-meow、守卫透传 decision 且按 cwd 存、坏库只回 error 不抛且旧快照仍能退、admin(snapshot) 出正文'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 
@@ -180,22 +181,29 @@ const t0 = Date.now()
 /** 跑一支：预算、超时、断言条数、耗时都按传入的基线算（收敛轮会传刚写盘的新基线）。 */
 const measure = (file, what, bl) => {
   const outFile = join(home, `${file.replace(/[\\/]/g, '_')}.log`)
+  const errFile = join(home, `${file.replace(/[\\/]/g, '_')}.err.log`)
   const fd = openSync(outFile, 'w')
+  const fdErr = openSync(errFile, 'w')
   const budget = budgetFor(bl, file)
   const started = Date.now()
   const run = spawnSync(process.execPath, [join(root, file)], {
     cwd: neutralCwd,
-    // 关键：不用 'pipe'（沙箱下 EPERM），把两个流都交给同一个文件 fd
-    stdio: ['ignore', fd, fd],
+    // 关键：不用 'pipe'（沙箱下 EPERM）；stdout 与 stderr 各一个文件 fd。
+    // 0.6.68 修：两者共用同一个 fd 时，子进程的 stderr（引擎告警、`[macro-memory]` 日志）
+    // 会把 stdout 的断言行从中间撕开，`countPass` 收尾数出来就少几条——每跑一次少 3~4 条，
+    // 于是「断言数回退」这支钟一直在晃，`--update-baselines` 记进去的还是个抖动的数。
+    stdio: ['ignore', fd, fdErr],
     env: { ...process.env },
     windowsHide: true,
     // 超过预算直接杀掉：宁可给一条「超时」的红，也不要让整条验收命令停在那里
     timeout: budget,
     killSignal: 'SIGKILL',
   })
+  closeSync(fdErr)
   closeSync(fd)
   const ms = Date.now() - started
   const output = readFileSync(outFile, 'utf8')
+  const errText = readFileSync(errFile, 'utf8')
   // spawnSync 被 timeout 杀掉时 status 为 null、error.code 为 ETIMEDOUT
   const timedOut = run.error?.code === 'ETIMEDOUT' || (run.signal !== null && run.signal !== undefined)
   const failed = run.status !== 0 && !timedOut
@@ -205,7 +213,7 @@ const measure = (file, what, bl) => {
   // 被杀掉的那次耗时不参与漂移判定：它只是「至少这么久」，不是真实用时
   const slow =
     !timedOut && Number.isInteger(lastMs) && lastMs > 0 && ms >= SLOW_FLOOR_MS && ms > lastMs * SLOW_FACTOR
-  return { file, what, ok: !failed && !timedOut, code: run.status, ms, pass, base, budget, timedOut, lastMs, slow, output }
+  return { file, what, ok: !failed && !timedOut, code: run.status, ms, pass, base, budget, timedOut, lastMs, slow, output, errText }
 }
 
 /**
@@ -213,7 +221,7 @@ const measure = (file, what, bl) => {
  * 抽成函数是因为收敛轮要把刚重跑的那几支再打一遍——同一份格式，两处不许各写一套。
  */
 const showStep = (r) => {
-  const { file, what, ms, pass, base, budget, timedOut, lastMs, slow, output } = r
+  const { file, what, ms, pass, base, budget, timedOut, lastMs, slow, output, errText } = r
   const failed = !r.ok && !timedOut
   const mark = timedOut ? '⏱' : failed ? '✗' : '✓'
   const secs = (ms / 1000).toFixed(1)
@@ -237,6 +245,10 @@ const showStep = (r) => {
     const lines = output.trimEnd().split('\n')
     const shown = failed && !verbose ? lines.slice(-16) : lines
     for (const line of shown) say(`    ${line}`)
+    // stderr 另走一段：它不进断言计数，但红的时候要看——真正的报错常在这一半里
+    if (failed && String(errText).trim()) {
+      for (const line of String(errText).trimEnd().split('\n').slice(-8)) say(`    ! ${line}`)
+    }
   }
 }
 

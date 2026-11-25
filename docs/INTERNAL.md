@@ -14496,3 +14496,22 @@ function id8(id) { return String(id).slice(0, 8) }
 两处补救：①`check-market` 现在会在「commit 查不到」且「HEAD 的版本与 `package.json` 不一致」时先念一句「这棵树的 .git 疑似旧克隆（HEAD 在 0.5.0，包是 0.6.67）」（只加提示不加断言——断言数一变就打穿基线）；②全量 `check-all` 到 vendor 源树里跑，阅读树的红支先看这句提示再判。阅读树里那套旧 `.git` 没删——它不是活跃数据源，删不删由主人定。
 
 **留着的口子**：①星图连线不能按内容反推 id，只能等以后重新 `memory_link` 补；②dream 自动封存、从没被召回过的条目（没有回执也没被 dump）这次就是永久损失，护栏能防下一次、救不回这一次；③`sync-trees.mjs` 现在只保护 `.dsh-meow` 这一处运行时目录，**任何新的运行时产物目录都要同时加进 `RUNTIME_DIRS` 与排除表**——这是这个文件以后唯一需要维护的地方。
+
+### 9.268 0.6.68：给记忆库加上快照环
+
+**病**：9.267 那次事故暴露的不是「同步器写错了一次」，而是**插件对库损坏零防线**。引擎里本有一条备份路——`vendor/meow-memory/lib/index.js:1219 function backupMemoryDb(workspace, dir=".dsh-meow")`，做法是 `VACUUM INTO ${dbPath}.bak`——但它在配置里是 `backup: { enabled: false }`（`:1297`），唯一的调用点在 dream 收尾（`:11749`）。也就是说：①**默认关闭**，事故前一个备份都没有；②就算开着，**只留一份 `.bak`**，连续两次写坏就一起没了。2,613 条变成空 schema 的那一刻，没有任何东西可以退回去。
+
+**处方**：新模块 `lib/macro/snapshot.js`（病/处方/边界三段写在文件抬头），快照落在工作区之外的 `$DSH_HOME/macro-memory/snapshots/<工作区尾部96>/`（沿用 `store.js` 的路径口径，`macroHome()` + 同一个 `replace(/[^A-Za-z0-9_.-]+/g,'_').slice(-96)`），文件名 `memory-YYYYMMDD-HHmmss.db`。
+
+- **一致快照，不是复制文件**：`db.vacuumInto(tmp)` 再 `renameSync(tmp, file)`——复制一个正在写的库会拿到撕裂的半张表（WAL 里还有没落盘的部分），VACUUM INTO 出来的是一份单独的、自洽的库。探针 S2 就是拿快照当库打开、数条数对得上。
+- **两条「别存」闸**：`不强制时`，①库自上一份之后没再写过（`last.at >= dataMtimeOf(dbPath)`）→ `skipped:'unchanged'`；②距上一份不到 `gapMs`（默认 60 分钟）→ `skipped:'gap'`。两条都不写盘。一次快照 = 一次全库 VACUUM，一小时一次、且只在库真变了之后才做，代价可以接受；每轮都存则是拿 I/O 换一堆一模一样的文件。
+- **同一秒不覆盖**：文件名只到秒。非强制时认已有的那份（`skipped:'same-second'`）；`force: true` 是「现在就要一份新的」，那就把时间戳往后挪到下一个空位（最多 60 秒），**绝不覆盖已有快照**。
+- **轮转**：`SNAPSHOT_KEEP = 7`，存完调 `pruneSnapshots()` 删最老的，返回删了几份。7 份 × 一小时的窗口够 cover「晚上发现写坏了、退到昨天」。
+- **守卫挂在 `agent/pre-step`**：`createSnapshotGuard({ ctx, meowDir, logger, keep, gapMs })` 在 `buildSurface()` 里装配（`lib/index.js`），`const decision = await next()` **之后**才动手，`attempt()` 不 await——存快照的失败绝不影响这一轮。工作区口径取 `payload.agent.session.header.cwd`，目录用注入器同一个 `meowDirReader` 现读。`busy` 互斥，`dispose()` 摘监听器。
+- **坏库不反咬**：库文件读不出来（`file is not a database`）时 `takeSnapshot` 只回 `{status:'error', error: 原话}`，不抛；面板照常念旧快照——这正是事故里最需要的行为：**能读出「有备份」，才谈得上退**。
+- **面板**：`memory_admin(action="snapshot")`（`lib/macro/defs/admin.js` 的 ACTIONS 里一行，`kind:'local'`，`params:['limit']`，默认 7）。正文=库路径 / 大小 · 最后写入 / 快照（N/M 份，新→旧）/ 复原三步；note=这次存没存、为什么没多存、口径（最多留几份、间隔几分钟）。顺手非强制存一份——面板本身就是「我怀疑库有问题」时打开的地方。`GUIDE_TEXT` 的运维行同步加进 `snapshot`（现在 1,259/1,400 字，余量 141）。
+- **复原口子只有一处**：`restoreHint()` 给的三步是「备份现状 → `copy 快照 库路径` → 删掉 `-wal`/`-shm`」，并指向 `tools\restore-live-db.ps1 -Source <快照>`。删 WAL 那步不能省：旧 WAL 是坏盐帧，留着会被回放（9.267 的现场就是这样）。
+
+**读数**：`tools/probe-snapshot.mjs` 18 条断言（S1–S18：一致副本、两条闸、轮转、面板两份正文、`no-db`/`no-ws`、不写进 `.dsh-meow`、守卫透传 decision + 按 cwd 存 + dispose、坏库只回 error 且旧快照仍可退、`admin(snapshot)` 出正文）。写这一支时踩到一个坑，记在这里：`Meow.closeAllDbs()` 关的是**全部**缓存连接，顺手把 WAL checkpoint 进 `memory.db`，库 mtime 就变新了——于是「库没变」那条闸会误判成「库变了」。探针里谁都不在中途关库，句柄开到末尾，只有「覆写坏库」那一步才关。
+
+**边界**：①快照不替代备份策略——它是**同一块盘**上的时间环，盘坏了没救；要防灾得靠外部备份（这不在本轮范围内）。②守卫只在有 `pre-step` 的会话里跑（桌面/CLI 都走这条），headless 批量任务同样受益；没进会话的写入（例如开发脚本直接开库）不会触发快照。③快照里是**明文记忆正文**，落在 `$DSH_HOME` 下，权限跟库一致；别把 `snapshots/` 目录同步进仓库（`sync-trees` 的 `RUNTIME_DIRS` 已排掉 `.dsh-meow`，快照根本不在源树里）。④真丢了只能退到「上一份」，退完之后的增量照样没了——这正是要配着「写坏立刻停手」用的。
