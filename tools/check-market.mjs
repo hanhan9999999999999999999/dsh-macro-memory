@@ -101,6 +101,19 @@ const isRepo = git('rev-parse', '--git-dir').status === 0
 check(isRepo, '本仓是 git 仓库（市场按 commit 拉代码）', root)
 if (isRepo) {
   const has = git('cat-file', '-e', `${source.commit}^{commit}`)
+  // 同一份代码常有两棵工作树（阅读树 / vendor 源树），.git 不跟着文件同步走，
+  // 旧工作副本里那套 .git 会冻在某个老版本上 —— 于是「commit 查不到」其实是「跑错树」。
+  // 只念一句缘由，不新增断言（断言数变化会打穿基线）。
+  if (has.status !== 0) {
+    const headSubject = git('log', '-1', '--format=%s').stdout.trim()
+    const headVersion = /(\d+\.\d+\.\d+)/.exec(headSubject)?.[1] ?? ''
+    if (headVersion !== '' && headVersion !== pkg.version) {
+      warn(
+        `这棵树的 .git 疑似旧克隆（HEAD 在 ${headVersion}，包是 ${pkg.version}）`,
+        'commit 查不到的常见原因是跑错了树：.git 不随文件同步，请在带完整历史的那棵树里跑这一支',
+      )
+    }
+  }
   check(has.status === 0, 'commit 在本仓里真实存在', source.commit)
   const head = git('rev-parse', 'HEAD').stdout.trim()
   check(/^[0-9a-f]{40}$/.test(head), 'HEAD 有提交', head)

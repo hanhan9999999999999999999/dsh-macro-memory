@@ -14461,3 +14461,38 @@ function id8(id) { return String(id).slice(0, 8) }
 **顺带修的真 bug**：`tools/sync-trees.mjs` 的 robocopy 只 `/XD node_modules .git`，而 `diffOf` 的 `SKIP_DIRS` 还有 `.analysis` / `.dsh-meow` —— 于是每次 `--apply` 都去复制 `.dsh-meow/` 里那份活着的 SQLite（`-wal` / `-shm` 被别的进程 map 着），报 `ERROR 1224 (0x000004C8) The requested operation cannot be performed on a file with a user-mapped section open`，整趟判失败。改成 `'/XD', ...SKIP_DIRS`：排除表与比较表同源，两棵树都 `robocopy exit=3 已同步`。
 
 **留着的口子**：meow 自己的回执仍是全 id（要改得动 vendor，且会破 append-only 结论，不动）；`shortenerOf` 每次检索现查七条 `SELECT id`（真库 1.6 ms，比缓存错前缀便宜，不缓存）。
+
+### 9.267 2026-11-25 16:38 活库被自己的同步器覆盖：事故、抢救与护栏
+
+**病**：`memory_remember` 报 `Error: database disk image is malformed`。查盘：`D:\document\DSH Memory Macro-Regulation System\.dsh-meow\memory.db` 在 **16:38:46 被截成 4,096 字节**，同一时刻源树 `D:\dsh-home\vendor\dsh-macro-memory\.dsh-meow\memory.db` 与装机树 `…\profiles\desktop\node_modules\dsh-macro-memory\.dsh-meow\memory.db` 也都是 4,096（+152,472 字节 WAL）——三棵树同值，指向「复制」而不是「损坏」。
+追下去是 **16:38 那趟 `node tools\sync-trees.mjs --apply` 干的**：当时 `robocopy` 的排除表只有 `node_modules` 和 `.git`，`SKIP_DIRS` 却已经写了 `.dsh-meow`——两份排除表不同源，于是源树里那份 4,096 字节的**空壳 fixture 库 + 152,472 字节 fixture WAL** 被原样盖到了阅读树（=当时的活动工作区）的活库上。活库内容当场没了。
+
+**证据链（不是猜）**：
+- 活 WAL `3,357,832` 字节 / 815 帧 / `page_size=4096`。gen1 `salt=1243877942:3758934049` 占 frames 0..36（37×4120+32 = 152,472，正是 fixture WAL 的长度）；frames 37..782 全零（棚洞）；gen3 `salt=2427869762:2961992741` 占 frames 783..814（7 个不同页 / maxPg 333 / 28 个 commit）。这段形状说明**活进程一直握着写句柄，按它内存里的老 mxFrame 从 3.2 MB 偏移继续追加**——它根本不知道文件被人换过。
+- 用 gen1 的帧拼成 `E:/Temp/meow-salvage/recovered.db`（25 页，`PRAGMA integrity_check` = ok）→ 七层表全 **0 行**：盘上那份就是个空 schema 库，等于坐实「被 fixture 覆盖」。
+- 备份留了两份：`D:\备份\20261125-165500-meow-db-malformed\`、`D:\备份\20261125-170000-meow-live2\`（后者用 `[System.IO.File]::Open(...,'Open','Read','ReadWrite')` 共享读复制，三件套齐全）。
+- 裸卷雕刻这条路走不通：`\\.\D:` 要提权，`whoami` 是 `寒木逸冬\administrator` 但 `IsInRole(Administrator)` 为 `False`，审批也被禁。
+- `memory_admin(action="stats")` 一度还能从星图侧读出「2,613 条记忆 / 14,566 条连接 / 11 个工作区 / 75 个会话账本」，随后 `memory_read` 也报同一句 malformed —— **读写全死**。星图库 `D:\dsh-home\memory-nebula\nebula.db` 只有 `links/meta/cache/events/mutes` 五张表，**不含正文**，救不了内容。
+
+**抢救**：唯一可行的路是从会话转写里把「写进去过什么」抠回来。转写在 `D:\dsh-home\sessions\<转义工作区>\session-<id>\session.v4.jsonl.zstd`（本工作区 18 个会话 / 174.3 MB），是多帧拼接 zstd，必须按 magic `28 b5 2f fd` 切帧逐帧 `zstdDecompressSync`（直接流式解报 `Unknown frame descriptor`）。三路来源最后合成一份：
+1. **事故前导出**（最权威）：`E:\Temp\cmp\dump40.py` 早在 0.4.x 时用只读连接 dump 过活库 → `live-entries.json` **824 条**（含 id / 正文 / 关键词 / 项目 / 重要性 / 时间戳）。
+2. **句读转写**（覆盖 dump 之后的新条目）：`extract3.mjs`/`extract4.mjs` 按 `callId` 把 `tool/call` 与 `tool/result` 配对，抓 `memory_remember` 的 **1,135 次写入**（1,131 带 id）、`memory_update` 643 条，再叠加 `harvest5.mjs` 从回执里补正文——融合榜回执 `1. [lesson 0mw…] 本地#1 + 星图#1 —— 关于：…`（3 空格缩进正文）、老式回执 `[1] [proj : level] [id] [time] 关于：`（2 空格缩进）、项目全景 `[proj : level] [id36] 2026-11-18 14:47`、`memory_read` 面板 `[level] （status）` / `项目：` / 正文。
+3. **11-17 老快照**：`.analysis/tmp/live2d-memory.db`（749,568 字节 / 584 条 / 2026-11-01 → 11-17 22:11）等四份当时为跑基准留下的拷贝——事故前它只是「分析垃圾」，事故后成了唯一带全字段的完整快照。
+
+合并口径：先按 `level + 归一化正文` 去重（同正文保留 live 那份的元数据），再按 id 唯一化（老代 9 位 id 确有撞车：`0mworqlh` 曾同时返回两条不同正文的 lesson，所以同 id 多正文不能合并，后到的换新 id）。成品：**2,202 条**（project 478 / lesson 1,121 / fact 281 / topic 237 / rules 59 / user 26 / soul 0），`PRAGMA integrity_check` = ok，正文长度 p10 123 / 中位 291 / p90 778 字符，`LIKE '%sync-trees%'` 命中 41 条、`'%主人%'` 命中 274 条——内容是真的，不是壳子。
+
+**护栏（`tools/sync-trees.mjs`，这一版必须这么写）**：
+- `RUNTIME_DIRS = ['.dsh-meow','.analysis','sessions','attachments','logs']`，`SKIP_DIRS = ['node_modules','.git', ...RUNTIME_DIRS]`；**robocopy 的 `/XD` 与 `walk()` 吃同一个集合**——两份排除表各写一套，就是这次事故的根。
+- `RUNTIME_FILE_RE = /(\.(db|db-wal|db-shm|db-journal|sqlite|sqlite3|s3db))$/i` + `RUNTIME_FILE_GLOBS`：长得像数据库的文件无论躺在哪个目录都不复制（`/XF` 与 `walk()` 同源）。别人的 `.db` 也许真是源码，但「少同步一个库」的代价远小于「覆盖一个活库」。
+- `strayRuntimeFiles(ROOT)`：同步前把源树里混进来的运行时数据库**逐个点名**（本仓现有 18 个，全在 `.analysis/tmp/`），不静默跳过——知道自己在忽略什么。
+- `runtimeSnapshot(target)`：每个目标树的 `.dsh-meow` 库文件大小+时间戳，同步前后各取一次，**任何一项变了就判失败**并印 `.dsh-meow/memory.db 大小@mtime` 的差。护栏不只写在注释里，要有读数。
+- 复原不靠手敲：`tools/restore-live-db.ps1`（`-DryRun` 只体检）。它先拒绝在 DSH 还活着时动手（10 个 `DSH NEXT` 进程在跑就中止）、把现有三件套备份到 `D:\备份\<时间戳>-before-restore-live\`、覆盖 `memory.db`、**删掉 `-wal`/`-shm`**（旧 WAL 里是坏盐帧，留着会被回放）、最后只读打开做 `integrity_check` + 七层计数。源库默认取 `.dsh-meow\restore\20261125-restored-memory.db`（2,523,136 字节，`wal_checkpoint(TRUNCATE)` + `VACUUM` 过的单文件）。
+- 脚本编码：`.ps1` 带中文必须写 **UTF-8 BOM**，否则 Windows PowerShell 5.1 按 ANSI 解、满屏 mojibake + `Unexpected token`；`$Home` 是只读自动变量，参数名别叫 Home（改 `$Workspace`）。
+
+**损失面（如实记）**：库原覆盖 11 个工作区共 2,613 条，本工作区抠回 2,202 条；**没进过任何回执、也没被 dump 到的条目找不回来**——转写里出现过的 36 字全 id 有 1,344 个，最后带正文的约 929 个（69%），缺口 415 条多是被「注入摘要」引用过、正文从没在工具回执里露过面的。`0.6.67` 那轮的记忆是真损失：库坏的那一刻正要写，写不进去。星图侧 14,566 条连线在 `nebula.db` 里还在，但端点 id 悬空，**连线不会自动复活**，只有 id 对上的那部分会重新挂回。
+
+**两棵树的 git（踩过一次，写下来）**：同一份代码有两处工作副本——阅读树 `D:\document\DSH Memory Macro-Regulation System`（人读、会话工作区，**它的 `.git` 是 0.5.0 时代的旧克隆**，之后所有提交都在别处）与 vendor 源树 `D:\dsh-home\vendor\dsh-macro-memory`（真历史，HEAD 跟得上发版）。
+`.git` 不跟着 `sync-trees` 走，于是在阅读树里跑 `tools/check-market.mjs` 会念「commit 在本仓里真实存在」FAIL（market 索引钉的 `3eff514` 在旧克隆里查不到），看着像发版写错了 commit，其实是跑错了树。
+两处补救：①`check-market` 现在会在「commit 查不到」且「HEAD 的版本与 `package.json` 不一致」时先念一句「这棵树的 .git 疑似旧克隆（HEAD 在 0.5.0，包是 0.6.67）」（只加提示不加断言——断言数一变就打穿基线）；②全量 `check-all` 到 vendor 源树里跑，阅读树的红支先看这句提示再判。阅读树里那套旧 `.git` 没删——它不是活跃数据源，删不删由主人定。
+
+**留着的口子**：①星图连线不能按内容反推 id，只能等以后重新 `memory_link` 补；②dream 自动封存、从没被召回过的条目（没有回执也没被 dump）这次就是永久损失，护栏能防下一次、救不回这一次；③`sync-trees.mjs` 现在只保护 `.dsh-meow` 这一处运行时目录，**任何新的运行时产物目录都要同时加进 `RUNTIME_DIRS` 与排除表**——这是这个文件以后唯一需要维护的地方。
