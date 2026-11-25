@@ -336,6 +336,61 @@ const body = panel.body
   rmSync(oneWs, { recursive: true, force: true })
 }
 
+// ── I12 错边账也念得出来：压住几跳、断掉几跳（0.6.54）────────────────────────
+// 病根：错边账写进日志之后，面板还只念「邻域带了几条」——用户看不到那几跳被压住了、
+// 也看不到模型真断过；「AI 修了、账上没修」与「账上压着、面板不提」是同一种不闭环。
+// 这一块守：汇总行两支各自成立、明细点得回哪一跳、同轮两行不重复、没发生就不出行。
+{
+  const edgeWs = join(root, '.probe-injectlog-edge')
+  mkdirSync(join(edgeWs, '.dsh-meow'), { recursive: true })
+  const EDGE_LOG = join(edgeWs, '.dsh-meow', 'dream-debug.log')
+  const L1 = [
+    '[2026-11-25T06:00:00.000Z] neighbor-chain pid=1 sid=e1 ids=2 chars=300 weak=0 offtopic=1 flagged=1 deduped=0 max=4 cap=420 minScore=0.35',
+    '[2026-11-25T06:00:00.000Z] neighbor-suspect pid=1 sid=e1 withheld=2 turns=3 ids=aa111111,bb222222',
+    '[2026-11-25T06:00:01.000Z] neighbor-skip pid=1 sid=e1 reason=suspect withheld=2 turns=3 ids=aa111111,bb222222',
+    '[2026-11-25T06:00:10.000Z] neighbor-suspect pid=1 sid=e1 withheld=3 turns=3 ids=aa111111,bb222222,cc333333',
+    '[2026-11-25T06:00:20.000Z] neighbor-fix pid=1 a=aa111111 b=bb222222 via=mute cleared=1',
+    '[2026-11-25T06:00:30.000Z] neighbor-fix pid=1 a=cc333333 b=dd444444 via=mute cleared=2',
+  ].join('\n') + '\n'
+  writeFileSync(EDGE_LOG, L1, 'utf8')
+  const edgeBody = L.readInjectPanel({ workspace: edgeWs, dir: '.dsh-meow', limit: 20, config: {} }).body
+  const sum = (edgeBody.match(/- 错边：[^\n]*/) ?? [""])[0]
+  ok('I12.1 错边汇总行两支都在：压住几跳（取最新一条）+ AI 已断几跳（按销账条数累加）',
+    /暂时不带 3 跳（连标 3 轮还没修，图没动、账留着）/.test(sum) && /AI 已断 3 跳（mute 之后当场销账）/.test(sum), sum)
+  ok('I12.2 明细点得回是哪一跳：a ↔ b + via + 销账几条',
+    /断开一跳：aa111111 ↔ bb222222（mute，销账 1 条）/.test(edgeBody) &&
+      /断开一跳：cc333333 ↔ dd444444（mute，销账 2 条）/.test(edgeBody),
+    (edgeBody.match(/- [^\n]*断开一跳[^\n]*/g) ?? []).join(' | '))
+  ok('I12.3 同一轮「整轮没带」与「压住哪几跳」说的是同一件事：只出一行（取信息多的那条）',
+    (edgeBody.match(/错边压住：\d+ 跳先不带/g) ?? []).length === 1,
+    String((edgeBody.match(/错边压住：\d+ 跳先不带/g) ?? []).length))
+  ok('I12.4 出口名念得出来（不是 reason 原文当中文摆着）',
+    /没带的原因：[^\n]*错边压住（连续标了未沾词，先不带） 1 轮/.test(edgeBody),
+    (edgeBody.match(/没带的原因：[^\n]*/) ?? [''].slice(0, 1))[0])
+
+  // 只有断过、没压住过：不许凭空写「暂时不带 0 跳」
+  const fixOnly = join(root, '.probe-injectlog-edge2')
+  mkdirSync(join(fixOnly, '.dsh-meow'), { recursive: true })
+  writeFileSync(join(fixOnly, '.dsh-meow', 'dream-debug.log'),
+    '[2026-11-25T06:10:00.000Z] neighbor-chain pid=1 sid=e2 ids=1 chars=120 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35\n' +
+      '[2026-11-25T06:10:05.000Z] neighbor-fix pid=1 a=aa111111 b=bb222222 via=mute cleared=1\n', 'utf8')
+  const fixBody = L.readInjectPanel({ workspace: fixOnly, dir: '.dsh-meow', config: {} }).body
+  const fixSum = (fixBody.match(/- 错边：[^\n]*/) ?? [""])[0]
+  ok('I12.5 只断过没压过：只写「AI 已断」，不写「暂时不带 0 跳」',
+    /AI 已断 1 跳/.test(fixSum) && !/暂时不带/.test(fixSum), fixSum)
+
+  // 一类都没有：连「错边」这两个字都不出现（没发生的事不占行）
+  const cleanWs = join(root, '.probe-injectlog-edge3')
+  mkdirSync(join(cleanWs, '.dsh-meow'), { recursive: true })
+  writeFileSync(join(cleanWs, '.dsh-meow', 'dream-debug.log'),
+    '[2026-11-25T06:20:00.000Z] hit-chain pid=1 sid=e3 textLen=120 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 spent=120/∞\n', 'utf8')
+  const cleanBody = L.readInjectPanel({ workspace: cleanWs, dir: '.dsh-meow', config: {} }).body
+  ok('I12.6 没有错边账时一个字都不提（不写空段、不写 0 跳）', !/错边/.test(cleanBody), cleanBody.split('\n').length + ' 行')
+  rmSync(edgeWs, { recursive: true, force: true })
+  rmSync(fixOnly, { recursive: true, force: true })
+  rmSync(cleanWs, { recursive: true, force: true })
+}
+
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)

@@ -508,6 +508,108 @@ const recall = [
       /邻域 \d+ 条 · \d+ 字/.test(body) && /星图没查成/.test(body),
     (body.match(/邻域注入：[^\n]*/) ?? [''])[0])
 }
+// ── N13 错边账：连标三轮先不带、AI 断掉当场销账、不理就放回（0.6.54）──────────
+// 病根：模型在注入块尾部拿到了 mute 指引，但「标了未沾词」这件事本身不留痕——同一跳可以
+// 连着二十轮被标、每轮都占一份上下文，而图上什么都没有；用户不主动 mute 就永远这样。
+// 这一块守四件事：连标够轮数才压住（一次误标不算）、压住时图不动而账留着、
+// 真 mute 之后当场销账（下一轮立刻放回）、三轮没再被标自动放回（不搞永久降级）。
+{
+  const R = [
+    '星图邻域（1 跳，1 条）：',
+    '',
+    '1. [fact] 另一条线     强度 0.42 完全不相干的一条',
+    '  id: ws:0msus001',
+    '  为什么：经由「另一条线」(0msus001)的cooc关联扩散而来',
+    '  摘要：说的是别的行业的排期口径',
+  ].join('\n')
+  const ws2 = join(tmpHome, 'ws-n13')
+  const LOG2 = join(ws2, '.dsh-meow', 'dream-debug.log')
+  const mk = (opts = {}) => NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: R }) },
+    config: opts.config ?? {},
+    meowDir: () => '.dsh-meow',
+    logger: () => {},
+    loadLlm: async () => ({ createUserMessage: (o) => o }),
+  })
+  // 问句与那一条一个字面都不沾（不然不会被打「未沾词」标记）。
+  const ask = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '今天这个天气真好啊' }] }
+  const pl = (sid) => ({ agent: { session: { id: sid, header: { cwd: ws2 } } } })
+  const enter2 = (sid) => ({ kind: 'enter', messages: [ask] })
+  const text2 = () => (existsSync(LOG2) ? readFileSync(LOG2, 'utf8') : '')
+  const last2 = () => text2().trim().split('\n').slice(-1)[0] ?? ''
+
+  const inj2 = mk()
+  await inj2.decide(pl("n13-1"), enter2("n13-1"))
+  const one = NB.readSuspectLedger(ws2)
+  ok('N13 第一轮被标未沾词：错边账落下一条 n=1（图没动，只是记了一笔）',
+    one.edges['0msus001|0msus001']?.n === 1, JSON.stringify(one.edges))
+  await inj2.decide(pl("n13-2"), enter2("n13-2"))
+  await inj2.decide(pl("n13-3"), enter2("n13-3"))
+  const three = NB.readSuspectLedger(ws2)
+  ok('N13 连标三轮：n 攒到 3、轮次号跟着工作区走（不是按会话）',
+    three.edges['0msus001|0msus001']?.n === 3 && three.round === 3, JSON.stringify(three))
+
+  // 第四轮：连标够轮数了 → 这一跳先不带；这一轮没有别的邻居，于是整轮空着但留一笔账
+  await inj2.decide(pl("n13-4"), enter2("n13-4"))
+  const supLine = last2()
+  ok('N13 连标够轮数后这一轮不带它，出口写 reason=suspect（不是 empty，别让它看起来像图上没东西）',
+    /\] neighbor-skip pid=\d+ reason=suspect sid=n13-4 withheld=1 turns=3 ids=0msus001$/.test(supLine), supLine)
+
+  // 销账：走**真的** memory_link(mute) 那条路（不是直接调 clearSuspectEdge）——
+  // 闭环要验证的是「模型照着尾注动手之后，账当场就没了、还留了一行痕」，
+  // 只测内部函数会把「工具没接上」这种真故障漏过去。
+  const LINK = await import(pathToFileURL(join(root, 'lib', 'macro', 'defs', 'link.js')).href)
+  const execN13 = { agent: { session: { header: { cwd: ws2 } } } }
+  const linkTool = LINK.createLink({
+    flow: {
+      resolveIdDetail: async (id) => ({ kind: 'ok', id }),
+      tryCall: async () => ({ entry: true, text: '已屏蔽这一跳（重建也不会再连）' }),
+      flushLinks: async () => {},
+    },
+    meowDir: () => '.dsh-meow',
+  })
+  await linkTool.execute({ action: 'mute', a: '0msus001', b: '0msus001' }, execN13)
+  ok('N13 真走 memory_link(mute)：错边账当场清掉（不留到过期）',
+    Object.keys(NB.readSuspectLedger(ws2).edges).length === 0,
+    JSON.stringify(NB.readSuspectLedger(ws2).edges))
+  ok('N13 mute 顺手写一行 neighbor-fix（面板才念得出「AI 已断一跳」）',
+    /\] neighbor-fix pid=\d+ a=0msus001 b=0msus001 via=mute cleared=1$/.test(text2().trim().split('\n').slice(-1)[0] ?? ''),
+    text2().trim().split('\n').slice(-1)[0] ?? '')
+  ok('N13 再销一次是 0（幂等：重复 mute 不该报错也不该再写账）', NB.clearSuspectEdge(ws2, '0msus001', '0msus001') === 0)
+  ok("N13 销账后账上真的空了（不是留一条 n=0 的骨灰）", Object.keys(NB.readSuspectLedger(ws2).edges).length === 0)
+  await inj2.decide(pl("n13-5"), enter2("n13-5"))
+  ok('N13 断掉之后立刻恢复：下一轮正常带（不用等重启、不用等轮次）',
+    /\] neighbor-chain pid=\d+ sid=n13-5 /.test(last2()), last2())
+
+  // 面板读得出：压住那几跳要能解释「为什么这几轮是空的」，断过的要留痕
+  const IL2 = await import(pathToFileURL(join(root, "lib", "macro", "injectledger.js")).href)
+  const body2 = IL2.readInjectPanel({ workspace: ws2, dir: '.dsh-meow', limit: 20, config: {} }).body
+  ok('N13 面板把错边这一支单独念出来（暂时不带几跳 / AI 已断几跳）',
+    /- 错边：暂时不带 \d+ 跳/.test(body2), (body2.match(/- 错边：[^\n]*/) ?? [""])[0])
+  ok('N13 明细里「断开一跳」有 a ↔ b 与销账条数（点得回是哪一跳）',
+    /断开一跳：0msus001 ↔ 0msus001（mute，销账 1 条）/.test(body2), (body2.match(/- [^\n]*断开一跳[^\n]*/) ?? [''])[0])
+
+  // 0＝整层关：逐位退回 0.6.53 的行为（连标一百轮也照带）
+  const ws3 = join(tmpHome, "ws-n13-off")
+  const mk3 = () => NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: R }) },
+    config: { neighborSuspectTurns: 0 },
+    meowDir: () => ".dsh-meow",
+    logger: () => {},
+    loadLlm: async () => ({ createUserMessage: (o) => o }),
+  })
+  const inj3 = mk3()
+  const pl3 = (sid) => ({ agent: { session: { id: sid, header: { cwd: ws3 } } } })
+  for (const sid of ["n13o-1", "n13o-2", "n13o-3", "n13o-4"]) await inj3.decide(pl3(sid), enter2(sid))
+  const LOG3 = join(ws3, ".dsh-meow", "dream-debug.log")
+  const t3 = existsSync(LOG3) ? readFileSync(LOG3, "utf8") : ""
+  ok('N13 neighborSuspectTurns: 0 时整层关（第四轮照带，且一行错边账都不写）',
+    /sid=n13o-4 /.test(t3) && !/neighbor-suspect|reason=suspect/.test(t3) &&
+      Object.keys(NB.readSuspectLedger(ws3).edges).length === 0, String(t3.length))
+}
+
 rmSync(tmpHome, { recursive: true, force: true })
 
 console.log('')

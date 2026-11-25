@@ -14064,3 +14064,30 @@ function pairRounds(hits, chains) {
 **回退性**：只动读侧，`client.js` 不变、账本不写。换回 0.6.52 的 `injectledger.js` 即回到「只念最近一场」。
 
 **踩坑**：①「另有 N 场未列」的 N 必须从**有字的场次**里减——第一版用 `sessionOf.size`，把零字场次也数进去，夹具上立刻多出「另有 2 场」（应为 1）；②`others` 的过滤条件要写 `b !== sessionLast`（对象身份），不要按 `sid` 比较——同 `sid` 的两条账本就在同一箱里，按 `sid` 比较反而要用字符串等值；③探针工作区里 `.old` 是拼起来读的，断言场数时先数清 `.old` 里有几场，否则会以为「多了一场」。
+
+### 9.253 0.6.54：连错的那一跳，先不带
+
+**症状（三个问句，一个根因）**。①用户问「这条明明跟我不相干，为什么每轮都塞给我」，插件答得出「它强度 0.42、一个词面都不沾，已打标记」——但它**每轮都还在**：词面闸只砍「同一轮里零重合的第 2、3、4 条」（`NEIGHBOR_OFFTOPIC_KEEP = 1`），第 1 条永远带。②用户问「我上次让它断的那一跳，它断了吗」，没有答案：`memory_link(mute)` 改的是星图，邻域这一层不读也不记，图上断了这边下一轮才知道（因为查不到它了）。③用户问「我不管它，它会不会自己好」，也不会：同一跳连着二十轮被标「未沾词」，每轮都占一份完整邻域块，账上却是一条记录都没有。
+根因：0.6.38–0.6.44 把「别将错就错」做成了**一次性的提示**（强度门槛 + 词面闸 + 尾部 mute 命令），可「标了未沾词」这个事实本身不留痕。没有状态，就没有「连标三轮就先不带」这种判断，也没有「断了没有」这种回执。
+
+**处方（三处，缺一不可）**。
+1. **观察账**（`lib/macro/neighbor.js` + `store.js`）：`neighbor-suspect/<工作区>.json`，形状 `{v:1, at, round, edges:{"a|b":{n, first, last}}}`。**按工作区一份**而不是按会话——错的是图上那一跳，跟哪个窗口问的无关；`round` 是工作区自己的轮次号，只在「真注入的那一轮」+1。三条常量：`NEIGHBOR_SUSPECT_TURNS = 3`（连标够几轮才压）、`NEIGHBOR_SUSPECT_DECAY = 3`（几轮没再被标就放回）、`NEIGHBOR_SUSPECT_MAX = 120`（封顶，超了丢最久没被标的）。
+2. **错边闸**（`neighborBlockOf`）：在跨层去重之后、强度闸之前。`opts.suspect` 是短 id 集合，命中就 `suspectSkipped += 1`、`suppressed.push({a,b})`、`continue`；返回体多两个字段 `edges`（这一轮被标了未沾词的跳）与 `suspect`（被压住几条）。关键一支：**全部被压住时返回 `text: ''` 而不是 `null`**——上层要能把「被账压住」和「图上确实没东西」分开记（`reason=suspect` vs `reason=empty`）。
+3. **销账**（`lib/macro/defs/link.js`）：`memory_link` 的 mute 成功后调 `clearSuspectEdge(ws, ra, rb)`（8 位前缀双向 `startsWith` 匹配），`cleared > 0` 才写一行 `neighbor-fix a=… b=… via=mute cleared=N`。整段包在 try/catch 里：**销账失败不许影响 mute 本身**——图已经断了，那才是用户要的结果。
+
+**读侧**（`lib/macro/injectledger.js`）：`LINE_RE` 扩到六种行；`nsuspect` / `nfix` 两支进 `suspects` / `fixes`；面板在「打标记」之后多一行
+
+```
+- 错边：暂时不带 3 跳（连标 3 轮还没修，图没动、账留着） · AI 已断 3 跳（mute 之后当场销账）
+```
+
+两支都为 0 就不出行。明细里 `断开一跳：aa111111 ↔ bb222222（mute，销账 1 条）` 与 `错边压住：3 跳先不带（窗口 3 轮）：…`；**同一轮**的 `reason=suspect` 与 `neighbor-suspect` 说的是同一件事，取信息多的那条（两秒内算同轮）。出口名 `错边压住（连续标了未沾词，先不带）`。
+
+**读数与判据**：`probe-neighbor` 58 → **69**（N13 十一条）、`probe-injectlog` 65 → **71**（I12 六条）；全量 `check-all` 61 支 / **4,345 断言**。回退性：账本删掉即回到「标了也照带」，`neighborSuspectTurns: 0` 逐位等同 0.6.53。
+
+**踩坑（三条，都是「看着绿其实没测到」）**：
+1. **跨秒就去重不掉**：同一轮的 `neighbor-suspect` 与 `reason=suspect` 各写一行，按 `at` 相等去重在夹具上过、真跑时若跨秒就漏。改成「两秒内算同一轮」。
+2. **压住的那一轮不许盖章**：`block.text === ''` 的出口如果也走成功路径更新账本，`round` 会 +1、`last` 被刷新——`NEIGHBOR_SUSPECT_DECAY` 永远不满足，这条边就永久压住（正好是要避免的「一次误标变永久降级」）。只在真注入的那一轮盖章。
+3. **设置 hint 里别写双引号**：`nebula_link(action="mute")` 这种句子被原样拼进生成器的双引号字符串，`build.mjs` 出来的 `client.js` 直接 `SyntaxError: Unexpected identifier 'mute'`（`probe-client-ui` 一跑就炸）。三语都改写成「用 nebula_link 的 mute（a、b 写两端 id）」。
+
+**顺手补的一口**：`clearSuspectEdge` / `readSuspectLedger` 都导出给探针与工具面用；`appendNeighborLog` 由私有转导出，供 `link.js` 写 `neighbor-fix`——三条路径写同一份 `dream-debug.log`、同一种行格式，面板一个解析器读完。

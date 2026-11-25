@@ -38,6 +38,7 @@ export const NEW_FIELDS = [
   { key: 'neighborMax', type: 'num', group: 'neighbor' },
   { key: 'neighborChars', type: 'num', group: 'neighbor' },
   { key: 'neighborMinScore', type: 'num', group: 'neighbor' },
+  { key: 'neighborSuspectTurns', type: 'num', group: 'neighbor' },
 ]
 
 /** 三份词典要插的 13 条文案。zh 的写法在插进去时转成 \uXXXX（与包内既有风格一致）。 */
@@ -81,6 +82,11 @@ const TEXT = {
       'Character budget for the neighbourhood block, header and the path/mute guidance included.',
     ],
     ['settings.field.neighborMinScore.label', 'Neighbour strength floor'],
+    ['settings.field.neighborSuspectTurns.label', 'Hold mis-edged neighbours'],
+    [
+      'settings.field.neighborSuspectTurns.hint',
+      'An edge flagged as unrelated for this many turns in a row is left out of the neighbourhood block (0 = off, default 3). The graph is not touched and the ledger is kept: mute it with the nebula_link tool and the edge is cleared on the spot; if nothing is done, it comes back after three quiet turns.',
+    ],
     [
       'settings.field.neighborMinScore.hint',
       'Neighbours weaker than this are dropped (0–1; measured default 0.35). A turn whose neighbours are all weak injects nothing rather than padding with noise.',
@@ -123,6 +129,11 @@ const TEXT = {
     ['settings.field.neighborChars.label', '邻域块字符上限'],
     ['settings.field.neighborChars.hint', '邻域那一块（含标题与「看路径 / 断边」指引）最多多少字符。'],
     ['settings.field.neighborMinScore.label', '邻居强度下限'],
+    ['settings.field.neighborSuspectTurns.label', '错边先不带'],
+    [
+      'settings.field.neighborSuspectTurns.hint',
+      '一跳连着这么多轮被标「未沾词」就先不带（0＝关，默认 3）。图不动、账留着：确认无关就用 nebula_link 的 mute 断掉（a、b 写两端 id），当场销账；不理它则三轮后自动放回。',
+    ],
     [
       'settings.field.neighborMinScore.hint',
       '强度低于它的邻居不注入（0–1，实测默认 0.35）；整批都弱就一条都不带，不拿噪声凑数。',
@@ -168,6 +179,11 @@ const TEXT = {
       'Orçamento de caracteres do bloco de vizinhança, incluindo cabeçalho e a orientação de path/mute.',
     ],
     ['settings.field.neighborMinScore.label', 'Piso de força do vizinho'],
+    ['settings.field.neighborSuspectTurns.label', 'Reter arestas suspeitas'],
+    [
+      'settings.field.neighborSuspectTurns.hint',
+      'Uma aresta marcada como sem termo em comum por este número de turnos seguidos fica fora do bloco de vizinhança (0 = desligado, padrão 3). O grafo não muda e o registro fica: use o mute do nebula_link e a aresta é removida na hora; sem ação, ela volta depois de três turnos calmos.',
+    ],
     [
       'settings.field.neighborMinScore.hint',
       'Vizinhos mais fracos que isto são descartados (0–1; padrão medido 0,35). Turnos só com vizinhos fracos não injetam nada em vez de encher com ruído.',
@@ -188,7 +204,9 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
   neighborInject: true,
   neighborMax: 4,
   neighborChars: 420,
-  neighborMinScore: 0.35,`
+  neighborMinScore: 0.35,
+  /** 0.6.54：错边连标 3 轮先不带（＝融合层默认 NEIGHBOR_SUSPECT_TURNS）。 */
+  neighborSuspectTurns: 3,`
 
 const FIELDS_BLOCK = `,
       { key: "injectFloor", label: "settings.field.injectFloor.label", type: "num", hint: "settings.field.injectFloor.hint" },
@@ -203,7 +221,8 @@ const GROUP_BLOCK = `  {
       { key: "neighborInject", label: "settings.field.neighborInject.label", type: "bool", hint: "settings.field.neighborInject.hint" },
       { key: "neighborMax", label: "settings.field.neighborMax.label", type: "num", hint: "settings.field.neighborMax.hint" },
       { key: "neighborChars", label: "settings.field.neighborChars.label", type: "num", hint: "settings.field.neighborChars.hint" },
-      { key: "neighborMinScore", label: "settings.field.neighborMinScore.label", type: "num", hint: "settings.field.neighborMinScore.hint" }
+      { key: "neighborMinScore", label: "settings.field.neighborMinScore.label", type: "num", hint: "settings.field.neighborMinScore.hint" },
+      { key: "neighborSuspectTurns", label: "settings.field.neighborSuspectTurns.label", type: "num", hint: "settings.field.neighborSuspectTurns.hint" }
     ]
   },
 `
