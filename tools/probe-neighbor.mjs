@@ -497,7 +497,7 @@ const recall = [
   await inj.decide(payload('n12-a', true), enter('n12-a'))
   const chain = lastLine()
   ok('N12 注入成功写 neighbor-chain：条数 / 字数 / 闸位读数都在（与引擎同一行格式）',
-    /\] neighbor-chain pid=\d+ sid=n12-a ids=1 chars=\d+ weak=\d+ offtopic=\d+ flagged=\d+ deduped=\d+ max=4 cap=420 minScore=0\.35 turnCap=0 turnSpent=0$/.test(chain),
+    /\] neighbor-chain pid=\d+ sid=n12-a ids=1 chars=\d+ weak=\d+ offtopic=\d+ flagged=\d+ deduped=\d+ max=4 cap=420 minScore=0\.35 turnCap=0 turnSpent=0 solo=[01]$/.test(chain),
     chain)
 
   // ③ 同一个会话再问：已经带过的条目由跨层按 id 挡掉，写 reason=empty
@@ -675,13 +675,13 @@ const recall = [
   const off = mk4({})
   await off.decide(pl4('n14-off'), { kind: 'enter', messages: [user4, carriedMsg(5000)] })
   ok('N14 上限默认 0（不限）：照旧注入，账行写 turnCap=0 turnSpent=0（老行为一位不变）',
-    /] neighbor-chain pid=\d+ sid=n14-off .*turnCap=0 turnSpent=0$/.test(last4()), last4())
+    /] neighbor-chain pid=\d+ sid=n14-off .*turnCap=0 turnSpent=0 solo=[01]$/.test(last4()), last4())
 
   // ② 上限很宽：邻域照旧吃满自己的 neighborChars，不被总上限无故削
   const wide = mk4({ injectTurnMaxChars: 900 })
   await wide.decide(pl4('n14-wide'), { kind: 'enter', messages: [user4] })
   ok('N14 上限比单层预算还宽：邻域照旧吃满 cap=420（不因为开了总上限就变小）',
-    /chars=\d+ .*cap=420 minScore=0\.35 turnCap=900 turnSpent=0$/.test(last4()), last4())
+    /chars=\d+ .*cap=420 minScore=0\.35 turnCap=900 turnSpent=0 solo=[01]$/.test(last4()), last4())
 
   // ③ 上限收紧：邻域只能花余额（600 - 350 = 250），块本身跟着缩
   const tight = mk4({ injectTurnMaxChars: 600 })
@@ -689,7 +689,7 @@ const recall = [
   const tightLine = last4()
   const tightChars = Number((tightLine.match(/chars=(\d+)/) ?? [])[1] ?? -1)
   ok('N14 命中已花 350 时，邻域这一块只拿剩下的 250（块字数真的缩了，不是只在账上写）',
-    tightChars > 0 && tightChars <= 250 && /turnCap=600 turnSpent=350$/.test(tightLine), tightLine)
+    tightChars > 0 && tightChars <= 250 && /turnCap=600 turnSpent=350 solo=[01]$/.test(tightLine), tightLine)
 
   // ④ 余额不够开一块：整块不带，写 reason=turncap，decision 原样返回
   const over = mk4({ injectTurnMaxChars: 400 })
@@ -715,6 +715,129 @@ const recall = [
   ok('N14 撞上限的轮在「没带的原因」里念得出来（不是一句 None）',
     /撞一轮总上限（本轮剩余不够开一块） 1 轮/.test(body3),
     (body3.match(/- 没带的原因[^\n]*/) ?? [''])[0])
+}
+
+// ── N15 边缘单条隔轮带：一块只活下来一条、强度又低，就带一轮歇一轮（0.6.62）──────
+// 病根（bench37 量出来的）：17 条操作型话术里 11 条只活下来 1 条邻居，强度 0.36–0.54、
+// weak=7（recall 给 8 条、7 条被刷）。这种块 193 字，每轮都带，而那条邻居大半轮用不上。
+// 这一块守四件事：边缘单条第一轮照带（不砍线索）、下一轮让路并把原因写出来、
+// 再下轮照带（隔轮不是关掉）、线以上或一块两条时不降频。
+// 注意：邻居 id 按前 8 位认同一跳（sameId），下面每条边的前 8 位都刻意不同，否则会先被
+// 「已经带过」挡掉、测不到降频闸。
+{
+  const ws6 = join(tmpHome, 'ws-n15')
+  const LOG6 = join(ws6, '.dsh-meow', 'dream-debug.log')
+  /** 造一份「1 跳」回执：id 与强度可换，模拟每轮问到的是别的邻居。 */
+  const one = (id, score) => [
+    '星图邻域（1 跳，1 条）：',
+    '',
+    `1. [fact] 一条边缘线     强度 ${score} 沾一点边`,
+    `  id: ws:${id}`,
+    `  为什么：经由「另一条线」(${id})的cooc关联扩散而来`,
+    '  摘要：说的是别的事的排期',
+  ].join('\n')
+  /** 造一份「2 条」回执。 */
+  const two = (a, b, sa, sb) => [
+    '星图邻域（1 跳，2 条）：',
+    '',
+    `1. [fact] 一条边缘线     强度 ${sa} 沾一点边`,
+    `  id: ws:${a}`,
+    `  为什么：经由「另一条线」(${a})的cooc关联扩散而来`,
+    '  摘要：说的是别的事的排期',
+    `2. [fact] 另一条     强度 ${sb} 也一般`,
+    `  id: ws:${b}`,
+    `  为什么：经由「另一条线」(${b})的cooc关联扩散而来`,
+    '  摘要：另一条摘要',
+  ].join('\n')
+
+  // recall 可变：换轮要换新 id，否则先被「已经带过」的 id 账挡掉，测不到降频闸。
+  const mk6 = (box, opts = {}) => NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: box.text }) },
+    config: opts.config ?? {},
+    meowDir: () => '.dsh-meow',
+    logger: () => {},
+    loadLlm: async () => ({ createUserMessage: (o) => o }),
+  })
+  const user6 = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '那条边缘线后来怎么算的' }] }
+  const pl6 = (sid) => ({ agent: { session: { id: sid, header: { cwd: ws6 } } } })
+  const enter6 = (sid) => ({ kind: 'enter', messages: [user6] })
+  const text6 = () => (existsSync(LOG6) ? readFileSync(LOG6, 'utf8') : '')
+  const last6 = () => text6().trim().split('\n').slice(-1)[0] ?? ''
+
+  // ① 第一轮：照带，账行标 solo=1（这一块是边缘单条，下一轮让路）
+  const box1 = { text: one('0ma1edge1', '0.38') }
+  const s1 = mk6(box1)
+  const r1 = await s1.decide(pl6('n15-a'), enter6('n15-a'))
+  const l1 = last6()
+  ok('N15 边缘单条第一轮照带（不砍线索），账行标 solo=1',
+    Array.isArray(r1?.messages) && r1.messages.length === 2 && /ids=1/.test(l1) && /solo=1$/.test(l1), l1)
+
+  // ② 第二轮：又只活下来一条新的边缘邻居 → 让路，出口写 reason=edgeturn（带分数与块字数）
+  box1.text = one('0mb2edge2', '0.38')
+  const r2 = await s1.decide(pl6('n15-a'), enter6('n15-a'))
+  const l2 = last6()
+  ok('N15 下一轮让路：写 neighbor-skip reason=edgeturn（带分数与块字数，窗口里看得见为什么空）',
+    /\] neighbor-skip pid=\d+ reason=edgeturn sid=n15-a score=0\.38 chars=\d+$/.test(l2), l2)
+  ok('N15 让路时 decision 原样返回（一条消息都不多，绝不塞半块）',
+    Array.isArray(r2?.messages) && r2.messages.length === 1, String(r2?.messages?.length))
+  ok('N15 让路记进 state.edged（自证数得出来，不是只有日志）',
+    s1.stats().edged === 1 && s1.stats().injected === 1,
+    `edged=${s1.stats().edged} injected=${s1.stats().injected}`)
+
+  // ③ 第三轮：隔轮不是关掉 —— 再来一条边缘单条照带（让过的那一轮不记账）
+  box1.text = one('0mc3edge3', '0.38')
+  const r3 = await s1.decide(pl6('n15-a'), enter6('n15-a'))
+  ok('N15 隔轮只歇一轮：再下一轮照带（同一会话里 带→歇→带）',
+    Array.isArray(r3?.messages) && r3.messages.length === 2 && /ids=1/.test(last6()) && /solo=1$/.test(last6()), last6())
+
+  // ④ 线以上不降频：0.68 那种单条是真线索（`suspect 账几天清一次`），每轮都带
+  const box4 = { text: one('0ma4str01', '0.68') }
+  const s4 = mk6(box4)
+  await s4.decide(pl6('n15-b'), enter6('n15-b'))
+  const l4a = last6()
+  box4.text = one('0mb5str02', '0.68')
+  await s4.decide(pl6('n15-b'), enter6('n15-b'))
+  const l4b = last6()
+  ok('N15 强度在线以上的单条不降频（0.68 每轮照带，账行 solo=0）',
+    /ids=1/.test(l4a) && /solo=0$/.test(l4a) && /ids=1/.test(l4b) && !/reason=edgeturn/.test(l4b), l4a + ' | ' + l4b)
+
+  // ⑤ 一块带两条时不降频：多条说明这条线有结构。
+  //    （两条都弱的情况本来就会被词面闸压成一条——NEIGHBOR_OFFTOPIC_KEEP=1，所以这里用两条过线的。）
+  const box5 = { text: two('0ma6pair1', '0mb7pair2', '0.62', '0.68') }
+  const s5 = mk6(box5)
+  await s5.decide(pl6('n15-c'), enter6('n15-c'))
+  const l5a = last6()
+  box5.text = two('0mc8pair3', '0md9pair4', '0.62', '0.68')
+  await s5.decide(pl6('n15-c'), enter6('n15-c'))
+  const l5b = last6()
+  ok('N15 一块带两条时不降频（账行 ids=2 solo=0，下一轮照带）',
+    /ids=2/.test(l5a) && /solo=0$/.test(l5a) && /ids=2/.test(l5b) && !/reason=edgeturn/.test(l5b), l5a + ' | ' + l5b)
+
+  // ⑥ 旋钮 0 = 关：边缘单条退回每轮都带（老行为一位不变）
+  const box6 = { text: one('0ma1off11', '0.38') }
+  const s6 = mk6(box6, { config: { neighborSoloEdge: 0 } })
+  await s6.decide(pl6('n15-d'), enter6('n15-d'))
+  const l6a = last6()
+  box6.text = one('0mb2off22', '0.38')
+  await s6.decide(pl6('n15-d'), enter6('n15-d'))
+  const l6b = last6()
+  ok('N15 neighborSoloEdge: 0 时整层关（边缘单条照旧每轮带，一行 edgeturn 都不写）',
+    /ids=1/.test(l6a) && /solo=0$/.test(l6a) && /ids=1/.test(l6b) && !/reason=edgeturn/.test(l6b), l6a + ' | ' + l6b)
+
+  // ⑦ 面板把出口念成人话（不是把 edgeturn 原样吐给主人）
+  const IL6 = await import(pathToFileURL(join(root, 'lib', 'macro', 'injectledger.js')).href)
+  const body6 = IL6.readInjectPanel({ workspace: ws6, dir: '.dsh-meow', limit: 40, config: {} }).body
+  ok('N15 面板把 edgeturn 念成人话（边缘单条歇一轮 · 下轮照带）',
+    /边缘单条歇一轮（下轮照带）/.test(body6),
+    (body6.match(/- 没带的原因[^\n]*/) ?? [''])[0])
+
+  // ⑧ 源码断言：scores 与 ids 同序（降频闸读「这一块第一条的强度」，错位就误判）
+  const src6 = readFileSync(join(root, 'lib', 'macro', 'neighbor.js'), 'utf8')
+  const idsAt = src6.indexOf('ids.push(bare)')
+  const scAt = src6.indexOf('scores.push(Number.isFinite(node.score) ? node.score : 0)')
+  ok('N15 scores 与 ids 同序（在同一处配对 push，读数一一对应）',
+    idsAt > 0 && scAt > idsAt && scAt - idsAt < 400, `ids@${idsAt} scores@${scAt}`)
 }
 
 rmSync(tmpHome, { recursive: true, force: true })

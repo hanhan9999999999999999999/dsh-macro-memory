@@ -43,6 +43,8 @@ export const NEW_FIELDS = [
   { key: 'neighborChars', type: 'num', group: 'neighbor' },
   { key: 'neighborMinScore', type: 'num', group: 'neighbor' },
   { key: 'neighborSuspectTurns', type: 'num', group: 'neighbor' },
+  // 0.6.62：边缘单条隔轮带——一块里只剩一条弱邻居时带一轮、休一轮。
+  { key: 'neighborSoloEdge', type: 'num', group: 'neighbor' },
 ]
 
 /** 三份词典要插的 13 条文案。zh 的写法在插进去时转成 \uXXXX（与包内既有风格一致）。 */
@@ -101,6 +103,11 @@ const TEXT = {
       'settings.field.neighborSuspectTurns.hint',
       'An edge flagged as unrelated for this many turns in a row is left out of the neighbourhood block (0 = off, default 3). The graph is not touched and the ledger is kept: mute it with the nebula_link tool and the edge is cleared on the spot; if nothing is done, it comes back after three quiet turns.',
     ],
+    ['settings.field.neighborSoloEdge.label', 'Alternate weak lone neighbours'],
+    [
+      'settings.field.neighborSoloEdge.hint',
+      'A block holding a single neighbour below this strength (0–1, default 0.55, 0 = off) is treated as a faint side hint and injected every other turn. Measured on the real library: lone neighbours between 0.35 and 0.55 turn up on most operational turns — about 190 characters for one loosely related link — while a lone neighbour at 0.68+ is a real lead and keeps coming every turn. The same neighbour never repeats anyway (per-session ledger), so what is saved is the fresh weak one.',
+    ],
     [
       'settings.field.neighborMinScore.hint',
       'Neighbours weaker than this are dropped (0–1; measured default 0.35). A turn whose neighbours are all weak injects nothing rather than padding with noise.',
@@ -157,6 +164,11 @@ const TEXT = {
     [
       'settings.field.neighborSuspectTurns.hint',
       '一跳连着这么多轮被标「未沾词」就先不带（0＝关，默认 3）。图不动、账留着：确认无关就用 nebula_link 的 mute 断掉（a、b 写两端 id），当场销账；不理它则三轮后自动放回。',
+    ],
+    ['settings.field.neighborSoloEdge.label', '边缘单条隔轮带'],
+    [
+      'settings.field.neighborSoloEdge.hint',
+      '一块里只剩一条邻居、强度又低于这个值（0–1，默认 0.55，0＝关），就按边缘线索处理：带一轮、休一轮。实测真库上 0.35–0.55 的单条占操作型轮次的一大半，每块约 190 字只换来一句「沾一个词」的横向线索；0.68 以上那种单条是真线索，照旧每轮带。同一条邻居本来就不会重复带（会话账），这里省的只是新来的弱邻居。',
     ],
     [
       'settings.field.neighborMinScore.hint',
@@ -218,6 +230,11 @@ const TEXT = {
       'settings.field.neighborSuspectTurns.hint',
       'Uma aresta marcada como sem termo em comum por este número de turnos seguidos fica fora do bloco de vizinhança (0 = desligado, padrão 3). O grafo não muda e o registro fica: use o mute do nebula_link e a aresta é removida na hora; sem ação, ela volta depois de três turnos calmos.',
     ],
+    ['settings.field.neighborSoloEdge.label', 'Alternar vizinho fraco isolado'],
+    [
+      'settings.field.neighborSoloEdge.hint',
+      'Um bloco com um único vizinho abaixo desta força (0–1, padrão 0,55, 0 = desligado) conta como pista lateral fraca e entra a cada dois turnos. Medido na biblioteca real: vizinhos isolados entre 0,35 e 0,55 aparecem na maioria dos turnos operacionais — cerca de 190 caracteres por um elo frouxo — enquanto um vizinho isolado de 0,68+ é pista de verdade e continua entrando sempre. O mesmo vizinho nunca se repete (registro da sessão), então o que se economiza é o vizinho fraco novo.',
+    ],
     [
       'settings.field.neighborMinScore.hint',
       'Vizinhos mais fracos que isto são descartados (0–1; padrão medido 0,35). Turnos só com vizinhos fracos não injetam nada em vez de encher com ruído.',
@@ -244,7 +261,9 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
   neighborChars: 420,
   neighborMinScore: 0.35,
   /** 0.6.54：错边连标 3 轮先不带（＝融合层默认 NEIGHBOR_SUSPECT_TURNS）。 */
-  neighborSuspectTurns: 3,`
+  neighborSuspectTurns: 3,
+  /** 0.6.62：边缘单条隔轮带（＝融合层默认 NEIGHBOR_SOLO_EDGE_SCORE；0＝关）。 */
+  neighborSoloEdge: 0.55,`
 
 const FIELDS_BLOCK = `,
       { key: "injectFloor", label: "settings.field.injectFloor.label", type: "num", hint: "settings.field.injectFloor.hint" },
@@ -262,7 +281,8 @@ const GROUP_BLOCK = `  {
       { key: "neighborMax", label: "settings.field.neighborMax.label", type: "num", hint: "settings.field.neighborMax.hint" },
       { key: "neighborChars", label: "settings.field.neighborChars.label", type: "num", hint: "settings.field.neighborChars.hint" },
       { key: "neighborMinScore", label: "settings.field.neighborMinScore.label", type: "num", hint: "settings.field.neighborMinScore.hint" },
-      { key: "neighborSuspectTurns", label: "settings.field.neighborSuspectTurns.label", type: "num", hint: "settings.field.neighborSuspectTurns.hint" }
+      { key: "neighborSuspectTurns", label: "settings.field.neighborSuspectTurns.label", type: "num", hint: "settings.field.neighborSuspectTurns.hint" },
+      { key: "neighborSoloEdge", label: "settings.field.neighborSoloEdge.label", type: "num", hint: "settings.field.neighborSoloEdge.hint" }
     ]
   },
 `
