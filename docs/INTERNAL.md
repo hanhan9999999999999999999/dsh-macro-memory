@@ -14423,3 +14423,41 @@ appendNeighborLog(..., 'neighbor-fix', `a=… b=… via=mute cleared=${cleared}`
 **探针自己的两个坑**（不是插件 bug）：①`recordNeighborFix` 的 `now` 参数决定 `at`，写一条 90 天前的时间戳会**在落盘时被当场裁掉**——第一版断言写的是「90 天前先还在」，那是把「读取时过滤」当成「写入时过滤」；②同一对 id 的 8 位前缀相同时（`0mkeep001|0mkeep002` 两个都切到 `0mkeep00`）会撞成一个键，夹具必须给两端**不同的 8 位前缀**，否则「只撤这一对」的断言测的是空集。
 
 **留着的口子**：`times` 只记次数不记每轮的明细（要看每一轮的顺序得翻 `dream-debug.log`）；修过账不参与检索/注入，它只服务面板与反悔。
+
+### 9.266 0.6.67：检索回执也要印短 id
+
+**病**（0.6.64 留下的最后一处旧口径）：`lib/macro/defs/search.js` 里
+
+```js
+function id8(id) { return String(id).slice(0, 8) }
+```
+
+子问句补充段（`- 「<子问句>」[<level>] <id8(hit.id)> · <首句>`）与共识行（`consensus.map(id8)`）都用它。真库 1,121 条里 8 位前缀撞 13 组，撞车的短 id 抄去 `memory_read` / `memory_update` / `memory_link(mute)` 会因歧义被拒（`update` 撞多命中时 `console.warn` 后 `return false`），读起来像「那条记忆不见了」。另一头 `fusedText` 的融合榜印完整 36 字 id，一行 id 就吃掉小半行。
+
+**处方**：把 0.6.64 的 `lib/macro/shortid.js` 接到检索这条路上。
+
+- `lib/macro/fusion.js`：`fusedText({ note, rows, k, graphShown, dropped, shorten })`；`showLocal = shorten ?? ((id) => String(id ?? ''))`、`showGraph = shorten ? (id) => shorten(uidOf(id)) : 同上`。**星图行必须先 `uidOf` 剥 `ws:` 前缀**——直接 `shorten('ws:...')` 缩的是工作区键，永远解析不到 id。不给 `shorten` 时逐位老行为（探针 U/M 段与老调用方一个字都不变）。
+- `lib/macro/defs/search.js`：新增
+
+  ```js
+  function shortenerOf(exec, meowDir) {
+    const ws = workspaceOfExec(exec)
+    if (ws === '') return null
+    try {
+      const index = shortIdsOf(Meow.getDb(ws, typeof meowDir === 'function' ? meowDir() : '.dsh-meow'))
+      return (id) => shortenId(index, id)
+    } catch { return null }
+  }
+  ```
+
+  索引这一步出任何事只退回 8 位，不抛、不挡检索。`supplementText(rows, subs, consensus, shorten)` 里 `const show = typeof shorten === 'function' ? shorten : id8`；`augmentByDecompose` / `fusedPart` 各收一个 `shorten`；`runSearch(flow, args, exec, flags, budget, mqConfig, shorten)` **第 7 参**往下传；`createSearch` 的 `execute` 里 `const shorten = shortenerOf(exec, meowDir)`。
+
+**坑（改参数前先看使用点在哪个函数域）**：`shorten` 第一次只加在 `execute` 里，而 `fusedPart` 的调用点在 `runSearch` 内 → `ReferenceError: shorten is not defined`（`search.js:524`）。`runSearch` 加第 7 参才修好。
+
+**边界（写死）**：meow 自己那份本地回执**原文一个字不改**（0.4.0 的 append-only 不变量：原榜动一个字就等于改结论），所以回执里 `[全局] [36 字 id] [3m] 关于：…` 那几行仍是全 id。本插件只保证**自己拼上去的两段**（子问句补充段、融合榜）用最短唯一前缀，`docs/DESIGN` 里也照这个说。
+
+**判据**：`tools/probe-fusion.mjs` +6 条（Q1–Q5）。夹具走真库：临时 home 下 `MW.getDb(ws)` 插两条**前 8 位相同**的 fact（`0mcolid0-aaa…` / `0mcolid0-bbb…`）加一条不撞的，stub bridge 的 `memory_search` 按查询返回不同命中（原句给 A、两个子问句各给 B / C，`config.multiQuery = 'conservative'` 才会走分解——默认 `off`）。判据：①补充段里撞车那条印出的前缀 **≥9 位且互不相同**；②回执里不再出现 `[level] 36 字全 id ·` 的形状；③**每个印出来的 id 拿去 `db.findByIdAll()` 都唯一命中一条**（这是「不歧义」的硬证据，不看措辞）；④拿不到会话工作区时退回 8 位且不抛；⑤融合榜两行都吃 shorten，星图那行的 `ws:` 先剥掉；⑥不给 shorten 时逐位老行为。
+
+**顺带修的真 bug**：`tools/sync-trees.mjs` 的 robocopy 只 `/XD node_modules .git`，而 `diffOf` 的 `SKIP_DIRS` 还有 `.analysis` / `.dsh-meow` —— 于是每次 `--apply` 都去复制 `.dsh-meow/` 里那份活着的 SQLite（`-wal` / `-shm` 被别的进程 map 着），报 `ERROR 1224 (0x000004C8) The requested operation cannot be performed on a file with a user-mapped section open`，整趟判失败。改成 `'/XD', ...SKIP_DIRS`：排除表与比较表同源，两棵树都 `robocopy exit=3 已同步`。
+
+**留着的口子**：meow 自己的回执仍是全 id（要改得动 vendor，且会破 append-only 结论，不动）；`shortenerOf` 每次检索现查七条 `SELECT id`（真库 1.6 ms，比缓存错前缀便宜，不缓存）。

@@ -3550,7 +3550,7 @@ function makeHostCtx() {
   )
   check(
     'search: 模式名不合法时一句都不查（先挡住，再谈检索）',
-    /const mode = modeOf\(args\)[\s\S]{0,400}?if \(mode\.bad\) return badModeText\(mode\)[\s\S]{0,600}?const text = await runSearch\(flow, args, exec, flags, budget(?:, config)?\)/.test(
+    /const mode = modeOf\(args\)[\s\S]{0,400}?if \(mode\.bad\) return badModeText\(mode\)[\s\S]{0,600}?const text = await runSearch\(flow, args, exec, flags, budget(?:, config)?(?:, shorten)?\)/.test(
       searchSrc,
     ),
     'badMode',
@@ -3581,7 +3581,7 @@ function makeHostCtx() {
   check(
     'search: 老的「不认识就当 local」写法一行都不剩（注释里提一句可以，代码里不行）',
     !/^\s*const mode = String\(args\.mode/m.test(searchSrc) &&
-      /async function runSearch\(flow, args, exec, flags = \{\}, budget = \{ value: null, note: '' \}(?:, mqConfig = \{\})?\)/.test(searchSrc),
+      /async function runSearch\(flow, args, exec, flags = \{\}, budget = \{ value: null, note: '' \}(?:, mqConfig = \{\})?(?:, shorten = null)?\)/.test(searchSrc),
     'legacy',
   )
   check(
@@ -3646,9 +3646,9 @@ function makeHostCtx() {
   )
   check(
     'mq: 配置真的接进了检索工具（不是只写在 schema 里）',
-    toolsSrcMq.includes('createSearch({ flow, config })') &&
-      searchSrcMq.includes('export function createSearch({ flow, config = {} })') &&
-      /const text = await runSearch\(flow, args, exec, flags, budget, config\)/.test(searchSrcMq),
+    toolsSrcMq.includes('createSearch({ flow, config, meowDir })') &&
+      searchSrcMq.includes("export function createSearch({ flow, config = {}, meowDir = () => '.dsh-meow' })") &&
+      /const text = await runSearch\(flow, args, exec, flags, budget, config, shorten\)/.test(searchSrcMq),
     'plumbing',
   )
   check(
@@ -9093,7 +9093,7 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
   )
   check(
     '融合: 接在 expand 分支上，并且排在预算分支之前（融合榜是整份回执，不能先按分段花完预算再合）',
-    searchSrc118.includes('const fusedHead = await fusedPart({ localValue: main.value, graphText: spread.text, spreadLimit, budget, flags })') &&
+    searchSrc118.includes('const fusedHead = await fusedPart({ localValue: main.value, graphText: spread.text, spreadLimit, budget, flags, shorten })') &&
       searchSrc118.includes('if (fusedHead !== null) return fusedHead') &&
       searchSrc118.indexOf('await fusedPart(') < searchSrc118.indexOf('const spreadFit = await fitPath(flow, exec, {'),
   )

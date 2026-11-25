@@ -613,7 +613,7 @@ export function contractChecklist({
         searchDefSrcS.includes('limit 是 graph / bridge 的条数') &&
         searchDefSrcS.includes('只在 bridge 模式生效，这次没用上') &&
         /if \(mode\.bad\) return badModeText\(mode\)/.test(searchDefSrcS) &&
-        /const text = await runSearch\(flow, args, exec, flags(?:, budget)?(?:, config)?\)/.test(searchDefSrcS) &&
+        /const text = await runSearch\(flow, args, exec, flags(?:, budget)?(?:, config)?(?:, shorten)?\)/.test(searchDefSrcS) &&
         /const notes = modeNotes\(mode\.name, args, flags\)/.test(searchDefSrcS),
       detail: searchDefSrcS.includes('function modeOf(')
         ? 'ok'

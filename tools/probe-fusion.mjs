@@ -7505,6 +7505,123 @@ check(
   )
 }
 
+// ── 0.6.67 检索回执里的 id 也走最短唯一前缀 ────────────────────────────────
+// 病：0.6.64 起命中注入 / 邻域 / 项目目录都印「最短唯一前缀」，只有 memory_search 回执
+// 还在印 8 位（子问句补充段）与 36 字全 id（融合榜）。真库 1,121 条里 8 位前缀撞 13 组，
+// 撞车的短 id 抄去 read / update / mute 会因歧义被拒——读起来像「那条记忆不见了」。
+{
+  const MW = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
+  const { createUnifiedTools: mkShortTools } = await import(pathToFileURL(join(root, 'lib', 'macro', 'tools.js')).href)
+  const { fusedText: fusedOf } = await import(pathToFileURL(join(root, 'lib', 'macro', 'fusion.js')).href)
+  const ws = join(home, 'ws-shortid')
+  const db = MW.getDb(ws, '.dsh-meow')
+  // 前 8 位相同的两条（真库撞车 13 组就是这种形状）+ 一条不撞的
+  const IDA = '0mcolid0-aaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const IDB = '0mcolid0-bbbbbbbbbbbbbbbbbbbbbbbbbb'
+  const IDC = '0mcolid1-cccccccccccccccccccccccccc'
+  const now = Date.now()
+  for (const [id, body] of [
+    [IDA, '撞车的一号：前八位和二号一样'],
+    [IDB, '撞车的二号：八位短 id 会指向两条'],
+    [IDC, '不撞的第三条'],
+  ]) {
+    try {
+      db.insert({ id, level: 'fact', content: body, importance: 2, created_at: now })
+    } catch (err) {
+      check('Q0 夹具落库失败（后面几条无从谈起）', false, String(err && err.message))
+    }
+  }
+  const hit = (id, body) => ({ id, level: 'fact', title: '', content: body, score: 0.9, keywords: ['短id'] })
+  const bridgeOf = () => ({
+    has: () => true,
+    get: () => undefined,
+    names: () => ['memory_search'],
+    awaitTool: async () => undefined,
+    async call(name, args) {
+      if (name !== 'memory_search') throw new Error('stub 里没有 ' + name)
+      const q = String(args?.query ?? '')
+      // 原句给 A，两个子问句各给 B / C —— 这样补充段一定会被走到
+      const hits = q.includes('和') || q.includes('跟') ? [hit(IDA, '撞车的一号：前八位和二号一样')]
+        : q.includes('二号') ? [hit(IDC, '不撞的第三条')]
+        : [hit(IDB, '撞车的二号：八位短 id 会指向两条')]
+      const head = hits.map((h, i) => `[${i + 1}] [全局] [${h.id}] [3m] 关于：${h.keywords.join('、')}`).join('\n')
+      return { text: head, value: { hits, note: '' } }
+    },
+  })
+  const toolOf = (b) => mkShortTools({ bridge: b, config: { toolWaitMs: 5, linkWaitMs: 5, multiQuery: 'conservative' }, meowDir: () => '.dsh-meow' })
+    .find((x) => x.name === 'memory_search')
+  const execWs = { agent: { session: { header: { cwd: ws } } } }
+  const args = { query: '短 id 撞车的一号 和 撞车的二号 哪个更麻烦', expand: false }
+
+  let receipt = ''
+  try {
+    receipt = await toolOf(bridgeOf()).execute(args, execWs)
+  } catch (err) {
+    check('Q1 检索回执不再抛（短 id 索引这一步不许挡检索）', false, String(err && err.message))
+  }
+
+  // Q1：两条撞车的 id 印出来必须互不相同、且都够长到能唯一指认
+  const idTokens = [...receipt.matchAll(/\[[a-z]+\] ([0-9a-z-]+) ·/g)].map((m) => m[1])
+  const aTok = idTokens.find((x) => x.startsWith('0mcolid0'))
+  const shortIds = [...new Set(idTokens)]
+  check(
+    'Q1 补充段里的 id 按最短唯一前缀印（撞车那条超过 8 位）',
+    typeof aTok === 'string' && aTok.length >= 9 && shortIds.length === idTokens.length,
+    aTok ?? '(补充段没印 id)',
+  )
+  // Q2：不许再出现 36 字全 id（融合榜老口径）
+  check(
+    'Q2 回执里不出现 36 字全 id',
+    !/\[[a-z]+\] [0-9a-z]{8}-[0-9a-z]{26} ·/.test(receipt),
+    (receipt.match(/\[fact [^\]]+\]/) || [''])[0],
+  )
+  // Q3：印出来的 id 真的能唯一定位（这是「不歧义」的硬证据，不是措辞好看）
+  let resolvable = true
+  let resolveWhy = ''
+  for (const tok of idTokens) {
+    try {
+      const all = db.findByIdAll(tok) ?? []
+      if (all.length !== 1) {
+        resolvable = false
+        resolveWhy = tok + ' → ' + all.length + ' 条'
+        break
+      }
+    } catch (err) {
+      resolvable = false
+      resolveWhy = tok + ' → ' + String(err && err.message)
+      break
+    }
+  }
+  check('Q3 回执里每个 id 拿去查都唯一命中一条', resolvable && idTokens.length >= 2, resolveWhy)
+
+  // Q4：拿不到会话工作区时退回 8 位老口径（不抛、不静默变空）
+  let plain = ''
+  try {
+    plain = await toolOf(bridgeOf()).execute(args, {})
+  } catch (err) {
+    check('Q4 没有工作区时不许抛', false, String(err && err.message))
+  }
+  check(
+    'Q4 拿不到工作区就退回 8 位（老口径，绝不因为省字把 id 弄没）',
+    /\[[a-z]+\] 0mcolid0[0-9a-z-]* ·/.test(plain),
+    (plain.match(/\[[a-z]+\] [0-9a-z-]+ ·/) || [''])[0],
+  )
+
+  // Q5：融合榜同一条口径；不给 shorten 时逐位保持老行为（探针与老调用方不受影响）
+  const rows = [
+    { uid: IDA, localRank: 1, graphRank: 1, local: hit(IDA, '本地也有'), graph: null },
+    { uid: IDB, localRank: 0, graphRank: 1, local: null, graph: { level: 'fact', id: 'ws:' + IDB, why: '经由「一号」', preview: '星图独有' } },
+  ]
+  const withShort = fusedOf({ note: '', rows, k: 5, graphShown: 5, dropped: 0, shorten: (x) => x.slice(0, 11) })
+  const without = fusedOf({ note: '', rows, k: 5, graphShown: 5, dropped: 0 })
+  check(
+    'Q5 融合榜接 shorten 后两行都用短 id（星图那行的 ws: 前缀先剥掉）',
+    withShort.includes('[fact 0mcolid0-aa]') && withShort.includes('[fact 0mcolid0-bb]') && !withShort.includes('ws:'),
+    withShort.split('\n')[0],
+  )
+  check('Q5 不给 shorten 时逐位老行为（全 id 原样）', without.includes('[fact ' + IDA + ']') && without.includes('[fact ws:' + IDB + ']'), '')
+}
+
 for (const d of disposers) {
   try {
     d()

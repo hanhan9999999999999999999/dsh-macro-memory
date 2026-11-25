@@ -102,9 +102,11 @@ function robocopy(src, dst) {
   fs.mkdirSync(dst, { recursive: true })
   const r = spawnSync(
     'robocopy',
-    [src, dst, '/E', '/XD', 'node_modules', '.git', '/NFL', '/NDL', '/NJH', '/NJS', '/R:1', '/W:1'],
+    [src, dst, '/E', '/XD', ...SKIP_DIRS, '/NFL', '/NDL', '/NJH', '/NJS', '/R:1', '/W:1'],
     { stdio: 'inherit' },
   )
+  // 排除表与 diffOf 的 SKIP_DIRS 同源：只排 node_modules / .git 时，robocopy 会去复制
+  // `.dsh-meow/` 里那份活着的 SQLite（-wal/-shm 被别的进程 map 着），报 ERROR 1224 并整趟判失败。
   // robocopy：0 = 没变化，1 = 有复制，2/3 = 有额外/复制+额外，>=8 = 出错
   const code = r.status === null ? 16 : r.status
   return { code, ok: code < 8 }
