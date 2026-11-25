@@ -100,7 +100,8 @@ const Q = '部署脚本的端口约定'
 {
   // ② 单次上限很紧：排在后面的被 cap 挤掉，理由记 cap 而不是 floor
   // （floor 必须置 0：门槛先开，弱条才有机会走到「被挤掉」这一步）
-  const tight = runOn(Q, { hitTopK: 4, injectFloor: 0, injectBodyMax: 120, injectMaxChars: 210 })
+  // [0.6.73] 陪跑线关掉：这一条只要 cap 当唯一变量，否则第二条会先被 margin 砍掉。
+  const tight = runOn(Q, { hitTopK: 4, injectFloor: 0, injectBodyMax: 120, injectMaxChars: 210, injectMarginRatio: 0 })
   const drops = Array.isArray(tight?.drops) ? tight.drops : []
   const cap = drops.find((d) => d.reason === 'cap')
   ok('R4 字数上限挤掉的记 cap（不是分数不够）', tight !== null && cap !== undefined, tight === null ? '整轮都被挡了' : JSON.stringify(drops.map((d) => [d.id, d.reason])))

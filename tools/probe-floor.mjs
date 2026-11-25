@@ -70,7 +70,9 @@ function stubDb() {
 const wsRoot = mkdtempSync(join(tmpdir(), 'probe-floor-'))
 mkdirSync(join(wsRoot, '.dsh-meow'), { recursive: true })
 function run(q, opts, sid = 'sess-floor-' + Math.random().toString(36).slice(2, 8)) {
-  return V.buildHitInjection(stubDb(), wsRoot, sid, q, opts, '.dsh-meow')
+  // [0.6.73] 这一支只问 floor：陪跑线（默认 0.2）同样会砍掉「过了线但远远落后第一名」的
+  // 弱命中，读起来就像闸门没关。测哪道闸，就让它当唯一变量。
+  return V.buildHitInjection(stubDb(), wsRoot, sid, q, { injectMarginRatio: 0, ...(opts ?? {}) }, '.dsh-meow')
 }
 function seenOf(sid) {
   const dir = join(wsRoot, '.dsh-meow', 'sessions')
@@ -89,8 +91,8 @@ function seenOf(sid) {
 // ── F1 形状：常量 / 默认值 / 配置面五处 / 观测字段 ────────────────────────────
 {
   ok('F1 默认分线常量在位（0.35，0.6.45 起）', src.includes('var INJECT_FLOOR_DEF = 0.35;'))
-  ok('F1 DEFAULT_OPTS 带上闸门（0.6.44 起还带注入节奏两项：会话预算 0 / 同话题 0.6；0.6.49 带重放窗口；0.6.60 带问句降档）',
-    /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO \};/.test(src))
+  ok('F1 DEFAULT_OPTS 带上闸门（0.6.44 起还带注入节奏两项：会话预算 0 / 同话题 0.6；0.6.49 带重放窗口；0.6.60 带问句降档；0.6.73 带陪跑线）',
+    /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO, injectMarginRatio: INJECT_MARGIN_RATIO_DEF \};/.test(src))
   ok('F1 问句降档常量在位（0.6.60：0.6 = 问句线落到 0.21）', src.includes('var INJECT_QUESTION_FLOOR_RATIO = 0.6;'))
   ok('F1 CONFIG_DEFAULTS 里是字面 0.35（模块求值早于常量赋值）', /injectFloor: 0\.35,/.test(src))
   ok('F1 zod schema 默认跟常量走', src.includes('injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),'))

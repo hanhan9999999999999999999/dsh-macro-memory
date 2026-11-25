@@ -34,6 +34,8 @@ export const NEW_FIELDS = [
   // 0.6.44：注入节奏两个旋钮——「一次会话一共允许多少字」与「同话题延续怎么判」。
   { key: 'injectSessionBudget', type: 'num', group: 'inject' },
   { key: 'injectRepeatSim', type: 'num', group: 'inject' },
+  // 0.6.73：陪跑线——第一名够强时，第二三名只沾同一个泛词的就不占额度。
+  { key: 'injectMarginRatio', type: 'num', group: 'inject' },
   // 0.6.49：本会话给过的条目隔多少轮又能重新进候选。
   { key: 'injectReinjectTurns', type: 'num', group: 'inject' },
   // 0.6.55：一轮总上限——命中 + 邻域一起算的「每次注入一共多少字」。
@@ -77,6 +79,11 @@ const TEXT = {
     [
       'settings.field.injectRepeatSim.hint',
       'When this turn’s wording overlaps the previous injection’s question this much (0–1; 1 = off, default 0.25), only hits clearly more relevant than last turn’s best are injected — follow-ups stop re-reading the same neighbourhood.',
+    ],
+    ['settings.field.injectMarginRatio.label', 'Runner-up gate'],
+    [
+      'settings.field.injectMarginRatio.hint',
+      'When the second hit scores below this fraction of the best one (0–1; 0 = off, default 0.2), it is not injected: it only shared one generic word, and its 200–400 characters would then be re-billed every turn. The best hit always stays, and the dropped entry is not marked as given — it comes back the moment it is the best match. Measured on 15 real questions: rounds with two candidates split into 0.04–0.08 (runner-up) and 0.71 (both genuinely relevant), so 0.2 sits in the empty band.',
     ],
     ['settings.field.injectReinjectTurns.label', 'Re-offer after turns'],
     [
@@ -148,6 +155,11 @@ const TEXT = {
       'settings.field.injectRepeatSim.hint',
       '这一轮的问句与上一次注入时的问句重合到这个程度（0–1，1＝关，默认 0.25），就只注入比上一轮最好那条明显更相关的条目——追问不再重复看同一批邻居。',
     ],
+    ['settings.field.injectMarginRatio.label', '陪跑线'],
+    [
+      'settings.field.injectMarginRatio.hint',
+      '第二名分数不到第一名这个比例（0–1，0＝关，默认 0.2）就不注入：它多半只是沾了同一个泛词，而那 200–400 字进了上下文还要每轮重新计费。第一名永远保留；被砍的条目不算「已给过」，下一轮它成了第一名照常进来。实测 15 句真实问句：两候选的轮次落在 0.04–0.08（陪跑）与 0.71（两条都真相关）两处，0.2 正好在空带里。',
+    ],
     ['settings.field.injectReinjectTurns.label', '会话内重新进候选'],
     [
       'settings.field.injectReinjectTurns.hint',
@@ -216,6 +228,11 @@ const TEXT = {
       'settings.field.injectRepeatSim.hint',
       'Quando a frase deste turno se sobrepõe à pergunta da injeção anterior neste grau (0–1; 1 = desligado, padrão 0,25), só entram acertos claramente mais relevantes que o melhor do turno anterior.',
     ],
+    ['settings.field.injectMarginRatio.label', 'Fator de acompanhante'],
+    [
+      'settings.field.injectMarginRatio.hint',
+      'Quando o segundo acerto fica abaixo desta fração do melhor (0–1; 0 = desligado, padrão 0,2), ele não é injetado: só compartilhou uma palavra genérica e seus 200–400 caracteres seriam cobrados a cada turno. O melhor acerto fica sempre, e a entrada descartada não é marcada como dada — volta assim que for a melhor. Medido em 15 perguntas reais: rodadas com dois candidatos ficam em 0,04–0,08 e 0,71.',
+    ],
     ['settings.field.injectReinjectTurns.label', 'Reoferecer após turnos'],
     [
       'settings.field.injectReinjectTurns.hint',
@@ -271,6 +288,8 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
   /** 0.6.44：注入节奏两个旋钮的出厂值＝引擎默认（0＝会话累计不限；0.25＝同话题抑制生效）。 */
   injectSessionBudget: 0,
   injectRepeatSim: 0.25,
+  /** 0.6.73：陪跑线的出厂值＝引擎默认 INJECT_MARGIN_RATIO_DEF（第二名不到第一名的 20% 不注入）。 */
+  injectMarginRatio: 0.2,
   /** 0.6.49：本会话给过的条目隔 12 轮又能重新进候选（＝引擎默认 INJECT_REINJECT_TURNS_DEF）。 */
   injectReinjectTurns: 12,
   /** 0.6.55：一轮总上限的出厂值＝融合层默认 NEIGHBOR_TURN_MAX_CHARS（0＝不限）。 */
@@ -293,6 +312,7 @@ const FIELDS_BLOCK = `,
       { key: "injectBodyMax", label: "settings.field.injectBodyMax.label", type: "num", hint: "settings.field.injectBodyMax.hint" },
       { key: "injectSessionBudget", label: "settings.field.injectSessionBudget.label", type: "num", hint: "settings.field.injectSessionBudget.hint" },
       { key: "injectRepeatSim", label: "settings.field.injectRepeatSim.label", type: "num", hint: "settings.field.injectRepeatSim.hint" },
+      { key: "injectMarginRatio", label: "settings.field.injectMarginRatio.label", type: "num", hint: "settings.field.injectMarginRatio.hint" },
       { key: "injectReinjectTurns", label: "settings.field.injectReinjectTurns.label", type: "num", hint: "settings.field.injectReinjectTurns.hint" },
       { key: "injectTurnMaxChars", label: "settings.field.injectTurnMaxChars.label", type: "num", hint: "settings.field.injectTurnMaxChars.hint" }`
 

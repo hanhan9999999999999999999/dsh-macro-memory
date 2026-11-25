@@ -92,7 +92,8 @@ function run(q, opts, sid) {
   return V.buildHitInjection(stubDb(), wsRoot, sid, q, opts, '.dsh-meow')
 }
 const PREV_TERMS = V.injectTermsOf(Q_PREV)
-const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
+// [0.6.73] 陪跑线关掉：这一支验节奏与额度，不同时验两道闸。
+const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240, injectMarginRatio: 0 }
 
 // ── R0 形状：常量与出厂值 ──────────────────────────────────────────────────
 {
@@ -284,7 +285,7 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
     idsBySession: () => [],
     findById: (id) => ({ row: LONG.find((r) => r.id === id) }),
   })
-  const base = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 0 }
+  const base = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 0, injectMarginRatio: 0 }
 
   const free = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-free', Q_SAME, base, '.dsh-meow')
   ok('R7 不计预算、不限单条时两条长条目整条进来（这是对照：正文真长，会顶穿小额度）',
@@ -353,11 +354,11 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
 {
   ok('R9 五个配置面都在：常量 12 / 默认值 / schema / 校验 / resolveConfig / 热生效白名单',
     src.includes('var INJECT_REINJECT_TURNS_DEF = 12;') &&
-      src.includes('injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO }') &&
+      src.includes('injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO, injectMarginRatio: INJECT_MARGIN_RATIO_DEF }') &&
       src.includes('injectReinjectTurns: z.number().min(0).default(INJECT_REINJECT_TURNS_DEF)') &&
       src.includes('reqNum("injectReinjectTurns")') &&
       src.includes('injectReinjectTurns: Number.isFinite(c.injectReinjectTurns)') &&
-      src.includes('"injectRepeatSim", "injectReinjectTurns", "reflect"'))
+      src.includes('"injectRepeatSim", "injectMarginRatio", "injectReinjectTurns", "reflect"'))
 
   const sid = 'sess-r9-fresh'
   const first = run(Q_PREV, baseOpts, sid)

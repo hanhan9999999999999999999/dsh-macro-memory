@@ -1276,6 +1276,9 @@ var CONFIG_DEFAULTS = {
   // [macro-fusion 0.6.44] 同话题延续判定（0–1；1 = 关）：上一轮问句与本轮词面重合到这个程度，
   // 就只注入「明显更相关」的条目（见 injectRepeatBoost）。同 1264 行，写死字面值。
   injectRepeatSim: 0.25,
+  // [macro-fusion 0.6.73] 陪跑线（0–1；0 = 关；默认 0.2）：第一名分数远超第二名时，第二名只是
+  // 陪跑、不该占额度。标定见 buildHitInjection 闸③的注释。同 1264 行，写死字面值。
+  injectMarginRatio: 0.2,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -5716,7 +5719,7 @@ var INJECT_BODY_MAX_DEF = 240;
 // （+3.3%）、整轮空 3 轮、只给 1 条 0 轮。12 轮大致是一个话题的来回长度：过了它再被问到，
 // 宁可再给一遍，也不要空着——旧条目还在历史里，重复一遍只是多花字，不给是直接丢能力。
 var INJECT_REINJECT_TURNS_DEF = 12;
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO };
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO, injectMarginRatio: INJECT_MARGIN_RATIO_DEF };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -6315,6 +6318,8 @@ var INJECT_BODY_NOTE_MAX = 56;
 // 最典型的追问全被漏掉，闸门等于没开。真正的收口在 boost（1.3）上，不在相似度上。
 var INJECT_REPEAT_SIM_DEF = 0.25;
 var INJECT_REPEAT_BOOST_DEF = 1.3;
+// [macro-fusion 0.6.73] 陪跑线：top2 / top1 低于这个比例就不注入（0 = 关）。标定见闸③。
+var INJECT_MARGIN_RATIO_DEF = 0.2;
 // 词面少于这么多条时不判同话题：短句（「继续」「好的」）的重合度本来就不可信。
 var INJECT_REPEAT_MIN_TERMS = 4;
 var INJECT_SENT_SPLIT = /(?<=[。！？；!?;\n])/;
@@ -7036,6 +7041,32 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     logHitSkip(workspace, dir, "repeat", ` repeated=${repeated} sim=${sim} prevTop=${seen.lastTopScore}${dropsTail(drops)}`);
     return null;
   }
+  // [macro-fusion 0.6.73] 闸 ③：陪跑线（相对门槛）。闸②管的是「同一批再灌一遍」，这一道管的是
+  // 「名额被陪跑占了」：hitTopK 默认 2，每轮固定要两条；可第一名把手头这句问句解释掉之后，
+  // 第二名常常只是沾了同一个泛词——它过了 floor、分数看着也不低，灌进去却是纯噪声，
+  // 而那 200–400 字进了历史还要每一轮重新计费。
+  // 标定（14 句真实问句 × 12 条带关键词的条目，k=3 看前两名分数）：两候选的轮次只有两种形态——
+  // 第二名只沾到一个问句词时 top2/top1 = 0.04 / 0.08；两条都真相关时 0.71。0.04–0.08 与 0.71
+  // 之间是空的，所以 0.2 落在这条空带里：噪声一律砍，真相关一条不误伤。
+  // 与 floor 的分工：floor 是绝对门槛（够不够格），这一道是相对门槛（比第一名差多远）。
+  // 保底：第一名永远留下——闸③只砍第二名及以后，不会把一轮砍成空轮。
+  // 被砍的条目不当成「已注入」（不写 seen、不加 hit_count）：下一轮它成了第一名照常进来。
+  const marginRatio = Number.isFinite(o.injectMarginRatio) ? Math.max(0, Math.min(1, o.injectMarginRatio)) : INJECT_MARGIN_RATIO_DEF;
+  let marginCut = 0;
+  if (marginRatio > 0 && kept.length > 1) {
+    const top = Number.isFinite(kept[0].score) ? kept[0].score : 0;
+    if (top > 0) {
+      const bar = top * marginRatio;
+      const beforeMargin = kept.length;
+      kept = kept.filter((h, i) => {
+        if (i === 0) return true;
+        const ok = Number.isFinite(h.score) && h.score >= bar;
+        if (!ok) drops.push({ id: h.id, level: h.level, score: h.score, reason: "margin" });
+        return ok;
+      });
+      marginCut = beforeMargin - kept.length;
+    }
+  }
   // [macro-fusion 0.6.72] 落选的第四种要在渲染之后才能算：这一轮的字数上限把排在后面
   // 的几条挤掉了（`modes` 一格一条，长度就是真渲染出来的条数）。被挤掉的那几条不是「分数
   // 不够」也不是「看过」——它只是排在这一轮后面，调大一点额度或把条目压短就能进来。
@@ -7100,7 +7131,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     writeSeenFile(workspace, sessionId, after, dir);
   } catch {
   }
-  return { text, injectedIds: ids, gated, picks: shown.map((h, i) => ({ id: h.id, level: h.level, chars: Number.isFinite(rendered.sizes?.[i]) ? rendered.sizes[i] : 0, mode: rendered.modes[i] ?? "full" })), drops, budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
+  return { text, injectedIds: ids, gated, picks: shown.map((h, i) => ({ id: h.id, level: h.level, chars: Number.isFinite(rendered.sizes?.[i]) ? rendered.sizes[i] : 0, mode: rendered.modes[i] ?? "full" })), drops, budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, margin: marginCut, spent: spent + text.length, sessionBudget } };
 }
 
 // src/tools.ts
@@ -11073,6 +11104,13 @@ var config = z.object({
    *  不同话题的 10 组全是 0.000，所以这个阈值不误伤。
    *  设 1 = 关（逐位回到 0.6.43）。 */
   injectRepeatSim: z.number().min(0).max(1).default(INJECT_REPEAT_SIM_DEF),
+  /** [macro-fusion 0.6.73] 陪跑线（0–1，0 = 关；默认 0.2）。
+   *  每轮固定要 hitTopK 条，可第一名把这句问句解释掉之后，第二名常常只沾了一个泛词：
+   *  它过了 floor、分数看着也不低，灌进去却是纯噪声，那 200–400 字还每轮重新计费。
+   *  实测 14 句问句 × 12 条带关键词的条目（k=3 取前两名）：两候选的轮次要嘛 top2/top1 = 0.04 / 0.08
+   *  （第二名仅沾一个问句词），要嘛 0.71（两条都真相关）——0.04–0.08 与 0.71 之间是空的，0.2 落在空带里。
+   *  第一名永远保留；被砍的条目不算「已注入」，下一轮它成了第一名照常进来。设 0 = 关（逐位回到 0.6.72）。 */
+  injectMarginRatio: z.number().min(0).max(1).default(INJECT_MARGIN_RATIO_DEF),
   /** [macro-fusion 0.6.49] 会话内「给过的条目」隔多少轮可以重新进候选（0 = 永不；默认 12）。
    *  旧行为是本会话注入过的条目**永久**拉黑，长会话里话题绕回来时最贴问的那条也进不来。
    *  标定（45 问连跑、k=2、bodyMax 240）：永久拉黑 78 条 / 22,247 字 / 5 轮空、2 轮只给 1 条；
@@ -11154,6 +11192,7 @@ function validateConfigUserLayer(value) {
   reqNum("injectBodyMax");
   reqNum("injectSessionBudget");
   reqNum("injectRepeatSim");
+  reqNum("injectMarginRatio");
   reqNum("injectReinjectTurns");
   reqNum("injectQuestionFloor");
   reqBool("reflect");
@@ -11250,6 +11289,9 @@ function resolveConfig(config2) {
     // 大于 1 视为关（buildHitInjection 里 `sim <= 1` 才启用）。
     injectSessionBudget: Number.isFinite(c.injectSessionBudget) ? Math.max(0, Math.floor(c.injectSessionBudget)) : 0,
     injectRepeatSim: Number.isFinite(c.injectRepeatSim) ? Math.min(1, Math.max(0, c.injectRepeatSim)) : INJECT_REPEAT_SIM_DEF,
+    // [macro-fusion 0.6.73] 陪跑线同样是 0–1 的比例：非数字回默认 0.2（配置读坏了不许变成
+    // 「第二名一律不要」，也不许变成「闸门悄悄关了」），数字夹到 [0,1]，0 = 显式关。
+    injectMarginRatio: Number.isFinite(c.injectMarginRatio) ? Math.min(1, Math.max(0, c.injectMarginRatio)) : INJECT_MARGIN_RATIO_DEF,
     // [macro-fusion 0.6.49] 重放窗口是整数轮数：非数字回默认 12（配置读坏了不许变成「永久拉黑」），
     // 数字取整夹到非负，0 = 显式回到「永不重放」。
     injectReinjectTurns: Number.isFinite(c.injectReinjectTurns) ? Math.max(0, Math.floor(c.injectReinjectTurns)) : INJECT_REINJECT_TURNS_DEF,
@@ -11413,7 +11455,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectQuestionFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "injectReinjectTurns", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectQuestionFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "injectMarginRatio", "injectReinjectTurns", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -12049,14 +12091,15 @@ ${e.stack ?? ""}` : String(e)}
           injectQuestionFloor: resolved.injectQuestionFloor,
           injectBodyMax: resolved.injectBodyMax,
           injectSessionBudget: resolved.injectSessionBudget,
-          injectRepeatSim: resolved.injectRepeatSim
+          injectRepeatSim: resolved.injectRepeatSim,
+          injectMarginRatio: resolved.injectMarginRatio
         }, resolved.projectDir);
         const picksStr = hit === null || !Array.isArray(hit.picks) || hit.picks.length === 0 ? "-" : hit.picks.slice(0, 8).map((p) => `${String(p.id).slice(0, 8)}:${p.chars}:${p.mode}`).join(",");
         // [macro-fusion 0.6.72] 落选名单与 picks 同一行：格式只有 dropsTail 一处定义，
         // 这里把 ` drops=` 前缀摘掉再拼回模板，免得两处各写一套（写法一分叉，读日志的人就要猜）。
         const dropsStr = hit === null ? "-" : dropsTail(hit.drops).replace(/^ drops=/, "");
         try {
-          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} picks=${picksStr} drops=${dropsStr} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} margin=${hit === null ? 0 : hit.budget?.margin ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} picks=${picksStr} drops=${dropsStr} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }
