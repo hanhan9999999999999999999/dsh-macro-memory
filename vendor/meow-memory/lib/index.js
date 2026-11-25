@@ -6291,6 +6291,9 @@ var INJECT_SENT_KEEP = 2;
 // 硬信息句的加权：等于「命中两三个双字词」的量级，够把纯数字句顶进候选，又不至于压过
 // 真正词面重合的句子。
 var INJECT_HARD_BONUS = 4;
+// [macro-fusion 0.6.58] 长句接不上时「拆到分句级」的最低份量：剩下的预算够这么多字
+// 才值得把一句截断塞进正文（少于这个数只剩半句话头，读不出意思反而添噪声）。
+var INJECT_LONG_MIN = 60;
 // [macro-fusion 0.6.56] 硬切兜底：切点往回收，最多退这么多字，找一个能读断的地方。
 var INJECT_CLIP_BACK = 20;
 // 能当作断点的字符：中英文标点、空白。切在「，」之后比切在「{value,」中间强得多，
@@ -6462,11 +6465,34 @@ function squeezeBody(body, cap, qTerms) {
     used += add
     taken.add(key)
   }
+  // [macro-fusion 0.6.58] 剩下的预算别留白：这条条目里最值钱、但「整句装不下」的句子
+  // （真库上常见 148–275 字的复句，而名次靠后的条目只分到 144 字预算），按分截断接在末尾。
+  // 只花已经划给本条目的预算，不多要一个字；截断仍在标点后收口（clipChars）。
+  let cutPiece = null
+  if (used < cap) {
+    for (const i of cand) {
+      if (pick.includes(i)) continue
+      const s = sents[i]
+      const lead = used > 0 ? 1 : 0
+      if (s.length + lead <= cap - used) continue
+      const room = cap - used - lead
+      if (room < INJECT_LONG_MIN) continue
+      const key = sentKey(s)
+      if (key !== '' && taken.has(key)) continue
+      const piece = clipChars(s, room)
+      if (piece === '') continue
+      pick.push(i)
+      cutPiece = { i, text: piece }
+      taken.add(key)
+      break
+    }
+  }
   if (pick.length === 0) return { text: clipChars(sents[0], cap), mode: 'clip' }
   pick.sort((a, b) => a - b)
-  let out = pick.map((i) => sents[i]).join(' ')
+  let out = pick.map((i) => (cutPiece && cutPiece.i === i ? cutPiece.text : sents[i])).join(' ')
   if (out.length > cap) out = clipChars(out, cap)
-  return { text: out, mode: pick.length > 1 ? 'squeeze' : 'head' }
+  const mode = pick.length > 1 ? 'squeeze' : cutPiece ? 'clip' : 'head'
+  return { text: out, mode }
 }
 
 /**
@@ -6608,12 +6634,18 @@ function renderHitEntries(entries, o, query) {
     // 现在现场量：rest 的上界就是 contentLen（剪得再狠也剩不下更多），按「本条最坏情况」
     // 量一次；再用「最多吃掉本条一半预算」封顶，覆盖写得离谱也不会把正文挤没。
     const willCut = contentLen > per
-    const noteLen = willCut
+    // [macro-fusion 0.6.58] 小上限下逐条自述是净亏：真库上 cap 240 时每条只分到 60 字，
+    // 而一句「本条还有 N 字未展开」要 38–56 字——指路话把正文挤成 0，整批只剩骨架。
+    // 现在的规矩：自述行要吃掉的预算超过正文的一半，就不留它，改由整批的尾巴统一交代
+    // （尾巴本来就说清「压了几条、全文用各条前面的 id 调 memory_read」）。预算宽裕时照旧。
+    const noteWant = willCut
       ? Math.min(
           lbl2('inject.bodyNote', { id: String(left.id ?? ''), rest: contentLen }).length,
           Math.max(INJECT_BODY_NOTE_MAX, Math.floor(per / 2))
         )
       : 0
+    const keepNote = willCut && per - noteWant >= noteWant + INJECT_BODY_AFTER_NOTE_MIN
+    const noteLen = keepNote ? noteWant : 0
     if (willCut) {
       const room = per - noteLen
       // 一句都装不下 → 整条不列。旧写法在这里 Math.max(INJECT_BODY_MIN, …) 保底，
@@ -6630,7 +6662,7 @@ function renderHitEntries(entries, o, query) {
     if (sq.text !== '') blocks.push(sq.text)
     if (willCut) {
       bodyCut += 1
-      blocks.push(lbl2('inject.bodyNote', { id: String(left.id ?? ''), rest: Math.max(0, contentLen - sq.text.length) }))
+      if (keepNote) blocks.push(lbl2('inject.bodyNote', { id: String(left.id ?? ''), rest: Math.max(0, contentLen - sq.text.length) }))
     }
     blocks.push('')
     if (budgeted) {

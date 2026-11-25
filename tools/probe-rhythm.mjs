@@ -295,10 +295,12 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
     wide !== null && wide.text === free.text, wide === null ? 'null' : `${wide.text.length} vs ${free.text.length}`)
 
   bumpedLong = []
-  const tight = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-tight', Q_SAME, { ...base, injectSessionBudget: 340 }, '.dsh-meow')
+  // 额度 250 是 0.6.58 之后重新标的：自述让位后同样 340 字已经能装下两条的「第一句」，
+  // 那时「被挤掉的那条」根本不存在，这条断言就测不到东西了——把额度调回真的只够一条的位置。
+  const tight = V.buildHitInjection(longDb(), wsRoot, 'sess-r7-tight', Q_SAME, { ...base, injectSessionBudget: 250 }, '.dsh-meow')
   const seenTight = readSeen('sess-r7-tight')
-  ok('R7 额度只剩 340 → 本轮注入不超过 340 字（旧写法会把两条 1000+ 全灌进来）',
-    tight !== null && tight.text.length <= 340 && tight.text.length < free.text.length,
+  ok('R7 额度只剩 250 → 本轮注入不超过 250 字（旧写法会把两条 1000+ 全灌进来）',
+    tight !== null && tight.text.length <= 250 && tight.text.length < free.text.length,
     tight === null ? 'null' : `${tight.text.length} 字（不计预算 ${free.text.length}）`)
   ok('R7 被挤掉的那条不许标成「已注入」（否则它下一轮再也不出现）',
     tight !== null && tight.injectedIds.length === 1 && seenTight !== null &&

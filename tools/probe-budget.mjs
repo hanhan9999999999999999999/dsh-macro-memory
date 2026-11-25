@@ -211,6 +211,41 @@ const Q = '降糖药 剂量'
   ok('B11 去重后仍留住正题句（不是靠少说话省字）', body.includes('240'))
 }
 
+// ── B12 自述让位（0.6.58）：小上限时逐条自述先让位，但整批尾巴绝不许一起消失 ──
+// 每条只分到 60–80 字时，一句 40 多字的「全文用 memory_read 取」会把正文挤成 0；
+// 让位可以，静默不行——尾巴必须还在（用户得知道这轮被压了、怎么取全文）。
+{
+  // 让位是真的会发生的：额度和整批尾巴先吃掉一部分，后面那条只剩几十字，
+  // 这时 40 多字的指路话就该让给正文（前面那条预算宽裕，照旧自述）。
+  const rows = [0, 1].map((i) => ({
+    id: `0mprobe00${3 + i * 2}`,
+    content: '先说一句铺垫，讲的是别的事。' + '这一段讲的是怎么调上限、上限调小之后会发生什么，说了很多遍。'.repeat(8),
+    level: 'fact', project: null, title: null, importance: 3, status: 'active', keywords: [], updatedAt: Date.now(),
+  }))
+  const r = V.renderHitEntries(rows, { injectMaxChars: 340, injectBodyMax: 0 }, '上限调小 铺垫')
+  const notes = (r.text.match(/本条还有 \d+ 字未展开/g) ?? []).length
+  const hasTail = r.text.includes('按上限') && r.text.includes('memory_read')
+  ok('B12 两条都要压时，后面那条不再逐条自述（把字数让给正文）', notes < rows.length, `自述 ${notes} 条 / 列出 ${rows.length} 条`)
+  ok('B12 但整批尾巴必须在位（压了几条 + 怎么取全文）', hasTail, hasTail ? '尾巴在位' : '尾巴丢了：' + r.text.slice(-80))
+  ok('B12 让位之后正文仍有内容（不是靠少说话省字）', r.modes.every((m) => m !== 'full') && r.text.length > 200, `${r.modes.join(',')} · ${r.text.length} 字`)
+}
+
+// ── B13 长句接续（0.6.58）：整句装不下时按分截断接在后头，别让预算空着 ────────
+// 「一句 300 字、预算只够 200」是常有的真情况（真库 90 个关键句里 9 个属这类）。
+// 旧写法直接跳过，于是这一条只剩开场铺垫；现在要在预算尾部咬掉一段，且不超过上限。
+{
+  const hard = {
+    id: '0mprobe004',
+    content: '预算上限这件事得从头说。' + '上限怎么算、算到哪一步、算完了又怎么调，这里一口气讲清楚不留余地，'.repeat(12) + '。',
+    level: 'fact', project: null, title: null, importance: 3, status: 'active', keywords: [], updatedAt: Date.now(),
+  }
+  const r = V.renderHitEntries([hard], { injectMaxChars: 300, injectBodyMax: 0 }, '上限怎么算')
+  const body = r.text.split('\n').filter((l) => !l.startsWith('[') && !/本条还有/.test(l) && !/^（以上为长期记忆/.test(l) && !/^…（本次注入按上限/.test(l) && l.trim() !== '').join(' ')
+  ok('B13 长句装不下时咬一段接上（正文里出现该句的开头）', body.includes('上限怎么算、算到哪一步'), '正文 ' + body.trim().length + ' 字')
+  ok('B13 咬断处有省略号收尾（别让人以为句子就到此为止）', /…\s*$/.test(body.trim()), JSON.stringify(body.trim().slice(-20)))
+  ok('B13 接续之后仍然不超上限', r.text.length <= 300, r.text.length + ' ≤ 300')
+}
+
 console.log('')
 if (fail > 0) {
   console.log(`FAILED  passed ${pass} / failed ${fail}`)
