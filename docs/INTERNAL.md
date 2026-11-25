@@ -14065,6 +14065,30 @@ function pairRounds(hits, chains) {
 
 **踩坑**：①「另有 N 场未列」的 N 必须从**有字的场次**里减——第一版用 `sessionOf.size`，把零字场次也数进去，夹具上立刻多出「另有 2 场」（应为 1）；②`others` 的过滤条件要写 `b !== sessionLast`（对象身份），不要按 `sid` 比较——同 `sid` 的两条账本就在同一箱里，按 `sid` 比较反而要用字符串等值；③探针工作区里 `.old` 是拼起来读的，断言场数时先数清 `.old` 里有几场，否则会以为「多了一场」。
 
+### 9.254 0.6.55：每轮最多灌多少字，得有一个数说话
+
+**症状（三个问句，一个根因）**。①用户问「我把每轮记忆压到 600 字，为什么还是被塞了 670」，插件答不出：四个上限各管一段——`injectBodyMax` 管每条正文、`injectMaxChars` 管命中注入整块、`injectSessionBudget` 管一场会话累计、`neighborChars` 管邻域块，**没有任何一个数是「这一轮总账」**。命中先花 350（没越 `injectMaxChars`）、邻域再花 320（没越 `neighborChars`），两个旋钮都合规，用户设的那个数一处都不生效。②用户问「这一轮到底花了多少」，只有命中那半有账（0.6.50 之后邻域才落账），加总还得自己算。③用户问「上限设小了会怎样」，没有答案：以前根本没有这一层，设小了也只能事后发现。
+根因：0.6.41 / 0.6.45 / 0.6.47 三道闸都是**单层预算**（各自守自己那一段），跨层的「一轮总账」从来没写。邻域这一层尤其被动——它在命中注入之后跑，可它拿不到「前面已经花掉多少」这个数，只能照自己那 420 字走。
+
+**处方（三处，缺一不可）**。
+1. **一轮总账**（`lib/macro/neighbor.js`）：新增 `injectTurnMaxChars`（默认 `NEIGHBOR_TURN_MAX_CHARS = 0`＝不限，与出厂行为逐位一致）。优先级写死：**命中 / 重放先花，邻域只花余额**。`decide` 里先算 `carriedChars = injectTurnMaxChars > 0 ? injectedCharsOf(messages) : 0`，再 `left = turnMax - carriedChars`：`left < NEIGHBOR_TURN_MIN_BLOCK`（140 字）→ 整块不带、写 `neighbor-skip reason=turncap turnSpent= turnCap= left=` 并原样返回 `decision`；否则 `blockChars = Math.min(chars, left)` 传给 `neighborBlockOf`。
+2. **只数本轮**（`injectedCharsOf(messages)`）：从**最后一条 `source.kind === 'user'` 之后**开始扫，只累加 `isMemorySource` 那一类消息里的 `type === 'text'` 块长度。这一步是这一版最容易写错的地方——扫整段 `messages` 会把上一轮的注入也算进来，于是第二轮起点就顶满、上限变成「聊到第三轮就再也带不了邻域」。
+3. **账与面板**：`neighbor-chain` 行尾加 `turnCap= turnSpent=`；`injectledger.js` 解析给 `turnCap`（缺省 0）与 `turnSpent`（缺省 `null`，老账不许读成「开了上限却没花钱」）；面板多一行
+
+```
+- 一轮总上限 600 字：最近一轮 命中 350 + 邻域 160 = 510（还剩 90 字）
+```
+
+只念**最近一轮设了上限**的账（`chains.filter((e) => e.turnCap > 0)`），一档都不是就不出行；出口名 `reason=turncap` → 「撞一轮总上限（本轮剩余不够开一块）」。
+
+**为什么余额不够就整块不带，而不是塞半块**：邻域块有固定开销——标题约 40 字、行尾那条现成的 `nebula_link(action="mute", a=…, b=…)` 指引约 100 字，`NEIGHBOR_TURN_MIN_BLOCK = 140` 就是这两项之和。余额 60 字时塞进去的只会是标题 + 半条摘要，**既读不懂、又拿不到断线的抓手**，还照样占账——那比不带更贵。
+
+**读数与判据**：`probe-neighbor` 69 → **77**（N14 八条：默认 0 逐位照旧 / 上限宽了不吃亏 / 收紧后块真的缩 / 余额不足整块不带且 decision 原样 / 只数本轮 / 面板三个数 / 出口名）、`probe-injectlog` 71 → **77**（I13 六条：三个数验算、老账不造「上限 0 字」、无命中行按 0 算）；全量 `check-all` 61 支 / **4,359 断言**。回退性：`injectTurnMaxChars: 0`（设置里填 0 或删掉这个键）逐位退回 0.6.54——`turnMax > 0` 才算账，关着时一行都不多写。
+
+**三条踩坑**：① 上限关着时**不许**走「拿余额去 `Math.min`」的分支（`Infinity` 也能算出同一个块，但账上会多一次无意义的计算，且容易顺手把「不限」写成 0）；② `injectedCharsOf` 的扫描起点必须是**最后一条 user 消息**，不是「第一条记忆消息」——一个回合里可能有多条记忆注入（命中 + 邻域），下一轮用户说话前它们全属于「上一轮」；③ 老账行没有这两个键，缺失时 `turnSpent` 要给 `null` 而不是 0：`null` 在面板里按「没设上限」处理，0 会被念成「开了上限、一分没花」。
+
+**顺手补的一口**：`NEIGHBOR_TURN_MIN_BLOCK` 与 `NEIGHBOR_TURN_MAX_CHARS` 都导出，探针与设置面用同一个数；`injectTurnMaxChars` 进了 `MACRO_KEYS`，设置里改完当场 `syncSurface()` 重挂，不必重启进程（但 DSH 主进程还是要重启才换上新代码）。
+
 ### 9.253 0.6.54：连错的那一跳，先不带
 
 **症状（三个问句，一个根因）**。①用户问「这条明明跟我不相干，为什么每轮都塞给我」，插件答得出「它强度 0.42、一个词面都不沾，已打标记」——但它**每轮都还在**：词面闸只砍「同一轮里零重合的第 2、3、4 条」（`NEIGHBOR_OFFTOPIC_KEEP = 1`），第 1 条永远带。②用户问「我上次让它断的那一跳，它断了吗」，没有答案：`memory_link(mute)` 改的是星图，邻域这一层不读也不记，图上断了这边下一轮才知道（因为查不到它了）。③用户问「我不管它，它会不会自己好」，也不会：同一跳连着二十轮被标「未沾词」，每轮都占一份完整邻域块，账上却是一条记录都没有。

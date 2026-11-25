@@ -34,6 +34,8 @@ export const NEW_FIELDS = [
   { key: 'injectRepeatSim', type: 'num', group: 'inject' },
   // 0.6.49：本会话给过的条目隔多少轮又能重新进候选。
   { key: 'injectReinjectTurns', type: 'num', group: 'inject' },
+  // 0.6.55：一轮总上限——命中 + 邻域一起算的「每次注入一共多少字」。
+  { key: 'injectTurnMaxChars', type: 'num', group: 'inject' },
   { key: 'neighborInject', type: 'bool', group: 'neighbor' },
   { key: 'neighborMax', type: 'num', group: 'neighbor' },
   { key: 'neighborChars', type: 'num', group: 'neighbor' },
@@ -69,6 +71,11 @@ const TEXT = {
     [
       'settings.field.injectReinjectTurns.hint',
       'Entries already given in this session stay out of the candidates for this many turns (0 = never re-offer). Past that, a memory you were shown earlier can come back when it is again the best match — long sessions where the topic returns stop coming up empty. Default 12.',
+    ],
+    ['settings.field.injectTurnMaxChars.label', 'Per-turn injection cap'],
+    [
+      'settings.field.injectTurnMaxChars.hint',
+      'Total characters of long-term memory injected into one turn (0 = no limit). Keyword hits spend first and the graph neighbourhood uses what is left; if the remainder cannot fit a useful block, no neighbours are injected that turn. This is a third account on top of the per-hit and per-session caps above.',
     ],
     ['settings.field.neighborInject.label', 'Inject graph neighbourhood'],    [
       'settings.field.neighborInject.hint',
@@ -119,6 +126,11 @@ const TEXT = {
       'settings.field.injectReinjectTurns.hint',
       '本会话已经给过的条目，隔多少轮之后可以重新进候选（0＝永不放回，默认 12）。超过这个轮数，以前给过的条目如果又是最贴问的，会再给一遍——长会话里话题绕回来时不至于空着；旧条目本来就在上下文里，多给一遍只是多花字，不给是直接丢能力。',
     ],
+    ['settings.field.injectTurnMaxChars.label', '每轮注入总上限'],
+    [
+      'settings.field.injectTurnMaxChars.hint',
+      '一轮里长期记忆一共允许多少字（0＝不限）。命中注入先花，星图邻域只能花剩下的；剩下的不够开一块，这轮就一条邻居都不带。这是压在「单次命中上限」「会话预算」之上的第三层总账。',
+    ],
     ['settings.field.neighborInject.label', '每轮带星图邻域'],
     [
       'settings.field.neighborInject.hint',
@@ -166,6 +178,11 @@ const TEXT = {
       'settings.field.injectReinjectTurns.hint',
       'Entradas já dadas nesta sessão ficam fora dos candidatos por este número de turnos (0 = nunca reoferecer, padrão 12). Passado isso, uma memória mostrada antes volta quando é de novo a mais relevante — sessões longas em que o assunto retorna deixam de ficar vazias.',
     ],
+    ['settings.field.injectTurnMaxChars.label', 'Teto de injeção por turno'],
+    [
+      'settings.field.injectTurnMaxChars.hint',
+      'Total de caracteres de memória de longo prazo injetados em um turno (0 = sem limite). Os acertos por palavra-chave gastam primeiro e a vizinhança do grafo usa o que sobra; se o resto não couber um bloco útil, nenhum vizinho entra neste turno. É a terceira conta, acima dos tetos por acerto e por sessão.',
+    ],
     ['settings.field.neighborInject.label', 'Injetar vizinhança do grafo'],
     [
       'settings.field.neighborInject.hint',
@@ -200,6 +217,8 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
   injectRepeatSim: 0.25,
   /** 0.6.49：本会话给过的条目隔 12 轮又能重新进候选（＝引擎默认 INJECT_REINJECT_TURNS_DEF）。 */
   injectReinjectTurns: 12,
+  /** 0.6.55：一轮总上限的出厂值＝融合层默认 NEIGHBOR_TURN_MAX_CHARS（0＝不限）。 */
+  injectTurnMaxChars: 0,
   /** 0.6.42：星图邻域四个旋钮的出厂值＝融合层默认（lib/macro/neighbor.js）。 */
   neighborInject: true,
   neighborMax: 4,
@@ -213,7 +232,8 @@ const FIELDS_BLOCK = `,
       { key: "injectBodyMax", label: "settings.field.injectBodyMax.label", type: "num", hint: "settings.field.injectBodyMax.hint" },
       { key: "injectSessionBudget", label: "settings.field.injectSessionBudget.label", type: "num", hint: "settings.field.injectSessionBudget.hint" },
       { key: "injectRepeatSim", label: "settings.field.injectRepeatSim.label", type: "num", hint: "settings.field.injectRepeatSim.hint" },
-      { key: "injectReinjectTurns", label: "settings.field.injectReinjectTurns.label", type: "num", hint: "settings.field.injectReinjectTurns.hint" }`
+      { key: "injectReinjectTurns", label: "settings.field.injectReinjectTurns.label", type: "num", hint: "settings.field.injectReinjectTurns.hint" },
+      { key: "injectTurnMaxChars", label: "settings.field.injectTurnMaxChars.label", type: "num", hint: "settings.field.injectTurnMaxChars.hint" }`
 
 const GROUP_BLOCK = `  {
     title: "settings.group.neighbor",

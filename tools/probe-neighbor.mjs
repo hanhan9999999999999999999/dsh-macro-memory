@@ -472,7 +472,7 @@ const recall = [
   await inj.decide(payload('n12-a', true), enter('n12-a'))
   const chain = lastLine()
   ok('N12 注入成功写 neighbor-chain：条数 / 字数 / 闸位读数都在（与引擎同一行格式）',
-    /\] neighbor-chain pid=\d+ sid=n12-a ids=1 chars=\d+ weak=\d+ offtopic=\d+ flagged=\d+ deduped=\d+ max=4 cap=420 minScore=0\.35$/.test(chain),
+    /\] neighbor-chain pid=\d+ sid=n12-a ids=1 chars=\d+ weak=\d+ offtopic=\d+ flagged=\d+ deduped=\d+ max=4 cap=420 minScore=0\.35 turnCap=0 turnSpent=0$/.test(chain),
     chain)
 
   // ③ 同一个会话再问：已经带过的条目由跨层按 id 挡掉，写 reason=empty
@@ -608,6 +608,88 @@ const recall = [
   ok('N13 neighborSuspectTurns: 0 时整层关（第四轮照带，且一行错边账都不写）',
     /sid=n13o-4 /.test(t3) && !/neighbor-suspect|reason=suspect/.test(t3) &&
       Object.keys(NB.readSuspectLedger(ws3).edges).length === 0, String(t3.length))
+}
+
+// ── N14 一轮总上限：命中先花、邻域只花剩下的（0.6.55）──────────────────────────
+// 病根：三个上限各管一段（命中 injectMaxChars / 邻域 neighborChars / 会话累计），
+// 用户想「每轮最多 600 字」时没有任何一个数对得上；邻域每轮还要另花 200~400 字，
+// 于是「每轮几乎都注入」变成了两份账单。这一块守五件事：
+// 上限关着时逐位照旧、开了之后邻域只拿余额、余额不够就整块不带（不塞半块）、
+// 「这一轮已花」只算本轮（上一轮的注入不算）、面板念得出这笔账。
+{
+  const R2 = [
+    '星图邻域（1 跳，2 条）：',
+    '',
+    '1. [fact] dsh-macro-memory     强度 0.82 0.2.144 的交付态',
+    '  id: ws:0mcap001',
+    '  为什么：经由「写入节流」的cooc关联扩散而来',
+    '  摘要：交付态摘要',
+    '2. [fact] 别的项目     强度 0.70 交付节奏',
+    '  id: 0mcap002',
+    '  为什么：经由「写入节流」的cooc关联扩散而来',
+    '  摘要：另一条摘要',
+  ].join('\n')
+  const ws4 = join(tmpHome, 'ws-n14')
+  const LOG4 = join(ws4, '.dsh-meow', 'dream-debug.log')
+  const mk4 = (cfg) => NB.createNeighborInjector({
+    ctx: { on: () => () => {} },
+    bridge: { tryCall: async () => ({ text: R2 }) },
+    config: cfg,
+    meowDir: () => '.dsh-meow',
+    logger: () => {},
+    loadLlm: async () => ({ createUserMessage: (o) => o }),
+  })
+  const user4 = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '写入节流那个窗口后来怎么定的' }] }
+  // 上一层（meow 命中 / 重放）已经注入的那一块：只认 source.kind，不认内容。
+  const carriedMsg = (n) => ({ role: 'user', source: { kind: 'plugin:macro-memory' }, content: [{ type: 'text', text: 'x'.repeat(n) }] })
+  const pl4 = (sid) => ({ agent: { session: { id: sid, header: { cwd: ws4 } } } })
+  const text4 = () => (existsSync(LOG4) ? readFileSync(LOG4, 'utf8') : '')
+  const last4 = () => text4().trim().split('\n').slice(-1)[0] ?? ''
+
+  // ① 上限关着（默认 0）：一个字都不变，账行写 turnCap=0 —— 与 0.6.54 逐位相同
+  const off = mk4({})
+  await off.decide(pl4('n14-off'), { kind: 'enter', messages: [user4, carriedMsg(5000)] })
+  ok('N14 上限默认 0（不限）：照旧注入，账行写 turnCap=0 turnSpent=0（老行为一位不变）',
+    /] neighbor-chain pid=\d+ sid=n14-off .*turnCap=0 turnSpent=0$/.test(last4()), last4())
+
+  // ② 上限很宽：邻域照旧吃满自己的 neighborChars，不被总上限无故削
+  const wide = mk4({ injectTurnMaxChars: 900 })
+  await wide.decide(pl4('n14-wide'), { kind: 'enter', messages: [user4] })
+  ok('N14 上限比单层预算还宽：邻域照旧吃满 cap=420（不因为开了总上限就变小）',
+    /chars=\d+ .*cap=420 minScore=0\.35 turnCap=900 turnSpent=0$/.test(last4()), last4())
+
+  // ③ 上限收紧：邻域只能花余额（600 - 350 = 250），块本身跟着缩
+  const tight = mk4({ injectTurnMaxChars: 600 })
+  await tight.decide(pl4('n14-tight'), { kind: 'enter', messages: [user4, carriedMsg(350)] })
+  const tightLine = last4()
+  const tightChars = Number((tightLine.match(/chars=(\d+)/) ?? [])[1] ?? -1)
+  ok('N14 命中已花 350 时，邻域这一块只拿剩下的 250（块字数真的缩了，不是只在账上写）',
+    tightChars > 0 && tightChars <= 250 && /turnCap=600 turnSpent=350$/.test(tightLine), tightLine)
+
+  // ④ 余额不够开一块：整块不带，写 reason=turncap，decision 原样返回
+  const over = mk4({ injectTurnMaxChars: 400 })
+  const res = await over.decide(pl4('n14-over'), { kind: 'enter', messages: [user4, carriedMsg(400)] })
+  ok('N14 余额不足（400-400）：这一轮一条邻居都不带，出口写 reason=turncap 并带上账',
+    /\] neighbor-skip pid=\d+ reason=turncap sid=n14-over turnSpent=400 turnCap=400 left=0$/.test(last4()), last4())
+  ok('N14 被上限挡住时 decision 原样返回（消息一条没多，绝不塞半块进去）',
+    Array.isArray(res?.messages) && res.messages.length === 2 && over.stats().capped === 1,
+    String(res?.messages?.length) + ' / capped=' + String(over.stats().capped))
+
+  // ⑤ 「这一轮已花」只算本轮：用户消息之前的注入（上一轮）不进账
+  ok('N14 已花字数只数最后一条用户消息之后的注入（上一轮的不算，否则第二轮就永远顶满）',
+    NB.injectedCharsOf([carriedMsg(100), user4, carriedMsg(30)]) === 30 &&
+      NB.injectedCharsOf([user4]) === 0,
+    String(NB.injectedCharsOf([carriedMsg(100), user4, carriedMsg(30)])))
+
+  // ⑥ 面板念得出这笔账（最近一轮设了上限的是 ③：命中 350 + 邻域 tightChars）
+  const IL3 = await import(pathToFileURL(join(root, 'lib', 'macro', 'injectledger.js')).href)
+  const body3 = IL3.readInjectPanel({ workspace: ws4, dir: '.dsh-meow', limit: 30, config: {} }).body
+  ok('N14 面板念得出「一轮总上限 N 字：命中 X + 邻域 Y = Z（还剩 R）」',
+    /- 一轮总上限 600 字：最近一轮 命中 350 \+ 邻域 \d+ = \d+（还剩 \d+ 字）/.test(body3),
+    (body3.match(/- 一轮总上限[^\n]*/) ?? [''])[0])
+  ok('N14 撞上限的轮在「没带的原因」里念得出来（不是一句 None）',
+    /撞一轮总上限（本轮剩余不够开一块） 1 轮/.test(body3),
+    (body3.match(/- 没带的原因[^\n]*/) ?? [''])[0])
 }
 
 rmSync(tmpHome, { recursive: true, force: true })

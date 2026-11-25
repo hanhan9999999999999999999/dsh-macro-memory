@@ -391,6 +391,60 @@ const body = panel.body
   rmSync(cleanWs, { recursive: true, force: true })
 }
 
+// ── I13 一轮总上限也念得出来：开了多大、最近一轮怎么花的（0.6.55）────────────
+// 病根：0.6.55 给邻域加了「一轮总账」闸（命中先花、邻域只花剩下的），但面板还只念
+// 「邻域带了几条、多少字」——用户设了 600 字，事后没法确认这一轮到底花到哪。
+// 这一块守：设了上限才出行、数字能验算（命中 + 邻域 = 合计、还剩多少）、
+// 老账（0.6.55 之前写的行没有这两个读数）不许被读成「开了上限却没花钱」。
+{
+  const capWs = join(root, '.probe-injectlog-cap')
+  mkdirSync(join(capWs, '.dsh-meow'), { recursive: true })
+  const CAP_LOG = join(capWs, '.dsh-meow', 'dream-debug.log')
+  const rows = [
+    // 一轮没设上限（turnCap=0）：这一轮不该进「一轮总上限」那一行
+    '[2026-11-25T07:00:00.000Z] hit-chain pid=1 sid=c1 textLen=900 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=900/∞',
+    '[2026-11-25T07:00:01.000Z] neighbor-chain pid=1 sid=c1 ids=2 chars=300 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35 turnCap=0 turnSpent=0',
+    // 一轮设了 600：命中 350 + 邻域 160 = 510，还剩 90
+    '[2026-11-25T07:10:00.000Z] hit-chain pid=1 sid=c2 textLen=350 hit=yes floor=0.35 gated=0 body=240 bodyCut=0 sim=0.25 repeated=0 released=0 reinject=12 spent=1,250/∞',
+    '[2026-11-25T07:10:01.000Z] neighbor-chain pid=1 sid=c2 ids=2 chars=160 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35 turnCap=600 turnSpent=350',
+    // 一轮撞到上限：整轮没带，出口名要念得出来
+    '[2026-11-25T07:20:00.000Z] neighbor-skip pid=1 reason=turncap sid=c3 turnSpent=380 turnCap=600 left=220',
+  ]
+  writeFileSync(CAP_LOG, rows.join('\n') + '\n', 'utf8')
+  const body = L.readInjectPanel({ workspace: capWs, dir: '.dsh-meow', limit: 30, config: {} }).body
+  ok('I13.1 设了上限的那一轮报出三个数：命中 + 邻域 = 合计，还剩多少（350+160=510，余 90）',
+    /- 一轮总上限 600 字：最近一轮 命中 350 \+ 邻域 160 = 510（还剩 90 字）/.test(body),
+    (body.match(/- 一轮总上限[^\n]*/) ?? [''])[0])
+  ok('I13.2 出口名念得出来（撞上限不是一句 reason=turncap）',
+    /没带的原因：[^\n]*撞一轮总上限（本轮剩余不够开一块） 1 轮/.test(body),
+    (body.match(/没带的原因：[^\n]*/) ?? [''])[0])
+  ok('I13.3 只念最近一轮设了上限的账（c1 那轮 turnCap=0 不上榜）', !/turnCap=0/.test(body) && !/上限 0 字/.test(body), 'c1')
+
+  // 老账（0.6.55 之前写的 neighbor-chain 没有 turnCap / turnSpent）：当成「没设上限」，不出这一行
+  const legacy = join(root, '.probe-injectlog-legacy')
+  mkdirSync(join(legacy, '.dsh-meow'), { recursive: true })
+  writeFileSync(join(legacy, '.dsh-meow', 'dream-debug.log'),
+    '[2026-11-25T07:30:00.000Z] neighbor-chain pid=1 sid=lg ids=2 chars=300 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35\n', 'utf8')
+  const legacyBody = L.readInjectPanel({ workspace: legacy, dir: '.dsh-meow', config: {} }).body
+  ok('I13.4 老账没有这两个读数：当作没设上限，不造一行「上限 0 字」也不报 NaN',
+    !/一轮总上限/.test(legacyBody) && !/NaN/.test(legacyBody), (legacyBody.match(/一轮总上限[^\n]*/) ?? [''])[0])
+  ok('I13.5 老账照旧念得出来（新读数缺失不动老结论）', /邻域 2 条|邻域 1 轮/.test(legacyBody), 'legacy')
+
+  // 撞上限但没有命中行：命中按 0 算，别把合计写成 NaN/空
+  const soloWs = join(root, '.probe-injectlog-cap2')
+  mkdirSync(join(soloWs, '.dsh-meow'), { recursive: true })
+  writeFileSync(join(soloWs, '.dsh-meow', 'dream-debug.log'),
+    '[2026-11-25T07:40:00.000Z] neighbor-chain pid=1 sid=solo2 ids=1 chars=120 weak=0 offtopic=0 flagged=0 deduped=0 max=4 cap=420 minScore=0.35 turnCap=500 turnSpent=0\n', 'utf8')
+  const soloBody = L.readInjectPanel({ workspace: soloWs, dir: '.dsh-meow', config: {} }).body
+  ok('I13.6 这一轮还没花过命中时命中按 0 算（120 = 0 + 120，剩 380）',
+    /- 一轮总上限 500 字：最近一轮 命中 0 \+ 邻域 120 = 120（还剩 380 字）/.test(soloBody),
+    (soloBody.match(/- 一轮总上限[^\n]*/) ?? [''])[0])
+
+  rmSync(capWs, { recursive: true, force: true })
+  rmSync(legacy, { recursive: true, force: true })
+  rmSync(soloWs, { recursive: true, force: true })
+}
+
 rmSync(ws, { recursive: true, force: true })
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} ${pass}/${pass + fail}`)
