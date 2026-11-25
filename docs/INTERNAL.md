@@ -14302,3 +14302,20 @@ const soloEdge = edgeScore > 0 && block.ids.length === 1 && block.scores[0] < ed
 会话级复量：17 条话术串成一条连续会话、id 账本只增不减，4,322 → **3,731 字（-13.7%）**，17 轮歇 4 轮；记忆型 10 轮里只有 2 轮带邻域且都过线，一个字没变。旋钮 `neighborSoloEdge`（默认 0.55，0 = 关）落在设置页「边缘单条隔轮带」，关掉逐位退回 0.6.61。`probe-neighbor` 81 → **91**：带→歇→带三态、让路时 `decision` 原样、`state.edged`、0.68 单条不降频、一块两条不降频、旋钮 0 整层关、面板文案、`scores` 与 `ids` 同序。
 
 写探针时踩到一个坑值得记：邻居 id 按**前 8 位**认同一跳（`sameId`），第一版测试用了 `0mstrong01` / `0mstrong02` 这种 id，前 8 位一样 → 第二轮先被「已经带过」挡掉、写 `reason=empty`，看起来像降频闸没生效。换成前 8 位不同的 id 才测得到闸。
+### 9.262 0.6.63：目录比全文便宜
+
+`memory_project` 一直是「一次把整个项目铺出来」。它不在注入路径上，所以 0.6.56–0.6.62 那一串砍字数的刀一次都没碰到它；直到按 `cost.jsonl` 把工具回执排队：**30 次调用合计 347,428 字，中位数 7,554，最大 27,319，96% 的花费在超过 3,000 的那 21 次里**——比命中注入一整轮大二十倍。
+
+病根不在「条目多」，在 `vendor/meow-memory/lib/index.js:6138` 的 `buildProjectSection`：`fmtProjectRow()` 每行给一句元信息之后**紧跟整段 `content`**，一条都不截，再叠一段约 1.1K 字的固定说明（只给 active、SQLite 路径、七层表结构、session 日志位置）。项目越大越吃亏，而这层信息的读者通常只需要知道「有哪些条目、各自讲什么」。
+
+处方落在 `lib/macro/defs/project.js`（这一版把它从 25 行转发改成真实现）：
+
+- `export const PROJECT_MAX_CHARS = 3000`——标定依据是中位数 7,554 与「目录实测 240–1,270 字」；
+- `compactProject({ project, groups, cap })`：`GROUP_ORDER = ['rules','overview','structure','decisions','quotes','ops','todo']` 逐组列 `§ <组名> <n> 条`，每行 `- [<完整 id>] <level> <首句>`；`headOf()` 取到第一个句末标点（`。！？；!?;`），超 60 字截断加 `…`；边装边判 `used + line.length + 1 + TAIL_RESERVE > limit`，装不下 `skipped += 1`；尾巴 `还有 N 条没列（上限 M 字）` + 三个出口（`budget=0` / `group=<…>` / `memory_read("id")`）；
+- `createProject({ flow, config, meowDir })`：先照原样调 vendor 的 `memory_project`，只有 `cap > 0 && full.length > cap` 且 `projectAnswerKind(full) === 'ok'` 才换目录；`rowsOf()` 用 `Meow.getDb(workspace, dir).list('project'|'rules')` 取真行（active 按 subcategory 分组、stale todo 取最新 5 条进 `done` 组），读不到行就退回原文——**宁可不压，不给半截**。
+
+三层出口的优先级是「单次 `budget` > 配置 `projectMaxChars` > 常量」，`budget=0` 明写「原样全量」，`group` 写错不报错、只加一句「这次没按组筛」——工具面的原则是不让一个错参数把整次调用废掉。
+
+读数（真库 `memory.db`，11 个项目名 + `cost.jsonl` 30 次重放）：`meow-memory` 10 条 5,148 → 1,267（-75%）、`dsh-macro-memory` 6 条 14,909 → 1,079（-93%），其余 9 个项目本来就在 3,000 以内、逐字节原样；历史合计省约 305,858 字。
+
+判据 `tools/probe-project.mjs` **23 条**：短回执原样、目录口径（分组标题 + 完整 id + 层名 + 只留首句 + 不含第二句 + 自报字数）、`budget=0` 逐字节、`group` / `limit` 两个出口、极小上限的「连一条目录都排不下」、三类空回答不压、`projectMaxChars: 0` 原样、组名写错、首句截断加 `…`、已完结待办单列、`budget=400` 自报未列条数。`probe-client-ui` 20 → **22**（面板渲染出「工具回执」组与「项目全景上限」）。**踩坑一条**：探针第一版给 `config` 传 `{}`，而 `cap = 有限 budget ? 它 : config.projectMaxChars` → `undefined` 落到 `!(cap > 0)` 分支原样返回，11 条断言一起红——夹具必须按真实插件的形状传（`{ projectMaxChars: PROJECT_MAX_CHARS }`，真实环境里这个值由 zod 默认值填进来）。

@@ -53,6 +53,7 @@ const STEPS = [
   ['tools/param-audit.mjs', '参数级覆盖：原参数与必填都没退化'],
   ['tools/probe-toolsize.mjs', '工具清单与体积：17 个原工具一个不少、参数没有膨胀'],
   ['tools/probe-tools.mjs', '工具账本：每个脚本有归属、_root 导出不许白用、只读脚本真跑一遍'],
+  ['tools/probe-project.mjs', '项目全景预算账：短回执原样 / 超上限给目录 / budget=0 全量 / group·limit 出口 / 空回答不压'],
   ['tools/probe-words.mjs', '口径总账：手册、schema、常量、对外文案说的是不是同一件事'],
   ['tools/probe-recall.mjs', '召回校准：相关度优先、重要度进分数、死条目/层过滤/长句召回'],
   ['tools/probe-merge.mjs', '合并账本：关键词并集、归属不搬、变短默认不换、overwrite 才换'],

@@ -139,6 +139,9 @@ const EXTRA = {
   // [macro-fusion 0.2.157] patch / append / restore / allowShrink：可更新性的两半（按句改 + 改前留一版），
   // vendor 的 update 口只收整段 content，这四个参数由融合层自己算成最终正文，登记在这里才算「有出处」。
   'memory_update': ['links', 'patch', 'append', 'restore', 'allowShrink'],
+  // [macro-fusion 0.6.63] group / limit / budget：项目全景的目录视图是统一工具自己加的能力
+  // （vendor 的 project 口只有 project 一个参数，一次吐全文，实测中位数 7,554 字、最大 27,319 字）。
+  'memory_project': ['group', 'limit', 'budget'],
 }
 
 // [macro-fusion 0.4.0] WITHHELD：vendor 侧有、统一工具**故意**不暴露的参数。

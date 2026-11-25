@@ -45,6 +45,8 @@ export const NEW_FIELDS = [
   { key: 'neighborSuspectTurns', type: 'num', group: 'neighbor' },
   // 0.6.62：边缘单条隔轮带——一块里只剩一条弱邻居时带一轮、休一轮。
   { key: 'neighborSoloEdge', type: 'num', group: 'neighbor' },
+  // 0.6.63：项目全景的目录上限——memory_project 一次能吐多少字。
+  { key: 'projectMaxChars', type: 'num', group: 'reply' },
 ]
 
 /** 三份词典要插的 13 条文案。zh 的写法在插进去时转成 \uXXXX（与包内既有风格一致）。 */
@@ -112,6 +114,12 @@ const TEXT = {
       'settings.field.neighborMinScore.hint',
       'Neighbours weaker than this are dropped (0–1; measured default 0.35). A turn whose neighbours are all weak injects nothing rather than padding with noise.',
     ],
+    ['settings.group.reply', 'Tool replies'],
+    ['settings.field.projectMaxChars.label', 'Project overview cap'],
+    [
+      'settings.field.projectMaxChars.hint',
+      'How many characters memory_project may return (0 = no cap). Past the cap it answers with an index instead of the full text: group headings, one line per entry with its full id, level and first sentence, then how many entries were left out. Measured on the real library: median 7,554 characters, largest 27,319, and 96% of the spend sat in calls over 3,000 — the index keeps the same entries reachable through memory_read. memory_project budget=<n> overrides it for one call, budget=0 returns everything.',
+    ],
   ],
   zh: [
     ['settings.group.neighbor', '星图邻域'],
@@ -173,6 +181,12 @@ const TEXT = {
     [
       'settings.field.neighborMinScore.hint',
       '强度低于它的邻居不注入（0–1，实测默认 0.35）；整批都弱就一条都不带，不拿噪声凑数。',
+    ],
+    ['settings.group.reply', '工具回执'],
+    ['settings.field.projectMaxChars.label', '项目全景上限'],
+    [
+      'settings.field.projectMaxChars.hint',
+      'memory_project 一次最多回多少字（0＝不限）。超了就改给目录：按组列标题、每条一行（完整 id、层级、首句），末尾自报还有几条没列；原文一条不丢，要用全文按 id 调 memory_read。实测真库中位数 7,554 字、最大 27,319 字，96% 的花费集中在超过 3,000 字的那几次调用上。单次可用 memory_project budget=<n> 覆盖，budget=0 给全量。',
     ],
   ],
   'pt-br': [
@@ -239,6 +253,12 @@ const TEXT = {
       'settings.field.neighborMinScore.hint',
       'Vizinhos mais fracos que isto são descartados (0–1; padrão medido 0,35). Turnos só com vizinhos fracos não injetam nada em vez de encher com ruído.',
     ],
+    ['settings.group.reply', 'Respostas de ferramentas'],
+    ['settings.field.projectMaxChars.label', 'Teto do panorama do projeto'],
+    [
+      'settings.field.projectMaxChars.hint',
+      'Quantos caracteres o memory_project pode devolver (0 = sem teto). Acima do teto ele responde com um índice em vez do texto inteiro: títulos de grupo, uma linha por entrada com id completo, nível e primeira frase, e quantas ficaram de fora. Medido na biblioteca real: mediana 7.554 caracteres, máximo 27.319, e 96% do gasto estava em chamadas acima de 3.000 — o índice mantém as mesmas entradas alcançáveis por memory_read. memory_project budget=<n> substitui o teto numa chamada; budget=0 devolve tudo.',
+    ],
   ],
 }
 
@@ -263,7 +283,9 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
   /** 0.6.54：错边连标 3 轮先不带（＝融合层默认 NEIGHBOR_SUSPECT_TURNS）。 */
   neighborSuspectTurns: 3,
   /** 0.6.62：边缘单条隔轮带（＝融合层默认 NEIGHBOR_SOLO_EDGE_SCORE；0＝关）。 */
-  neighborSoloEdge: 0.55,`
+  neighborSoloEdge: 0.55,
+  /** 0.6.63：项目全景目录上限（＝defs/project.js 的 PROJECT_MAX_CHARS，0＝不限）。 */
+  projectMaxChars: 3000,`
 
 const FIELDS_BLOCK = `,
       { key: "injectFloor", label: "settings.field.injectFloor.label", type: "num", hint: "settings.field.injectFloor.hint" },
@@ -283,6 +305,15 @@ const GROUP_BLOCK = `  {
       { key: "neighborMinScore", label: "settings.field.neighborMinScore.label", type: "num", hint: "settings.field.neighborMinScore.hint" },
       { key: "neighborSuspectTurns", label: "settings.field.neighborSuspectTurns.label", type: "num", hint: "settings.field.neighborSuspectTurns.hint" },
       { key: "neighborSoloEdge", label: "settings.field.neighborSoloEdge.label", type: "num", hint: "settings.field.neighborSoloEdge.hint" }
+    ]
+  },
+`
+
+/** 0.6.63 新开「工具回执」一组（顺序：注入 → 邻域 → 回执 → 反思）。 */
+const REPLY_GROUP_BLOCK = `  {
+    title: "settings.group.reply",
+    fields: [
+      { key: "projectMaxChars", label: "settings.field.projectMaxChars.label", type: "num", hint: "settings.field.projectMaxChars.hint" }
     ]
   },
 `
@@ -372,13 +403,17 @@ export function applySettingsFields(text) {
   //    probe-client-ui 一执行 bundle 就报 Unexpected token '{'）。
   const groupAnchor = '  {\n    title: "settings.group.reflect",'
   expect(out, groupAnchor, 1)
-  out = out.replace(groupAnchor, GROUP_BLOCK + groupAnchor)
+  out = out.replace(groupAnchor, GROUP_BLOCK + REPLY_GROUP_BLOCK + groupAnchor)
 
   // 5) 面板文案键清单。
   const keyAnchor = '  "settings.field.injectMaxChars.hint",'
   expect(out, keyAnchor, 1)
   const keys = [
-    ...new Set(['settings.group.neighbor', ...NEW_FIELDS.flatMap((f) => [`settings.field.${f.key}.label`, `settings.field.${f.key}.hint`])]),
+    ...new Set([
+      'settings.group.neighbor',
+      'settings.group.reply',
+      ...NEW_FIELDS.flatMap((f) => [`settings.field.${f.key}.label`, `settings.field.${f.key}.hint`]),
+    ]),
   ]
     .map((k) => `  ${JSON.stringify(k)},`)
     .join('\n')
