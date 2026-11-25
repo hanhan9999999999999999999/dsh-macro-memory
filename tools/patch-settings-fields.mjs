@@ -28,6 +28,8 @@
 /** 面板新增的字段（顺序即界面顺序）：key / type / 属于哪个分组。 */
 export const NEW_FIELDS = [
   { key: 'injectFloor', type: 'num', group: 'inject' },
+  // 0.6.60：问句降档——真问句分数系统性低于祈使句，按闸门 × 本系数判。
+  { key: 'injectQuestionFloor', type: 'num', group: 'inject' },
   { key: 'injectBodyMax', type: 'num', group: 'inject' },
   // 0.6.44：注入节奏两个旋钮——「一次会话一共允许多少字」与「同话题延续怎么判」。
   { key: 'injectSessionBudget', type: 'num', group: 'inject' },
@@ -51,6 +53,11 @@ const TEXT = {
     [
       'settings.field.injectFloor.hint',
       'Keyword hits scoring below this are not injected (0–1; 0 = gate off). 0.35 is the measured default: strong hits still come through, fragments that only share one word stay out.',
+    ],
+    ['settings.field.injectQuestionFloor.label', 'Question-mode gate'],
+    [
+      'settings.field.injectQuestionFloor.hint',
+      'Questions (怎么 / 为什么 / 哪里 / how / why…) are judged by the gate above × this ratio (0–1; 1 = off). Measured default 0.6: a real question such as “git push 在 pwsh 里卡住怎么办” scores 0.26–0.29 and the plain 0.35 gate keeps it out, while an imperative of the same score (提交并推送) still stays out.',
     ],
     ['settings.field.injectBodyMax.label', 'Per-entry body baseline'],
     [
@@ -106,6 +113,11 @@ const TEXT = {
       'settings.field.injectFloor.hint',
       '关键词命中分数低于它的不注入（0–1，0＝关闸）。0.35 是实测默认值：强命中照旧进来，只沾一个词的碎片被挡在外面。',
     ],
+    ['settings.field.injectQuestionFloor.label', '问句降档系数'],
+    [
+      'settings.field.injectQuestionFloor.hint',
+      '带「怎么／为什么／哪里／如何」这类疑问词的问句，按上一项闸门 × 本系数 判（0–1，1＝关）。默认 0.6：实测「git push 在 pwsh 里卡住怎么办」这类真问句分数 0.26–0.29，被 0.35 挡在门外；同样分数的祈使句（提交并推送）照旧挡住。',
+    ],
     ['settings.field.injectBodyMax.label', '单条正文基准上限'],
     [
       'settings.field.injectBodyMax.hint',
@@ -157,6 +169,11 @@ const TEXT = {
     [
       'settings.field.injectFloor.hint',
       'Acertos por palavra-chave abaixo deste valor não são injetados (0–1; 0 = desligado). 0,35 é o padrão medido: acertos fortes continuam passando, fragmentos que só compartilham uma palavra ficam de fora.',
+    ],
+    ['settings.field.injectQuestionFloor.label', 'Fator do limiar para perguntas'],
+    [
+      'settings.field.injectQuestionFloor.hint',
+      'Perguntas (怎么 / 为什么 / 哪里 / how / why…) são julgadas por limiar × este fator (0–1; 1 = desligado). Padrão medido 0,6: uma pergunta real como “git push 在 pwsh 里卡住怎么办” fica em 0,26–0,29 e o limiar 0,35 a barra, enquanto um imperativo de mesma pontuação (提交并推送) continua barrado.',
     ],
     ['settings.field.injectBodyMax.label', 'Base de corpo por entrada'],
     [
@@ -211,6 +228,8 @@ const TEXT = {
 /** 出厂值：必须与引擎 / 融合层的默认值逐个相等（探针盯着）。 */
 const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎默认（0.35 / 240 字），「恢复默认」写回它们（0.6.45 把闸门从 0.45 降到 0.35）。 */
   injectFloor: 0.35,
+  /** 0.6.60：问句降档系数＝引擎默认 INJECT_QUESTION_FLOOR_RATIO（真问句 0.26–0.29 才进得来）。 */
+  injectQuestionFloor: 0.6,
   injectBodyMax: 240,
   /** 0.6.44：注入节奏两个旋钮的出厂值＝引擎默认（0＝会话累计不限；0.25＝同话题抑制生效）。 */
   injectSessionBudget: 0,
@@ -229,6 +248,7 @@ const DEFAULTS_BLOCK = `  /** 0.6.42：两个注入闸门的出厂值＝引擎�
 
 const FIELDS_BLOCK = `,
       { key: "injectFloor", label: "settings.field.injectFloor.label", type: "num", hint: "settings.field.injectFloor.hint" },
+      { key: "injectQuestionFloor", label: "settings.field.injectQuestionFloor.label", type: "num", hint: "settings.field.injectQuestionFloor.hint" },
       { key: "injectBodyMax", label: "settings.field.injectBodyMax.label", type: "num", hint: "settings.field.injectBodyMax.hint" },
       { key: "injectSessionBudget", label: "settings.field.injectSessionBudget.label", type: "num", hint: "settings.field.injectSessionBudget.hint" },
       { key: "injectRepeatSim", label: "settings.field.injectRepeatSim.label", type: "num", hint: "settings.field.injectRepeatSim.hint" },

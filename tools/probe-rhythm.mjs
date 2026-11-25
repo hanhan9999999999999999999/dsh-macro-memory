@@ -353,7 +353,7 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
 {
   ok('R9 五个配置面都在：常量 12 / 默认值 / schema / 校验 / resolveConfig / 热生效白名单',
     src.includes('var INJECT_REINJECT_TURNS_DEF = 12;') &&
-      src.includes('injectReinjectTurns: INJECT_REINJECT_TURNS_DEF }') &&
+      src.includes('injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO }') &&
       src.includes('injectReinjectTurns: z.number().min(0).default(INJECT_REINJECT_TURNS_DEF)') &&
       src.includes('reqNum("injectReinjectTurns")') &&
       src.includes('injectReinjectTurns: Number.isFinite(c.injectReinjectTurns)') &&

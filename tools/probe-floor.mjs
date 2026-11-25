@@ -51,6 +51,7 @@ const ROWS = [
   mkRow('gate0003', 'topic', ['星图', '邻域', 'nebula_link', 'mute', '断边'], 2),
 ]
 const Q_MIX = '注入闸门的测试怎么写' // → gate0001 ≈1.324、gate0002 ≈0.089
+const IMPERATIVE_MIX = '跑一下注入闸门的测试' // 同关键词但没有疑问框架 → 走原线 0.35（0.6.60）
 const Q_STRONG = '星图 mute 怎么断边' // → gate0003 ≈1.839
 const Q_OFF = '把注释补上' // → 无命中
 
@@ -88,16 +89,19 @@ function seenOf(sid) {
 // ── F1 形状：常量 / 默认值 / 配置面五处 / 观测字段 ────────────────────────────
 {
   ok('F1 默认分线常量在位（0.35，0.6.45 起）', src.includes('var INJECT_FLOOR_DEF = 0.35;'))
-  ok('F1 DEFAULT_OPTS 带上闸门（0.6.44 起还带注入节奏两项：会话预算 0 / 同话题 0.6；0.6.49 带重放窗口）',
-    /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF \};/.test(src))
+  ok('F1 DEFAULT_OPTS 带上闸门（0.6.44 起还带注入节奏两项：会话预算 0 / 同话题 0.6；0.6.49 带重放窗口；0.6.60 带问句降档）',
+    /var DEFAULT_OPTS = \{ hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO \};/.test(src))
+  ok('F1 问句降档常量在位（0.6.60：0.6 = 问句线落到 0.21）', src.includes('var INJECT_QUESTION_FLOOR_RATIO = 0.6;'))
   ok('F1 CONFIG_DEFAULTS 里是字面 0.35（模块求值早于常量赋值）', /injectFloor: 0\.35,/.test(src))
   ok('F1 zod schema 默认跟常量走', src.includes('injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),'))
   ok('F1 设置页校验会挡坏值', src.includes('reqNum("injectFloor");'))
   ok('F1 resolveConfig 落成非负小数并回默认', src.includes('injectFloor: Number.isFinite(c.injectFloor) ? Math.max(0, c.injectFloor) : INJECT_FLOOR_DEF,'))
   ok('F1 配置进了热生效白名单', /LIVE_CONFIG_KEYS = \[[^\]]*"injectFloor"/.test(src))
   ok('F1 pre-step 把闸门透传下去', src.includes('injectFloor: resolved.injectFloor'))
-  ok('F1 日志里看得见这一轮的线与挡了几条', /hit-chain[^`]*floor=\$\{resolved\.injectFloor\} gated=/.test(src))
-  ok('F1 闸门判断只有一处（分数比较不许散落）', (src.match(/h\.score < floor/g) ?? []).length === 1)
+  ok('F1 日志里看得见这一轮真用的线与挡了几条（0.6.60 起记的是降档后的有效线）',
+    /hit-chain[^`]*floor=\$\{hit === null \? resolved\.injectFloor : Number\(hit\.budget\?\.floor \?\? resolved\.injectFloor\)\.toFixed\(2\)\} qfloor=/.test(src) && / qfloor=[^`]* gated=/.test(src))
+  ok('F1 闸门判断只有一处（分数比较不许散落）', (src.match(/h\.score < effFloor/g) ?? []).length === 1 && !/h\.score < floor/.test(src))
+  ok('F1 问句判据复用疑问框架抽取（不新增词表）', src.includes('stripQuestionFrame(String(userText ?? "")).stripped.length > 0'))
 }
 
 // ── F2 默认 0.35：该挡的挡、该留的留 ────────────────────────────────────────
@@ -107,7 +111,13 @@ function seenOf(sid) {
     r === null ? 'null' : r.injectedIds.join(','))
   ok('F2 默认线下：弱命中被挡，且挡了几条写在回执里', r !== null && r.gated === 1, 'gated ' + (r?.gated ?? '—'))
   ok('F2 默认线下：回执里带 floor 与 gated（观测面不许空）',
-    r !== null && r.budget.floor === 0.35 && r.budget.gated === 1)
+    r !== null && r.budget.floor === 0.21 && r.budget.gated === 1,
+    r === null ? 'null' : `floor ${r.budget.floor} gated ${r.budget.gated}`)
+  ok('F2 这是问句，回执里的 floor 是降档后的有效线（0.35 × 0.6）', r !== null && r.budget.floor === 0.35 * 0.6)
+  ok('F2 同一条问句把降档关掉（系数 1）→ 有效线回到 0.35', run(Q_MIX, { injectQuestionFloor: 1 })?.budget.floor === 0.35)
+  ok('F2 祈使句不降档：同关键词的祈使句有效线仍是 0.35',
+    run(IMPERATIVE_MIX, {})?.budget.floor === 0.35,
+    String(run(IMPERATIVE_MIX, {})?.budget?.floor ?? '不注入'))
   const rs = run(Q_STRONG, {})
   ok('F2 另一条强命中（星图断边）也照旧注入', rs !== null && rs.injectedIds[0] === 'gate0003' && rs.gated === 0)
   ok('F2 完全无关的问句不注入（连空壳都不发）', run(Q_OFF, {}) === null)
@@ -158,19 +168,25 @@ function seenOf(sid) {
   }
   ok('F5 门槛 0 → 2 条', at(0) === 2, String(at(0)))
   ok('F5 门槛 0.45 → 1 条', at(0.45) === 1, String(at(0.45)))
-  ok('F5 门槛 1.5 → 0 条（强命中 1.324 也被挡）', at(1.5) === 0, String(at(1.5)))
+  ok('F5 门槛 1.5 且问句降档关掉（系数 1）→ 0 条（强命中 1.324 也被挡）',
+    (() => { const r = run(Q_MIX, { injectFloor: 1.5, injectQuestionFloor: 1 }); return r === null ? 0 : r.injectedIds.length })() === 0)
+  ok('F5 门槛 1.5 带默认降档 → 有效线 0.9，1.324 的强命中进得来（降档是「按语气放宽」，不是失效）',
+    (() => { const r = run(Q_MIX, { injectFloor: 1.5 }); return r === null ? 0 : r.injectedIds.length })() === 1)
   ok('F5 方向单调：0 ≥ 0.45 ≥ 1.5', at(0) >= at(0.45) && at(0.45) >= at(1.5))
   ok('F5 门槛很小但非零（0.05）时弱命中能进来', run(Q_MIX, { injectFloor: 0.05 })?.injectedIds.includes('gate0002') === true)
 }
 
 // ── F6 配置写坏的两种待遇：非数字回默认，负数夹成 0（显式关闸）──────────────
 {
-  const bad1 = run(Q_MIX, { injectFloor: Number.NaN })
-  const bad2 = run(Q_MIX, { injectFloor: '0.9' })
+  const bad1 = run(Q_MIX, { injectFloor: Number.NaN, injectQuestionFloor: 1 })
+  const bad2 = run(Q_MIX, { injectFloor: '0.9', injectQuestionFloor: 1 })
   ok('F6 非数字（NaN / 字符串）按默认 0.35 走：弱命中仍被挡',
     [bad1, bad2].every((r) => r !== null && r.gated === 1),
     [bad1, bad2].map((r) => (r === null ? 'null' : `g${r.gated}`)).join('/'))
-  ok('F6 非数字时回执里的 floor 仍是有效数字 0.35', [bad1, bad2].every((r) => r !== null && r.budget.floor === 0.35))
+  ok('F6 非数字时回执里的 floor 仍是有效数字（降档关掉时回到 0.35）',
+    [bad1, bad2].every((r) => r !== null && r.budget.floor === 0.35))
+  ok('F6 非数字时回执里的 floor 仍是有效数字（问句默认降档 → 0.21）',
+    [run(Q_MIX, { injectFloor: Number.NaN }), run(Q_MIX, { injectFloor: '0.9' })].every((r) => r !== null && r.budget.floor === 0.21))
   const neg = run(Q_MIX, { injectFloor: -1 })
   ok('F6 负数夹成 0＝显式关闸：两条都进、且回执里的 floor 是 0',
     neg !== null && neg.injectedIds.length === 2 && neg.gated === 0 && neg.budget.floor === 0,

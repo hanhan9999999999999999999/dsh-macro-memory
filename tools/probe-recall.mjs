@@ -678,10 +678,11 @@ check(
   JSON.stringify(V.tokenize(strip1.text)),
 )
 check(
-  'R8 只在问句这一侧剥（索引不动）：剥离函数在被调用的地方只有一处，且带 questionStrip:false 的出口',
-  countOf('stripQuestionFrame(') === 2 &&
-    SRC.includes('const qStrip = opts.questionStrip === false ? { text: query, stripped: [] } : stripQuestionFrame(query);'),
-  `stripQuestionFrame 出现 ${countOf('stripQuestionFrame(')} 处（定义 1 + 调用 1）`,
+  'R8 只在问句这一侧剥（索引不动）：剥离函数只在问句侧被调用，且带 questionStrip:false 的出口',
+  countOf('stripQuestionFrame(') === 3 &&
+    SRC.includes('const qStrip = opts.questionStrip === false ? { text: query, stripped: [] } : stripQuestionFrame(query);') &&
+    SRC.includes('stripQuestionFrame(String(userText ?? "")).stripped.length > 0'),
+  `stripQuestionFrame 出现 ${countOf('stripQuestionFrame(')} 处（定义 1 + 检索侧 1 + 0.6.60 注入侧语气判据 1）`,
 )
 // 受控库：干净 workspace，四条语料，污染源只共享「么时」一个碎片。
 const ws8 = join(home, 'ws8')

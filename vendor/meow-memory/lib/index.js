@@ -1264,6 +1264,9 @@ var CONFIG_DEFAULTS = {
   // [macro-fusion 0.6.45] 0.45 → 0.35，标定见 INJECT_FLOOR_DEF 那一段（真库读数逐位相同、gold 召回 +2.9 点）。
   // 这里写死字面值而不是引 INJECT_FLOOR_DEF：本对象在模块求值时先于那一行执行。
   injectFloor: 0.35,
+  // [macro-fusion 0.6.60] 问句降档系数（0–1，1 = 关）：带疑问词的问句按 injectFloor × 本系数判。
+  // 实测真问句（「git push 在 pwsh 里卡住怎么办」）0.26–0.29，被 0.35 挡在门外；祈使句同分照旧挡。
+  injectQuestionFloor: 0.6,
   // [macro-fusion 0.6.41] 单条正文上限（0 = 不限，逐位等同 0.6.40 的整条注入）。
   // 同样写死字面值：本对象求值早于 INJECT_BODY_MAX_DEF 那一行。
   injectBodyMax: 240,
@@ -5523,12 +5526,27 @@ function keywordHitScore(query, docs, opts = {}) {
   const maxRaw = Math.max(...raw);
   // [macro-fusion 0.6.31] 同 `search`：这条阈值与候选无关，提到循环外。
   const impBandMax = IMP_BAND * maxRaw;
+  // [macro-fusion 0.6.60] 只给注入路算证据（`search` 不要这个字段，多塞一个键会改它的返回形状）。
+  const evReq = opts.evidence === true;
   const out = [];
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0 && rawVerbatim[di] === null) continue;
     const len = docToks[di].length;
     let overlap = 0;
     for (const t of qTf.keys()) if (tf[di].has(t)) overlap++;
+    // 问句侧证据：命中了几条问句实词（n）、占全部实词的比例（cover）、其中最泛那条的库内占比（share）。
+    // 标识符原样命中（`0mwv…`）没有词面可数，按「至少一条」记，免得被字面兜底的闸误伤。
+    let evN = overlap;
+    if (evN === 0 && rawVerbatim[di] !== null) evN = 1;
+    let evShare = 1;
+    if (overlap > 0) {
+      evShare = 0;
+      for (const t of qTf.keys()) {
+        if (!tf[di].has(t)) continue;
+        const s = (df.get(t) ?? 0) / n;
+        if (s > evShare) evShare = s;
+      }
+    }
     const coverage = len > 0 ? overlap / len : 0;
     let w = 1;
     // [macro-fusion 0.2.150] 近分带用同一个 85% 判据；衰减有下限，旧记忆不该被折成看不见。
@@ -5548,7 +5566,9 @@ function keywordHitScore(query, docs, opts = {}) {
       content: docs[di].content,
       importance: docs[di].importance,
       updated_at: docs[di].updated_at,
-      score: raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1)
+      score: raw[di] * coverage * w * impW * stW * (titleHit ? 1.2 : 1),
+      // [macro-fusion 0.6.60] 内部字段，只有 opts.evidence 时留着（hitQuery 取走后删掉）。
+      _ev: evReq ? { n: evN, cover: qTf.size > 0 ? evN / qTf.size : 0, share: evShare } : void 0
     });
   }
   // [macro-fusion 0.2.148] 与 search 同口径：单位取榜首实际分数，补完再排序。
@@ -5571,6 +5591,7 @@ function keywordHitScore(query, docs, opts = {}) {
   for (const h of out) {
     delete h._raw;
     delete h._ident;
+    if (!evReq) delete h._ev;
   }
   return out.slice(0, k);
 }
@@ -5669,6 +5690,16 @@ function topicDrift(turnText, topics) {
 // hit@1 从 58.0% 掉到 55.1%（k=2）；0.35 那带不切任何条目，回到 58.0%。同样的节省、更好的召回。
 // 再往下（0.30）真库操作问句从 5/16 涨到 8/16，是明确的拐点，所以停在 0.35。
 var INJECT_FLOOR_DEF = 0.35;
+// [macro-fusion 0.6.60] 问句把 floor 按这个比例下调（1 = 关，逐位回到 0.6.59）。
+// 病根不在分数本身，在**语气**：同一个 0.35 对祈使句正好、对问句偏高。真库实测（888 条 active，
+// bench30 从 hit-skip 行读 engine 自己算的读数）——被挡在门外的三条问句与一条祈使句分数几乎一样：
+//   问句 git push 在 pwsh 里卡住怎么办     best score 0.273  该给
+//   问句 记忆分层 fact lesson topic 怎么选  best score 0.289  该给
+//   问句 备份目录放哪里，怎么还原           best score 0.260  该给
+//   祈使 提交并推送                         best score 0.285  不该给
+// 分数分不开，所以判据用疑问框架（stripQuestionFrame，0.2.170）：问句里沾到一点边往往就是想问的事，
+// 祈使句里沾边就是噪声。0.6 让 0.35 的门槛在问句上落到 0.21，三条问句都进得来、祈使句照旧挡。
+var INJECT_QUESTION_FLOOR_RATIO = 0.6;
 // [macro-fusion 0.6.41] 单条正文上限的默认值：0 = 不限（逐位回到 0.6.40）。
 // 它和 injectMaxChars 是两层账：injectMaxChars 管「这一次注入总共多少字」，
 // injectBodyMax 管「其中一条记忆自己最多占多少字」——后者才是长条目（topic / project 全景）
@@ -5685,7 +5716,7 @@ var INJECT_BODY_MAX_DEF = 240;
 // （+3.3%）、整轮空 3 轮、只给 1 条 0 轮。12 轮大致是一个话题的来回长度：过了它再被问到，
 // 宁可再给一遍，也不要空着——旧条目还在历史里，重复一遍只是多花字，不给是直接丢能力。
 var INJECT_REINJECT_TURNS_DEF = 12;
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF };
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, injectMaxChars: 0, injectFloor: INJECT_FLOOR_DEF, injectBodyMax: INJECT_BODY_MAX_DEF, injectSessionBudget: 0, injectRepeatSim: INJECT_REPEAT_SIM_DEF, injectReinjectTurns: INJECT_REINJECT_TURNS_DEF, injectQuestionFloor: INJECT_QUESTION_FLOOR_RATIO };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -6780,13 +6811,17 @@ function hitQuery(db, workspace, sessionId, userText, o, dir) {
     // [macro-fusion 0.6.6] 同 docText：keywords 缺失 / 非数组时不许在这里抛（旧条目会整批读不出来）。
     content: Array.isArray(d.keywords) && d.keywords.length > 0 ? d.keywords.join(" ") : String(d.content ?? "").slice(0, 100)
   }));
-  const hits = keywordHitScore(query, docs, { k: o.hitTopK });
+  const hits = keywordHitScore(query, docs, { k: o.hitTopK, evidence: true });
   const byId = new Map(hitRows.map((r) => [r.id, r]));
   return hits.map((h) => {
     const row = byId.get(h.id);
     // [macro-fusion 0.6.40] 把分数一起带出来：闸门要在这一条上量，渲染器不看它
     // （renderHitEntries 只读 id/level/content/project/updated_at，多带一个字段不改变输出）。
-    return { id: h.id, level: h.level, content: row?.content ?? h.content, project: row?.project ?? null, updated_at: row?.updated_at ?? null, score: h.score };
+    // [macro-fusion 0.6.60] 证据同样只带出来给闸门用：n = 命中几条问句词，cover = 占问句实词的比例，
+    // share = 命中词里最泛那条的库内占比。字面兜底的路没有词面可数，按 n=0 交上去。
+    const ev = h._ev ?? { n: 0, cover: 0, share: 1 };
+    delete h._ev;
+    return { id: h.id, level: h.level, content: row?.content ?? h.content, project: row?.project ?? null, updated_at: row?.updated_at ?? null, score: h.score, evidence: ev };
   });
 }
 /**
@@ -6878,6 +6913,15 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     logHitSkip(workspace, dir, "empty", ` released=${released} reinject=${reinjectTurns}`);
     return null;
   }
+  // [macro-fusion 0.6.60] 字面兜底不算证据：单字问句（「好」「嗯」）在 keywordHitScore 里
+  // 走 literalFallback，正文里恰好有那个字就能配上——真库实测「好」能配上两条、灌进 236 字
+  // （bench28），而这 236 字每轮都在历史里重新计费。这类命中一条 ≥2 字的问句词都没对上
+  // （evidence.n === 0），进上下文只会误导。标识符原样命中不算字面，n 按 1 记，照常放行。
+  const lexical = fresh.filter((h) => h.evidence && h.evidence.n > 0);
+  if (lexical.length === 0) {
+    logHitSkip(workspace, dir, "literal", ` hits=${fresh.length}`);
+    return null;
+  }
   // [macro-fusion 0.6.40] 命中闸门：分数不到 injectFloor 的命中不注入。
   // 病根是「有命中就注入」——keywordHitScore 没有任何下限，于是「跑一下测试」「继续」
   // 这类问句也会把 0.30~0.42 分的条目正文搬进上下文，每条被注入的正文还会留在
@@ -6886,10 +6930,28 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
   // 被挡的条目不当成「已注入」（不写 seen、不加 hit_count）：下一轮问句真问到它时还能进来。
   // 坏值的两种待遇见 resolveConfig 的注释：非数字回默认 0.45，负数夹成 0（显式关闸）。
   const floor = Number.isFinite(o.injectFloor) ? Math.max(0, o.injectFloor) : INJECT_FLOOR_DEF;
-  let kept = floor > 0 ? fresh.filter((h) => !(Number.isFinite(h.score) && h.score < floor)) : fresh;
-  const gated = fresh.length - kept.length;
+  // [macro-fusion 0.6.60] 问句下调：同一个 0.35，对祈使句正好、对问句偏高。
+  // 真库读数（bench30，floor 挡下时日志留 best=n/cover/share/score）：
+  //   问句 git push 在 pwsh 里卡住怎么办    best score 0.273  ← 该给
+  //   问句 记忆分层 fact lesson topic 怎么选 best score 0.289  ← 该给
+  //   问句 备份目录放哪里，怎么还原          best score 0.260  ← 该给
+  //   祈使 提交并推送                        best score 0.285  ← 不该给
+  // 分数分不开两类，**语气**分得开：问句里「沾到一点边」往往就是想问的那件事，祈使句里沾边就是噪声。
+  // 判据复用引擎既有的疑问框架抽取（stripQuestionFrame，0.2.170），不新增词表：剥得出框架词才算问句，
+  // 剥不出来（含「把这个参数改成 300」这类指令、「重新跑一遍」）照旧走原 floor。
+  const qRatio = Number.isFinite(o.injectQuestionFloor) ? Math.max(0, Math.min(1, o.injectQuestionFloor)) : INJECT_QUESTION_FLOOR_RATIO;
+  const asked = qRatio < 1 && stripQuestionFrame(String(userText ?? "")).stripped.length > 0;
+  const effFloor = asked ? floor * qRatio : floor;
+  let kept = effFloor > 0 ? lexical.filter((h) => !(Number.isFinite(h.score) && h.score < effFloor)) : lexical;
+  const gated = lexical.length - kept.length;
   if (kept.length === 0) {
-    logHitSkip(workspace, dir, "floor", ` gated=${gated} floor=${floor}`);
+    // 挡下也把「差多远」留下：报被挡条目里分最高的那一条的证据读数（n/cover/share），
+    // 排查时不必复跑夹具就知道是词面没命中还是命中太泛。
+    let best = null;
+    for (const h of lexical) if (best === null || (Number.isFinite(h.score) ? h.score : 0) > (Number.isFinite(best.score) ? best.score : 0)) best = h;
+    const ev = best && best.evidence ? best.evidence : null;
+    const tail = ev ? ` best=${ev.n}/${ev.cover.toFixed(2)}/share=${ev.share.toFixed(2)} score=${Number.isFinite(best.score) ? best.score.toFixed(3) : "-"}` : "";
+    logHitSkip(workspace, dir, "floor", ` gated=${gated} floor=${effFloor.toFixed(2)}${asked ? " asked=1" : ""}${tail}`);
     return null;
   }
   // 闸 ②：同话题延续（0.6.44）。上一轮问句与本轮词面 Jaccard ≥ injectRepeatSim 时，
@@ -6980,7 +7042,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     writeSeenFile(workspace, sessionId, after, dir);
   } catch {
   }
-  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
+  return { text, injectedIds: ids, gated, budget: { cap: o.injectMaxChars ?? 0, floor: effFloor, gated, chars: text.length, squeezed: rendered.squeezed, heads: rendered.heads, dropped: rendered.dropped, bodyMax: rendered.bodyMax ?? 0, bodyCut: rendered.bodyCut ?? 0, repeated, released, reinjectTurns, spent: spent + text.length, sessionBudget } };
 }
 
 // src/tools.ts
@@ -10923,6 +10985,15 @@ var config = z.object({
    *  只拦注入不拦检索——被挡的条目照样能 memory_search 到。
    *  想看清省了什么：闸门挡了几条写在 dream-debug.log 的 hit-chain 行的 gated=。 */
   injectFloor: z.number().min(0).default(INJECT_FLOOR_DEF),
+  /** [macro-fusion 0.6.60] 问句把 injectFloor 乘以这个比例（0–1，1 = 关，逐位回到 0.6.59）。
+   *  病根不在分数，在语气：同一个 0.35 对祈使句正好、对问句偏高。真库实测（888 条 active）——
+   *  问句「git push 在 pwsh 里卡住怎么办」0.273、「记忆分层 fact lesson topic 怎么选」0.289、
+   *  「备份目录放哪里，怎么还原」0.260，全被 0.35 挡在门外；而同样分数的祈使句「提交并推送」
+   *  0.285 挡掉是对的。分数分不开两类，疑问框架分得开，所以按语气分档：
+   *  「怎么/为什么/哪里/如何…」剥得出框架词的按 0.35×0.6≈0.21 判，其余照旧 0.35。
+   *  读数（bench30/bench28，默认其余配置）：操作型 0/16 注入（0.6.59 有 1/16 灌 236 字），
+   *  记忆型 7/10 → 10/10，5,269 字。设 1 = 关掉这条分档。 */
+  injectQuestionFloor: z.number().min(0).max(1).default(INJECT_QUESTION_FLOOR_RATIO),
   /** [macro-fusion 0.6.41] 单条正文上限：一次注入里「任何一条记忆自己」最多占多少字（0 = 不限）。
    *  与 injectMaxChars 两层账：那个管整次注入的总字数，这个管单条体积——长条目（topic /
    *  project 全景动辄 600–2,500 字）不再整条灌进来，而是压成「首句 + 相关句 + 硬信息句」，
@@ -11026,6 +11097,7 @@ function validateConfigUserLayer(value) {
   reqNum("injectSessionBudget");
   reqNum("injectRepeatSim");
   reqNum("injectReinjectTurns");
+  reqNum("injectQuestionFloor");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -11123,6 +11195,9 @@ function resolveConfig(config2) {
     // [macro-fusion 0.6.49] 重放窗口是整数轮数：非数字回默认 12（配置读坏了不许变成「永久拉黑」），
     // 数字取整夹到非负，0 = 显式回到「永不重放」。
     injectReinjectTurns: Number.isFinite(c.injectReinjectTurns) ? Math.max(0, Math.floor(c.injectReinjectTurns)) : INJECT_REINJECT_TURNS_DEF,
+    // [macro-fusion 0.6.60] 问句分档是 0–1 的比例：非数字回默认 0.6（配置读坏了不许变成「问句不设防」，
+    // 也不许变成「问句全挡」），数字夹到 [0,1]，1 = 关（问句与祈使句同一个 floor）。
+    injectQuestionFloor: Number.isFinite(c.injectQuestionFloor) ? Math.min(1, Math.max(0, c.injectQuestionFloor)) : INJECT_QUESTION_FLOOR_RATIO,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -11280,7 +11355,7 @@ function settingsDiag(line) {
   } catch {
   }
 }
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "injectReinjectTurns", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "injectMaxChars", "injectFloor", "injectQuestionFloor", "injectBodyMax", "injectSessionBudget", "injectRepeatSim", "injectReinjectTurns", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -11913,12 +11988,13 @@ ${e.stack ?? ""}` : String(e)}
           titleMax: resolved.titleMax,
           injectMaxChars: resolved.injectMaxChars,
           injectFloor: resolved.injectFloor,
+          injectQuestionFloor: resolved.injectQuestionFloor,
           injectBodyMax: resolved.injectBodyMax,
           injectSessionBudget: resolved.injectSessionBudget,
           injectRepeatSim: resolved.injectRepeatSim
         }, resolved.projectDir);
         try {
-          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${resolved.injectFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
+          appendDreamLog(ws, resolved.projectDir, `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"} floor=${hit === null ? resolved.injectFloor : Number(hit.budget?.floor ?? resolved.injectFloor).toFixed(2)} qfloor=${resolved.injectQuestionFloor} gated=${hit === null ? 0 : hit.gated ?? 0} body=${resolved.injectBodyMax} bodyCut=${hit === null ? 0 : hit.budget?.bodyCut ?? 0} sim=${resolved.injectRepeatSim} repeated=${hit === null ? 0 : hit.budget?.repeated ?? 0} released=${hit === null ? 0 : hit.budget?.released ?? 0} reinject=${resolved.injectReinjectTurns} spent=${hit === null ? 0 : hit.budget?.spent ?? 0}/${resolved.injectSessionBudget === 0 ? "∞" : resolved.injectSessionBudget}
 `);
         } catch {
         }
