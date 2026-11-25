@@ -840,6 +840,24 @@ const recall = [
     idsAt > 0 && scAt > idsAt && scAt - idsAt < 400, `ids@${idsAt} scores@${scAt}`)
 }
 
+// ── N16 [0.6.64] 行首 id 的显示形式：交给上层给（最短唯一前缀），缺省仍是 8 位 ──────
+{
+  const long = (id) => `${id}LONG`
+  const blk = NB.neighborBlockOf(recall, { max: 4, chars: 3000, shorten: long })
+  ok('N16 行首 id 用上层给的形式（撞车的 8 位前缀必须能加长）',
+    blk !== null && blk.text.includes('[0mwq3aa9LONG]') && !blk.text.includes('[0mwq3aa9] '),
+    blk === null ? 'null' : blk.text.split('\n')[1].slice(0, 40))
+  ok('N16 尾注里 memory_read / mute 的 id 一起换（命令照抄就能用，不留半截）',
+    blk !== null && blk.text.includes('memory_read("0mwq3aa9LONG")') && !/memory_read\("0mwq3aa9"\)/.test(blk.text))
+  const plain = NB.neighborBlockOf(recall, { max: 4, chars: 420 })
+  ok('N16 不传 shorten 时还是 8 位切法（老调用方与老回执不受影响）',
+    plain !== null && plain.text.includes('[0mwq3aa9]'))
+}
+
+
+// 那个句柄在 Windows 上会占住临时工作区，不关就删不掉（EPERM）。收尾前统一关掉。
+const MeowMod = await import(pathToFileURL(join(root, 'vendor/meow-memory/lib/index.js')).href)
+MeowMod.closeAllDbs()
 rmSync(tmpHome, { recursive: true, force: true })
 
 console.log('')

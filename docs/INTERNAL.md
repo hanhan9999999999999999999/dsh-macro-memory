@@ -14319,3 +14319,24 @@ const soloEdge = edgeScore > 0 && block.ids.length === 1 && block.scores[0] < ed
 读数（真库 `memory.db`，11 个项目名 + `cost.jsonl` 30 次重放）：`meow-memory` 10 条 5,148 → 1,267（-75%）、`dsh-macro-memory` 6 条 14,909 → 1,079（-93%），其余 9 个项目本来就在 3,000 以内、逐字节原样；历史合计省约 305,858 字。
 
 判据 `tools/probe-project.mjs` **23 条**：短回执原样、目录口径（分组标题 + 完整 id + 层名 + 只留首句 + 不含第二句 + 自报字数）、`budget=0` 逐字节、`group` / `limit` 两个出口、极小上限的「连一条目录都排不下」、三类空回答不压、`projectMaxChars: 0` 原样、组名写错、首句截断加 `…`、已完结待办单列、`budget=400` 自报未列条数。`probe-client-ui` 20 → **22**（面板渲染出「工具回执」组与「项目全景上限」）。**踩坑一条**：探针第一版给 `config` 传 `{}`，而 `cap = 有限 budget ? 它 : config.projectMaxChars` → `undefined` 落到 `!(cap > 0)` 分支原样返回，11 条断言一起红——夹具必须按真实插件的形状传（`{ projectMaxChars: PROJECT_MAX_CHARS }`，真实环境里这个值由 zod 默认值填进来）。
+
+### 9.263 0.6.64：id 该多短就多短
+
+0.6.63 把项目全景改成目录视图之后，行是 `- [<完整 id>] <level> <首句>`。当时用的理由是「读者拿到 id 要能直接 `memory_read`」，所以印完整 36 字。可真库的形状是 `9 位前缀 + '-' + 26 位 hex`（`0mwvkk15w-7ea683b10ad5432b89ac03e91e`），36 字里 27 字是同一个库内永远用不到的后缀：`dsh-macro-memory` 34 行光 id 就 1,224 字，占满 3,000 上限的 41%，于是一页只列得下 26 条。
+
+另一半不是浪费，是错。邻域块行首、注入块行首、尾注里那两条现成命令（`memory_read("…")` 与 `memory_link(action='mute', a=…, b=…)`）用的都是 `String(id).slice(0, 8)`。真库 1,121 条里 **8 位前缀撞 13 组** —— 这 13 组上模型拿到的是**指两条**的 id：读会歧义，改会撞 vendor 的多命中拒绝（`vendor/meow-memory/lib/index.js:715` 里 `if (id.length < 36)` 走前缀匹配，多命中 `console.warn` 后 `return false`），mute 更是摘不掉边。也就是说「短一点好抄」这个想法本身没错，错在**按长度切**而不是**按唯一性切**。
+
+处方是 `lib/macro/shortid.js`（这一版唯一的新文件）：
+
+- `export const SHORT_ID_MIN = 8`、`const LEVELS = ['soul','user','rules','fact','lesson','topic','project']`；
+- `shortIdsOf(db)`：逐层 `db.p(\`SELECT id FROM ${level}\`).all()` 收 id，`ids.sort()` 之后逐条从 8 位起试，只跟**字典序左右邻居**比 `startsWith`（有序数组里，一条 id 的「前缀撞车者」必然紧邻它），撞就加长一位，得到 `{ byId: Map<完整id, 最短唯一前缀>, sorted }`；没有 id 返回 `null`；
+- `shortenId(index, id)`：①给的是完整 id 就直查 `byId`；②给的是短 id（模型从别处抄来的）就二分 `sorted` 数命中几条，恰好 1 条就解析回那条再给它的前缀；③命中 0 条或撞多条，一律 `given.slice(0, 8)` —— **不替调用方挑一条**，挑错比给长一点坏得多；
+- 不缓存：新写入的 id 随时可能让缓存里的前缀变歧义，而七条 `SELECT id` 在真库 1,121 条上是 **1.6 ms**。
+
+接线三处，都只换「怎么印」，不换「印什么」：`defs/project.js` 的 `rowsOf()` 里 `short: shortenId(shortIdsOf(db), r.id)`，`compactProject` 行改 `const id = String(one.short ?? one.row.id ?? '')`（外部直接把 groups 塞进来的调用方仍吃完整 id，探针就是这么喂的）；`neighbor.js` 的 `neighborBlockOf` 增第四参 `opts.shorten`（缺省仍是 `slice(0, 8)`，所以老调用逐字节不变），行首、`suppressed`、`flaggedEdges`、尾注里 `memory_read("…")` 及其后的 mute 命令全走它，注入器侧建一次索引再传进去；观察账的键仍是 `a.slice(0,8)|b.slice(0,8)`，格式不跟着改（改了等于旧账全丢）。
+
+读数（真库 `memory.db`，1,121 条）：最短唯一前缀 **8 位 1,090 条 / 9 位 31 条**，8 位那 13 组撞车清零；同 3,000 上限下 `dsh-macro-memory` 从「26 条 2,937 字」变「**34 条 2,901 字**」，`meow-memory` 1,267 → **990**、`macro-fusion` 699 → **559**，合计省 **929 字**。省下来的字数不是重点（929 字换不回什么），重点是**同一条上限里多列 8 条**、且那 13 组歧义从「模型踩坑」变成「根本不存在」。
+
+判据：`probe-project` 23 → **29 条**（P2 从「必须是完整 id」改成「撞车的必须加长、唯一的才缩」，新增 P13 五条：`0mprojdec1` 原样 10 位、唯一的那条缩到 `0mprojru`、短 id `0mprojdec` 撞车退回 8 位、短 id `0mprojr` 解析回唯一那条、`shortenId(null, …)` 退回 8 位）；`probe-neighbor` 91 → **94 条**（N16：换一把 `shorten` 时行首与 `memory_read("…")` 一起换、不传就仍是 `[0mwq3aa9]`、尾注命令能照抄）。同一版顺手修了探针自己的坑：注入器现在 `Meow.getDb` 会缓存句柄并占住 Windows 临时目录，收尾 `rmSync` 报 `EPERM`，所以 `probe-neighbor.mjs` 结束前补一句 `MeowMod.closeAllDbs()`。
+
+留着的口子：`lib/macro/defs/search.js:703` 的 `id8()`（子问句拆解的补充段行首）还是 8 位，`memory_search` 的融合回执也没接这个索引 —— 那一支的回执里 id 用得少，本轮不动，留着下一轮按同样的判据收。

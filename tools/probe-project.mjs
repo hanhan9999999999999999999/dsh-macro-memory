@@ -18,6 +18,7 @@ import { pathToFileURL } from 'node:url'
 import { root } from './_root.mjs'
 
 const P = await import(pathToFileURL(join(root, 'lib/macro/defs/project.js')).href)
+const S = await import(pathToFileURL(join(root, 'lib/macro/shortid.js')).href)
 const C = await import(pathToFileURL(join(root, 'lib/macro/contract.js')).href)
 const Meow = await import(pathToFileURL(join(root, 'vendor/meow-memory/lib/index.js')).href)
 
@@ -77,7 +78,8 @@ ok((await run(short, {})) === short, 'P1 短回执逐字节原样（压缩只在
 const big = await run(LONG, {})
 ok(big.length <= P.PROJECT_MAX_CHARS + 120, 'P2 压缩回执不超上限', `${big.length} 字 ≤ ${P.PROJECT_MAX_CHARS}+尾巴`)
 ok(/§ 决策 4 条/.test(big) && /§ 结构 2 条/.test(big) && /§ 准则 1 条/.test(big), 'P2 分组标题带条数（决策/结构/准则）')
-ok(big.includes('0mprojdec1') && big.includes('0mprojrul1'), 'P2 每条留完整 id（memory_read 的把手）')
+ok(big.includes('[0mprojdec1]') && big.includes('[0mprojru]'), 'P2 每条留 id（0.6.64 最短唯一前缀，仍是 memory_read 的把手）')
+ok(!/[\[（]0mprojde[\]）]/.test(big) && !/[\[（]0mprojst[\]）]/.test(big), 'P2 会撞车的前缀必须加长到能唯一定位（8 位切法在这里指两条）')
 ok(big.includes('project ') || big.includes(' rules '), 'P2 每条留层名')
 ok(!big.includes('后面还有一句不该出现在目录里'), 'P2 目录只留首句，不带第二句')
 ok(/原文 \d+ 字 → 这份 \d+ 字/.test(big), 'P2 尾巴自报「原文多少 → 这份多少」')
@@ -130,6 +132,14 @@ ok(/§ 已完结待办 1 条/.test(big) && big.includes('0mprojtod2'), 'P11 已�
 // P12 装不下时自报条数，不静默变短。
 const capped = await run(LONG, { budget: 400 })
 ok(/还有 \d+ 条没列/.test(capped), 'P12 装不下时自报「还有 N 条没列」', capped.split('\n').pop().slice(0, 40))
+
+// P13 最短唯一前缀本身（0.6.64）：撞车的加长、唯一的压到 8 位、短 id 能反查回那条。
+const idx = S.shortIdsOf(db)
+ok(idx !== null && S.shortenId(idx, '0mprojdec1') === '0mprojdec1', 'P13 撞车的 id 加长到能唯一定位', S.shortenId(idx, '0mprojdec1'))
+ok(S.shortenId(idx, '0mprojrul1') === '0mprojru', 'P13 唯一的 id 压到 8 位', S.shortenId(idx, '0mprojrul1'))
+ok(S.shortenId(idx, '0mprojdec') === '0mprojde', 'P13 短 id 撞车时不替它挑一条（原样退回）', S.shortenId(idx, '0mprojdec'))
+ok(S.shortenId(idx, '0mprojr') === '0mprojru', 'P13 短 id 只命中一条时解析回那条再取前缀', S.shortenId(idx, '0mprojr'))
+ok(S.shortenId(null, '0mwvkk15w-7ea683b10ad5432b89ac03e91e') === '0mwvkk15', 'P13 没有索引时退回 8 位切法（行为不变）')
 
 console.log(failures === 0 ? 'ALL PASS' : `FAILURES: ${failures}`)
 if (failures !== 0) process.exitCode = 1
