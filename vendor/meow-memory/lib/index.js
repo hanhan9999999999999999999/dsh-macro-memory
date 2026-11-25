@@ -6084,6 +6084,17 @@ function buildInjection(db, workspace, sessionId, _firstUserText = "", opts = {}
   return { text, injectedIds: built.injectedIds };
 }
 var lbl2 = (key, params) => fillTemplate(keyedValue("labels", key), params);
+// [macro-fusion 0.6.59] 可选文案：缺了就用 ''，让调用方退回旧文案。
+// keyedValue 缺键是抛错（那是给「必需文案」用的），但 0.6.59 加的短尾巴是**优化项**——
+// 用户可能拿旧版 labels.md 覆盖过 $DSH_HOME/prompts/<lang>/，那里没有新键，
+// 不能因为一句可选文案把整轮注入弄挂。
+var lblSoft = (key, params) => {
+  try {
+    return lbl2(key, params);
+  } catch {
+    return "";
+  }
+};
 var sectionTitle = (sub) => lbl2(`project.section.${sub}`);
 function sortByUpdatedAt(list) {
   return [...list].sort((a, b) => (a.updated_at ?? 0) - (b.updated_at ?? 0) || a.created_at - b.created_at);
@@ -6294,6 +6305,28 @@ var INJECT_HARD_BONUS = 4;
 // [macro-fusion 0.6.58] 长句接不上时「拆到分句级」的最低份量：剩下的预算够这么多字
 // 才值得把一句截断塞进正文（少于这个数只剩半句话头，读不出意思反而添噪声）。
 var INJECT_LONG_MIN = 60;
+// ── 0.6.59：紧预算下先薄记账再薄正文 ─────────────────────────────────────────
+// 0.6.56 / 0.6.57 / 0.6.58 都在抢「正文怎么省」，但真库量下来（bench18，10 问、
+// 真库全量 active 条目）紧预算的账根本不在正文：cap 300 时总 2,688 字里
+// 头行 917 字（≈92/问）、自述尾巴 720 字（≈72/问）、header+boundary 181 字，
+// **记账占 66%，正文只有 911 字（34%）**；cap 480 记账也占 44%。
+// 单条头行实测 90 字：`[dsh-macro-memory : topic] [0mwvg4hyh-…-ca3] 2026-11-25 01:29 [2 小时前]`
+// ——project 17 + level + id 33 + 绝对时间 17 + 相对时间 9，比它这一条分到的正文还长。
+//
+// 处方两刀，都只改**记帐形态**、不动「注入了什么」：
+// ① 头行分级：这一条能拿到的预算里，头行不许超过 1/3。超了先去绝对时间戳（相对时间
+//    够判断新旧），还不够再去 project 段（level 保留——不同层的可信度不一样）。
+// ② 尾巴换短文案：`inject.budgetTailShort` / `inject.budgetTailDropOnlyShort`，
+//    只在「头 + 边界 + 尾巴」已经吃掉上限 40% 时启用；两个键缺失（用户覆盖了旧
+//    labels.md）就走回长文案，绝不因为少一句标签把注入弄挂。
+var INJECT_HEAD_LEAN_RATIO = 3;
+var INJECT_HEAD_FULL_MIN = 40;
+var INJECT_BOOKKEEP_RATIO = 0.4;
+// [macro-fusion 0.6.59] 「预览档」：分不到 INJECT_BODY_MIN(60) 的条目，只要还能挤出
+// 36 字就列一句，不留逐条自述（尾巴统一说「全文按 id 调 memory_read」）。
+// 依据同一条：整条不列 + 尾巴报「N 条未列出」，模型连「有这么几条」都不知道；
+// 36 字足够交代这条讲什么，而 id 还在头行上，要全文随时能取。
+var INJECT_BODY_PREVIEW_MIN = 36;
 // [macro-fusion 0.6.56] 硬切兜底：切点往回收，最多退这么多字，找一个能读断的地方。
 var INJECT_CLIP_BACK = 20;
 // 能当作断点的字符：中英文标点、空白。切在「，」之后比切在「{value,」中间强得多，
@@ -6552,10 +6585,19 @@ function renderHitEntries(entries, o, query) {
   const header = keyedValue('labels', 'inject.hitHeader')
   const boundary = lbl2('inject.boundary')
   const headLines = []
+  // [macro-fusion 0.6.59] 头行三档（同一份信息，按预算瘦身）：
+  //   headLines   完整：`[project : level] [id] 2026-11-25 01:29 [2 小时前]`
+  //   headLean    去绝对时间（相对时间够判断新旧）
+  //   headLeanest 只留 `[level] [id] [2 小时前]`（project 名太长时先让它让位）
+  const headLean = []
+  const headLeanest = []
   for (const e of entries) {
     const proj = projectLabel(e.project)
-    const time = e.updated_at ? ` ${new Date(e.updated_at).toISOString().slice(0, 16).replace('T', ' ')} [${relativeTime(e.updated_at)}]` : ''
-    headLines.push(`[${proj} : ${e.level}] [${e.id}]${time}`)
+    const rel = e.updated_at ? ` [${relativeTime(e.updated_at)}]` : ''
+    const abs = e.updated_at ? ` ${new Date(e.updated_at).toISOString().slice(0, 16).replace('T', ' ')}` : ''
+    headLines.push(`[${proj} : ${e.level}] [${e.id}]${abs}${rel}`)
+    headLean.push(`[${proj} : ${e.level}] [${e.id}]${rel}`)
+    headLeanest.push(`[${e.level}] [${e.id}]${rel}`)
   }
   if (!(cap > 0) && !(bodyMax > 0)) {
     const lines = [header]
@@ -6582,7 +6624,7 @@ function renderHitEntries(entries, o, query) {
   // 才知道压了几条，所以按「条数都取最大位数」量一遍（squeezed / heads / dropped 都不会
   // 超过条数），两种尾巴取长的那条。覆盖写长了自动多留、写短了就省给正文；只有标签丢了
   // 才回 INJECT_NOTE_RESERVE 兜底——留一段没人用的预算，等于每轮白扔几十字。
-  const tailWorst = budgeted
+  const tailWorstLong = budgeted
     ? Math.max(
         lbl2('inject.budgetTail', {
           cap,
@@ -6594,6 +6636,22 @@ function renderHitEntries(entries, o, query) {
         lbl2('inject.budgetTailDropOnly', { cap, dropped: entries.length }).length,
       ) || INJECT_NOTE_RESERVE
     : 0
+  // [macro-fusion 0.6.59] 尾巴也分长短：紧预算下这句话（真库实测 88 字）比正文还占地方，
+  // 而它要说的就三件事——压了、漏了、全文怎么取。短文案同样三件事，字数少四成。
+  // 只在「头 + 边界 + 尾巴」已经吃掉上限 40% 时启用；标签缺失（用户拿旧 labels.md 覆盖）
+  // 就退回长文案：少一句文案可以，注入不许因为取不到字串就抛。
+  let tailShort = false
+  let tailWorst = tailWorstLong
+  if (budgeted) {
+    const shortWorst = Math.max(
+      lblSoft('inject.budgetTailShort', { cap, squeezed: entries.length, heads: entries.length, dropped: entries.length }).length,
+      lblSoft('inject.budgetTailDropOnlyShort', { cap, dropped: entries.length }).length,
+    )
+    if (shortWorst > 0 && shortWorst < tailWorstLong && fixed + tailWorstLong > cap * INJECT_BOOKKEEP_RATIO) {
+      tailShort = true
+      tailWorst = shortWorst
+    }
+  }
   let rest = budgeted ? cap - fixed - tailWorst : 0
   const blocks = []
   const modes = []
@@ -6607,7 +6665,19 @@ function renderHitEntries(entries, o, query) {
   // 与 240 的较大者——预算越宽，单条越能整条呈现。
   const bodyCap = budgeted ? Math.max(INJECT_BODY_CAP, Math.floor(cap * 0.5)) : 0
   for (let i = 0; i < entries.length; i += 1) {
-    const head = headLines[i]
+    // [macro-fusion 0.6.59] 头行先按预算瘦身（见 INJECT_HEAD_LEAN_RATIO 注释）：
+    // 这一条最多能动用的预算是 rest - 1（末尾换行），头行不许超过它的 1/3。
+    // 分三档递进，永远保留 id（它是 memory_read 的唯一把手）与 level。
+    let head = headLines[i]
+    if (budgeted) {
+      const avail = Math.max(0, rest - 1)
+      const headMax = Math.max(INJECT_HEAD_FULL_MIN, Math.floor(avail / INJECT_HEAD_LEAN_RATIO))
+      if (head.length > headMax) {
+        if (headLean[i].length <= headMax) head = headLean[i]
+        else if (headLeanest[i].length <= headMax) head = headLeanest[i]
+        else head = headLean[i]
+      }
+    }
     const left = entries[i]
     const contentLen = String(left.content ?? '').length
     let per
@@ -6616,7 +6686,11 @@ function renderHitEntries(entries, o, query) {
       if (bodyMax > 0) per = Math.min(per, rankBodyMax(bodyMax, i))
       // 放不下「头 + 一句像样的正文」就整条不列——只留一个 id 的占位条目对模型几乎无用，
       // 不如把预算留给前面几条完整呈现，并把「还有 N 条」说在尾巴上。
-      if (per < INJECT_BODY_MIN) {
+      // [macro-fusion 0.6.59] 但 0.6.56 起头行也瘦了：紧预算下 60 字这条线本身把预算
+      // 卡死在「一条都排不下」——cap 300 时 3 条候选里能列 0–1 条，剩下的全变「N 条未列出」。
+      // 现在补一档「预览」：分到 36 字以上就列，正文压到一句、不留逐条自述（尾巴统一交代），
+      // 让模型至少知道「这几条存在、大致讲什么」，要全文按 id 调 memory_read。
+      if (per < INJECT_BODY_MIN && !(per >= INJECT_BODY_PREVIEW_MIN)) {
         dropped = entries.length - i
         break
       }
@@ -6644,7 +6718,7 @@ function renderHitEntries(entries, o, query) {
           Math.max(INJECT_BODY_NOTE_MAX, Math.floor(per / 2))
         )
       : 0
-    const keepNote = willCut && per - noteWant >= noteWant + INJECT_BODY_AFTER_NOTE_MIN
+    const keepNote = willCut && per - noteWant >= noteWant + INJECT_BODY_AFTER_NOTE_MIN && per >= INJECT_BODY_MIN
     const noteLen = keepNote ? noteWant : 0
     if (willCut) {
       const room = per - noteLen
@@ -6676,8 +6750,12 @@ function renderHitEntries(entries, o, query) {
   const lines = [header, ...blocks, boundary]
   if (budgeted) {
     const firstId = entries.find((e, i) => modes[i] === 'squeeze' || modes[i] === 'clip' || modes[i] === 'head')?.id
-    if (squeezed + heads > 0) lines.push(lbl2('inject.budgetTail', { cap, squeezed, heads, dropped, id: String(firstId ?? '') }))
-    else if (dropped > 0) lines.push(lbl2('inject.budgetTailDropOnly', { cap, dropped }))
+    // [macro-fusion 0.6.59] tailShort 选中时用短文案；万一取不到（标签缺失）就回长的，
+    // 这里绝不能让 fillTemplate 收到空串之外的意外——空串会被下面的 || 兜底挡掉。
+    const pick = (shortKey, longKey, params) =>
+      (tailShort && lblSoft(shortKey, params)) || lbl2(longKey, params)
+    if (squeezed + heads > 0) lines.push(pick('inject.budgetTailShort', 'inject.budgetTail', { cap, squeezed, heads, dropped, id: String(firstId ?? '') }))
+    else if (dropped > 0) lines.push(pick('inject.budgetTailDropOnlyShort', 'inject.budgetTailDropOnly', { cap, dropped }))
   }
   return { text: lines.join('\n').trimEnd(), modes, dropped, squeezed, heads, bodyCut, bodyMax }
 }

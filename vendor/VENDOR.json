@@ -8,8 +8,8 @@
       "name": "meow-memory",
       "version": "0.32.8",
       "files": 44,
-      "bytes": 2196235,
-      "sha256": "4d95e3f6f83bd47c3385e4afb91e1069b79733f9370b05986c78f7ac008db39b"
+      "bytes": 2202601,
+      "sha256": "3b0e185b4bf3a23d82bf4daf6a24e64a5d22edd410e217e03b8fc1e03528691d"
     },
     {
       "dir": "vendor/dsh-memory-nebula",

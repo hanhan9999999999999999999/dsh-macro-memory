@@ -54,8 +54,8 @@ const Q = '降糖药 剂量'
 {
   // [0.6.56] 自述尾巴改为「现场量最坏情况」预留，INJECT_NOTE_RESERVE 保留但只当标签
   // 缺失时的兜底——所以这里仍然钉它的值，同时钉住「量过才用」的那段代码在位。
-  ok('B0 常量在位：正文上限 240 / 整条最小 60 / 自述兜底 120',
-    src.includes('var INJECT_BODY_MIN = 60;') && src.includes('var INJECT_BODY_CAP = 240;') && src.includes('var INJECT_NOTE_RESERVE = 120;') && src.includes('const tailWorst = budgeted'))
+  ok('B0 常量在位：正文上限 240 / 整条最小 60 / 自述兜底 120 / 预览档 36',
+    src.includes('var INJECT_BODY_MIN = 60;') && src.includes('var INJECT_BODY_CAP = 240;') && src.includes('var INJECT_NOTE_RESERVE = 120;') && src.includes('var INJECT_BODY_PREVIEW_MIN = 36;') && src.includes('const tailWorstLong = budgeted'))
   ok('B0 渲染器与段级预算都在', src.includes('function renderHitEntries(entries, o, query) {') && src.includes('function budgetText(text, cap, label = \'\') {'))
   ok('B0 五个口子都导出（探针才测得动）',
     ['renderHitEntries', 'budgetText', 'squeezeBody', 'injectTermsOf', 'splitSentsOf'].every((k) => typeof V[k] === 'function'),
@@ -137,7 +137,9 @@ const Q = '降糖药 剂量'
   const r = V.renderHitEntries(ENTRIES, { injectMaxChars: 600 }, Q)
   ok('B6 自述尾巴在位并写清上限数字', r.text.includes('按上限') && r.text.includes('600'))
   ok('B6 自述里给了 memory_read 的取全文指引', /memory_read\("?[a-z0-9]{8}"?\)/i.test(r.text) || r.text.includes('memory_read'))
-  const rTiny = V.renderHitEntries(ENTRIES, { injectMaxChars: 200 }, Q)
+  // [0.6.59] 预览档（36 字）把「一条都列不出」的临界点往下推了：同样的 200 字，
+  // 现在能列出第一条的一句，于是 dropOnly 尾巴要另找一个更小的档来验（150 字）。
+  const rTiny = V.renderHitEntries(ENTRIES, { injectMaxChars: 150 }, Q)
   ok('B6 上限只够骨架时自述改成「N 条没列出 + memory_search 去查」', rTiny.text.includes('没列出') && rTiny.text.includes('memory_search'), `len ${rTiny.text.length} · drop ${rTiny.dropped}`)
 }
 
@@ -240,10 +242,51 @@ const Q = '降糖药 剂量'
     level: 'fact', project: null, title: null, importance: 3, status: 'active', keywords: [], updatedAt: Date.now(),
   }
   const r = V.renderHitEntries([hard], { injectMaxChars: 300, injectBodyMax: 0 }, '上限怎么算')
-  const body = r.text.split('\n').filter((l) => !l.startsWith('[') && !/本条还有/.test(l) && !/^（以上为长期记忆/.test(l) && !/^…（本次注入按上限/.test(l) && l.trim() !== '').join(' ')
+  // [0.6.59] 尾巴有长短两版，取正文时按前缀整行剔掉（短版以 `…（上限 300 字：` 开头）。
+  const body = r.text.split('\n').filter((l) => !l.startsWith('[') && !/本条还有/.test(l) && !/^（以上为长期记忆/.test(l) && !/^…（/.test(l) && l.trim() !== '').join(' ')
   ok('B13 长句装不下时咬一段接上（正文里出现该句的开头）', body.includes('上限怎么算、算到哪一步'), '正文 ' + body.trim().length + ' 字')
   ok('B13 咬断处有省略号收尾（别让人以为句子就到此为止）', /…\s*$/.test(body.trim()), JSON.stringify(body.trim().slice(-20)))
   ok('B13 接续之后仍然不超上限', r.text.length <= 300, r.text.length + ' ≤ 300')
+}
+
+// ── B14 记账让位（0.6.59）：紧预算先薄头行与尾巴，正文才是钱 ──────────────────
+// 真库量下来 cap 300 时 66% 花在头行（90 字/条）和尾巴（72 字/轮）上，正文只有 34%。
+// 处方是分级：头行完整 → 去绝对时间 → 去 project；尾巴换短文案。信息不删，只让位。
+{
+  const one = {
+    id: '0mprobe013',
+    content: '上限这件事要讲清楚。' + '每段都讲上限怎么算。'.repeat(20),
+    level: 'topic', project: 'dsh-macro-memory', title: null, importance: 3, status: 'active', keywords: [],
+    updated_at: Date.now() - 7200e3,
+  }
+  const tight = V.renderHitEntries([one], { injectMaxChars: 240, injectBodyMax: 0 }, '上限怎么算')
+  const roomy = V.renderHitEntries([one], { injectMaxChars: 900, injectBodyMax: 0 }, '上限怎么算')
+  const headOf = (r) => r.text.split('\n').find((l) => l.startsWith('[')) ?? ''
+  const tightHead = headOf(tight)
+  const roomyHead = headOf(roomy)
+  ok('B14 紧上限下头行不写绝对时间戳（省 18 字/条）', tightHead !== '' && !/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(tightHead), tightHead)
+  ok('B14 但 id 与相对时间必须在（还要能 memory_read）', tightHead.includes('0mprobe013') && /\[\d+ 分钟前\]|\[\d+ 小时前\]/.test(tightHead), tightHead)
+  ok('B14 预算宽时绝对时间要回来（只让位，不删信息）', /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(roomyHead), roomyHead)
+  ok('B14 紧上限下尾巴换短文案', tight.text.includes('全文用上面各条 id 调 memory_read') && !tight.text.includes('本次注入按上限'), (tight.text.split('\n').pop() ?? '').slice(0, 46))
+  ok('B14 薄了之后仍然不超上限', tight.text.length <= 240, `${tight.text.length} ≤ 240`)
+}
+
+// ── B15 预览档（0.6.59）：分不到 60 字也别整条丢掉，36 字换一个「它在讲什么」──
+// 0.6.56 起的 60 字门槛在紧预算下会变成「一条都列不出、全进『N 条未列出』」，
+// 模型连「有这么几条」都不知道。36–59 字之间列一句预览 + id，要全文再 memory_read。
+{
+  const mk = (id) => ({
+    id,
+    content: '先说一句铺垫，讲的是别的事。' + '这一段讲的是怎么调上限、上限调小之后会发生什么，说了很多遍。'.repeat(8),
+    level: 'fact', project: null, title: null, importance: 3, status: 'active', keywords: [], updatedAt: Date.now(),
+  })
+  const rows = [mk('0mprobe011'), mk('0mprobe012')]
+  const preview = V.renderHitEntries(rows, { injectMaxChars: 288, injectBodyMax: 0 }, '上限调小 铺垫')
+  const squeezed = V.renderHitEntries(rows, { injectMaxChars: 240, injectBodyMax: 0 }, '上限调小 铺垫')
+  ok('B15 分不到 60 字也列（36 字以上就给一句预览）', preview.modes.length === 2 && preview.dropped === 0, `${JSON.stringify(preview.modes)} · 漏 ${preview.dropped}`)
+  ok('B15 预览档不留逐条自述（省下的字全给正文）', (preview.text.match(/本条还有/g) ?? []).length < 2, `自述 ${(preview.text.match(/本条还有/g) ?? []).length} 条 / 列出 ${preview.modes.length} 条`)
+  ok('B15 预算真不够时照旧整条不列（不是无条件扩列）', squeezed.modes.length < 2 && squeezed.dropped > 0, `${JSON.stringify(squeezed.modes)} · 漏 ${squeezed.dropped}`)
+  ok('B15 预览档一样不超上限', preview.text.length <= 288 && squeezed.text.length <= 240, `${preview.text.length} ≤ 288 · ${squeezed.text.length} ≤ 240`)
 }
 
 console.log('')

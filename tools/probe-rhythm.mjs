@@ -338,11 +338,13 @@ const baseOpts = { injectMaxChars: 0, injectFloor: 0, injectBodyMax: 240 }
 
   // 病根二：单次上限小到只剩骨架时，旧写法照样把「标题 + 边界句」灌进去，却一条 id 都不记，
   // 下一轮同一批再算一遍。现在改成整轮不注入，日志里说清是哪一道上限卡住的。
-  const tiny = run(Q_SAME, { ...baseOpts, injectMaxChars: 200 }, 'sess-r8-tiny')
+  // [0.6.59] 预览档（36 字）把「能列一条」的临界点往下推了：200 字现在能列一条带正文的，
+  // 那就不算骨架，该注入。真正只剩骨架的档在这里是 120 字。
+  const tiny = run(Q_SAME, { ...baseOpts, injectMaxChars: 120 }, 'sess-r8-tiny')
   ok('R8 上限小到只剩骨架 → 整轮不注入（不灌一行没有正文的标题）', tiny === null, String(tiny))
   const logText = readFileSync(join(wsRoot, '.dsh-meow', 'dream-debug.log'), 'utf8')
   ok('R8 骨架挡法在日志里带 cap（与「会话额度花光」同一个出口，但看得清是哪一道）',
-    /hit-skip reason=budget .*cap=200 /.test(logText), logText.split('\n').filter((l) => l.includes('cap=200')).pop() ?? '没有 cap 行')
+    /hit-skip reason=budget .*cap=120 /.test(logText), logText.split('\n').filter((l) => l.includes('cap=120')).pop() ?? '没有 cap 行')
 }
 
 // ── R9 老条目放回：本会话给过的，隔 N 轮又能进候选（0.6.49）──────────────────

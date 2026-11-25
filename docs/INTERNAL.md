@@ -14236,3 +14236,19 @@ cap 240 归零不是回归：header 13 + boundary 33 + 尾巴约 90 + 头行 47 
 
 **顺手记一笔**：`probe-rhythm` 的 R7 夹具（「额度只剩 340」）在新行为下已经装得下两条的「第一句」，
 「被挤掉的那条」不存在了，断言变成测空气——额度重新标定到 **250**，并在原位写了理由。
+
+### 9.258 0.6.59：紧预算先薄记账
+
+**症状**：用户把注入上限从默认调到 300 字，本想「少而精」，结果拿到的是**一堆 id 和时间戳**。`bench18.mjs` 把注入按行拆开记账（真库 10 问 / 每条 top-3）：默认档每轮 8,880 字里 header 140 / 条目头行 2,776 / 正文 5,084 / 自述 860，正文占 57%；一旦 cap = 300，总字数塌到 2,688，**头行 917 + 整批尾巴 720 = 记账 66%，正文只剩 911**（每问约 91 字）。头行单条 90 字——`[dsh-macro-memory : topic] [0mwvg4hyh-d6753025bf3d41adb676097ca3] 2026-11-25 01:29 [2 小时前]`，其中 id 33 字、绝对时间戳 17 字、相对时间 9 字、project 17 字；尾巴一行近 100 字；boundary 41 字。上限越小，这些固定开支占比越高，用户的旋钮拧的是「正文」，落地拧的是「账本」。
+
+**归因**：三处「不管有多少预算都按同一套样板渲染」——① 头行一次性拼好，不分预算档；② 尾巴两句长文案（`inject.budgetTail` / `inject.budgetTailDropOnly`）取长者为最坏估计，短预算下也照发；③ `if (per < INJECT_BODY_MIN) { dropped = entries.length - i; break }`：本条的正文预算不到 60 字就整条不列——可真库不少条目**第一句就 40 多字，正好把要点说完**，整条丢掉的代价是「本来能列一条带正文的，结果列了零条」。
+
+**处方三刀**（全部只在上限生效时动手，默认档一个字不改；`INJECT_*` 四个常量都带真库读数注释）：
+
+1. **头行三档**（`INJECT_HEAD_LEAN_RATIO = 3`、`INJECT_HEAD_FULL_MIN = 40`）：每条先量「它到底能占多少」——`avail = Math.max(0, rest - 1)`、`headMax = Math.max(40, Math.floor(avail / 3))`；装不下就降档：先去绝对时间戳（`2026-11-25 01:29 [2 小时前]` → `[2 小时前]`），还装不下连 project 名也让位（只留 `[level] [id] [相对时间]`）。**id 与相对时间永不让位**——没有 id 拿不到全文，没有相对时间算不出新近度。
+2. **尾巴双档**（`INJECT_BOOKKEEP_RATIO = 0.4`）：`shortWorst > 0 && shortWorst < tailWorstLong && fixed + tailWorstLong > cap * 0.4` 时换短文案（`inject.budgetTailShort` / `inject.budgetTailDropOnlyShort`，约 45 字，同样三件事只说一遍）；收尾 `const pick = (shortKey, longKey, params) => (tailShort && lblSoft(shortKey, params)) || lbl2(longKey, params)`。新键一律走 `lblSoft`（try/catch 返回空串）——用户覆盖过的 `$DSH_HOME/prompts/<lang>/labels.md` 没有这个键时只能退回长文案，**不能抛错**（`keyedValue` 缺键是硬抛 `[meow-memory] prompt 文案缺失`）。
+3. **正文预览档**（`INJECT_BODY_PREVIEW_MIN = 36`）：`if (per < INJECT_BODY_MIN && !(per >= INJECT_BODY_PREVIEW_MIN)) { ... break }`，并把 `keepNote` 追加 `&& per >= INJECT_BODY_MIN`——36–59 字也列一段裁剪过的正文，**逐条自述在这个档位一律不留**（留了就没正文）。
+
+**读数**（`bench19.mjs`，真库 10 问 / top-3，A = `E:\Temp\cmp\pkg58` 即 0.6.58 引擎副本，B = 当前）：默认档 **8,867 字 / 46.6% 逐位相同**（不越界改默认行为）；cap 300 2,688 → 2,643 字、**10.2% → 11.4%**、记账占比 **66% → 约 48%**（头行 917 → 546、尾巴 720 → 590）；cap 600 4,956 → 5,448 字、**18.2% → 21.6%**（能列 12 → 16 条）；cap 360 / 480 / 900 召回持平或略升（3,319 → 3,182、4,193 → 4,204、8,560 → 8,499）。行为快照（`bench20b.mjs` / `bench21.mjs`）：cap 300 头行 `[dsh-macro-memory : topic] [0mprobe013] [2 小时前]`、cap 240 `[topic] [0mprobe013] [2 小时前]`、cap 0/400/480/900 一律保留绝对时间戳；预览档 cap 286–294 两条都列、dropped 0，cap ≤ 284 只列一条，cap 120–170 走空 modes 的骨架尾巴。
+
+**断言**：`probe-budget` 48 → **57**（新增 B14：紧上限不服绝对时间戳 / id 与相对时间仍在 / 宽预算时间戳回来 / 尾巴换短文案 / 仍 ≤ cap；B15：288 档两条都列 dropped 0 / 预览档不留逐条自述 / 240 档照旧整条不列 / 都不超上限；B0 常量断言补 `INJECT_BODY_PREVIEW_MIN` 与 `tailWorstLong`；B6 骨架夹具 200 → 150、B13 尾巴过滤放宽到只认前缀）。另修两支**假绿**：`probe-injectlog` I5.5 原本靠「cwd 恰好没有 `.dsh-meow`」通过（仓库根就是活工作区，`.dsh-meow/dream-debug.log` 86 KB 一直在），改成 `mkdtempSync(join(tmpdir(),'probe-injectlog-nows-'))` + `process.chdir` + finally 切回；`probe-rhythm` R8 的骨架夹具 200 → **120**（预览档下 200 已能列一条带正文，不算骨架），日志断言同步 `cap=120`。规模 61 支 / **4,377 断言**。

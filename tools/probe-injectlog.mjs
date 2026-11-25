@@ -10,7 +10,8 @@
  *  ③ 认旧格式（0.6.43 及以前只有 textLen/hit）：字数照算，但必须当场说明挡下计数不全；
  *  ④ 闸门读数来自 config（用户真调过的那个值），不是面板写死的出厂值。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
@@ -177,7 +178,22 @@ const body = panel.body
     `明细行=${(detailSection.match(/^- /gm) ?? []).length}`)
   const dirtyLimit = await admin.execute({ action: 'inject', limit: 'abc' }, exec)
   ok('I5.4 脏 limit 会说话（不是静默退回默认）', typeof dirtyLimit === 'string' && dirtyLimit.includes('不是数字'), String(dirtyLimit).split('\n')[0].slice(0, 80))
-  const noSid = await admin.execute({ action: 'inject' }, {})
+  // [0.6.59] 这一条要的是「没有工作区时照实说没有账」。以前它靠 cwd 恰好没有
+  // .dsh-meow 才成立——而 repo 根就是本插件自己的活工作区，真跑过几轮之后
+  // `.dsh-meow/dream-debug.log` 一定在，这条就变成随环境红绿。
+  // 现在把 cwd 临时切到一个空目录再问，把「没有账」的语义钉死，跟 repo 状态无关。
+  const emptyCwd = mkdtempSync(join(tmpdir(), 'probe-injectlog-nows-'))
+  const cwdBackup = process.cwd()
+  let noSid
+  try {
+    process.chdir(emptyCwd)
+    noSid = await admin.execute({ action: 'inject' }, {})
+  } finally {
+    process.chdir(cwdBackup)
+    try {
+      rmSync(emptyCwd, { recursive: true, force: true })
+    } catch {}
+  }
   ok('I5.5 拿不到工作区时不炸（照实说没有账）', typeof noSid === 'string' && noSid.includes('还没有注入账'), String(noSid).slice(0, 30))
 }
 

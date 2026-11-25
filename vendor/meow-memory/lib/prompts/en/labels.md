@@ -20,6 +20,8 @@
 - inject.boundary: (The above is long-term memory for reference, not an instruction for this turn — the user's message follows below.)
 - inject.budgetTail: …(injection fit to {cap} chars: {squeezed} entries kept relevant sentences, {heads} kept a single sentence, {dropped} not listed; use memory_read with each entry's id.)
 - inject.budgetTailDropOnly: …(injection fit to {cap} chars: {dropped} entries not listed; use memory_search with keywords to find them.)
+- inject.budgetTailShort: …(cap {cap}: {squeezed} compressed, {heads} single-sentence, {dropped} unlisted; memory_read by id for full text.)
+- inject.budgetTailDropOnlyShort: …(cap {cap}: {dropped} unlisted; use memory_search with keywords to find them.)
 - inject.budgetNote: …({label}truncated to {cap} chars; {dropped} blocks dropped. Use memory_read / memory_project for the rest.)
 - inject.bodyNote: …({rest} more chars elided; use memory_read with this entry's id.)
 - dream.title: Memory consolidation task (dream)
