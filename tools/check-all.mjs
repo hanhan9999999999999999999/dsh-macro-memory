@@ -113,7 +113,7 @@ const STEPS = [
   ['tools/probe-platform.mjs', '平台账（0.7.0）：三平台宏目录与 DSH_HOME 优先级（有值用值 / 空白当没设 / 不展开 ~）、pathFor 分隔符、运行面没有盘符字面量与 Windows-only 环境变量、process.platform 只出自 platform.js、设置页 placeholder 无盘符、snapshot 惰性取 node:sqlite 且本机能取到、复原提示按平台给命令、四个自检工具各有平台分支、跨平台复原脚本在位、文档（MAC.md / README / CHANGELOG）与版本三处一致、坏样本必红的好样本必绿'],
   ['tools/probe-core.mjs', 'core 层（0.8.0 全 agent 适配）：不依赖 DSH 也能跑——装配就绪 17 子工具 / remember→search→read 闭环 / 库落在 <ws>/.dsh-meow 与 DSH 同一文件 / 陌生库拒绝写且 trust 后能写 / L0 ≤1,300 字符 / MCP 握手四报文 / CLI --help / dataDir 三分支 / 关掉后不再静默成功 / 裸包（无 node_modules）也能起'],
   ['tools/probe-fence.mjs', '文件围栏（AGENTS.md 注入，PLAN §8.3 / U10）：纯函数一秒跑完——空文件建块、重复写不叠加、三种结尾（无换行/一个/两个空行）摘完逐字节还原、CRLF 文件块也是 CRLF、坏块原样不动只报错、块在中间只碰自己、CLI uninstall 不装引擎也能摘干净、--help 里有这三条命令'],
-  ['tools/probe-share.mjs', '归属账（多 agent 共用一个库，PLAN P1-2 / U6）：A 写的 B 读到带 [agent:A]、自己搜到自己带 [self]、改内容不动主人只换 last_editor、没有归属记录的老条目不乱标、scope 三层默认值、正文里的同形 8 位串不误标、归属表坏掉记忆照旧写入'],
+  ['tools/probe-share.mjs', '归属账与隔离（多 agent 共用一个库，PLAN P1-2 / U6）：A 写的 B 读到带 [agent:A]、自己搜到自己带 [self]、改内容不动主人只换 last_editor、没有归属记录的老条目不乱标、scope 三层默认值、正文里的同形 8 位串不误标、别人的 private 搜不到也读不到（明说「不给你看」而不是「查不到」）、owner 为空的老条目不被误藏、归属表坏掉记忆照旧写入'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 

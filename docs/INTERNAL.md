@@ -14764,7 +14764,7 @@ function id8(id) { return String(id).slice(0, 8) }
 
 **为什么标签在文本层**：meow 的七层渲染散在十几处，改任何一处都要连带把「回执文案」这条资产重新验一遍（它还有 budget 裁剪、星图扩散、多模式拼接）。而「哪个 id 属于谁」是**查表来的事实**，标签只是把它印在 id 旁边。代价写在明处：如果某条记忆的正文里恰好出现了**方括号包起来的合法 id 形态**，它也会被印上标签——概率极低，且只对库里真实存在的 id 生效。实测的两种 id 形态都认：回执行里的 `[0mwxux1f6-709dde1a98df49729b9f192c10]`，以及行首裸写的 `0mwxux1f`。
 
-**判据**：`tools/probe-share.mjs` **13 条**（临时目录，两个 agent 共用一个工作区库）——codex 写、claude 搜到带 `[agent:codex]`；codex 自己搜到带 `[self]`；claude 改那条之后库里 `owner` 仍是 codex 而 `last_editor` 是 claude；删掉归属行后那条**不再带任何标签**；`soul` 默认 `private` / `rules` 默认 `workspace` / 显式 `global` 生效且别人看到 `[global]`；正文里的 `ab12cd34`、`deadbeef` 不被误标而同一行的真 id 照标；`DROP TABLE mem_owner` 之后记忆照旧写入。
+**判据**：`tools/probe-share.mjs` **19 条**（临时目录，两个 agent 共用一个工作区库；后 6 条是隔离）——codex 写、claude 搜到带 `[agent:codex]`；codex 自己搜到带 `[self]`；claude 改那条之后库里 `owner` 仍是 codex 而 `last_editor` 是 claude；删掉归属行后那条**不再带任何标签**；`soul` 默认 `private` / `rules` 默认 `workspace` / 显式 `global` 生效且别人看到 `[global]`；正文里的 `ab12cd34`、`deadbeef` 不被误标而同一行的真 id 照标；`DROP TABLE mem_owner` 之后记忆照旧写入。
 
 **踩坑**：
 
@@ -14772,4 +14772,30 @@ function id8(id) { return String(id).slice(0, 8) }
 - 回执里的 id 不是 8 位而是 `8 位短 id + "-" + 26 位` 的复合串，所以第一版 `/\[([0-9a-z]{8,40})\]/` 一个都匹配不到——`-` 不在字符集里。字符集改成 `[0-9a-z]{8}[0-9a-z-]{0,32}` 才对上。
 - PowerShell 里 `node -e "<多行脚本>"` 会被参数绑定拦下（`已指定 command 参数`），批量改文本一律写临时 `.mjs` 再 `node` 跑。
 
-**还没做（写在明处）**：`private` 现在只是「记账 + 标注」，跨 agent 的**硬隔离**没做——别人的私密条目仍然会出现在你的检索结果里。真隔离要落在 meow 的检索 SQL 上（或统一工具层的前置过滤），是 0.9.0 的下一刀。
+### 9.283 0.9.0（开发中）：private 的硬隔离——别人的私事不该出现在候选池里
+
+**问题**：9.282 只把「谁写的」记下来了，回执也印了 `[agent:x]`，但别人的私密条目**照样进检索结果**。记账不是隔离，标签不是权限。
+
+**做法**：可见性在**执行前**算，挂在 `exec.visibility.hidden` 上，meow 只负责问一句。
+
+| 位置 | 关键点 |
+| --- | --- |
+| `lib/core/owner.js` `hiddenFor(selfId)` | `SELECT id FROM mem_owner WHERE scope='private' AND owner IS NOT NULL AND owner <> ?`；查表失败返回空集 |
+| `lib/core/owner.js` `buildVisibility(store, selfId)` | 每轮现算，不缓存——缓存错了就是「刚写的私密条目被人搜到」 |
+| `lib/core/engine.js` `call()` | 先算 visibility → `makeExec` 挂上去 → 执行；记账用**执行后**再取一次 store |
+| `vendor/meow-memory/lib/index.js` `filterSearchable()` | 加一行 `if (isHidden(opts.hidden, r.id)) return false`——候选池就剔掉，不占 top-k |
+| `vendor/meow-memory/lib/index.js` `memory_read` | 取到 row 之后判定，明说「这是另一个 agent 的 private 记忆，不给你看」 |
+
+**三条口径（都是有意的，别顺手改）**：
+
+1. **只挡 `private`**。`workspace` / `global` 就是拿来共享的，挡掉等于把功能关掉。
+2. **`owner` 为空的 private 不挡**。0.9 之前写的老条目全都没有归属记录（旁表是这版才有的），一挡就是整库从检索里消失——那不是隐私，是事故。
+3. **查表失败退化成「都能看」**，不降级成「都看不见」。隐私让位给可用性，这条和「归属坏掉不挡写入」是同一个取舍。
+
+**为什么不能放在渲染之后**：先给答案再划掉，等于 k 条里被私密条目占掉位置、时间轴也漏了条目，读者看到的还是「有这条但没内容」。必须在候选池就剔。
+
+**踩坑（这条是探针跑红才发现的）**：账本里存的是 **8 位短 id**（`memory_remember` 回执里那个），层表行 id 是 `短 id + "-" + 32 位`。所以 `hidden.has(row.id)` **永远不命中**，第一版 `probe-share` 的 S8 直接红了。`isHidden()` 改成「相等或前缀命中」才对上。集合通常几十条，逐行比几个前缀比查表便宜。
+
+**第二个坑**：`ownerStoreFor()` 在库文件不存在时返回 `null`（检查不该顺手建库）——而「第一次写入」正是库还不存在的场景。一开始把 store 只取一次并用它算可见性，结果**第一条记忆的归属永久丢失**（S0/S1 红）。现在取两次：执行前取一次算可见性（可能是 null）、执行后再取一次记账（此时库一定在）。
+
+**边界（写在明处）**：这道滤只挡 `memory_search` 与 `memory_read`。`memory_project` 的面板、星图扩散（`nebula_recall`）、`memory_dream` 的整理账**还没过这道滤**，那几处仍可能露出正文。当「别顺手读别人的私事」的护栏够用，当权限边界还早一步。

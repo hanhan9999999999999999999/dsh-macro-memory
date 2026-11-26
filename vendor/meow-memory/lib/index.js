@@ -7206,12 +7206,30 @@ function coerceBoolean(raw) {
   if (typeof raw === "string") return ["true", "1", "yes", "y"].includes(raw.trim().toLowerCase());
   return false;
 }
+// [macro-memory 0.9.0] 可见性过滤：别人的 private 条目不该出现在检索结果里。
+// 集合由宿主在每次调用前算好、挂在 exec.visibility.hidden 上——meow 不认识 owner 表，
+// 也不该认识：它只负责「问一句这个 id 能不能看」，谁写的、给谁看，归上层的账本管。
+function hiddenOf(exec) {
+  const s = exec?.visibility?.hidden;
+  return s && typeof s.has === "function" && s.size > 0 ? s : null;
+}
+// 账本里存的是 8 位短 id（memory_remember 回执里那个），层表里的行 id 是「短 id + '-' + 32 位」。
+// 直接 has() 永远不命中，所以按前缀认——集合通常几十条，逐行比几个前缀比查表便宜。
+function isHidden(set, id) {
+  if (set === null || set === void 0) return false;
+  const s = String(id);
+  if (set.has(s)) return true;
+  for (const h of set) if (s.startsWith(String(h))) return true;
+  return false;
+}
 function filterSearchable(rows, opts) {
   return rows.filter((r) => {
     if (opts.project && opts.project.length > 0 && !opts.project.some((p) => projectCovers(r.project, p))) return false;
     const statuses = opts.status?.filter((s) => s !== "all") ?? [];
     if (statuses.length > 0 && !statuses.includes(r.status)) return false;
     if (opts.days && Date.now() - r.created_at > opts.days * 864e5) return false;
+    // [macro-memory 0.9.0] 别人的 private：一行都不进候选池，也就不会被 top-k 占位。
+    if (isHidden(opts.hidden, r.id)) return false;
     return true;
   });
 }
@@ -7933,7 +7951,7 @@ function searchTool(dir) {
           }
         }
       }
-      const filtered = filterSearchable(rows, { project, status, days });
+      const filtered = filterSearchable(rows, { project, status, days, hidden: hiddenOf(exec) });
       const byId = new Map(filtered.map((r) => [r.id, r]));
       // [macro-fusion 0.6.36] 一趟做完「行 → 文档对象 → 就地换格 → 盖签名版本章」（`stableDocsOf`）：
       // 不再有 `filtered.map(docFor)` 那只中间数组，也不再让 `indexSignature` 回头逐条比字段。
@@ -8327,6 +8345,16 @@ function readTool(dir) {
         };
       }
       const { row } = found;
+      // [macro-memory 0.9.0] 别人的 private：明说「不给你看」，不伪装成「查不到」——
+      // 前者是权限，后者是误导，读者会去别的 cwd 白找一圈。
+      const hiddenSet = hiddenOf(exec);
+      if (isHidden(hiddenSet, row.id)) {
+        return {
+          found: false,
+          id,
+          note: `这条（${String(row.id).slice(0, 8)}）是另一个 agent 的 private 记忆，不给你看。private 只对写它的那个 agent 开放；要看自己写的就 memory_search，想共享就让写它的那个 agent 把 scope 改成 workspace。`
+        };
+      }
       markAccessed(workspace, sessionIdOf(exec) ?? "unknown", [row.id], dir);
       // [macro-fusion 0.4.0] 读到正文才记一次 read：这是 unused 体检（hit_count>0 却从没读过）
       // 唯一的记账点，所以只放在这里——检索、注入、面板都不许冒充「读」。

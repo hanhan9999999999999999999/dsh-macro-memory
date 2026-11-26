@@ -9,6 +9,10 @@
  *   S5 scope 默认：人格/用户 → private，规矩/事实 → workspace；显式 global 标 `[global]`
  *   S6 标签只印在行首 id 上，正文里同形的 8 位串不被误标
  *   S7 归属账打不开时记忆照旧能写（归属是增强，不是前置条件）
+ *   S8 别人的 private：检索里一条都看不见（连候选池都不进，不占 k）
+ *   S9 别人的 private：直读被拒，且说的是「不给你看」不是「查不到」
+ *   S10 自己写的 private：搜得到也读得到（隔离不是自己关自己）
+ *   S11 owner 为空的 private 不误挡（0.9 之前的老条目一挡就是整库消失）
  *
  * 全部在临时目录里做，不碰真实库。
  * 用法：node tools/probe-share.mjs
@@ -108,6 +112,55 @@ const trickySeen = await eng.call('memory_search', { query: '构建号 ab12cd34'
 const bodies = trickySeen.text.split('\n').filter((l) => l.includes('ab12cd34'))
 check('S6 正文里的 ab12cd34 后面没有跟着标签', bodies.length > 0 && bodies.every((l) => !/ab12cd34`?\[/.test(l)), bodies[0]?.slice(0, 140) ?? '没找到')
 check('S6 那条自己的行首 id 仍然带标签', trickySeen.text.includes('[agent:codex]'), trickySeen.text.split('\n').find((l) => l.includes('[agent:codex]'))?.slice(0, 120) ?? '')
+
+// ── S8–S11 可见性：别人的 private 看不见 ────────────────────
+// 这一组要在 S7 之前跑：S7 会把 mem_owner 整张表 DROP 掉。
+const idOf = (r) => r.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(r.text)?.[1] ?? ''
+const priv = await eng.call(
+  'memory_remember',
+  { content: '归属账：这条是 codex 的私事，别人不该看见（私有炮台词）。', level: 'fact', project: 'share', keywords: ['私有炮台词'], importance: 2, scope: 'private' },
+  as('codex'),
+)
+const idPriv = idOf(priv)
+check('S8 一条 private 写进去了', idPriv !== '', idPriv)
+
+const privByB = await eng.call('memory_search', { query: '私有炮台词', k: 5 }, as('claude'))
+check(
+  'S8 别人搜不到这条 private（连候选都不占）',
+  !privByB.text.includes(idPriv.slice(0, 8)),
+  privByB.text.split('\n').slice(0, 2).join(' | ').slice(0, 150),
+)
+
+const privBySelf = await eng.call('memory_search', { query: '私有炮台词', k: 5 }, as('codex'))
+check(
+  'S9 自己搜得到，并带 [self]',
+  privBySelf.text.includes(idPriv.slice(0, 8)) && privBySelf.text.includes('[self]'),
+  privBySelf.text.split('\n').find((l) => l.includes(idPriv.slice(0, 8)))?.slice(0, 130) ?? '',
+)
+
+const readByB = await eng.call('memory_read', { id: idPriv }, as('claude'))
+check(
+  'S9 别人直读被拒，且说的是「private 不给你看」不是「查不到」',
+  /private 记忆|不给你看/.test(readByB.text) && !/在七层表里都查不到/.test(readByB.text),
+  readByB.text.split('\n')[0]?.slice(0, 130) ?? '',
+)
+
+const readBySelf = await eng.call('memory_read', { id: idPriv }, as('codex'))
+check(
+  'S10 自己直读拿到正文（隔离不关自己）',
+  readBySelf.text.includes('私有炮台词') && !/private 记忆|不给你看/.test(readBySelf.text),
+  readBySelf.text.split('\n')[0]?.slice(0, 120) ?? '',
+)
+
+// owner 为空的 private：0.9 之前写的老条目没有归属记录，一挡就是「整库消失」。
+db.p("INSERT OR REPLACE INTO mem_owner (id, owner, scope, visibility, level, last_editor, created_at, updated_at) VALUES (?, NULL, 'private', 'private', 'fact', NULL, ?, ?)")
+  .run(idRules, Date.now(), Date.now())
+const orphanSeen = await eng.call('memory_search', { query: '规矩是工作区的', k: 5 }, as('claude'))
+check(
+  'S11 owner 为空的 private 不误挡（老条目不该被藏）',
+  orphanSeen.text.includes(idRules.slice(0, 8)),
+  orphanSeen.text.split('\n').find((l) => l.includes(idRules.slice(0, 8)))?.slice(0, 120) ?? '',
+)
 
 // ── S7 归属账坏了也不挡写入 ─────────────────────────────────
 db.db.exec('DROP TABLE mem_owner')
