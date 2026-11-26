@@ -49,13 +49,19 @@
 >
 > 11.1 **第二次真跑：URL 那步过了，红在「不需要宿主的那批自检」——根是一个 36 毫秒的窗口。** `034a11e` push 上去，第 6 步（两个仓库名）过了，第 7 步三支红（`probe-share` 17↓、`probe-rrf` 6↓、`probe-tools` 19↓），本机依旧全绿。查下来是两件互不相干的事：
 >
-> ① `probe-share` / `probe-rrf` 是**真 bug**：meow 的 id 是「base36 毫秒时间戳（9 位）+ `-` + 26 位 hex」，而回执只印前 8 位——精度 **36 ms**。融合层从回执认 id 的两条正则都是 `[0-9a-z]{6,}`，**完整 id 带着连字符，于是永远被判非法**，只能退回 8 位前缀。Linux 上连写三条（soul / rules / fact+global）落在同一毫秒窗口 → 前缀相同 → 归属表的 `UPDATE mem_owner SET owner = COALESCE(?, owner), scope = ?, visibility = ?` 互相覆盖 → 后写的 global 把前两条的 scope 也改成了 global。修法：回执印完整 id（`vendor/meow-memory/lib/index.js`）、`newIdOf` 两条正则放行连字符（`lib/core/engine.js`）、`ownersOf` 加 `substr(id, 1, 8)` 前缀匹配（展示层从搜索结果里只能认 8 位，宁可标错一条也别一条都不标），并新增 `probe-share` S12 盯住「回执印的够不够长」。
+> ① `probe-share` / `probe-rrf` 是**真 bug**：meow 的 id 是「base36 毫秒时间戳（9 位）+ `-` + 26 位 hex」，而回执只印前 8 位——精度 **36 ms**。融合层从回执认 id 的两条正则都是 `[0-9a-z]{6,}`，**完整 id 带着连字符，于是永远被判非法**，只能退回 8 位前缀。Linux 上连写三条（soul / rules / fact+global）落在同一毫秒窗口 → 前缀相同 → 归属表的 `UPDATE mem_owner SET owner = COALESCE(?, owner), scope = ?, visibility = ?` 互相覆盖 → 后写的 global 把前两条的 scope 也改成了 global。修法：回执印完整 id（`vendor/meow-memory/lib/index.js`）、`newIdOf` 两条正则放行连字符（`lib/core/engine.js`）、`ownersOf` 支持按前缀查（展示层从文本里认到的是短形态；第一版写的是「宁可标错一条也别一条都不标」，11.2 改掉了后半句），并新增 `probe-share` S12 盯住「回执印的够不够长」。
 >
 > ② `probe-tools` 是**两个手动脚本写死了本机路径**：`tools/cost-baseline.mjs` 的 `createRequire('D:/document/…/package.json')` 站在 try 外面，Linux 上直接抛 `ERR_INVALID_ARG_VALUE('filename', filenameOrURL, …)`（栈在 `node:internal/modules/cjs/loader`，完全看不出是路径问题）；`tools/wire-profile.mjs` 的 `PROFILE = 'D:/dsh-home/profiles/desktop'` 让 `readFileSync` ENOENT。都改成从 `_root.mjs` 的 `root` 与 `DSH_HOME` 推；顺手修掉 `wire-profile` 一个反向默认——原来**不带参数就写盘**，和它自己头注释写的「`--status` 只打印、`--apply` 执行」正好相反。
 >
 > 顺带两处探针自身的毛病：`probe-toolsize` 的 `cutObject` 只认字符串定界符，注释里一个反引号就能让配对错乱（`memory_search` 的 schema 从 5,927 涨到 7,150 B，两条体积判据红在一句注释上），补上 `//` 与 `/* */` 的跳过；`verify` 那条「cost-baseline 的裸 root 也修了」原来逐字要求 `import { vendorDir }`，改成「import 了 `root` 且全文没有盘符绝对路径」——判据不该红在「代码修得更对了」上。
 >
-> 计数口径：`check-all` **79 支 / 4,807 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 20 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
+> 11.2 **第三次真跑：根修好了，判据自己还在用短 id 比身份。** `6c8d80b` push 上去，`probe-tools` 绿了，`probe-share` / `probe-rrf` 还红——红在 `S6 那条自己的行首 id 仍然带标签`、`S8 别人搜不到这条 private`、`Q6 别人的 private 不进任何一段`。三条同一个根：判据里写的是 `text.includes(idPriv.slice(0, 8))` 与 `orderOf = /\[\d+\]…\[([0-9a-z]{8})/`，而库里条目现在印完整 id——**8 位前缀撞车时「包含」恒真、索引全同**，于是「私事没进来」被判成「进来了」。修法：`orderOf` 抓完整 id，S4/S8/S9/S11/Q3/Q4/Q6 一律按完整 id 比较。
+>
+> 同一轮还揪出两个展示层的错：① `tagOwners` 撞车时「随手取第一条」，会把私事标成 `[global]`——改成**owner/scope 一致的照标、不一致的不标**（不标是「没说」，标错是「说错话」）；`ownersOf` 的查询统一成 `id LIKE '片段%'`，因为调用方给的可能就是 9 位行首形态，`substr(id,1,8)` 比不过 9 位。② `LINE_ID` 只抓 8 位，而行首裸 id 真实是 **9 位**前缀，替换后成了 `- 0mzzzzzz`[agent:codex]`z（fact）`——**id 被标签劈开**，原样复制回去就查不到那条；改成捕获整段。
+>
+> 新增 `probe-share` **S13**（3 条）把撞车处置钉死：用独立内存库 + 手工构造两条同前缀 id，验「完整 id 命中那一条」「撞车且 scope 不同 → 不标」「撞车但 owner/scope 相同 → 照标且标签在 id 后面」。这条判据**不依赖机器跑多快**——时序竞态不能靠「跑一遍看红不红」验，得自己造条件。
+>
+> 计数口径：`check-all` **79 支 / 4,810 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 23 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
 
 ---
 

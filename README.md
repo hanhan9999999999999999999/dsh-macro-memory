@@ -167,7 +167,7 @@ npx -y macro-memory trust "/你的/项目目录"
 
 | 宿主 | 8 个工具 | 常驻注入 | 本地面板 | 斜杠命令 | 生命周期 hooks | 证据 |
 | --- | --- | --- | --- | --- | --- | --- |
-| **DSH 插件** | ✅ `memory_*` | ✅ L0 常驻 + 面板/星图 | ✅ 「宏记忆」「宏记忆 · 星图」 | ✅ `/dream`、`/meow-trust` | ✅ 会话生命周期 | `probe-share` 20 / `probe-ui` 12 / `probe-tools` |
+| **DSH 插件** | ✅ `memory_*` | ✅ L0 常驻 + 面板/星图 | ✅ 「宏记忆」「宏记忆 · 星图」 | ✅ `/dream`、`/meow-trust` | ✅ 会话生命周期 | `probe-share` 23 / `probe-ui` 12 / `probe-tools` |
 | **DSH（走 MCP）** | ✅ | ✅ `instructions` | ◐ 用 `macro-memory ui` | ❌ 宿主没有斜杠命令 | ❌ | `probe-mcp` 11 |
 | **Codex CLI** | ✅ | ✅ `instructions`；`init --agents` 写 `AGENTS.md` 围栏 | ◐ 用 `ui` | ❌ | ❌ | `probe-mcp`（协议层）+ `probe-fence` 11 |
 | **Claude Code** | ✅ | ✅ 同上；围栏文件换 `CLAUDE.md` | ◐ 用 `ui` | ❌ | ❌ | 同上 |
@@ -209,7 +209,7 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 
 11. **三平台全绿才算发版。** `.github/workflows/ci.yml` 是一张矩阵：`windows-latest` / `macos-latest` / `ubuntu-latest` × Node 24（`engines` 写的就是 24），零依赖、不装任何东西，直接跑那批**不需要宿主**的自检。宿主契约（`verify.mjs`）与本机流程备份（`doctor.mjs` 的备份段）在 runner 上不存在——硬跑只会把「环境没有」当成「代码坏了」，这两支留给人自己的机器。mac 上打 SEA 产物要先 `codesign --remove-signature`，所以那一支用 `runner.os != 'macOS'` 守卫，**不是 `continue-on-error`**：不许有「失败了但放过」的开关。`release.yml` 只由 tag 触发，`needs: [test]`（复用的就是 ci.yml 那一份），先判「tag 与 `package.json` 版本同号」，再打两个包、两个名字分别 publish，附上二进制与 `SHA256SUMS.txt`；凭据只从 `secrets.NPM_TOKEN` 取，**没有凭据时脚本会说「这次不发 npm，只出二进制」然后正常退出**——不猜、不静默、不假装发过。CI 里还有一条 PLAN 要求的检查：**两个仓库名都探一遍**——当前名必须活着（200/301/302），改名目标允许还是 404（改名之前不判红，只钉「两个名字不许同时死」；新名一旦生效还会顺手警告「旧名没跟着 301」）。这条写错过一次：第一版只探了改名目标，于是**第一次真跑三平台全红**，而本地 14 条判据全绿（教训写进 [`docs/INTERNAL.md`](docs/INTERNAL.md) 的 9.291 第 4 个坑：静态判据证材料对，真跑证成立）。
 
-十一条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 20 条（归属 13 条 + 隔离 6 条 + 撞车 1 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）、`probe-ci` 14 条（含**ci 与 release 的分工**、**没有 `continue-on-error`**、**`--only` 名单每个名字都对得上**——改名后不许静默跑空集）。
+十一条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 23 条（归属 13 条 + 隔离 6 条 + 撞车 4 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）、`probe-ci` 14 条（含**ci 与 release 的分工**、**没有 `continue-on-error`**、**`--only` 名单每个名字都对得上**——改名后不许静默跑空集）。
 
 不开 agent 也能自证：
 
@@ -299,7 +299,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
 | **0.8.1** | **69** | **4,671** |
-| 0.9.0（开发中） | 79 | 4,807 |
+| 0.9.0（开发中） | 79 | 4,810 |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -339,7 +339,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.9.0（开发中；最新发布 0.8.1） |
-| 自证规模 | **79 支自检 / 4,807 条可执行断言** |
+| 自证规模 | **79 支自检 / 4,810 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 15,153 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |

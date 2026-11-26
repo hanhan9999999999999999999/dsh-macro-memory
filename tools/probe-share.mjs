@@ -17,6 +17,7 @@
  * 全部在临时目录里做，不碰真实库。
  * 用法：node tools/probe-share.mjs
  */
+import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -107,7 +108,7 @@ check('S5 global 条目在别人那儿标 [global]', globalSeen.text.includes('[
 // ── S4 没有归属记录的老条目不乱标 ────────────────────────────
 db.p('DELETE FROM mem_owner WHERE id = ?').run(idA)
 const seenNoOwner = await eng.call('memory_search', { query: KEY, k: 5 }, as('claude'))
-const lineA = seenNoOwner.text.split('\n').find((l) => l.includes(idA.slice(0, 8))) ?? ''
+const lineA = seenNoOwner.text.split('\n').find((l) => l.includes(idA)) ?? ''
 check('S4 删掉归属记录后那条不再有 agent 标签', lineA !== '' && !/\[agent:|\[self\]|\[global\]/.test(lineA), lineA.slice(0, 120))
 
 // ── S6 正文里的 8 位串不被误标 ──────────────────────────────
@@ -136,15 +137,15 @@ check('S8 一条 private 写进去了', idPriv !== '', idPriv)
 const privByB = await eng.call('memory_search', { query: '私有炮台词', k: 5 }, as('claude'))
 check(
   'S8 别人搜不到这条 private（连候选都不占）',
-  !privByB.text.includes(idPriv.slice(0, 8)),
+  !privByB.text.includes(idPriv),
   privByB.text.split('\n').slice(0, 2).join(' | ').slice(0, 150),
 )
 
 const privBySelf = await eng.call('memory_search', { query: '私有炮台词', k: 5 }, as('codex'))
 check(
   'S9 自己搜得到，并带 [self]',
-  privBySelf.text.includes(idPriv.slice(0, 8)) && privBySelf.text.includes('[self]'),
-  privBySelf.text.split('\n').find((l) => l.includes(idPriv.slice(0, 8)))?.slice(0, 130) ?? '',
+  privBySelf.text.includes(idPriv) && privBySelf.text.includes('[self]'),
+  privBySelf.text.split('\n').find((l) => l.includes(idPriv))?.slice(0, 130) ?? '',
 )
 
 const readByB = await eng.call('memory_read', { id: idPriv }, as('claude'))
@@ -167,8 +168,8 @@ db.p("INSERT OR REPLACE INTO mem_owner (id, owner, scope, visibility, level, las
 const orphanSeen = await eng.call('memory_search', { query: '规矩是工作区的', k: 5 }, as('claude'))
 check(
   'S11 owner 为空的 private 不误挡（老条目不该被藏）',
-  orphanSeen.text.includes(idRules.slice(0, 8)),
-  orphanSeen.text.split('\n').find((l) => l.includes(idRules.slice(0, 8)))?.slice(0, 120) ?? '',
+  orphanSeen.text.includes(idRules),
+  orphanSeen.text.split('\n').find((l) => l.includes(idRules))?.slice(0, 120) ?? '',
 )
 
 // ── S7 归属账坏了也不挡写入 ─────────────────────────────────
@@ -179,6 +180,35 @@ const stillWrites = await eng.call(
   as('codex'),
 )
 check('S7 mem_owner 表没了，记忆照旧写入成功', stillWrites.refused !== true && /写入|已记|✅/.test(stillWrites.text), stillWrites.text.split('\n')[0]?.slice(0, 120) ?? '')
+
+// ── S13 8 位前缀撞车不许乱标 ──────────────────────────────────
+// 同一 36 ms 窗口里连写的几条前缀一模一样。撞车时「随手取第一条」会把私事标成 [global]
+// （Linux CI 上真发生过，docs/INTERNAL.md 9.292）。这里用一个独立内存库把三种情形钉死，
+// 不依赖「本机跑得快不快」这种时序条件。
+{
+  const { tagOwners } = await mod('lib/core/owner.js')
+  const mem = new DatabaseSync(':memory:')
+  const ms = createOwnerStore(mem)
+  const PRE = '0mwy5o7ac'
+  const gid = `${PRE}-${'b'.repeat(26)}`
+  ms.record(`${PRE}-${'a'.repeat(26)}`, { owner: 'codex', scope: 'private', level: 'fact' })
+  ms.record(gid, { owner: 'codex', scope: 'global', level: 'fact' })
+  ms.record(`0mzzzzzzz-${'c'.repeat(26)}`, { owner: 'codex', scope: 'private', level: 'fact' })
+  ms.record(`0mzzzzzzz-${'d'.repeat(26)}`, { owner: 'codex', scope: 'private', level: 'fact' })
+
+  const exact = tagOwners('`[' + gid + ']` 正文', ms, 'claude')
+  check('S13 完整 id 精确命中，标的是那一条自己的 scope', exact.includes('[global]'), exact)
+
+  const clash = tagOwners('- 0mwy5o7a（fact）正文', ms, 'claude')
+  check('S13 前缀撞车且 scope 不同 → 不标（不猜、不说假话）', !/\[global\]|\[self\]|\[agent:/.test(clash), clash)
+
+  const same = tagOwners('- 0mzzzzzzz（fact）正文', ms, 'claude')
+  check(
+    'S13 前缀撞车但 owner/scope 相同 → 照标，且标签在 id 后面而不是插进 id 中间',
+    same.includes('0mzzzzzzz`[agent:codex]`'),
+    same,
+  )
+}
 
 console.log(`\n${pass} PASS / ${fail} FAIL`)
 await eng.close()

@@ -15079,7 +15079,7 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 | --- | --- | --- |
 | 回执印 8 位还是完整 id | 印完整（`vendor/meow-memory/lib/index.js:7590`，`id=${v.id.slice(0, 8)}` → `id=${v.id}`） | meow 的 id = base36 毫秒时间戳（9 位）+ `-` + 26 位 hex，前 8 位的精度是 **36 ms**。同一毫秒窗口里连写两条记忆，回执上的「id=0mwy4gy5」指的是两条里的哪一条？说不清。多印 26 个字符，换「回执上的 id 一定指得回那一条」 |
 | 归属层从回执里认 id 的条件 | 两条正则都放连字符进来：`/^[0-9a-z][0-9a-z-]{5,}$/` 与 `/id\s*=\s*([0-9a-z][0-9a-z-]{5,})/`（`lib/core/engine.js` 的 `newIdOf`） | 原来两条都是 `[0-9a-z]{6,}`。完整 id 带 `-`，于是**每一条**完整 id 都被判非法，`newIdOf` 永远退化成从回执文本里捞 8 位前缀。这不是「偶尔退化」，是「永远退化」 |
-| 谁来兜住 8 位 | `lib/core/owner.js` 的 `ownersOf`：SQL 从 `WHERE id IN (…)` 扩成 `… OR substr(id, 1, 8) IN (…)` | 展示层（`tagOwners`）从搜索结果里认 id 只能认 8 位（行首那个方括号里就是 8 位）。精确匹配会让标签**整片消失**。前缀撞了怎么办？按查到的那条算——标签是展示层增强，宁可标错一条，也别一条都不标 |
+| 谁来兜住短形态 | `lib/core/owner.js` 的 `ownersOf` 一律走 `id LIKE '片段%'`；`tagOwners` 的 `find` 精确优先，只剩短形态才按前缀找，**且只在撞车那几条 owner/scope 完全一致时才用** | 展示层从回执 / 检索文本里认 id，可能是完整 id，也可能是 8 / 9 位的行首短形态；精确匹配会让标签**整片消失**。但「撞车就随手取第一条」会**说假话**（私事被标成 `[global]`）。改成：一致的照标、不一致的不标——不标是「没说」，标错是「说错话」 |
 | 探针要不要跟着改 | 要，`tools/probe-share.mjs`（7 处）、`tools/probe-rrf.mjs`（1 处）、`tools/probe-core.mjs:146` 的 `/id=([0-9a-z]+)/` 全改成带连字符的版本 | 探针从回执里捞 id 是为了「事后核对这一条」。捞到 8 位前缀，核对的就不是那一条了 |
 | 加不加判据 | 加：`probe-share` S12「回执印的是完整 id，不是 8 位前缀」（`fullId.includes('-') && fullId.length >= 16`） | 这个 bug 能活到今天，是因为**没有任何一条判据看回执长什么样**。有人以后再想 `.slice(0, 8)` 图省事，先被这条拦一次 |
 | 两个「本机手动脚本」怎么办 | `tools/cost-baseline.mjs` 与 `tools/wire-profile.mjs` 去掉写死的绝对路径 | 它们标了 `smoke: true`，`probe-tools` 会在**任何机器**上真跑一遍。写死 `D:/document/…` / `D:/dsh-home/profiles/desktop`，等于把「这台机器没有那个目录」判成「代码坏了」 |
@@ -15092,10 +15092,13 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 
 **为什么本机全绿**：Windows 上每条写入之间隔着若干毫秒，8 位前缀撞不上；两个脚本的绝对路径在这台机器上真实存在。**「本机绿、CI 红」未必是 CI 的问题，也可能是一段只在快机器 / 慢机器上才现形的竞态。**
 
-三个坑：
+六个坑：
 
 1. **8 位前缀是 36 ms，不是 8 位随机。** `newId()` 是 `now.toString(36).padStart(9, '0')` —— base36 一个字符 ≈ 5.2 bit，8 位 ≈ 41.6 bit，除以毫秒就是 36 ms 的窗口。凡是「从展示文本里认实体 id」的地方，都要问一句：这段文本印的是**指针**还是**前缀**。
 2. **`ERR_INVALID_ARG_VALUE('filename', filenameOrURL, …)` 的栈在 `node:internal/modules/cjs/loader`，看不出是路径问题。** CI 日志里只有这一行和 `exit=1`，我一开始以为是 `node:sqlite` 在 runner 上不可用。真因是 `createRequire()` 收到一个 Linux 上根本不存在的盘符路径。**跨平台脚本里所有 `createRequire` / `readFileSync` 的入参都该从 `_root.mjs` 的 `root` 推，不许出现 `D:/`。**
 3. **注释和代码反向的默认值。** `wire-profile.mjs` 头注释写「`--status` 只打印，`--apply` 执行」，代码却是 `const status = argv.includes('--status')` —— **不带参数 = 直接写盘**。这种「危险动作是默认值」的写法，只要有人手滑 `node tools/wire-profile.mjs` 就改了一次 profile。改成只有显式 `--apply` 才写，并把「没有 profile 时」分成两档：只读模式说明情况 exit 0，`--apply` 才 exit 1。
+4. **修完根，探针自己还在用 8 位前缀比身份。** `6c8d80b` push 上去第三次真跑，`probe-tools` 绿了，`probe-share` / `probe-rrf` 还是红——红在 `S6 那条自己的行首 id 仍然带标签`、`S8 别人搜不到这条 private`、`Q6 别人的 private 不进任何一段`。根是同一条：探针判据写的是 `text.includes(idPriv.slice(0, 8))` 与 `orderOf = /\[(\d+)\]…\[([0-9a-z]{8})/`，库里条目现在印完整 id，**8 位前缀撞车时「包含」恒真、索引全同**，于是「私事没进来」被判成「进来了」。修法：`orderOf` 抓完整 id，S4/S8/S9/S11/Q3/Q4/Q6 一律用完整 id 比较。教训——**修了「短 id 撞车」这个根之后，所有拿短 id 当身份证的地方（哪怕只是判据）都得跟着改；否则被判红的是新加的判据，不是被修的东西。**
+5. **`LINE_ID` 只抓 8 位，标签会插进 id 中间。** 行首裸 id 的真实形态是 9 位前缀（`Date.now().toString(36).padStart(9,'0')`），而 `/([0-9a-z]{8})(?=…)/` 只吃 8 位，替换后成了 `- 0mzzzzzz`[agent:codex]`z（fact）` —— **id 被标签劈开，原样复制回去就查不到那条**。改成捕获整段 `([0-9a-z]{8}[0-9a-z-]*)`。这个错在本机跑了两个月没被看见，因为本机的分支很少走到「行首裸 id + 有归属」同时成立。
+6. **判据要制造条件，别等条件自己出现。** 撞车是时序竞态：本机快、Linux 慢的概率分布不同，靠「跑一遍看红不红」验不了。`probe-share` 新增的 `S13` 用**独立内存库 + 手工构造两条同前缀 id**（一条 private、一条 global）把三种处置钉死：完整 id 命中那一条、撞车且 scope 不同 → 不标、撞车但 owner/scope 相同 → 照标。判据从此不依赖「这台机器跑多快」。
 
-文件：`lib/core/engine.js`（`newIdOf` 两条正则）、`lib/core/owner.js`（`ownersOf` 前缀匹配）、`vendor/meow-memory/lib/index.js`（回执印完整 id）、`tools/probe-share.mjs`（正则 + 新增 S12，现 20 条）、`tools/probe-rrf.mjs`、`tools/probe-core.mjs`、`tools/cost-baseline.mjs`、`tools/wire-profile.mjs`。
+文件：`lib/core/engine.js`（`newIdOf` 两条正则）、`lib/core/owner.js`（`ownersOf` 前缀 LIKE、`tagOwners` 的 `find` 与 `LINE_ID`）、`vendor/meow-memory/lib/index.js`（回执印完整 id）、`tools/probe-share.mjs`（正则 + S12/S13，现 23 条）、`tools/probe-rrf.mjs`、`tools/probe-core.mjs`、`tools/cost-baseline.mjs`、`tools/wire-profile.mjs`。

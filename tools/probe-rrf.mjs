@@ -55,8 +55,14 @@ const write = (content, extra = {}, who = 'codex') =>
   eng.call('memory_remember', { content, level: 'fact', keywords: [KEY], importance: 2, project: 'rrf', ...extra }, as(who))
 const search = (extra = {}, who = 'codex') => eng.call('memory_search', { query: KEY, k: 5, ...extra }, as(who))
 
-/** 回执里的命中顺序（`[n] [层 : …] [id8-…]` 的 id8 序列）。 */
-const orderOf = (text) => [...String(text).matchAll(/\[\d+\]\s*\[[^\]]*\]\s*\[([0-9a-z]{8})/g)].map((m) => m[1])
+/**
+ * 回执里的命中顺序（`[n] [层 : …] [id]` 的 id 序列）。
+ *
+ * 抓**完整 id**，不抓 8 位前缀：meow 的 id 是「base36 毫秒时间戳 + `-` + 26 位 hex」，
+ * 8 位前缀的精度只有 36 ms，同一窗口里连写的两条前缀一模一样。用前缀比身份，
+ * Linux CI 上就会把私事认成 global 那条（0.9.0 真踩过，见 docs/INTERNAL.md 9.292）。
+ */
+const orderOf = (text) => [...String(text).matchAll(/\[\d+\]\s*\[[^\]]*\]\s*\[([0-9a-z][0-9a-z-]{5,})\]/g)].map((m) => m[1])
 
 // ── 第一次：库里只有 workspace —— 单段，必须走旧路径 ────────────
 const w1 = idOf(
@@ -82,16 +88,16 @@ const offOrder = orderOf(threeOff.text)
 check('Q2 三段齐了以后，融合的顺序与单池不同', onOrder.join() !== offOrder.join(), `融合 ${onOrder.join(' ')} / 单池 ${offOrder.join(' ')}`)
 check(
   'Q3 偏置把本 agent 的 private 抬到首位（它在单池里是末位）',
-  onOrder[0] === p1.slice(0, 8) && offOrder[offOrder.length - 1] === p1.slice(0, 8),
-  `融合榜首 ${onOrder[0]} · 单池末位 ${offOrder[offOrder.length - 1]} · private ${p1.slice(0, 8)}`,
+  onOrder[0] === p1 && offOrder[offOrder.length - 1] === p1,
+  `融合榜首 ${onOrder[0]?.slice(0, 8)} · 单池末位 ${offOrder[offOrder.length - 1]?.slice(0, 8)} · private ${p1.slice(0, 8)}`,
 )
 
 const noBoost = await search({ private_boost: 0 })
 const noBoostOrder = orderOf(noBoost.text)
 check(
   'Q4 关掉偏置后 private 不再占首位（首位是偏置挣的，不是数据自带的）',
-  noBoostOrder[0] !== p1.slice(0, 8),
-  `关偏置 ${noBoostOrder.join(' ')}（min_rel 会顺手收掉末位，所以只判「不是首位」）`,
+  p1 !== '' && noBoostOrder[0] !== p1,
+  `关偏置 ${noBoostOrder.map((x) => x.slice(0, 8)).join(' ')}（min_rel 会顺手收掉末位，所以只判「不是首位」）`,
 )
 
 const explained = await search({ explain: true })
@@ -106,7 +112,7 @@ check(
 const byOther = await search({}, 'claude')
 check(
   'Q6 别人的 private 不进任何一段（融合也变不出来）',
-  !byOther.text.includes(p1.slice(0, 8)) && orderOf(byOther.text).length > 0,
+  p1 !== '' && !byOther.text.includes(p1) && orderOf(byOther.text).length > 0,
   byOther.text.split('\n').find((l) => /^\[\d+\]/.test(l))?.slice(0, 100) ?? '一条都没有',
 )
 
