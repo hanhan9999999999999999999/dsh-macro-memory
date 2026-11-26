@@ -37,7 +37,15 @@
 >
 > 新增 `tools/probe-homebrew.mjs` 11 条：formula 在位且 class/desc/homepage/license 齐、四个平台块都有 url 与 sha256、`version` 就是根 `package.json` 的版本、**正文里没有 `depends_on "node"`**（注释里举反例不算）、`test do` 两条、formula 的四个平台都被 `build-sea` 认（build-sea 多出的 Windows 两份 brew 不管）、`owner/repo` 跟随 `package.json`、生成器 `--apply` 才写且不发包且缺产物时保留占位、**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**、**不带 `--apply` 时 formula 一个字节都不动**、README 里找得到那条 `brew install` 命令。tap 仓库 `hanhan9999999999999999999/homebrew-tap` 与 `brew audit --strict --new` 由人在 mac 上按。
 >
-> 计数口径：`check-all` **78 支 / 4,792 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条）。
+> **11. 三平台 CI 与「全绿才发版」（PLAN §16 / P2-6）**：`.github/workflows/ci.yml` 是一张矩阵——`windows-latest` / `macos-latest` / `ubuntu-latest` × Node 24（`engines` 写的就是 24），零依赖、不装任何东西，直接跑那批**不需要宿主**的自检。宿主契约（`verify.mjs`）与本机流程备份（`doctor.mjs` 的备份段）在 runner 上不存在，硬跑只会把「环境没有」当成「代码坏了」，这两支留给人自己的机器。mac 上打 SEA 产物要先 `codesign --remove-signature`，所以那一支用 `runner.os != 'macOS'` 守卫，**不是 `continue-on-error`**——不许有「失败了但放过」的开关。
+>
+> `.github/workflows/release.yml` 只由 tag 触发，`needs: [test]` 复用的就是 ci.yml 那一份；先判「tag 与 `package.json` 版本同号」，再打两个包、两个名字分别 publish，附上二进制与 `SHA256SUMS.txt`。凭据只从 `secrets.NPM_TOKEN` 取，**没有凭据时脚本会说「这次不发 npm，只出二进制」然后正常退出**——不猜、不静默、不假装发过。ci.yml 里还有一条 PLAN §16 要求的检查：**旧仓库名仍能解析**（改名后 GitHub 给 301，历史链接不许 404）。
+>
+> 新增 `tools/probe-ci.mjs` 14 条：两个 workflow 在位、矩阵三平台 × Node 主版本且满足 engines、有 steps 的 job 都设了 timeout 且测试 job 有 checkout 与 setup-node、ci 里没有 publish（发版只在 release 且由 tag 触发）、ci 可被复用 `workflow_call`、没有 `continue-on-error` 且 mac 上的 SEA 用 `runner.os` 守卫、publish 依赖 test、tag 与版本必须同号、凭据只从 secrets 取且没凭据时明说这次不发、两个 npm 包都发且 Release 附件带 SHA256SUMS、失败时上传日志、旧名能解析（301）、**ci.yml 的 `--only` 名单每个名字都能在 check-all 的 STEPS 里找到**（改名后不许静默跑空集）、YAML 形状（无 tab / 无行尾空格 / 缩进 2 的倍数）。
+>
+> 诚实边界：这一支是**静态判据**——它证「文件里该有的都在」，证不了「GitHub 上跑得过」。第一次 push 之后的真实运行记录才算数（与 P2-4 那次同一个教训：静态判据证材料对，真跑证成立）。
+>
+> 计数口径：`check-all` **79 支 / 4,806 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
 
 ---
 

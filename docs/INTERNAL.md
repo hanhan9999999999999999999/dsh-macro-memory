@@ -15049,3 +15049,24 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 3. **批量替换漏了末尾不带斜杠的那一处。** 把 formula 里的 `github.com/<owner>/macro-memory/` 换成 `dsh-macro-memory/` 时，`homepage` 那行是 `…/macro-memory`（末尾没有 `/`），于是漏改，H7 报「formula 里同时存在两个 owner/repo」。教训：**拿「带斜杠的前缀」做批量替换，一定先 `grep` 一遍不带斜杠的形式**。
 
 文件：`packaging/homebrew/macro-memory.rb`（formula）、`tools/gen-formula.mjs`（灌哈希）、`tools/probe-homebrew.mjs`（11 条）。`package.json` 加了 `formula` 这个 script。
+### 9.291 0.9.0（开发中）：CI 矩阵与「全绿才发版」——三个平台 × 一个 Node，和一条不许被绕过的门
+
+| 决定 | 结论 | 为什么 |
+| --- | --- | --- |
+| 一张矩阵还是两个 workflow | `ci.yml`（三平台 × Node 24）+ `release.yml`（只由 `v*` tag 触发） | CI 要被 PR / 手动 / 别的 workflow 复用，发版要被 tag 卡住 —— 两件事的生命周期不同，混在一个文件里迟早有人手动触发出一次「非 tag 的发版」 |
+| runner 上跑哪些支 | 只跑**不需要宿主**的那批：`--only=probe-core,probe-fence,probe-rrf,probe-share,probe-mcp,probe-dual,probe-homebrew,probe-platform,probe-tools,probe-monotone` | `verify.mjs` 要读 DSH 宿主的契约、`doctor.mjs` 要读本机流程备份（`D:\备份\…`），这两样在 runner 上不存在。硬跑等于把「环境没有」判成「代码坏了」——第一轮就会红，然后大家开始无视红 |
+| mac 上的 SEA 怎么处理 | `if: runner.os != 'macOS'` 守卫 | mac 上打 SEA 要先 `codesign --remove-signature`（node 官方二进制在 arm64 上有签名，postject 改字节会让签名失效）。用守卫是「这一格本来不在范围」，用 `continue-on-error` 是「失败了但放过」——后者一旦加上，就再没人看那一格 |
+| publish 的凭据从哪来 | 只从 `secrets.NPM_TOKEN`；`if [ -z "${NODE_AUTH_TOKEN:-}" ]; then echo "没有 NPM_TOKEN：这次不发 npm，只出二进制。"; exit 0; fi` | 不猜、不静默、不假装发过。真实场景是有人 fork 了仓库打 tag 试跑，这时候应该出二进制、不发包，而且**说一句** |
+| 什么时候允许发版 | `needs: [test]`（复用 ci.yml）+ tag 与 `package.json` 版本必须同号 | 「全绿才发版」的字面意思；tag 与版本不同号是发版事故的头号来源（npm 上 0.9.0，Release 写 v0.9.1） |
+| 改名之后历史链接怎么办 | ci 里一条 `curl -I` 探旧地址，`case 200|301|302` 才算过 | GitHub 仓库改名会 301，但仓库要是没了就是 404。README / npm / 别人博客里的旧链接不许死 —— 这条就是「改名没把链接改死」的守卫 |
+| 判据能证到哪 | 14 条**静态**判据，只证「文件里该有的都在」 | 与 9.289 同一个教训：静态判据证材料对，真跑证成立。这一支的第一次真实运行记录在 GitHub 上，不在本机 |
+
+判据（`tools/probe-ci.mjs`，14 条）：C1 两个 workflow 在位｜C2 矩阵三平台（windows/macos/ubuntu）× Node 主版本 ≥ `engines` 里的数字｜C3 有 `steps:` 的 job 都设了 `timeout-minutes`，且测试 job 有 `checkout` 与 `setup-node`｜C4 `ci.yml` 里没有 `npm publish`，`release.yml` 有且只由 `tags: ['v*']` 触发｜C5 `ci.yml` 可被 `workflow_call`，`release.yml` 用 `uses: ./.github/workflows/ci.yml`｜C6 两个文件都没有 `continue-on-error`，且 mac 上的 SEA 用 `runner.os != 'macOS'` 守卫｜C7 `publish` 依赖 `test`｜C8 `tag` 与 `package.json` 版本同号（`GITHUB_REF_NAME#v` + `require('./package.json').version` + `test "$tag" = "$ver"`）｜C9 凭据只从 `secrets.NPM_TOKEN` 取，没凭据时明说「这次不发 npm」｜C10 两个包都发（`build-dual --apply --pack` + `for tgz in`）、Release 附件带 `SHA256SUMS.txt`（`gh release create|upload`）｜C11 失败时 `upload-artifact` 带走日志与基线｜C12 旧仓库名仍能解析（301）｜C13 `ci.yml` 的 `--only` 名单（10 个名字）每个都能在 `check-all` 的 STEPS 里找到｜C14 YAML 形状：没有 tab、没有行尾空格、缩进是 2 的倍数。
+
+三个坑：
+
+1. **正则数 YAML 的 job，会数到 `on:` 底下的事件名。** 第一版用 `ci.match(/^ {2}[a-zA-Z0-9_-]+:\s*$/gm)` 数 job，`push:` / `pull_request:` / `workflow_dispatch:` / `workflow_call:` 全是两缩进的键，于是「5 个 job / 1 个 timeout」判红。修法：先用 `/^jobs:\s*$/m` 切出 `jobs:` 之后那一段，再在段内按 `^ {2}([A-Za-z0-9_-]+):\s*$` 切 job 块。**YAML 是缩进语言，任何「按缩进数结构」的正则都得先锚住段**。
+2. **reusable workflow 的 job 不能设 `timeout-minutes`。** `release.yml` 的 `test: uses: ./.github/workflows/ci.yml` 那种 job 只允许 `uses` / `with` / `secrets` / `needs` 几个键，加了 timeout 会直接被拒。所以判据不能是「每个 job 都要有 timeout」，必须是「**含 `steps:` 的 job** 都要有 timeout」。
+3. **`--only` 的名单是字符串，改名或删支之后会静默跑空集。** `check-all --only=a,b,c` 里写错一个名字，那一支就是不跑，而「不跑」和「跑了且绿」在退出码上长得一模一样。C13 因此把名单里每个名字回查 `check-all` 的 STEPS —— 名字必须在真表里存在。**凡是「按名字点菜」的地方，都要有一条判据证明这些名字还点得到东西。**
+
+文件：`.github/workflows/ci.yml`（三平台矩阵）、`.github/workflows/release.yml`（tag → 复用 CI → 双包 publish → 打二进制 → 建 Release）、`tools/probe-ci.mjs`（14 条）。`package.json` 加了 `ci` 这个 script。

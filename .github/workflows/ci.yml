@@ -1,0 +1,83 @@
+name: ci
+
+# 三平台 × Node 24 × 零依赖。这一份只管「不需要宿主的那批自检」——
+# DSH 宿主契约（verify.mjs）与本机流程备份（doctor.mjs 的备份段）在 runner 上不存在，
+# 硬跑只会把「环境没有」当成「代码坏了」。那两支由工程机上的 check-all 管。
+#
+# 复用：release.yml 用 `uses: ./.github/workflows/ci.yml` 等这一份跑完才发版
+# （「全绿才发版」就是这个 needs）。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        node: ['24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 报环境（三平台同一个口径）
+        shell: bash
+        run: |
+          node -v
+          node -p "process.platform + ' ' + process.arch"
+
+      - name: 零依赖：仓库里没有 dependencies，也没有 install 脚本
+        shell: bash
+        run: |
+          node -e "const p=require('./package.json');const d=Object.keys(p.dependencies??{});const s=p.scripts??{};console.log('dependencies:',d.length,'install-script:',Object.keys(s).filter(k=>k==='install'||k==='postinstall').length);if(d.length||s.install||s.postinstall)process.exit(1)"
+
+      - name: 旧仓库名仍能解析（改名后 GitHub 给 301；链接别 404）
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/hanhan9999999999999999999/macro-memory"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I --max-time 20 "$url" || echo 000)
+          echo "旧名 $url → $code"
+          case "$code" in
+            200|301|302) ;;
+            *) echo "旧名解析不了（$code）：README 与 npm 上的历史链接会 404"; exit 1 ;;
+          esac
+
+      - name: 不需要宿主的那批自检
+        shell: bash
+        run: |
+          node tools/check-all.mjs --only=probe-core,probe-fence,probe-rrf,probe-share,probe-mcp,probe-dual,probe-homebrew,probe-platform,probe-tools,probe-monotone
+
+      - name: 单文件二进制（mac 上要先 codesign --remove-signature，见 docs/INTERNAL.md 9.289）
+        if: runner.os != 'macOS'
+        shell: bash
+        run: node tools/probe-sea.mjs
+
+      - name: 失败时把日志带走
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.os }}-node${{ matrix.node }}
+          path: |
+            **/*.log
+            tools/baselines.json
+          if-no-files-found: ignore
+          retention-days: 7

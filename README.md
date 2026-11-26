@@ -207,7 +207,9 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 
 10. **`brew install` 一行，装的是同一个文件。** mac 与 Linux 上还有第三条路：Homebrew。formula 在 [`packaging/homebrew/macro-memory.rb`](packaging/homebrew/macro-memory.rb)，四个平台块各自一个 `url` + `sha256`，装的就是第 9 条那个单文件产物——**不 `depends_on "node"`**，所以装上就有 `macro-memory`，机器上不必先有 Node，也不必担心宿主的 Node 版本够不够 `node:sqlite`。版本号与四个哈希都不手抄：`node tools/gen-formula.mjs --apply --sums <产物目录>` 从 `SHA256SUMS.txt` 灌进去（92 MB 的产物每打一次哈希都不同，手抄一次就等于把上一次的哈希发给下一次的下载者）；缺哪个平台的产物，那个占位就留着并在报告里点名「半份 sha 的 formula 装不了，别发」。`test do` 里钉了两条——`--version` 报得出号、`--help` 提得到 `mcp`，`brew audit` 与用户拿到手最先做的事是同一件。tap 仓库 `hanhan9999999999999999999/homebrew-tap` 得人推，`brew audit --strict --new` 与真正的 `brew install` 只能在 mac 上按。
 
-十条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）。
+11. **三平台全绿才算发版。** `.github/workflows/ci.yml` 是一张矩阵：`windows-latest` / `macos-latest` / `ubuntu-latest` × Node 24（`engines` 写的就是 24），零依赖、不装任何东西，直接跑那批**不需要宿主**的自检。宿主契约（`verify.mjs`）与本机流程备份（`doctor.mjs` 的备份段）在 runner 上不存在——硬跑只会把「环境没有」当成「代码坏了」，这两支留给人自己的机器。mac 上打 SEA 产物要先 `codesign --remove-signature`，所以那一支用 `runner.os != 'macOS'` 守卫，**不是 `continue-on-error`**：不许有「失败了但放过」的开关。`release.yml` 只由 tag 触发，`needs: [test]`（复用的就是 ci.yml 那一份），先判「tag 与 `package.json` 版本同号」，再打两个包、两个名字分别 publish，附上二进制与 `SHA256SUMS.txt`；凭据只从 `secrets.NPM_TOKEN` 取，**没有凭据时脚本会说「这次不发 npm，只出二进制」然后正常退出**——不猜、不静默、不假装发过。CI 里还有一条 PLAN 要求的检查：**旧仓库名仍能解析**（改名后 GitHub 会给 301，README 与 npm 上的历史链接不许 404）。
+
+十一条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）、`probe-ci` 14 条（含**ci 与 release 的分工**、**没有 `continue-on-error`**、**`--only` 名单每个名字都对得上**——改名后不许静默跑空集）。
 
 不开 agent 也能自证：
 
@@ -218,7 +220,7 @@ npx -y macro-memory doctor
 # 结果：一切正常
 ```
 
-边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、MCP 面的真机自证、能双击跑的单文件二进制、`brew install` 的 formula，**每一件都有一支自检盯着**（见上面十条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、mac 产物的真机签名与公证与 tap 仓库推送（脚本齐了，缺 Apple 开发者账号与 GitHub 凭据）、CI 矩阵——这几件这一版没做就是没做。
+边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、MCP 面的真机自证、能双击跑的单文件二进制、`brew install` 的 formula、三平台 CI 与「全绿才发版」，**每一件都有一支自检盯着**（见上面十一条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、mac 产物的真机签名与公证与 tap 仓库推送、CI 的第一次真实运行记录——这几件这一版没做就是没做。
 
 **0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包当时不存在，于是报 `'macro-memory' is not recognized`；0.8.1 的正确写法是 `npx -y -p dsh-macro-memory macro-memory mcp`（0.9 起通用包 `macro-memory` 自己上架，直接 `npx -y macro-memory mcp` 即可，本页其余命令已按 0.9 的写法）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/schemastery` + `vendor/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
 
@@ -297,7 +299,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
 | **0.8.1** | **69** | **4,671** |
-| 0.9.0（开发中） | 78 | 4,792 |
+| 0.9.0（开发中） | 79 | 4,806 |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -337,7 +339,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.9.0（开发中；最新发布 0.8.1） |
-| 自证规模 | **78 支自检 / 4,792 条可执行断言** |
+| 自证规模 | **79 支自检 / 4,806 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 15,153 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |
@@ -352,7 +354,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 ## 参与开发
 
 ```bash
-node tools/check-all.mjs      # 78 支自检，全绿才算改完
+node tools/check-all.mjs      # 79 支自检，全绿才算改完
 node tools/doctor.mjs         # 交付物体检：版本、字节数、图、市场索引
 node tools/check-market.mjs   # 市场索引能不能被宿主接受
 ```

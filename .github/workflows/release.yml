@@ -1,0 +1,87 @@
+name: release
+
+# 只有打 tag 才走这条路，而且必须先过 ci.yml 那一份（三平台 × Node 24）。
+# 发版的三件东西：两个 npm 包（同一份代码的两个名字）、每个平台一个二进制。
+#
+# 凭据：`NPM_TOKEN` 存在 GitHub 的 environment `npm` 里。没有这个 secret 时
+# publish 步骤自己会说「没有凭据，这次不发」然后正常退出——**不猜、不静默、不假装发过**。
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: 发版（两个 npm 包 + 每个平台的二进制）
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: tag 与 package.json 的版本必须同一个号
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(node -p "require('./package.json').version")
+          echo "tag=$tag package.json=$ver"
+          test "$tag" = "$ver" || { echo "tag 与版本号不一致：先改版本再打 tag"; exit 1; }
+
+      - name: 打两个包（同一份代码，逐字节验过才发）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/build-dual.mjs --apply --pack --out "$RUNNER_TEMP/macro-memory-dual"
+          ls -l "$RUNNER_TEMP/macro-memory-dual"
+
+      - name: 发布（没有凭据就不发，明说）
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "没有 NPM_TOKEN：这次不发 npm，只出二进制。"
+            exit 0
+          fi
+          for tgz in "$RUNNER_TEMP"/macro-memory-dual/*.tgz; do
+            echo "→ $tgz"
+            npm publish "$tgz" --access public
+          done
+
+      - name: 打二进制（本 runner 那一份）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/build-sea.mjs --apply --out "$RUNNER_TEMP/macro-memory-sea"
+          ls -l "$RUNNER_TEMP/macro-memory-sea"
+
+      - name: 附到 Release（sha256 一起带上）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sum="$RUNNER_TEMP/macro-memory-sea/SHA256SUMS.txt"
+          bin=$(ls "$RUNNER_TEMP"/macro-memory-sea/macro-memory-* | grep -v 'SHA256SUMS' | head -n 1)
+          gh release create "$GITHUB_REF_NAME" "$bin" "$sum" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "见 docs/CHANGELOG.md 同版本号那一节。" \
+            || gh release upload "$GITHUB_REF_NAME" "$bin" "$sum" --clobber
