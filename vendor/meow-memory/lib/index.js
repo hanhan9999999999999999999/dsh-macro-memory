@@ -7541,6 +7541,15 @@ function applyMerge(db, level, merged, asked) {
   }
   return `这条并进了已有条目 ${merged.id.slice(0, 8)}（内容重复度 ≥${Math.round(DEDUP_THRESHOLD * 100)}%）：${parts.join("；")}。这是「合并」，不是「新写一条」。`;
 }
+// [macro-fusion 0.9.0] 回执原来只印 `id.slice(0, 8)`。那 8 位是 base36 时间戳前缀，
+//   精度 36 ms——两条记忆在同一窗口里写入，前 8 位一模一样（同一个坑在
+//   lib/macro/defs/remember.js:47 已经踩过一次，那里只是「取代」功能认错人；
+//   这里更贵：融合层靠回执认 id 去记归属账，撞了就是后写的那条把前一条的
+//   owner/scope 覆盖掉）。Windows 上每条写入跨毫秒、撞不上；Linux CI 上连写三条
+//   落在同一窗口，probe-share 的 S5 就把 soul/rules 读成了最后一次写的 global。
+//   印完整 id：多 26 个字符，换来「这个 id 一定指得回那一条」。
+//   注：这段注释故意放在 factory 外面——tools/probe-toolsize.mjs 量的「schema」
+//   包含 output 对象里的 render 实现，注释写在里面会把体积算进去（多 746 B）。
 function rememberTool(dir) {
   return {
     name: "memory_remember",
@@ -7587,7 +7596,8 @@ function rememberTool(dir) {
         const kw = Array.isArray(v.keywords) && v.keywords.length > 0 ? `关键词：${v.keywords.join(" / ")}。` : "";
         const proj = typeof v.project === "string" ? `项目：${v.project}。` : "";
         const head = v.merged ? "✅ 已合并到已有条目" : "✅ 记忆已写入";
-        const base = `${head}（${String(v.level ?? "fact")}${typeof v.id === "string" ? `，id=${v.id.slice(0, 8)}` : ""}）。`;
+        // [macro-fusion 0.9.0] 印完整 id（不是 slice(0,8)）：为什么必须完整，见 rememberTool 上方的注释。
+        const base = `${head}（${String(v.level ?? "fact")}${typeof v.id === "string" ? `，id=${v.id}` : ""}）。`;
         const note = typeof v.note === "string" && v.note.trim() ? v.note.trim() : "";
         if (note.length === 0) {
           return [{ type: "text", text: `${base}${proj}${kw}无需重复调用本工具。` }];

@@ -6513,9 +6513,18 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
     '账本: 冒烟只跑标了 smoke 的，且真跑（不是读代码猜）',
     probeTools.includes('for (const m of smokeList)') && probeTools.includes('spawnSync(process.execPath, [join(root, m.file)'),
   )
+  // [macro-fusion 0.9.0] 0.9.0 起 cost-baseline 也要用 `root`（库路径从仓库根算，
+  // 不再写死 `D:/document/…`），所以 import 从「只有 vendorDir」变成「root + vendorDir」。
+  // 判据原来逐字要求 `import { vendorDir } from './_root.mjs'`，于是它红在「修得更对了」上。
+  // 现在判三件事：① _root.mjs 的导出确实被 import（放行任意顺序的 root/vendorDir 组合）；
+  // ② 没有裸用 `root +`（就是 0.2.82 那个错）；③ 全文没有盘符绝对路径（0.9.0 的真教训：
+  // `createRequire('D:/…')` 在 Linux runner 上抛 ERR_INVALID_ARG_VALUE，退出 1）。
   check(
     '脚本: cost-baseline 的裸 root 也修了（同一类错的第二例）',
-    costSrc.includes("import { vendorDir } from './_root.mjs'") && !/readFileSync\(root \+/.test(costSrc),
+    /import \{[^}]*\broot\b[^}]*\} from '\.\/_root\.mjs'/.test(costSrc) &&
+      !/readFileSync\(root \+/.test(costSrc) &&
+      !/createRequire\('D:\//.test(costSrc) &&
+      !/DatabaseSync\('D:\//.test(costSrc),
   )
   check(
     '脚本: cost-baseline 进账本且标了 smoke（只读，可随时跑）',

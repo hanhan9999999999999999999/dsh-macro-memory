@@ -17,11 +17,21 @@
  *   node tools/wire-profile.mjs --status     只打印当前状态，不改
  *   node tools/wire-profile.mjs --apply      执行（幂等）
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-const PROFILE = 'D:/dsh-home/profiles/desktop'
-const PKG = `${PROFILE}/package.json`
-const PATCH = `${PROFILE}/cordis.patch.yml`
+// [macro-fusion 0.9.0] 这里原来写死 `D:/dsh-home/profiles/desktop`。
+//   换一台机器跑（CI 的 Linux runner 就是一台）→ readFileSync 抛 ENOENT → exit 1，
+//   probe-tools 的冒烟判据跟着红，而 detail 里只有一句「exit=1」，看不出是路径问题。
+//   改成：先认 DSH_HOME，没有就看 D:/dsh-home 在不在（主人机器的布局），
+//   再没有就退到 `~/.dsh`。真没有 profile 时——只读模式明说「没得接」并 exit 0，
+//   只有真要写的人（--apply）才拿到 exit 1。
+const DSH_HOME = process.env.DSH_HOME
+  ?? (existsSync('D:/dsh-home') ? 'D:/dsh-home' : join(homedir(), '.dsh'))
+const PROFILE = join(DSH_HOME, 'profiles', 'desktop')
+const PKG = join(PROFILE, 'package.json')
+const PATCH = join(PROFILE, 'cordis.patch.yml')
 const OLD_BUNDLES = ['meow-memory', 'dsh-memory-nebula']
 const NEW_BUNDLE = 'dsh-macro-memory'
 const MACRO_ROW = [
@@ -43,7 +53,18 @@ const MACRO_ROW = [
   '',
 ].join('\n')
 
-const status = process.argv.includes('--status')
+// [macro-fusion 0.9.0] 不带参数就该是只读。原来写成 `status = argv.includes('--status')`，
+//   于是 `node tools/wire-profile.mjs` 一句不带参数的调用会**直接改盘**——注释里写的是
+//   「--status 只打印，--apply 执行」，代码和注释是反的。现在只有显式 `--apply` 才写。
+const wantApply = process.argv.includes('--apply')
+const status = !wantApply
+if (!existsSync(PKG) || !existsSync(PATCH)) {
+  console.log(`这台机器上没有这个 profile（找的是 ${PROFILE}）。`)
+  console.log(wantApply
+    ? '没有 DSH 安装就没得接——--apply 退出 1，什么都没写。'
+    : '只读模式：没有 DSH 安装就没得接，跳过（exit 0）。')
+  process.exit(wantApply ? 1 : 0)
+}
 const pkgText = readFileSync(PKG, 'utf8')
 const manifest = JSON.parse(pkgText)
 const bundles = manifest?.dsh?.profile?.bundles ?? []

@@ -47,7 +47,15 @@
 >
 > **第一次真跑就对上了这句话**：`044de7f` push 上去，`ci` 三个平台（windows / macos / ubuntu）全红，红的都是同一步——「旧仓库名仍能解析」。原因不是网络：那一版脚本探的是**改名目标** `github.com/<owner>/macro-memory`，而 remote 还没改名（`dsh-macro-memory` 才是活的），所以恒 404。静态判据之所以全绿，是因为它只查「文件里有这条 URL 和 `200|301|302` 这个 case」。修法：**两个名字都探**——当前名必须 200/301/302；改名目标允许 404（改名之前不判红，只钉「两个名字不许同时死」），新名一旦生效再顺手警告「旧名没跟着 301」。这条已在真 bash 里跑过一遍（当前名 200 / 目标名 404 / 判通过），`probe-ci` 的 C12 也跟着改成实体判据（缺当前名、缺 404 分支说明、或残留旧文案都判红）。
 >
-> 计数口径：`check-all` **79 支 / 4,806 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
+> 11.1 **第二次真跑：URL 那步过了，红在「不需要宿主的那批自检」——根是一个 36 毫秒的窗口。** `034a11e` push 上去，第 6 步（两个仓库名）过了，第 7 步三支红（`probe-share` 17↓、`probe-rrf` 6↓、`probe-tools` 19↓），本机依旧全绿。查下来是两件互不相干的事：
+>
+> ① `probe-share` / `probe-rrf` 是**真 bug**：meow 的 id 是「base36 毫秒时间戳（9 位）+ `-` + 26 位 hex」，而回执只印前 8 位——精度 **36 ms**。融合层从回执认 id 的两条正则都是 `[0-9a-z]{6,}`，**完整 id 带着连字符，于是永远被判非法**，只能退回 8 位前缀。Linux 上连写三条（soul / rules / fact+global）落在同一毫秒窗口 → 前缀相同 → 归属表的 `UPDATE mem_owner SET owner = COALESCE(?, owner), scope = ?, visibility = ?` 互相覆盖 → 后写的 global 把前两条的 scope 也改成了 global。修法：回执印完整 id（`vendor/meow-memory/lib/index.js`）、`newIdOf` 两条正则放行连字符（`lib/core/engine.js`）、`ownersOf` 加 `substr(id, 1, 8)` 前缀匹配（展示层从搜索结果里只能认 8 位，宁可标错一条也别一条都不标），并新增 `probe-share` S12 盯住「回执印的够不够长」。
+>
+> ② `probe-tools` 是**两个手动脚本写死了本机路径**：`tools/cost-baseline.mjs` 的 `createRequire('D:/document/…/package.json')` 站在 try 外面，Linux 上直接抛 `ERR_INVALID_ARG_VALUE('filename', filenameOrURL, …)`（栈在 `node:internal/modules/cjs/loader`，完全看不出是路径问题）；`tools/wire-profile.mjs` 的 `PROFILE = 'D:/dsh-home/profiles/desktop'` 让 `readFileSync` ENOENT。都改成从 `_root.mjs` 的 `root` 与 `DSH_HOME` 推；顺手修掉 `wire-profile` 一个反向默认——原来**不带参数就写盘**，和它自己头注释写的「`--status` 只打印、`--apply` 执行」正好相反。
+>
+> 顺带两处探针自身的毛病：`probe-toolsize` 的 `cutObject` 只认字符串定界符，注释里一个反引号就能让配对错乱（`memory_search` 的 schema 从 5,927 涨到 7,150 B，两条体积判据红在一句注释上），补上 `//` 与 `/* */` 的跳过；`verify` 那条「cost-baseline 的裸 root 也修了」原来逐字要求 `import { vendorDir }`，改成「import 了 `root` 且全文没有盘符绝对路径」——判据不该红在「代码修得更对了」上。
+>
+> 计数口径：`check-all` **79 支 / 4,807 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 20 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
 
 ---
 

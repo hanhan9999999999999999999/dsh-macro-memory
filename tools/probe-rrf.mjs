@@ -50,7 +50,7 @@ const eng = await createMacroEngine({ dataDir, homeDir: home, projectDir: '.dsh-
 const as = (agentId) => ({ cwd: ws, agentId })
 
 const KEY = '三段召回炮台词'
-const idOf = (r) => r.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(r.text)?.[1] ?? ''
+const idOf = (r) => r.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(r.text)?.[1] ?? ''
 const write = (content, extra = {}, who = 'codex') =>
   eng.call('memory_remember', { content, level: 'fact', keywords: [KEY], importance: 2, project: 'rrf', ...extra }, as(who))
 const search = (extra = {}, who = 'codex') => eng.call('memory_search', { query: KEY, k: 5, ...extra }, as(who))

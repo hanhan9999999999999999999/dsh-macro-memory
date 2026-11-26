@@ -63,7 +63,7 @@ const wrote = await eng.call(
   { content: '归属账：这条是 codex 写的，用来验证别的 agent 读到时能看见是谁写的。', level: 'fact', keywords: [KEY, '归属账'], importance: 2, project: 'share' },
   as('codex'),
 )
-const idA = wrote.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(wrote.text)?.[1] ?? ''
+const idA = wrote.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(wrote.text)?.[1] ?? ''
 check('S0 codex 写入成功并拿到 id', idA !== '', idA)
 
 const seenByB = await eng.call('memory_search', { query: KEY, k: 5 }, as('claude'))
@@ -82,11 +82,20 @@ check('S3 last_editor 换成 claude', row?.last_editor === 'claude', String(row?
 
 // ── S5 scope 默认与显式 ──────────────────────────────────────
 const soul = await eng.call('memory_remember', { content: '归属账：人格层的私事，默认该是 private。', level: 'soul', project: 'share', keywords: [KEY], importance: 2 }, as('codex'))
-const idSoul = soul.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(soul.text)?.[1] ?? ''
+const idSoul = soul.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(soul.text)?.[1] ?? ''
 const rules = await eng.call('memory_remember', { content: '归属账：规矩是工作区的，默认 workspace。', level: 'rules', project: 'share', keywords: [KEY], importance: 2 }, as('codex'))
-const idRules = rules.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(rules.text)?.[1] ?? ''
+const idRules = rules.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(rules.text)?.[1] ?? ''
 const glob = await eng.call('memory_remember', { content: '归属账：这条显式声明给所有 agent 看。', level: 'fact', project: 'share', scope: 'global', keywords: [KEY], importance: 2 }, as('codex'))
-const idGlob = glob.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(glob.text)?.[1] ?? ''
+const idGlob = glob.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(glob.text)?.[1] ?? ''
+
+// ── S12 回执印的必须是完整 id（36 ms 窗口那次真 bug 的判据）────
+// 只印前 8 位时，同一毫秒里连写的两条 id 前缀一模一样；探针再从回执里捞 id，
+// 就会把两条当成同一条，owner 表互相覆盖——0.9.0 之前 Linux CI 上真发生过
+// （probe-share S5 把 soul/rules 读成 global，probe-rrf Q4/Q6 同源）。
+// docs/INTERNAL.md 9.292 记着这件事。这条判据盯住「回执够不够长」，
+// 让人以后再想 `.slice(0, 8)` 时先被这里拦一次。
+const fullId = /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(soul.text)?.[1] ?? ''
+check('S12 回执印的是完整 id，不是 8 位前缀', fullId.includes('-') && fullId.length >= 16, fullId || '(回执里没找到 id=)')
 
 const rows = store.ownersOf([idSoul, idRules, idGlob])
 check('S5 soul 默认 private', rows.get(idSoul)?.scope === 'private', String(rows.get(idSoul)?.scope))
@@ -107,7 +116,7 @@ const tricky = await eng.call(
   { content: '归属账：正文里提到一个构建号 ab12cd34 和一个哈希 deadbeef，它们不是记忆 id。', level: 'fact', project: 'share', keywords: [KEY], importance: 1 },
   as('codex'),
 )
-const idTricky = tricky.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(tricky.text)?.[1] ?? ''
+const idTricky = tricky.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(tricky.text)?.[1] ?? ''
 const trickySeen = await eng.call('memory_search', { query: '构建号 ab12cd34', k: 5 }, as('claude'))
 const bodies = trickySeen.text.split('\n').filter((l) => l.includes('ab12cd34'))
 check('S6 正文里的 ab12cd34 后面没有跟着标签', bodies.length > 0 && bodies.every((l) => !/ab12cd34`?\[/.test(l)), bodies[0]?.slice(0, 140) ?? '没找到')
@@ -115,7 +124,7 @@ check('S6 那条自己的行首 id 仍然带标签', trickySeen.text.includes('[
 
 // ── S8–S11 可见性：别人的 private 看不见 ────────────────────
 // 这一组要在 S7 之前跑：S7 会把 mem_owner 整张表 DROP 掉。
-const idOf = (r) => r.value?.id ?? /id\s*=\s*([0-9a-z]{6,})/.exec(r.text)?.[1] ?? ''
+const idOf = (r) => r.value?.id ?? /id\s*=\s*([0-9a-z][0-9a-z-]{5,})/.exec(r.text)?.[1] ?? ''
 const priv = await eng.call(
   'memory_remember',
   { content: '归属账：这条是 codex 的私事，别人不该看见（私有炮台词）。', level: 'fact', project: 'share', keywords: ['私有炮台词'], importance: 2, scope: 'private' },

@@ -15072,3 +15072,30 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 4. **静态判据全绿，真跑三平台全红。** 第一版 ci.yml 那条「旧仓库名仍能解析」探的是**改名目标** `github.com/<owner>/macro-memory`，可 remote 还没改名（`dsh-macro-memory` 才是活的），于是恒 404。`044de7f` push 上去，三个平台（windows / macos / ubuntu）全红，红的都是同一步。`probe-ci` 那 14 条为什么全绿？因为它只查「文件里有这条 URL 和 `200|301|302` 这个 case」——**它查的是字面，不是语义**。修法：两个名字都探（当前名必须 200/301/302；改名目标允许 404，改名之前不判红，只钉「两个名字不许同时死」；新名生效后再警告「旧名没跟着 301」），C12 也跟着从字面改成实体（缺当前名、缺 404 分支说明、或残留旧文案都判红），并在真 bash 里跑过一遍（当前名 200 / 目标名 404 / 判通过）。教训与 9.289 同源但更硬：**「静态判据绿」和「真跑得通」之间隔着一次真跑；写 CI 判据的人，第一次 push 之前永远不知道自己写的是字面还是语义。**
 
 文件：`.github/workflows/ci.yml`（三平台矩阵）、`.github/workflows/release.yml`（tag → 复用 CI → 双包 publish → 打二进制 → 建 Release）、`tools/probe-ci.mjs`（14 条）。`package.json` 加了 `ci` 这个 script。
+
+### 9.292 0.9.0（开发中）：36 毫秒撞一次 id —— CI 三平台红的那三支，根不在 CI
+
+| 决定 | 结论 | 为什么 |
+| --- | --- | --- |
+| 回执印 8 位还是完整 id | 印完整（`vendor/meow-memory/lib/index.js:7590`，`id=${v.id.slice(0, 8)}` → `id=${v.id}`） | meow 的 id = base36 毫秒时间戳（9 位）+ `-` + 26 位 hex，前 8 位的精度是 **36 ms**。同一毫秒窗口里连写两条记忆，回执上的「id=0mwy4gy5」指的是两条里的哪一条？说不清。多印 26 个字符，换「回执上的 id 一定指得回那一条」 |
+| 归属层从回执里认 id 的条件 | 两条正则都放连字符进来：`/^[0-9a-z][0-9a-z-]{5,}$/` 与 `/id\s*=\s*([0-9a-z][0-9a-z-]{5,})/`（`lib/core/engine.js` 的 `newIdOf`） | 原来两条都是 `[0-9a-z]{6,}`。完整 id 带 `-`，于是**每一条**完整 id 都被判非法，`newIdOf` 永远退化成从回执文本里捞 8 位前缀。这不是「偶尔退化」，是「永远退化」 |
+| 谁来兜住 8 位 | `lib/core/owner.js` 的 `ownersOf`：SQL 从 `WHERE id IN (…)` 扩成 `… OR substr(id, 1, 8) IN (…)` | 展示层（`tagOwners`）从搜索结果里认 id 只能认 8 位（行首那个方括号里就是 8 位）。精确匹配会让标签**整片消失**。前缀撞了怎么办？按查到的那条算——标签是展示层增强，宁可标错一条，也别一条都不标 |
+| 探针要不要跟着改 | 要，`tools/probe-share.mjs`（7 处）、`tools/probe-rrf.mjs`（1 处）、`tools/probe-core.mjs:146` 的 `/id=([0-9a-z]+)/` 全改成带连字符的版本 | 探针从回执里捞 id 是为了「事后核对这一条」。捞到 8 位前缀，核对的就不是那一条了 |
+| 加不加判据 | 加：`probe-share` S12「回执印的是完整 id，不是 8 位前缀」（`fullId.includes('-') && fullId.length >= 16`） | 这个 bug 能活到今天，是因为**没有任何一条判据看回执长什么样**。有人以后再想 `.slice(0, 8)` 图省事，先被这条拦一次 |
+| 两个「本机手动脚本」怎么办 | `tools/cost-baseline.mjs` 与 `tools/wire-profile.mjs` 去掉写死的绝对路径 | 它们标了 `smoke: true`，`probe-tools` 会在**任何机器**上真跑一遍。写死 `D:/document/…` / `D:/dsh-home/profiles/desktop`，等于把「这台机器没有那个目录」判成「代码坏了」 |
+
+**这三支红的真实因果**（不是 CI 环境问题）：
+
+1. `probe-share` S5 连写三条（soul / rules / fact+global）。Linux 上三写落在同一毫秒窗口 → 8 位前缀相同 → `owner` 表的 `UPDATE mem_owner SET owner = COALESCE(?, owner), scope = ?, visibility = ?`（`lib/core/owner.js:123`）**互相覆盖** → 后写的 global 把前两条的 scope 也改成 global → S5 读出「soul 默认 global」「rules 默认 global」。
+2. `probe-rrf` Q4/Q6 是同一个根：private 被写成 global，于是「关掉偏置后 private 不再占首位」「别人的 private 不进任何一段」双双失效，检索行里出现 `[global]`。
+3. `probe-tools` 与上面无关，是两个手动脚本的硬编码路径：`cost-baseline` 的 `createRequire('D:/document/…/package.json')` 站在 try 外面，Linux 上直接抛 `ERR_INVALID_ARG_VALUE('filename', filenameOrURL, …)` 退出 1；`wire-profile` 的 `PROFILE = 'D:/dsh-home/profiles/desktop'` 让 `readFileSync` ENOENT。
+
+**为什么本机全绿**：Windows 上每条写入之间隔着若干毫秒，8 位前缀撞不上；两个脚本的绝对路径在这台机器上真实存在。**「本机绿、CI 红」未必是 CI 的问题，也可能是一段只在快机器 / 慢机器上才现形的竞态。**
+
+三个坑：
+
+1. **8 位前缀是 36 ms，不是 8 位随机。** `newId()` 是 `now.toString(36).padStart(9, '0')` —— base36 一个字符 ≈ 5.2 bit，8 位 ≈ 41.6 bit，除以毫秒就是 36 ms 的窗口。凡是「从展示文本里认实体 id」的地方，都要问一句：这段文本印的是**指针**还是**前缀**。
+2. **`ERR_INVALID_ARG_VALUE('filename', filenameOrURL, …)` 的栈在 `node:internal/modules/cjs/loader`，看不出是路径问题。** CI 日志里只有这一行和 `exit=1`，我一开始以为是 `node:sqlite` 在 runner 上不可用。真因是 `createRequire()` 收到一个 Linux 上根本不存在的盘符路径。**跨平台脚本里所有 `createRequire` / `readFileSync` 的入参都该从 `_root.mjs` 的 `root` 推，不许出现 `D:/`。**
+3. **注释和代码反向的默认值。** `wire-profile.mjs` 头注释写「`--status` 只打印，`--apply` 执行」，代码却是 `const status = argv.includes('--status')` —— **不带参数 = 直接写盘**。这种「危险动作是默认值」的写法，只要有人手滑 `node tools/wire-profile.mjs` 就改了一次 profile。改成只有显式 `--apply` 才写，并把「没有 profile 时」分成两档：只读模式说明情况 exit 0，`--apply` 才 exit 1。
+
+文件：`lib/core/engine.js`（`newIdOf` 两条正则）、`lib/core/owner.js`（`ownersOf` 前缀匹配）、`vendor/meow-memory/lib/index.js`（回执印完整 id）、`tools/probe-share.mjs`（正则 + 新增 S12，现 20 条）、`tools/probe-rrf.mjs`、`tools/probe-core.mjs`、`tools/cost-baseline.mjs`、`tools/wire-profile.mjs`。

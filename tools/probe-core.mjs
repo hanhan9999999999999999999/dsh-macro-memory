@@ -143,7 +143,9 @@ const wrote = await eng.call('memory_remember', {
   importance: 2,
   level: 'fact',
 }, exec)
-const id = /id=([0-9a-z]+)/.exec(wrote.text)?.[1] ?? ''
+// 回执自 0.9.0 起印**完整** id（`<base36 时间戳>-<26 位 hex>`），所以这里要放连字符进来：
+// 只取 8 位前缀的话，同一 36 ms 窗口里连写两条就会拿到同一个字符串（Linux CI 上真撞过）。
+const id = /id=([0-9a-z][0-9a-z-]{5,})/.exec(wrote.text)?.[1] ?? ''
 check('C2 remember 写入成功并回 id', wrote.refused !== true && id.length > 0, id || wrote.text.slice(0, 60))
 
 const found = await eng.call('memory_search', { query: '预发库 只读', budget: 300 }, exec)

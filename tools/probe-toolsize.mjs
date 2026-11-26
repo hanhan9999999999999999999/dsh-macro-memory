@@ -28,6 +28,20 @@ function cutObject(src, openIdx) {
       if (c === inS) inS = null
       continue
     }
+    // [macro-fusion 0.9.0] 注释要先跳过去。之前这里只认字符串定界符，于是注释里
+    // 出现一个反引号（`id.slice(0, 8)` 这种）就被当成模板字符串的开头，后面整段
+    // 被吞进「字符串」里，配对的 `}` 全找错——结果 memory_search 的 schema 从
+    // 5,927 B 涨到 7,150 B，两条体积判据红在一句注释上。探针自己的词法得先对。
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i)
+      i = nl < 0 ? src.length : nl
+      continue
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      i = end < 0 ? src.length : end + 1
+      continue
+    }
     if (c === '"' || c === "'" || c === '`') { inS = c; continue }
     if (c === '{') depth++
     else if (c === '}') { depth--; if (depth === 0) return src.slice(openIdx, i + 1) }
