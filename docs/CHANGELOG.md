@@ -5,7 +5,7 @@
 
 ---
 
-> **0.9.0 里程碑（开发中）**：这一版开始把 PLAN 里「别的 agent 也能用得踏实」那半段补齐。前两刀都落在**最容易伤到人的两个地方**：往用户文件里写东西，和打开别人写的库。
+> **0.9.0 里程碑**：这一版开始把 PLAN 里「别的 agent 也能用得踏实」那半段补齐。前两刀都落在**最容易伤到人的两个地方**：往用户文件里写东西，和打开别人写的库。
 >
 > 1. **文件围栏**（`lib/core/fence.js` + `lib/core/agents-file.js`，PLAN §8.3 / U10）：`init --agents` 把 L0 常驻注入写进 `AGENTS.md`（`--file` 可多次或逗号分隔，`CLAUDE.md`、`.cursorrules` 同一条路），`refresh` 原地刷新，`uninstall` 摘干净。判据不是「能写进去」，是**卸载后逐字节还原**——这需要知道当初到底插了几个换行，所以 `sep` 记在块标记里（`<!-- macro-memory:begin sep="2" v="1" -->`）而不是外部账本：卸载可能来自另一个进程、另一个工作区、另一台机器，只有文件自己带着「我是怎么被放进去的」才靠得住。三种结尾（没有尾换行 / 一个 / 两个空行）各一条判据，CRLF 文件里块内也是 CRLF（否则 git diff 整文件翻红）；坏块（begin 在 end 不在）一律拒改，`init --agents` 预检全部目标、有坏块就一个文件都不动，`uninstall` 报坏块并保持文件原样——比自动猜边界删掉用户内容安全。新增自检支 `tools/probe-fence.mjs`（**11 条**，纯函数 + 一次 CLI 端到端，0.2s）。
 > 2. **库版本门**（`lib/core/migrate.js`，PLAN P0-5 / U8）：适配层只认不高于自己的库。库的 schema 比适配层新（被更新版本写过）时，`memory_remember` 之类一律只读拒绝，回执说清「库 schema v99 > macro-memory v1」、为什么停、两条真实出路（升级 `npm i -g dsh-macro-memory@latest`，或确认后 `macro-memory migrate`）。版本号用 SQLite 原生的 `PRAGMA user_version`——meow 自己从不碰它（`grep user_version vendor/meow-memory/lib/index.js` 零命中），所以不新建元表、不改表结构，老库「看起来没被改过」。**这一层不主动写盘**：打开老库只读 0，写 `user_version` 只发生在用户显式跑 `macro-memory migrate` 时（真写前先 `vacuumInto` 出一份一致副本，WAL 里可能还有页，`copyFile` 不够）。库比适配层新时**不降级**：那条路只能靠升级适配层。`doctor` 多一行「库版本：适配层 v1 / 库 v0」，CLI 多一条 `migrate [--dry-run] [--to N] [--json]`。自检支 `tools/probe-core.mjs` 加 **`C13` 两条**（伪造 `user_version=99` 的库 → 写入 refused 且话术含两条出路、`migrateSchema` 回 `db-newer` 不降级；v0 老库 `migrate` 到 v1 并出副本后照旧写得进去），28 → **30 条**。

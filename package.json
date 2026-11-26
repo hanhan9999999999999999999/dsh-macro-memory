@@ -1,6 +1,6 @@
 {
   "name": "dsh-macro-memory",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": false,
   "description": "宏观记忆调控：以 meow-memory 的记忆库为主库、dsh-memory-nebula 的星图为索引，融合成一套 8 个 memory_* 统一工具 + 一段最小注入。0.8.1 起同一份库可直接给 Codex / Claude Code / Cursor 等任意 MCP agent 用——装 DSH 是体验最好的路，但不再是唯一的路。",
   "type": "module",

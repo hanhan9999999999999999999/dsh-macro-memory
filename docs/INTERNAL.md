@@ -14698,7 +14698,7 @@ function id8(id) { return String(id).slice(0, 8) }
 
 **踩坑**：PowerShell 里 `Sub $path @(@('a','b'))` 这种嵌套数组会被展开成一维，`$pair[0]` 退化成「字符串第一个字符」——一次批量替换把四个文件里所有 `"` 换成了 `t`（`baselines.json` 直接变成非法 JSON）。批量改文本一律用 node 脚本 + `fs.writeFileSync(..., 'utf8')`，或逐条走编辑工具；坏文件先拷到 `D:\备份\<时间戳>-<任务名>\` 再从 git 恢复重做。
 
-### 9.280 0.9.0（开发中）：文件围栏——`AGENTS.md` 里那一块，卸载要能逐字节还回去
+### 9.280 0.9.0：文件围栏——`AGENTS.md` 里那一块，卸载要能逐字节还回去
 
 **问题**：MCP 只解决「有工具」，不解决「会用」。宿主接上 8 个 `memory_*` 之后，agent 不会自动先查再写——需要一段常驻的规矩文本（L0，1,266 字符）出现在它每轮都能读到的地方。而往用户的 `AGENTS.md` 里写东西，是这个项目里**唯一会碰用户文件**的动作，也是最容易造成数据损失的一处：写多了、叠两层、卸载摘不干净，用户就再也不信了。
 
@@ -14720,7 +14720,7 @@ function id8(id) { return String(id).slice(0, 8) }
 
 **踩坑**：`edit` 工具连续两次改同一处（想「只删空行」）会把 `console.log(...)` 和 `process.exit(...)` 拼成一行，ESM 直接 `SyntaxError: Unexpected identifier 'process'`——空行不是无害的，改完立刻跑一次才是判据。
 
-### 9.281 0.9.0（开发中）：库版本门——库比适配层新就只读
+### 9.281 0.9.0：库版本门——库比适配层新就只读
 
 **问题**：一份库会被多个版本、多个 agent 打开。新版本加了列、改了约束，老版本再往同一个文件里写，就是拿「我知道的表结构」去赌「我不知道的约束」——坏的结果不会立刻报错，而是过几天发现某几条记忆读出来是空的。PLAN 4.2 原本设计一张 `schema_version(version, applied_at)` 表，任一入口启动先校验，库版本高于适配层就只读降级。
 
@@ -14743,7 +14743,7 @@ function id8(id) { return String(id).slice(0, 8) }
 
 **踩坑**：`MemoryDb` 只有 `p(sql)` 与 `this.db`，**没有自己的 `exec()`**（`vendor/meow-memory/lib/index.js:492`）——`stampSchema` 必须同时兼容 `db.exec` 与 `db.db.exec` 两种句柄，否则 CLI 迁得动、探针迁不动。
 
-### 9.282 0.9.0（开发中）：归属账——几个 agent 共用一个库，得知道这谁写的
+### 9.282 0.9.0：归属账——几个 agent 共用一个库，得知道这谁写的
 
 **问题**：0.8.0 之后同一份 `memory.db` 会被 DSH、Codex、Claude Code、Cursor 一起用。写进去的条目回执上只有一个 id，没人知道它出自谁；而「谁能看」这件事在 PLAN §4.1 里是要靠 `owner` / `scope` / `visibility` 三列表达的。给 meow 的七张层表各加三列是最直接的做法，代价是七个 `ALTER TABLE`、七次真迁移，而且把一个**只有宿主才知道**的概念（`agentId`）硬塞进它的表结构。
 
@@ -14772,7 +14772,7 @@ function id8(id) { return String(id).slice(0, 8) }
 - 回执里的 id 不是 8 位而是 `8 位短 id + "-" + 26 位` 的复合串，所以第一版 `/\[([0-9a-z]{8,40})\]/` 一个都匹配不到——`-` 不在字符集里。字符集改成 `[0-9a-z]{8}[0-9a-z-]{0,32}` 才对上。
 - PowerShell 里 `node -e "<多行脚本>"` 会被参数绑定拦下（`已指定 command 参数`），批量改文本一律写临时 `.mjs` 再 `node` 跑。
 
-### 9.283 0.9.0（开发中）：private 的硬隔离——别人的私事不该出现在候选池里
+### 9.283 0.9.0：private 的硬隔离——别人的私事不该出现在候选池里
 
 **问题**：9.282 只把「谁写的」记下来了，回执也印了 `[agent:x]`，但别人的私密条目**照样进检索结果**。记账不是隔离，标签不是权限。
 
@@ -14801,7 +14801,7 @@ function id8(id) { return String(id).slice(0, 8) }
 **边界（写在明处）**：这道滤只挡 `memory_search` 与 `memory_read`。`memory_project` 的面板、星图扩散（`nebula_recall`）、`memory_dream` 的整理账**还没过这道滤**，那几处仍可能露出正文。当「别顺手读别人的私事」的护栏够用，当权限边界还早一步。
 
 
-### 9.284 0.9.0（开发中）：三段召回 + RRF——三种 scope 不该共用一把尺子
+### 9.284 0.9.0：三段召回 + RRF——三种 scope 不该共用一把尺子
 
 **问题**：一次 `memory_search` 把七层的候选塞进**一个池子**打分排序。可 `private`（我这个 agent 的私事）、`workspace`（这个工作区的共同事实）、`global`（跨工作区都成立）三类条目的可比性并不相同，而词法分的绝对刻度受**池子大小与 idf 分布**支配——候选池里多混进十条长条目，同一条记忆的分数就换了个数。在一个池子里比绝对值，等于拿三把尺子量同一张桌子。
 
@@ -14837,7 +14837,7 @@ function id8(id) { return String(id).slice(0, 8) }
 
 顺带一条口径：`--update-baselines` 是**两阶段**的——它先让各支把新条数写盘，同一趟里的 `verify` / `probe-monotone` 仍按旧数字核对文档，所以那一趟必然红。正确姿势是跑完 `--update-baselines` 后**单独**跑 `node verify.mjs` 与 `node tools/probe-monotone.mjs`，再跑一次不带参数的 `node tools/check-all.mjs` 收口。
 
-### 9.285 0.9.0（开发中）：单写者服务 `serve`——两个写者同时开一个库，是唯一真会丢数据的坏
+### 9.285 0.9.0：单写者服务 `serve`——两个写者同时开一个库，是唯一真会丢数据的坏
 
 **问题**。前面几刀（围栏 / 版本门 / 归属账 / 隔离 / 三段召回）都建立在「一个进程一个写连接」这个前提上。多 agent 接进来之后这个前提没了：Codex 一个进程、Claude Code 另一个、DSH 里还有第三个，各自 `Meow.getDb()` 各写各的。SQLite 的 WAL 能扛住并发读，扛不住「两个进程各自判断该不该写」的竞态——重复合并、`hit_count` 自增、`created_at` 覆盖，坏起来不报错，只是数据慢慢不对。这类损坏事后修不回来：你没法知道 `hit_count=7` 里哪三次是同一件事被数了三遍。
 
@@ -14898,7 +14898,7 @@ function id8(id) { return String(id).slice(0, 8) }
 - UI 的 `/events` 只有心跳与 `call` 事件，没有增量快照。
 
 
-### 9.286 0.9.0（开发中）：管理界面——它是 serve 的客户端，不是第二个写者
+### 9.286 0.9.0：管理界面——它是 serve 的客户端，不是第二个写者
 
 PLAN §10 把界面放在「不是必需路径」的位置上，于是它的设计约束反而更硬：**要么轻到打开就能用，要么别进仓库**。一次实现里踩出来的东西，按可复用的顺序写在这里。
 
@@ -14922,7 +14922,7 @@ PLAN §10 把界面放在「不是必需路径」的位置上，于是它的设�
 5. **探针里的临时目录删不干净**——Windows 上 `rmSync(tmp, { recursive: true })` 常在 SQLite 句柄还没释放时 EPERM，判据之后统一 `try/catch` 包住（不影响结论）。
 
 
-### 9.287 0.9.0（开发中）：双包——两个名字，一份代码，一条会红的判据
+### 9.287 0.9.0：双包——两个名字，一份代码，一条会红的判据
 
 PLAN §11.1 的要求只有一句「两者同一份 core，不 fork 代码；发版脚本一次发两个包并校验版本映射」。难的不是这句话，是**怎么让「同源」可验证**——靠人记得两边都改，等于没有。
 
@@ -14949,7 +14949,7 @@ PLAN §11.1 的要求只有一句「两者同一份 core，不 fork 代码；发
 
 5. **「基线少了一条」先查 WARN，别先查代码。** 记基线时 doctor 记下 165 条（前值 166），我一度以为是「两棵树不同步时 FAIL 那一路少走一段」。真因在 doctor 6.2：`tools/` 下每个脚本都得在 `docs/INTERNAL.md` 里露过名（正则 `tools/<名字>.mjs`），而 `tools/build-dual.mjs` 在正文里只写了裸名 `build-dual.mjs` → 那条断言从 `pass('脚本都有文档出处')` 变成 `warn('脚本缺文档出处')`，而 `countPass` **只数 PASS 行** → 少一条。补上 `tools/build-dual.mjs` 出处之后 doctor 回 `ALL PASS` + 166 条，基线合计 4,750。**教训：断言数掉了一条，先看有没有 PASS 变成了 WARN；改数字之前先把这条找出来。**
 
-### 9.288 0.9.0（开发中）：MCP 面真机自证——「支持 MCP」这四个字得有人来拆
+### 9.288 0.9.0：MCP 面真机自证——「支持 MCP」这四个字得有人来拆
 
 文档上从 0.8 起就写着「接得上 Codex / Claude Code / Cursor」，但在此之前**没有任何一支探针起过一个真实的 MCP 客户端连接**：`lib/mcp/server.js` 写完（0.9 之前就写完，196 行手写 JSON-RPC）之后，判据只到「文件里有 `serveStdio`」这一层。P2-3 的验收里有一条「MCP 跑通」，缺的正是这件证据——「代码在」不等于「别人家用起来真的能读能写」。
 
@@ -14977,7 +14977,7 @@ PLAN §11.1 的要求只有一句「两者同一份 core，不 fork 代码；发
 2. **`spawn` 的 `cwd` 必须是工作区。** `cmdMcp` 没把 `--cwd` 传给引擎，引擎的默认工作区就是 `process.cwd()`；探针里 `--data-dir` / `--home-dir` 走参数，工作区只能靠 spawn 的 cwd 给。这也顺带说明 `MACRO_MEMORY_WORKSPACE` 为什么只对 CLI 有用、对 `mcp` 子进程没用——那一条路留给「宿主启动子进程时 cwd 不在项目里」的场景，M11 单独验它的优先级就好。
 3. **探针结尾 `rmSync(tmp)` 要 try/catch 包住。** Windows 上偶尔 EPERM（句柄还没放完），那是收尾噪音，不该把 11 条判据的全绿变成一支红。
 
-### 9.289 0.9.0（开发中）：单文件二进制——「一个文件，双击就跑」这七个字得有人拆
+### 9.289 0.9.0：单文件二进制——「一个文件，双击就跑」这七个字得有人拆
 
 P2-4。前面几条已经把「任何人装得上」做完了：npm 两个名字、MCP 真机自证。这一条补的是最后一段路——**机器上没有 Node、没有 npm、也没有网**。产物是一个 92 MB 的可执行文件，`--version` 报版本，`mcp` 直接能被接上。
 
@@ -15015,7 +15015,7 @@ P2-4。前面几条已经把「任何人装得上」做完了：npm 两个名字
 
 文件：`tools/build-sea.mjs`（构建）、`tools/sea-entry.cjs`（引导器）、`tools/probe-sea.mjs`（20 条）、`tools/sign-mac.sh`（mac 签名公证）。`package.json` 加了 `sea` / `pack:sea` 两个 script。
 
-### 9.290 0.9.0（开发中）：Homebrew tap——「`brew install` 一行」后面藏着哈希从哪来
+### 9.290 0.9.0：Homebrew tap——「`brew install` 一行」后面藏着哈希从哪来
 
 P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条装法。这一条的重点不是 formula 怎么写（那是模板活），而是**哈希与版本从哪来、什么时候该拒绝发**。
 
@@ -15049,7 +15049,7 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 3. **批量替换漏了末尾不带斜杠的那一处。** 把 formula 里的 `github.com/<owner>/macro-memory/` 换成 `dsh-macro-memory/` 时，`homepage` 那行是 `…/macro-memory`（末尾没有 `/`），于是漏改，H7 报「formula 里同时存在两个 owner/repo」。教训：**拿「带斜杠的前缀」做批量替换，一定先 `grep` 一遍不带斜杠的形式**。
 
 文件：`packaging/homebrew/macro-memory.rb`（formula）、`tools/gen-formula.mjs`（灌哈希）、`tools/probe-homebrew.mjs`（11 条）。`package.json` 加了 `formula` 这个 script。
-### 9.291 0.9.0（开发中）：CI 矩阵与「全绿才发版」——三个平台 × 一个 Node，和一条不许被绕过的门
+### 9.291 0.9.0：CI 矩阵与「全绿才发版」——三个平台 × 一个 Node，和一条不许被绕过的门
 
 | 决定 | 结论 | 为什么 |
 | --- | --- | --- |
@@ -15073,7 +15073,7 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 
 文件：`.github/workflows/ci.yml`（三平台矩阵）、`.github/workflows/release.yml`（tag → 复用 CI → 双包 publish → 打二进制 → 建 Release）、`tools/probe-ci.mjs`（14 条）。`package.json` 加了 `ci` 这个 script。
 
-### 9.292 0.9.0（开发中）：36 毫秒撞一次 id —— CI 三平台红的那三支，根不在 CI
+### 9.292 0.9.0：36 毫秒撞一次 id —— CI 三平台红的那三支，根不在 CI
 
 | 决定 | 结论 | 为什么 |
 | --- | --- | --- |
