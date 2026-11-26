@@ -15014,3 +15014,38 @@ P2-4。前面几条已经把「任何人装得上」做完了：npm 两个名字
 4. **自检必须真跑产物，不能只看「文件生成了」。** 这一条的价值在 S6/S7：产物 92 MB、`SHA256SUMS` 也对得上、包内 185 个文件逐字节一致——**这些全对的时候，产物仍然可能一跑就崩**（坑 1 就是这样：所有静态判据都绿，第一跑才暴露）。静态判据证「材料对」，只有真跑证「成立」。写判据时先问一句：这条判据如果绿了，能不能推出「用户拿到手能用」？
 
 文件：`tools/build-sea.mjs`（构建）、`tools/sea-entry.cjs`（引导器）、`tools/probe-sea.mjs`（20 条）、`tools/sign-mac.sh`（mac 签名公证）。`package.json` 加了 `sea` / `pack:sea` 两个 script。
+
+### 9.290 0.9.0（开发中）：Homebrew tap——「`brew install` 一行」后面藏着哈希从哪来
+
+P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条装法。这一条的重点不是 formula 怎么写（那是模板活），而是**哈希与版本从哪来、什么时候该拒绝发**。
+
+| 决定 | 选了什么 | 为什么 |
+| --- | --- | --- |
+| formula 装什么 | 单文件产物（第 9.289 条那个 exe 的 mac/linux 版） | 换成 `depends_on "node"` + npm 包的话，得在 formula 里判宿主 Node 版本（`node:sqlite` 要 22.5，我们 engines 写 24），还得处理全局 npm 前缀里 bin 去哪；装单文件则一条 `bin.install` 到底，用户机器上有没有 Node 与它无关 |
+| 哈希怎么来 | `tools/gen-formula.mjs` 从 `SHA256SUMS.txt` 灌 | 92 MB 的产物每打一次都不一样（postject 注入的段与时间戳都变）。手抄一次就等于把「上一次的哈希」发给下一次的下载者 |
+| 缺产物怎么办 | **保留占位** `__SHA256_MAC_ARM64__` 这种，并在报告里点名 | 半份 sha 的 formula 装不了。让它明着是占位（`grep` 得到、`brew audit` 骂得出口），比填一个猜的哈希好——猜错就是「下载的包校验失败」这种最难查的报错 |
+| 版本从哪来 | 根 `package.json` 的 `version` | 与 `tools/build-dual.mjs` 灌模板版本同一个口径：唯一真相只有一份 |
+| owner/repo 从哪来 | `package.json` 的 `repository.url` | P2-3 改名那天 formula 也得跟着走；写死就会留一个 404 的下载地址，而 `brew install` 的 404 表现是「下载失败」，看不出是仓库改名 |
+| tap 谁推 | **人**。脚本永不 publish、永不 push | 与 npm publish 同一条纪律：发版要凭据、要有人看着版本号 |
+
+判据 11 条（`tools/probe-homebrew.mjs`，其中 H9/H10 真跑生成器）：
+
+- H1 formula 在位，`class MacroMemory < Formula` / `desc` / `homepage` / `license "MIT"` 齐
+- H2 四个平台块都在，每块都有 `url` + `sha256`；`on_macos` / `on_intel` / `on_arm` / `on_linux` 四种分支都在
+- H3 formula 的 `version` 就是根 `package.json` 的版本
+- H4 正文里没有 `depends_on "node"`，且 `url` 指向 `releases/download`
+- H5 `test do` 里有 `--version` 与 `--help`（`brew audit` 要求 formula 能自测）
+- H6 formula 的四个平台都被 `build-sea` 认（`build-sea` 多出的 Windows 两份 brew 不管）
+- H7 `owner/repo` 跟随 `package.json`
+- H8 生成器有 `--apply` 门、不发包、缺产物时保留占位
+- H9 **真跑生成器**：喂四个平台的假 `SHA256SUMS`，四个哈希都进报告（不是只认第一个）
+- H10 **不带 `--apply` 是只读的**：formula 一个字节都没动，且明说「体检模式」
+- H11 README 里有那条 `brew install …/tap/macro-memory`
+
+三个坑：
+
+1. **注释里举的反例会被自己的判据咬。** formula 头注释写了「为什么走单文件而不是 `depends_on "node"` + npm 包」，H4 用正则扫全文时命中了那句注释，判红。修法不是删注释（那条注释恰恰是最该留的），而是**判据只看正文**：`src.split('\n').filter(l => !l.trimStart().startsWith('#'))`。同一类事在 `tools/probe-tools.mjs` 的自由变量探测里也踩过（那次把对象键 `root:` 当裸变量）——**凡是用正则扫源码的判据，先想清楚注释与字符串算不算**。
+2. **两边集合不相等不等于错。** H6 一开始要求「formula 的四个平台」与「`build-sea` 的 `--target`」完全相等，可 `build-sea` 有 6 个（含 Windows 两个），brew 不管 Windows。判据方向得是**单向包含**：formula 认的每个平台都必须是 `build-sea` 认得的；`build-sea` 多出来的不算错。
+3. **批量替换漏了末尾不带斜杠的那一处。** 把 formula 里的 `github.com/<owner>/macro-memory/` 换成 `dsh-macro-memory/` 时，`homepage` 那行是 `…/macro-memory`（末尾没有 `/`），于是漏改，H7 报「formula 里同时存在两个 owner/repo」。教训：**拿「带斜杠的前缀」做批量替换，一定先 `grep` 一遍不带斜杠的形式**。
+
+文件：`packaging/homebrew/macro-memory.rb`（formula）、`tools/gen-formula.mjs`（灌哈希）、`tools/probe-homebrew.mjs`（11 条）。`package.json` 加了 `formula` 这个 script。

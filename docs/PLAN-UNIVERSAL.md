@@ -390,7 +390,7 @@ meow 的 #64 保护（工作区自带非本机创建的记忆库时拒绝读写�
 | P2-2 ✅ | 双包：`macro-memory`（通用入口）+ `dsh-macro-memory`（DSH 插件）——`packages/macro-memory/package.json` 模板 + `tools/build-dual.mjs` 构建 + `probe-dual` 10 条 | 两包同源（`lib`/`bin`/`vendor` 183 个文件逐字节 + 清单都比）✅；版本映射（模板留 `0.0.0`、脚本灌根版本）✅；npm 两处可查 ⏳（要凭据，`npm publish` 由人来按，脚本只 `npm pack`） |
 | P2-3 ◐ | 仓库改名 + README 首句 + 能力矩阵 | 三联条件里本地两件已做完：README 首句去 dsh 化 + 能力矩阵 ✅（`probe-mcp` 11 条把「MCP 跑通」从纸面变成真子进程）；**remote 改名待主人按**（需 GitHub 凭据，连带改写交给 `tools/rename-brand.mjs`，默认 dry-run，`--apply` 前先探新地址） |
 | P2-4 ◐ | 单文件二进制 + mac 签名公证 | 单文件 ✅：`tools/build-sea.mjs`（MMB1 容器 + `node --experimental-sea-config` + `postject` 注入）+ `tools/sea-entry.cjs`（CJS 引导器：取包 / 校验包头 / 解临时目录 / 抹平 SEA 的 argv）+ `tools/probe-sea.mjs` 20 条——真打出 `macro-memory-win-x64.exe`（92 MB，包 4.23 MB），`--version` 报 0.8.1、当 MCP 服务器握得上手、185 个文件逐字节与源一致；mac ⏳：`tools/sign-mac.sh` 四步齐全（`codesign --options runtime` → 自验 → `notarytool submit --wait` → `stapler staple` → `spctl -a -vv`），但 `spctl` 通不通要 Apple 开发者账号与真机，判据只能验到脚本层 |
-| P2-5 | Homebrew tap | `brew install` 后 `mcp` 可跑 |
+| P2-5 ◐ | Homebrew tap | 本地全做完 ✅：`packaging/homebrew/macro-memory.rb`（四个平台块各自 url + sha256，装的是单文件产物、不含 `depends_on "node"`，`test do` 钉 `--version` 与 `--help`）+ `tools/gen-formula.mjs`（从 `SHA256SUMS.txt` 灌版本与四个哈希、对齐 owner/repo、默认只体检、永不 publish/push，缺产物就留占位并点名）+ `tools/probe-homebrew.mjs` 11 条（含真喂假 SHA256SUMS 与只读性两条）；`brew install` 后 `mcp` 可跑 ⏳：``brew audit --strict --new`` 与真装要在 mac 上按，tap 仓库 `hanhan9999999999999999999/homebrew-tap` 要人推 |
 | P2-6 | CI 矩阵 win/mac/linux × Node 22/24 × 有/无 DSH | 全绿才发版 |
 
 ---

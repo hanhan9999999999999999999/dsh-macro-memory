@@ -31,7 +31,13 @@
 >
 > 新增 `tools/probe-sea.mjs` 20 条：构建默认不写盘且三条防呆都在、脚本里没有 publish、**真打一个产物**（打包 → blob → 注入）、记忆包 185 个文件逐个与源比 sha256、包里没有 `tools/` 与 `docs/`、SEA 包盖住整个记忆包、config 指向 CJS 引导器、**产物自己报得出正确版本**、**产物当 MCP 服务器握得上手且工具面 8 个**、单文件形态下 stdout 零噪声、关 stdin 自己退 0、`SHA256SUMS.txt` 与产物一致、mac 脚本四步齐全且凭据不写死、引导器取包校验包头 / 抹平 argv / 按哈希分目录解包。
 >
-> 计数口径：`check-all` **77 支 / 4,781 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条）。（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条）。
+> **10. Homebrew tap（PLAN §11.4 / P2-5）**：mac 与 Linux 上的第三条装法。formula 在 `packaging/homebrew/macro-memory.rb`：四个平台块（mac-arm64 / mac-x64 / linux-arm64 / linux-x64）各自一个 `url` + `sha256`，装的就是第 9 条那个单文件产物——**不 `depends_on "node"`**，所以装上就有 `macro-memory`，宿主的 Node 版本够不够 `node:sqlite` 与这台机器无关。`test do` 钉两条：`--version` 报得出号、`--help` 提得到 `mcp`（`brew audit` 与用户拿到手最先做的事是同一件）。
+>
+> 哈希与版本都不手抄：新增 `tools/gen-formula.mjs`，从 `SHA256SUMS.txt` 灌 `version` 与四个 `sha256`，顺手把 `owner/repo` 也对齐 `package.json`（P2-3 改名那天 formula 不会漏）。默认只体检、`--apply` 才写、**永不 publish/push**；缺哪个平台的产物，那个占位就留着并在报告里点名「半份 sha 的 formula 装不了，别发」——宁可让它明着是占位，也不填一个猜的哈希。92 MB 的产物每打一次哈希都不同，手抄一次就等于把上一次的哈希发给下一次的下载者。
+>
+> 新增 `tools/probe-homebrew.mjs` 11 条：formula 在位且 class/desc/homepage/license 齐、四个平台块都有 url 与 sha256、`version` 就是根 `package.json` 的版本、**正文里没有 `depends_on "node"`**（注释里举反例不算）、`test do` 两条、formula 的四个平台都被 `build-sea` 认（build-sea 多出的 Windows 两份 brew 不管）、`owner/repo` 跟随 `package.json`、生成器 `--apply` 才写且不发包且缺产物时保留占位、**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**、**不带 `--apply` 时 formula 一个字节都不动**、README 里找得到那条 `brew install` 命令。tap 仓库 `hanhan9999999999999999999/homebrew-tap` 与 `brew audit --strict --new` 由人在 mac 上按。
+>
+> 计数口径：`check-all` **78 支 / 4,792 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条）。
 
 ---
 

@@ -19,7 +19,7 @@
 - **八个工具**：一份手册、一套 schema、附调用示例
 - **三张对外面**：工具、命令、两块面板
 - **能力矩阵**：宿主 × 工具 / 注入 / 面板 / 命令 / hooks，每一格都标了证据与降级路
-- **安装**：Windows / macOS / Linux 同一套装法
+- **安装**：DSH 插件 / `npx` / Homebrew / 单文件二进制，四条路都通
 - **读数**：注入字符、schema 字节、延迟、命中率、自检规模
 - **不说满的地方**：口径、样本量、还没做的事
 - **常见问题 / 技术规格 / 文档 / 许可**
@@ -205,7 +205,9 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 
 9. **一个文件，双击就跑。** 上面八条都假设机器上有 Node、有 npm、能联网。`tools/build-sea.mjs` 把 `package.json` + `bin/` + `lib/` + `vendor/` 打进一个自定义容器（`MMB1`），交给 Node 的 SEA 塞进一份 node 可执行文件：产物是一个 92 MB 的 `macro-memory-win-x64.exe`，没有 npm、没有先装依赖，`--version` 报版本、`mcp` 直接能被 Codex / Claude Code 接上。**打进去的就是仓库里那份**——`probe-sea` 把包解开，185 个文件逐个与源比 sha256，一个字节都没被改写；包里也不许有 `tools/`、`docs/`，自检家底不该发给用户。CJS 引导器（`tools/sea-entry.cjs`）运行时把包解到临时目录（按包哈希分目录，同一版只解一次），并**抹平 SEA 的 argv 怪癖**（那里 `argv[1]` 就是 exe 自己，直接 `slice(2)` 会吃掉第一个参数）。mac 的签名与公证是单独一步 `tools/sign-mac.sh`（`codesign --options runtime` → 自验 → `notarytool submit --wait` → `stapler staple` → `spctl -a -vv`），因为那一步只能在 mac 上跑、要 Apple 开发者账号——**没有账号照样能跑，只是别人第一次打开要右键「打开」**。判据只验到「脚本四步齐全」这一层，`spctl` 通不通只有真机能答。
 
-九条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）。
+10. **`brew install` 一行，装的是同一个文件。** mac 与 Linux 上还有第三条路：Homebrew。formula 在 [`packaging/homebrew/macro-memory.rb`](packaging/homebrew/macro-memory.rb)，四个平台块各自一个 `url` + `sha256`，装的就是第 9 条那个单文件产物——**不 `depends_on "node"`**，所以装上就有 `macro-memory`，机器上不必先有 Node，也不必担心宿主的 Node 版本够不够 `node:sqlite`。版本号与四个哈希都不手抄：`node tools/gen-formula.mjs --apply --sums <产物目录>` 从 `SHA256SUMS.txt` 灌进去（92 MB 的产物每打一次哈希都不同，手抄一次就等于把上一次的哈希发给下一次的下载者）；缺哪个平台的产物，那个占位就留着并在报告里点名「半份 sha 的 formula 装不了，别发」。`test do` 里钉了两条——`--version` 报得出号、`--help` 提得到 `mcp`，`brew audit` 与用户拿到手最先做的事是同一件。tap 仓库 `hanhan9999999999999999999/homebrew-tap` 得人推，`brew audit --strict --new` 与真正的 `brew install` 只能在 mac 上按。
+
+十条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）。
 
 不开 agent 也能自证：
 
@@ -216,7 +218,7 @@ npx -y macro-memory doctor
 # 结果：一切正常
 ```
 
-边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、MCP 面的真机自证、以及能双击跑的单文件二进制，**每一件都有一支自检盯着**（见上面九条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、mac 产物的真机签名与公证（脚本齐了，缺 Apple 开发者账号）、Homebrew tap、CI 矩阵——这五件属于 P2-4 之后，这一版没做就是没做。
+边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、MCP 面的真机自证、能双击跑的单文件二进制、`brew install` 的 formula，**每一件都有一支自检盯着**（见上面十条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、mac 产物的真机签名与公证与 tap 仓库推送（脚本齐了，缺 Apple 开发者账号与 GitHub 凭据）、CI 矩阵——这几件这一版没做就是没做。
 
 **0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包当时不存在，于是报 `'macro-memory' is not recognized`；0.8.1 的正确写法是 `npx -y -p dsh-macro-memory macro-memory mcp`（0.9 起通用包 `macro-memory` 自己上架，直接 `npx -y macro-memory mcp` 即可，本页其余命令已按 0.9 的写法）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/schemastery` + `vendor/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
 
@@ -227,6 +229,20 @@ npx -y macro-memory doctor
 1. 在 DSH 市场装 `macro-memory`（或 `npm i dsh-macro-memory`），重启 DSH 生效。
 2. 什么都不用配：默认就会记、会检索、会落账。
 3. 觉得注入太多或太少，一句话调额度（按轮总额、单条上限、会话预算都能单独设）。
+
+### 不装 DSH 也能用：三条路
+
+记忆层不只给 DSH 用。三条路装的是同一份代码、读的是同一个库（数据目录按平台落在同一处），所以可以混着用——brew 装的 `macro-memory mcp` 与 DSH 插件记的是同一段记忆。
+
+| 路子 | 命令 | 适合谁 |
+| --- | --- | --- |
+| npm（最省事） | `npx -y macro-memory mcp` | 有 Node 的任何宿主：Codex、Claude Code、Cursor、任何说 MCP 的 |
+| Homebrew | `brew install hanhan9999999999999999999/tap/macro-memory` | mac / Linux，不想让记忆层拖着 Node |
+| 单文件二进制 | 从 [Releases](https://github.com/hanhan9999999999999999999/dsh-macro-memory/releases) 下 `macro-memory-<平台>`，`chmod +x`（Windows 直接双击） | 机器上没有 Node、也没有网 |
+
+- Homebrew 的 formula 在 [`packaging/homebrew/macro-memory.rb`](packaging/homebrew/macro-memory.rb)：`version` 与四个平台的 `sha256` 不手抄，由 `node tools/gen-formula.mjs --apply --sums <产物目录>` 从 `SHA256SUMS.txt` 灌进来——92 MB 的产物每打一次哈希都不同，手抄一次就等于把上一次的哈希发给下一次的下载者。缺哪个平台的产物，那个平台的占位就留着，脚本会点名「半份 sha 的 formula 装不了，别发」。
+- tap 仓库是 `hanhan9999999999999999999/homebrew-tap`，把 formula 放成 `Formula/macro-memory.rb` 即可。`brew audit --strict --new` 与真正的 `brew install` 要在 mac 上按。
+- 三条路的产物都自报同一个版本号（`macro-memory --version`），装错了立刻看得出。
 
 ### 三个平台，同一套装法
 
@@ -281,7 +297,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
 | **0.8.1** | **69** | **4,671** |
-| 0.9.0（开发中） | 77 | 4,781 |
+| 0.9.0（开发中） | 78 | 4,792 |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -321,7 +337,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.9.0（开发中；最新发布 0.8.1） |
-| 自证规模 | **77 支自检 / 4,781 条可执行断言** |
+| 自证规模 | **78 支自检 / 4,792 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 15,153 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |
@@ -336,7 +352,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 ## 参与开发
 
 ```bash
-node tools/check-all.mjs      # 77 支自检，全绿才算改完
+node tools/check-all.mjs      # 78 支自检，全绿才算改完
 node tools/doctor.mjs         # 交付物体检：版本、字节数、图、市场索引
 node tools/check-market.mjs   # 市场索引能不能被宿主接受
 ```

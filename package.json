@@ -48,7 +48,8 @@
     "mcp": "node bin/macro-memory.mjs mcp",
     "doctor": "node bin/macro-memory.mjs doctor",
     "sea": "node tools/build-sea.mjs",
-    "pack:sea": "node tools/build-sea.mjs --apply"
+    "pack:sea": "node tools/build-sea.mjs --apply",
+    "formula": "node tools/gen-formula.mjs"
   },
   "license": "MIT",
   "dsh": {
