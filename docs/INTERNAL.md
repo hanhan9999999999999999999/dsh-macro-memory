@@ -14641,3 +14641,17 @@ function id8(id) { return String(id).slice(0, 8) }
 **判据**：`tools/probe-platform.mjs` 的 P6 是这一版的中心——扫 `lib/` 全树找「引号包着的盘符路径」，只允许 `platform.js` 里 `SAMPLE_HOME` 那一行（那是探针自己的样本值）。P17 更进一步，只认**真调用**（`execFileSync('powershell'` / `spawnSync('powershell'` / `robocopy(`），语料里出现的同类字符串不算——否则 `probe-recall.mjs` 里那条讲 robocopy 的记忆会让这条判据永远红，而它红的原因跟平台适配毫无关系。
 
 **没做到的**：手上没有 mac，真机冒烟（装包 → 建库 → 写一条 → 检索 → 重启看注入）只能写在 `docs/MAC.md` 第 8 节，等人跑。已知边界也一并写在那儿：asar 完整性、`~/.dsh` 的默认位置、市场装法的两条路。
+
+### 9.277 0.7.1：门面重做（README 去 HTML、市场介绍压成一段）
+
+**为什么只有文档也发一版**：插件在市场里长什么样由两处决定——`plugin-market/index.json` 的 `plugins[0].description`（卡片只显示一行，CSS 是 `-webkit-line-clamp: 1`；详情页把整段铺开但不渲染 markdown），以及索引钉住的那个 git commit 里的 `README.md`（`@deepseek-ai/dsh-plugin-market/src/index.ts:286-314` 的 `readEntryDetail`：`source.type === 'git'` 就走 `repositoryFiles(ref, source.commit, …)`）。所以改 README 这件事，不发新 commit 并重钉索引，市场上一个字都不会变；而 26,202 字符的逐版流水账在卡片上只会露出发版号。
+
+**改动**（只有门面，`lib/` 与 `vendor/` 逐字未动）：
+
+1. `README.md` 重写成 14,692 B / 205 行：去掉三处 raw HTML（`<div align="center">`、`<br>`、`</div>`——市场的 markdown 渲染器 `@deepseek-ai/dsh-client-ui-primitives/src/markdown/render.tsx` 文件头写着 `raw HTML renders as literal text`，会把标签原样显示出来）；保留四张门面图与五张表，新增「记忆只做四件事」「只有一份真身」「八个工具怎么用」「三张对外面」「不说满的地方」五节。
+2. `plugin-market/index.json` 与 `index.cn.json` 的 `plugins[0].description`：中文 26,202 → 622 字符、英文 95,888 → 1,449 字符；首句自我完整（卡片那一行自成一句话），末句明写「以上是自建 gold 与自测口径，不是公开榜单」。
+3. 版本三处（`package.json` / `lib/index.js` / README 技术规格）同升 0.7.1，`docs/CHANGELOG.md` 顶部补 0.7.1 里程碑，市场索引 versions 顶部插 0.7.1 条目并钉 `ce18b48`。
+
+**判据**：`check-market` 48 条 ALL PASS（含「仓库根的 README.md 存在（详情页读它）」「镜像与主索引钉同一 commit」）、`check-all` 68 支 / 4,639 条不变、`doctor` 三树 ALL PASS（公开 README 14,692 B、提到 0.7.1、引用图 4 张全在）。
+
+**踩坑**：`--update-baselines` 不许与「正在改文件」并行——这一轮改了市场索引的那一刻，check-all 正好跑到 `check-market` 那一支，于是 verify 少 2 条（MT068 连带）、doctor 记成 160；等文件不动了干净重跑才收敛回 68 支 / 4,639 条。
