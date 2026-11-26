@@ -242,16 +242,19 @@ check('C5 L0 里点了 memory_remember 的名字（模型得知道有这工具�
 }
 
 /**
- * C12 npx 口径（0.8.0 翻车的那一刀）：npm 包叫 `dsh-macro-memory`，bin 叫 `macro-memory`，
- * 名字不一样 → `npx -y macro-memory …` 会被 npx 当成「去找一个叫 macro-memory 的包」，
- * npm 上根本没有，报 `'macro-memory' is not recognized`。命令只许两种写法：
- *   ① npx -y -p dsh-macro-memory macro-memory …（显式指定包，最稳）
- *   ② npx -y dsh-macro-memory …（package.json 里给 bin 加了同名别名才成立）
+ * C12 npx 口径——两次教训的两面，所以判据不能盯着字面。
+ *
+ * 0.8.0 那刀：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`。`npx -y macro-memory …`
+ * 被 npx 当成「去找一个叫 macro-memory 的包」，npm 上没有 → `is not recognized`。
+ * 0.9.0 那刀（P2-2 双包）：`macro-memory` **真的成为包名**之后，同一句话又变成正确写法。
+ *
+ * 所以这里不认字面，认实体：命令里 npx 要装的那个包名，必须 ∈ 本仓真的会发布的名字
+ * （根 `package.json` 的 name + 双包模板的 name）；写了 `-p <包> <命令>` 时，
+ * `<命令>` 还必须落在那两个包的 `bin` 里——否则 npx 装得到包、却找不到命令。
  */
 {
   const docs = ['README.md', 'docs/CHANGELOG.md', 'bin/macro-memory.mjs', 'lib/core/engine.js']
-  // md 只扫 ``` 代码块里的行：正文里出现 `npx -y macro-memory …` 是在讲反面例子，
-  // 那不是「照抄会翻车」的命令，判红就变成了抓叙述。
+  // md 只扫代码块里的行：正文里写出来的命令例子是叙述，不是「照抄就翻车」的安装指引。
   const commandLines = (f, text) => {
     const lines = text.split('\n')
     if (!f.endsWith('.md')) return lines.map((l, i) => [i + 1, l])
@@ -263,20 +266,41 @@ check('C5 L0 里点了 memory_remember 的名字（模型得知道有这工具�
     }
     return out
   }
+
+  const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const dualPkg = JSON.parse(readFileSync(join(root, 'packages/macro-memory/package.json'), 'utf8'))
+  const published = new Set([rootPkg.name, dualPkg.name].filter(Boolean))
+  const knownBins = new Set([...Object.keys(rootPkg.bin ?? {}), ...Object.keys(dualPkg.bin ?? {})])
+
   const bad = []
+  let seen = 0
   for (const f of docs) {
     const text = readFileSync(join(root, f), 'utf8')
     for (const [no, line] of commandLines(f, text)) {
-      if (line.includes('npx -y macro-memory') || line.includes('npx -y -p macro-memory')) {
-        bad.push(`${f}:${no}: ${line.trim().slice(0, 90)}`)
+      const m = line.match(/npx\s+(?:-y|--yes)\s+(?:-p\s+(\S+)\s+)?([^\s`]+)/)
+      if (!m) continue
+      seen += 1
+      const [, pinned, first] = m
+      const target = pinned ?? first
+      const where = `${f}:${no}: ${line.trim().slice(0, 80)}`
+      if (!published.has(target)) {
+        bad.push(`${where} —— npx 要找的包「${target}」不在会发布的名单里（${[...published].join(' / ')}）`)
+        continue
+      }
+      // `-p <包> <命令>`：命令名必须真在那个包的 bin 里，否则装到了也起不来
+      if (pinned && !knownBins.has(first.replace(/@.*$/, ''))) {
+        bad.push(`${where} —— -p ${pinned} 后面的「${first}」不在 bin 里（${[...knownBins].join(' / ')}）`)
       }
     }
   }
-  check('C12 命令里没有「npx -y macro-memory」这种 npx 找不到包的写法（代码块与 CLI 输出为准）', bad.length === 0, bad[0] ?? '写法统一为 -p dsh-macro-memory macro-memory')
+  check(
+    'C12 npx 要装的包名真的是会发布的那个（-p <包> <命令> 的命令也必须落在 bin 里）',
+    bad.length === 0,
+    bad[0] ?? `${seen} 处命令，包名集合 ${[...published].join(' / ')}`,
+  )
 
-  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-  const bins = Object.keys(pkg.bin ?? {})
-  check('C12 package.json 的 bin 里带包名本身（npx -y <包名> 才找得到命令）', bins.includes(pkg.name), bins.join(', '))
+  const bins = Object.keys(rootPkg.bin ?? {})
+  check('C12 package.json 的 bin 里带包名本身（npx -y <包名> 才找得到命令）', bins.includes(rootPkg.name), bins.join(', '))
 }
 
 /**

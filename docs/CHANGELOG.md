@@ -17,7 +17,9 @@
 >
 > 6. **管理界面 `ui`**（`lib/ui/server.js` + `lib/ui/page.js`，PLAN §10 / P2-1）：看得见才敢信。`macro-memory ui` 起一页，只听 `127.0.0.1`、端口由系统挑、一次性令牌放在 URL 的 `?t=` 里；七页（概览 / 记忆 / 星图 / 注入预览 / agent / 共享 / 运维），首屏 17 KB（判据 ≤200 KB），不引框架、不打包、不联网。三条纪律写死在实现里：① **它不是第二个写者**——界面不直连库，探到在跑的 `serve` 就借它；探不到就在本进程里临时起一个，且 `publish:false`（**不写 `serve.json`、不撤别人的**），关界面就一起停；② 关掉之后进程与端口全消失（`server.close` + 临时 serve 的 `close`），不留守护进程；③ **只读面板一次写都不该有**——`census()` 刻意不建表（老库打开看一眼不该在工作区里落下 `.dsh-meow/`），空库就报空账。为此 serve 补了两块数据面：`GET /census`（分布账：总数 / 三档 scope / 七层 / 层 × scope 矩阵 / 写手）与 `GET /inject`（L0 注入预览与字符数）。判据照 PLAN 的原话：`probe-ui` 12 条里，「界面写一条，另一个引擎实例下次检索立刻读到」「探到现成 serve 就借它且关界面不停别人的服务」「关掉之后端口不再接受连接」「库不存在时只报空账」。
 >
-> 计数口径：`check-all` **74 支 / 4,740 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条）。
+> 7. **双包**（`packages/macro-memory/package.json` + `tools/build-dual.mjs`，PLAN §11.1、§11.2 / P2-2）：npm 上要有两个名字——`macro-memory`（通用入口：MCP / CLI / core / ui，给 Codex / Claude Code / Cursor）与 `dsh-macro-memory`（DSH 插件与市场条目）——而仓库里只有**一份** `lib/`、`bin/`、`vendor/`。做法是把「同源」变成一条每次发版都跑的判据：`build-dual` 按白名单把源树复制成通用包、把根 `package.json` 的版本号灌进模板（模板里写的是 `0.0.0`，**手填就会漂**），再逐字节比 `lib` / `bin` / `vendor` 三棵树（183 个文件），最后各打一次 tarball 确认不带自检家底（`tools/`、内部笔记、规划稿）。顺带补齐两处一直空着的入口：`lib/core/index.js`（core 面，78 个导出，`import 'macro-memory/core'` 就能拿到装配/归属/共享三组）与 `lib/mcp/stdio.js`（`import 'macro-memory/mcp'` 或 `node lib/mcp/stdio.js` 直接起 stdio 服务器，工作区按 `--cwd` > `MACRO_MEMORY_WORKSPACE` > cwd 的顺序认）。`probe-dual` 10 条里有两条是这一刀真正的价值：**「装上去 `import 'macro-memory/core'` 真解析得了」**（exports 写错了要等用户装完才发现）与**「脚本里没有 publish 调用」**——发包要有凭据、要有人看着版本号，这一步不该被脚本代劳。
+>
+> 计数口径：`check-all` **75 支 / 4,750 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条）。
 
 ---
 

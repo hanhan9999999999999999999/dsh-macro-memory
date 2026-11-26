@@ -73,10 +73,10 @@ const HELP = `macro-memory —— 一套记忆，所有 agent
   -h, --help          看这个
 
 例子：
-  npx -y -p dsh-macro-memory macro-memory mcp
-  npx -y -p dsh-macro-memory macro-memory init
-  npx -y -p dsh-macro-memory macro-memory remember "预发库只读，改数据走主库" --project 运维 --keywords 预发,只读
-  npx -y -p dsh-macro-memory macro-memory search "预发库"
+  npx -y macro-memory mcp
+  npx -y macro-memory init
+  npx -y macro-memory remember "预发库只读，改数据走主库" --project 运维 --keywords 预发,只读
+  npx -y macro-memory search "预发库"
 `
 /** 极简参数解析：只认 `--k v` / `--k=v` / `--flag`，其余进位置参数。 */
 function parseArgv(argv) {
@@ -205,7 +205,7 @@ async function cmdInit(args) {
   }
   const file = writeConfigFile({ dir: opts.dataDir }, next)
   const cwd = cwdOf(args)
-  const serverCmd = process.platform === 'win32' ? 'npx -y -p dsh-macro-memory macro-memory mcp' : 'npx -y -p dsh-macro-memory macro-memory mcp'
+  const serverCmd = 'npx -y macro-memory mcp'
   out(`配置文件：${file}`)
   out(`工作区：  ${cwd}`)
   out(`库目录：  ${path.join(cwd, next.projectDir ?? '.dsh-meow')}（与 DSH 共用同一份）`)

@@ -1,0 +1,60 @@
+{
+  "name": "macro-memory",
+  "version": "0.0.0",
+  "private": false,
+  "description": "一套记忆，所有 agent：以 meow-memory 的库为主库、dsh-memory-nebula 的星图为索引，合成 8 个 memory_* 统一工具 + 一段最小注入。可作 MCP 服务器、CLI、core 库或本地管理界面用；装 DSH 是体验最好的路，但不是唯一的路。",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hanhan9999999999999999999/dsh-macro-memory.git",
+    "directory": "."
+  },
+  "homepage": "https://github.com/hanhan9999999999999999999/dsh-macro-memory#readme",
+  "bugs": {
+    "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory/issues"
+  },
+  "main": "./lib/core/index.js",
+  "bin": {
+    "macro-memory": "./bin/macro-memory.mjs"
+  },
+  "exports": {
+    ".": "./lib/core/index.js",
+    "./core": "./lib/core/index.js",
+    "./mcp": "./lib/mcp/stdio.js",
+    "./cli": "./bin/macro-memory.mjs",
+    "./ui": "./lib/ui/server.js",
+    "./dsh": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "vendor",
+    "docs/images",
+    "docs/MAC.md",
+    "docs/CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "keywords": [
+    "memory",
+    "agent-memory",
+    "mcp",
+    "model-context-protocol",
+    "codex",
+    "claude-code",
+    "cursor",
+    "macro",
+    "meow-memory",
+    "memory-nebula",
+    "unified-tools",
+    "universal",
+    "deepseek-harness"
+  ],
+  "_comment": "这份文件是**模板**：version 由 tools/build-dual.mjs 从根 package.json 灌进来，保证两包永远同一个版本号。别在这里手填版本——手填就会漂。",
+  "_versionNote": "PLAN §11.3 写的是 engines >=22；这里是 >=24。原因：核心存储用 node:sqlite，22 里还得带 --experimental-sqlite 才能用，等于「装上了跑不起来」。宁可门槛写在明处，也不给一句「怎么一启动就报错」。"
+}
