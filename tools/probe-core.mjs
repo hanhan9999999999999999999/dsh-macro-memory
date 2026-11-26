@@ -280,8 +280,8 @@ check('C5 L0 里点了 memory_remember 的名字（模型得知道有这工具�
   )
   check(
     'C11 宿主包不再靠天吃饭：vendor 自带 schemastery/cosmokit + compat 层替 dsh-llm',
-    existsSync(join(bare, 'vendor', 'deepseek-ai', 'schemastery', 'lib', 'index.mjs')) &&
-      existsSync(join(bare, 'vendor', 'deepseek-ai', 'cosmokit', 'lib', 'index.js')) &&
+    existsSync(join(bare, 'vendor', 'schemastery', 'lib', 'index.mjs')) &&
+      existsSync(join(bare, 'vendor', 'cosmokit', 'lib', 'index.js')) &&
       existsSync(join(bare, 'lib', 'core', 'compat', 'dsh-llm.js')),
     '',
   )

@@ -8,8 +8,8 @@
       "name": "meow-memory",
       "version": "0.32.8",
       "files": 44,
-      "bytes": 2218453,
-      "sha256": "27c0e2eab75df25af29fe4fe4633f72d3fecafe944e6679b7c0a5508fad4b6d8"
+      "bytes": 2218515,
+      "sha256": "074bf7d862ccaf6258de0e1dd8a369e7fa6809a18a3dc1df8ccc30083a3cb416"
     },
     {
       "dir": "vendor/dsh-memory-nebula",
@@ -18,6 +18,22 @@
       "files": 52,
       "bytes": 1043581,
       "sha256": "85d0b5027b900d4f8f510022fc42db9babfaf5d4f88475cabe47fb9921d73768"
+    },
+    {
+      "dir": "vendor/schemastery",
+      "name": "@deepseek-ai/schemastery",
+      "version": "3.19.0",
+      "files": 8,
+      "bytes": 118714,
+      "sha256": "8dd8321a2d89ec10de6d277098025cec1afc543f72caa49fe10c4417d3f5c40a"
+    },
+    {
+      "dir": "vendor/cosmokit",
+      "name": "@deepseek-ai/cosmokit",
+      "version": "1.9.0",
+      "files": 25,
+      "bytes": 65942,
+      "sha256": "0ead94a0ff258bdd259c0baf38f409ef57987c67227dc5c95e5cd1bc6fd8e94d"
     }
   ]
 }

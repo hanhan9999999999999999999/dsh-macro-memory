@@ -17,7 +17,7 @@ import { hashTree, vendorPackage } from './vendor-hash.mjs'
 const MANIFEST = 'vendor/VENDOR.json'
 
 /** 账本要盯的目录（写死，避免「新拷贝一个目录进来但没人记账」；doctor 会反向核对有没有漏账）。 */
-export const VENDOR_DIRS = ['vendor/meow-memory', 'vendor/dsh-memory-nebula']
+export const VENDOR_DIRS = ['vendor/meow-memory', 'vendor/dsh-memory-nebula', 'vendor/schemastery', 'vendor/cosmokit']
 
 const vendors = []
 for (const rel of VENDOR_DIRS) {

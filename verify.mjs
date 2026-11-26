@@ -565,7 +565,15 @@ function makeHostCtx() {
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     const listed = Array.isArray(manifest.vendors) ? manifest.vendors : []
-    check('账本: 两个 vendor 都记了', listed.length === 2, listed.map((v) => v.name).join(','))
+    // 0.8.1：账本从「两个子插件」扩到「两个子插件 + 两个自带 peer 包」。
+    // 判据按名字核对而不是数长度——哪天再 vendor 一个包进来，这条不该假装没变化，
+    // 但也不该因为「数量不是 2」就红；真正的护栏是下面「doctor 反向核对未记账目录」。
+    const wantVendors = ['meow-memory', 'dsh-memory-nebula', '@deepseek-ai/schemastery', '@deepseek-ai/cosmokit']
+    check(
+      '账本: 四个 vendor 目录都记了（两引擎 + 自带 schemastery/cosmokit）',
+      wantVendors.every((n) => listed.some((v) => v.name === n)),
+      listed.map((v) => v.name).join(','),
+    )
     const fields = ['dir', 'name', 'version', 'files', 'bytes', 'sha256']
     const bad = listed.filter((v) => fields.some((f) => v[f] === undefined || v[f] === null))
     check('账本: 每条都有 dir/name/version/files/bytes/sha256', listed.length > 0 && bad.length === 0, bad.map((v) => v.dir).join(','))

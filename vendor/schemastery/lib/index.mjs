@@ -1,5 +1,5 @@
 // 0.8.1 补丁（dsh-macro-memory）：裸名 `@deepseek-ai/cosmokit` 在「没装 DSH 的机器」上解析不到——
-// 本包把 cosmokit 一起 vendor 在 vendor/deepseek-ai/cosmokit，这里改成相对路径，装到哪儿都能跑。
+// 本包把 cosmokit 一起 vendor 在 vendor/cosmokit，这里改成相对路径，装到哪儿都能跑。
 import { Binary, clone, createVolatile, deepEqual, filterKeys, isNullable, isPlainObject, isVolatile, pick, valueMap } from "../../cosmokit/lib/index.js";
 //#region lib/types/index.js
 const kSchema = Symbol.for("schemastery");

@@ -169,7 +169,7 @@ npx -y -p dsh-macro-memory macro-memory doctor
 
 边界说在前面：0.8.0 交付的是「同一个引擎能被别的 agent 用起来」这一层地基。计划里的**三档模式**（`standalone` / `shared` / `readonly`，多 agent 抢同一个库时切到单写者服务）、每条记忆带 `owner` / `scope` / `visibility` 的多人共享、`macro-memory serve` 写队列、本地 UI 七页、以及把包拆成 `macro-memory` + `dsh-macro-memory` 两件——**这一版都还没做**，方案全文在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md)。
 
-**0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包不存在，于是报 `'macro-memory' is not recognized`；正确写法是 `npx -y -p dsh-macro-memory macro-memory …`（本页所有命令都已改成这个形式，`package.json` 里也补了同名 bin 别名，`npx -y dsh-macro-memory …` 同样可用）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/deepseek-ai/schemastery` + `vendor/deepseek-ai/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
+**0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包不存在，于是报 `'macro-memory' is not recognized`；正确写法是 `npx -y -p dsh-macro-memory macro-memory …`（本页所有命令都已改成这个形式，`package.json` 里也补了同名 bin 别名，`npx -y dsh-macro-memory …` 同样可用）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/schemastery` + `vendor/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
 
 ---
 
@@ -231,7 +231,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.6.73 | 67 | 4,616 |
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
-| **0.8.1** | **69** | **4,667** |
+| **0.8.1** | **69** | **4,671** |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -270,7 +270,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.8.1 |
-| 自证规模 | **69 支自检 / 4,667 条可执行断言** |
+| 自证规模 | **69 支自检 / 4,671 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 14,494 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |

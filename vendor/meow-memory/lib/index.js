@@ -1,6 +1,6 @@
 // src/index.ts
 import { boundContextSummary, createUserMessage as createUserMessage3 } from "../../../lib/core/compat/dsh-llm.js";
-import z from "../../../vendor/deepseek-ai/schemastery/lib/index.mjs";
+import z from "../../../vendor/schemastery/lib/index.mjs";
 import { appendFileSync as appendFileSync2, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync6, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { dirname as dirname6, join as join9 } from "node:path";
