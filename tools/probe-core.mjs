@@ -12,11 +12,14 @@
  *   C7 CLI：--help 退出 0 且列出 mcp 子命令
  *   C8 平台：dataDir 三分支（Windows / macOS / Linux）与 MACRO_MEMORY_HOME 覆盖各自正确
  *   C9 关闭：close 之后引擎不再工作（不留后台句柄）
+ *   C10 全局库同源：装了 DSH 就落 <DSH_HOME>/storages/meow-memory，没装退 ~/.dsh-meow
+ *   C11 裸包：把运行面复制到一个没有 node_modules 的目录，仍能装配（vendor 自足 + compat 层）
+ *   C12 npx 口径：文档里的命令必须能真的被执行（包名 ≠ bin 名这坑只踩一次）
  *
  * 用法：node tools/probe-core.mjs
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -52,6 +55,14 @@ for (const d of [wsA, wsB, home, dataDir]) mkdirSync(d, { recursive: true })
  * 所以在本进程内把 DSH_HOME 指到临时目录：指针落在那儿，随 temp 一起消失。
  */
 process.env.DSH_HOME = join(tmp, 'dsh-home')
+// 再把「当前全局目录」指到本支的临时 home：`switchHomeDir()` 在目标 ≠ 当前目录时
+// 会从旧目录复制一份过来（并在 stderr 留一条 warn）。指针一写，两边一致，迁移不发生，
+// 探针输出就干净了——顺手也证明「指针文件就是唯一真相」。
+mkdirSync(join(process.env.DSH_HOME, 'storages'), { recursive: true })
+writeFileSync(
+  join(process.env.DSH_HOME, 'storages', 'meow-memory-home.json'),
+  JSON.stringify({ homeDir: home }),
+)
 
 // ── C0 文件在位 ────────────────────────────────────────────────
 const files = [
@@ -184,6 +195,96 @@ check('C5 L0 里点了 memory_remember 的名字（模型得知道有这工具�
     out = String(err.stdout ?? '')
   }
   check('C7 CLI --help 退出 0 且列出 mcp 子命令', code === 0 && out.includes('mcp') && out.includes('所有 agent'), `exit=${code}`)
+}
+
+/**
+ * C12 npx 口径（0.8.0 翻车的那一刀）：npm 包叫 `dsh-macro-memory`，bin 叫 `macro-memory`，
+ * 名字不一样 → `npx -y macro-memory …` 会被 npx 当成「去找一个叫 macro-memory 的包」，
+ * npm 上根本没有，报 `'macro-memory' is not recognized`。命令只许两种写法：
+ *   ① npx -y -p dsh-macro-memory macro-memory …（显式指定包，最稳）
+ *   ② npx -y dsh-macro-memory …（package.json 里给 bin 加了同名别名才成立）
+ */
+{
+  const docs = ['README.md', 'docs/CHANGELOG.md', 'bin/macro-memory.mjs', 'lib/core/engine.js']
+  // md 只扫 ``` 代码块里的行：正文里出现 `npx -y macro-memory …` 是在讲反面例子，
+  // 那不是「照抄会翻车」的命令，判红就变成了抓叙述。
+  const commandLines = (f, text) => {
+    const lines = text.split('\n')
+    if (!f.endsWith('.md')) return lines.map((l, i) => [i + 1, l])
+    const out = []
+    let fence = false
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*```/.test(lines[i])) { fence = !fence; continue }
+      if (fence) out.push([i + 1, lines[i]])
+    }
+    return out
+  }
+  const bad = []
+  for (const f of docs) {
+    const text = readFileSync(join(root, f), 'utf8')
+    for (const [no, line] of commandLines(f, text)) {
+      if (line.includes('npx -y macro-memory') || line.includes('npx -y -p macro-memory')) {
+        bad.push(`${f}:${no}: ${line.trim().slice(0, 90)}`)
+      }
+    }
+  }
+  check('C12 命令里没有「npx -y macro-memory」这种 npx 找不到包的写法（代码块与 CLI 输出为准）', bad.length === 0, bad[0] ?? '写法统一为 -p dsh-macro-memory macro-memory')
+
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const bins = Object.keys(pkg.bin ?? {})
+  check('C12 package.json 的 bin 里带包名本身（npx -y <包名> 才找得到命令）', bins.includes(pkg.name), bins.join(', '))
+}
+
+/**
+ * C11 裸包（0.8.1）：包的运行面里不能出现「装 DSH 才有」的裸依赖。
+ * 0.8.0 的 meow 顶部 `import '@deepseek-ai/dsh-llm'`，干净机器上直接 ERR_MODULE_NOT_FOUND——
+ * 这条把运行面复制到没有 node_modules 的目录里跑一遍 doctor，把这个洞焊死。
+ */
+{
+  const bare = join(tmp, 'bare')
+  // 把全局库与指针都圈进临时目录：否则 meow 的 autoMigrate 会把宿主真实的
+  // `~/.dsh-meow` 复制进来（只是多读一次 + 一条 warn，但探针不该有这种噪音）。
+  const dshHome = join(tmp, 'dsh-home-bare')
+  const bareHome = join(dshHome, 'storages', 'meow-memory')
+  mkdirSync(bareHome, { recursive: true })
+  writeFileSync(join(dshHome, 'storages', 'meow-memory-home.json'), JSON.stringify({ homeDir: bareHome }))
+  for (const d of ['bin', 'lib', 'vendor']) {
+    cpSync(join(root, d), join(bare, d), {
+      recursive: true,
+      filter: (src) => !src.split(/[\\/]/).includes('node_modules'),
+    })
+  }
+  cpSync(join(root, 'package.json'), join(bare, 'package.json'))
+  let out = ''
+  let code = 0
+  try {
+    out = execFileSync(process.execPath, [join(bare, 'bin', 'macro-memory.mjs'), 'doctor', '--no-nebula'], {
+      encoding: 'utf8',
+      cwd: bare,
+      env: {
+        ...process.env,
+        DSH_HOME: dshHome,
+        MACRO_MEMORY_HOME: join(tmp, 'bare-home'),
+        MACRO_MEMORY_WORKSPACE: join(tmp, 'bare-ws'),
+      },
+    })
+  } catch (err) {
+    code = err.status ?? 1
+    out = String(err.stdout ?? '')
+  }
+  const engineLine = out.split('\n').find((l) => l.includes('引擎')) || ''
+  check(
+    'C11 裸包（没有 node_modules）仍能装配：引擎就绪 + 8 工具 + L0 注入',
+    !existsSync(join(bare, 'node_modules')) && out.includes('meow=就绪') && out.includes('memory_remember'),
+    `exit=${code} ${engineLine.trim()}`,
+  )
+  check(
+    'C11 宿主包不再靠天吃饭：vendor 自带 schemastery/cosmokit + compat 层替 dsh-llm',
+    existsSync(join(bare, 'vendor', 'deepseek-ai', 'schemastery', 'lib', 'index.mjs')) &&
+      existsSync(join(bare, 'vendor', 'deepseek-ai', 'cosmokit', 'lib', 'index.js')) &&
+      existsSync(join(bare, 'lib', 'core', 'compat', 'dsh-llm.js')),
+    '',
+  )
 }
 
 // ── C6 MCP（最后跑：serveStdio 结束会关引擎） ──────────────────

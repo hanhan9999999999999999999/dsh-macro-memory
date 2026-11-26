@@ -14681,3 +14681,19 @@ function id8(id) { return String(id).slice(0, 8) }
 2. **`close()` 之后 `def.execute` 照样能跑**（bridge 的 Map 还在），C9 实测「关了还在返回检索结果」。加 `let closed`，`call()` 第一行拦，抛「引擎已关闭，不再提供服务」；判据写成「抛错 或 明说不可用」二者皆算健康——要防的是**静默成功**。
 3. **指针文件带 BOM 就静默失效**。`<DSH_HOME>/storages/meow-memory-home.json` 被 PowerShell 的 `Set-Content -Encoding UTF8` 写进 BOM 后，meow 的 `JSON.parse` 抛错、`readHomePointer()` catch 成 `undefined`，`activeHomeDir()` 安静地退回 `~/.dsh-meow`——文件看着是对的，库却换了地方。改这个指针只用 node 写无 BOM。
 4. **自检换 `homeDir` 会改写真实指针**。meow 的 `switchHomeDir()` 在目标目录为空时会 copy/rename 旧库过去并写指针；`probe-core` 用临时 home 就属于这种，于是一次自检把宿主的全局库指针改到了 `E:\Temp\macro-core-XXXX\home`（temp 一删宿主就找不到库）。修法：探针开头 `process.env.DSH_HOME = join(tmp,'dsh-home')`，指针落在 temp 内随它消失。另外探针必须传 `meow:{autoMigrate:false}`，否则 meow 会把真实全局库整份复制到临时目录（warn 里会写「自 … 复制 19 项」）。
+
+### 9.279 0.8.1：`npx` 那条路的两处断点（名字 + 依赖）
+
+**病根**：0.8.0 发布会后立刻验 `npx`，两句都断。第一处是**名字**——npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，npx 按包名去执行，于是 `npx -y dsh-macro-memory@0.8.0 doctor` 报 `'macro-memory' is not recognized as an internal or external command`；`npx -y -p dsh-macro-memory@0.8.0 macro-memory doctor` 能找到 bin 了，但第二处断在**依赖**：`Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@deepseek-ai/dsh-llm' imported from ...\vendor\meow-memory\lib\index.js`。本仓能跑，是因为 Node 向上解析撞见了 DSH 的 `node_modules`——**换个安装位置就断**，这正是「一份记忆任意 agent 都能用」的反面。
+
+**改动**：
+
+1. `lib/core/compat/dsh-llm.js`（约 75 行）：meow 只从 `@deepseek-ai/dsh-llm` 取两个符号，且两个都是纯数据整形——`boundContextSummary(summary)` = `summary.length <= 120 ? summary : summary.slice(0,119) + '…'`；`createUserMessage(input)` = `deepFreeze(structuredClone({...input, id: uuid, role:'user'}))`。compat 层按原语义实现（另补 `createMessage` / `createSystemMessage` / `createAssistantMessage` / `createDeveloperMessage`、`CONTEXT_SUMMARY_MAX_CHARS`），meow 的 `:2` / `:1638` / `:10310` 三处裸名改相对路径。
+2. `vendor/deepseek-ai/schemastery/`（8 文件 / 115.7 KB）+ `vendor/deepseek-ai/cosmokit/`（25 文件 / 64.4 KB）：整包自带；`schemastery/lib/index.mjs:1` 原本 `from "@deepseek-ai/cosmokit"`，改相对路径（cosmokit 只有 CJS 的 `lib/index.js`，named exports 靠 cjs-module-lexer）。meow 的 `:3` 改指这里。**不走 npm `dependencies`**：npm 不打包 `node_modules`（除非 `bundledDependencies`），且 `dsh-llm` 自身带 7 个 `@deepseek-ai/*` + peer `cordis`，整包 vendor 不现实。
+3. `package.json` 的 `bin` 加同名别名：`{"macro-memory": "./bin/macro-memory.mjs", "dsh-macro-memory": "./bin/macro-memory.mjs"}`——这样 `npx -y dsh-macro-memory mcp` 也成立。文档 / `--help` / `lib/core/engine.js:70` 的拒绝提示统一成 `npx -y -p dsh-macro-memory macro-memory <子命令>`。
+4. `tools/probe-core.mjs` 加 **C11**（把 `bin`/`lib`/`vendor` 复制到没有 `node_modules` 的目录跑 `doctor`，要求 `meow=就绪` 与 `memory_remember`；另查三个补丁文件在位）与 **C12**（md 只扫 ``` 代码块、js/mjs 扫全文，不许出现 `npx -y macro-memory`；`bin` 必须含包名本身）。24 → **28 条**。
+5. 探针噪音：meow 的「全局目录已切换为 X（自 Y 复制 N 项）」**不受 `meow:{autoMigrate:false}` 控制**（那个开关只管 workspace 层 `PROJECT.md`，见 `vendor/meow-memory/lib/index.js:12035`），而是 `switchHomeDir()` 在「传入 homeDir ≠ `Meow.activeHomeDir()`」时无条件迁移。消法：探针开头设完 `DSH_HOME=join(tmp,'dsh-home')` 后，再写 `<DSH_HOME>/storages/meow-memory-home.json`（`{homeDir: home}`，无 BOM）；C11 用独立的 `dsh-home-bare` 避免互相覆盖指针。
+
+**判据**：裸包 `node <bare>/bin/macro-memory.mjs doctor --no-nebula` → `meow=就绪` / `子工具：8 个被融合层收下` / `注入：L0 1266 字符`；`trust` → `已信任`；`remember` → `id=0mwxqj2u`；`search "裸包"` 命中真库历史记忆 + 星图扩散。`npm pack` 出的 tarball 实测两条路都能起：`npx -y -p <tgz> macro-memory doctor` 与 `npx -y <tgz> doctor`（别名）。`probe-core` 28 PASS / 0 FAIL（stderr 空）；`verify.mjs` ALL PASS（`文档 4667 / 实测 4667`）；`check-all` 69 支 / 4,667 条。
+
+**踩坑**：PowerShell 里 `Sub $path @(@('a','b'))` 这种嵌套数组会被展开成一维，`$pair[0]` 退化成「字符串第一个字符」——一次批量替换把四个文件里所有 `"` 换成了 `t`（`baselines.json` 直接变成非法 JSON）。批量改文本一律用 node 脚本 + `fs.writeFileSync(..., 'utf8')`，或逐条走编辑工具；坏文件先拷到 `D:\备份\<时间戳>-<任务名>\` 再从 git 恢复重做。

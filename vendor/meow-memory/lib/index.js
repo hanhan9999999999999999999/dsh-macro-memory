@@ -1,6 +1,6 @@
 // src/index.ts
-import { boundContextSummary, createUserMessage as createUserMessage3 } from "@deepseek-ai/dsh-llm";
-import z from "@deepseek-ai/schemastery";
+import { boundContextSummary, createUserMessage as createUserMessage3 } from "../../../lib/core/compat/dsh-llm.js";
+import z from "../../../vendor/deepseek-ai/schemastery/lib/index.mjs";
 import { appendFileSync as appendFileSync2, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync6, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { dirname as dirname6, join as join9 } from "node:path";
@@ -1635,7 +1635,7 @@ async function ensureV0SessionsMigrated(projectDir, log) {
 }
 
 // src/dream.ts
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage } from "../../../lib/core/compat/dsh-llm.js";
 import { appendFileSync, existsSync as existsSync6, readdirSync as readdirSync4, readFileSync as readFileSync6 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join7 } from "node:path";
@@ -10307,7 +10307,7 @@ function migrateLegacy(db, workspace, dir = ".dsh-meow") {
 }
 
 // src/reflect.ts
-import { createUserMessage as createUserMessage2 } from "@deepseek-ai/dsh-llm";
+import { createUserMessage as createUserMessage2 } from "../../../lib/core/compat/dsh-llm.js";
 var REFLECT_MARKER = "[meow-memory-reflect]";
 function scanTurn(events) {
   let startIdx = 0;

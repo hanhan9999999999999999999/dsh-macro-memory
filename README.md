@@ -124,15 +124,15 @@ memory_update({ id: '0mww…', patch: [{ find: '600 秒', replace: '十分钟' }
 
 ---
 
-## 一份记忆，任意 agent 都能用（0.8.0）
+## 一份记忆，任意 agent 都能用（0.8 起）
 
 到 0.7.x 为止，这套东西长在 DSH 宿主上：换到 Codex、Claude Code、Cursor，同一台机器上那份 `memory.db` 就只是一堆没人读的字节。0.8.0 把**引擎装配**从宿主里剥了出来，于是同一套工具、同一段注入、同一张星图，可以给任意 agent 用——**库还是那一份，位置一个字节没挪**：
 
 | 接法 | 一句话 | 谁适合 |
 | --- | --- | --- |
 | **DSH 插件** | 市场装 `macro-memory`，重启即生效 | 用 DSH 的人——面板、`/dream`、`/meow-trust` 都在，体验最全 |
-| **MCP 服务器** | `npx -y macro-memory mcp` | Codex / Claude Code / Cursor 等一切支持 MCP 的宿主 |
-| **CLI** | `npx -y macro-memory search "…"` | 脚本、CI、不想开 agent 只想查一眼的时候 |
+| **MCP 服务器** | `npx -y -p dsh-macro-memory macro-memory mcp` | Codex / Claude Code / Cursor 等一切支持 MCP 的宿主 |
+| **CLI** | `npx -y -p dsh-macro-memory macro-memory search "…"` | 脚本、CI、不想开 agent 只想查一眼的时候 |
 
 挂进任何 MCP 宿主的配置就三行：
 
@@ -141,7 +141,7 @@ memory_update({ id: '0mww…', patch: [{ find: '600 秒', replace: '十分钟' }
   "mcpServers": {
     "macro-memory": {
       "command": "npx",
-      "args": ["-y", "macro-memory", "mcp"],
+      "args": ["-y", "-p", "dsh-macro-memory", "macro-memory", "mcp"],
       "env": { "MACRO_MEMORY_WORKSPACE": "/你的/项目目录" }
     }
   }
@@ -153,7 +153,7 @@ memory_update({ id: '0mww…', patch: [{ find: '600 秒', replace: '十分钟' }
 **信任门也搬到了命令行这一侧。** meow 有个 #64 的保护：工作区里躺着一个不是本机创建的记忆库时（clone 了别人的仓库），默认关掉读写，免得被塞一嘴别人的「记忆」。DSH 里的解法是手打 `/meow-trust`；MCP / CLI 没有斜杠命令，所以 core 复刻了**完全同一张表**（`<全局目录>/trusted-workspaces/<sha256(规范化路径)>.json`）。放进来的库（目录里有不是本插件产生的文件）一律不自动信任，只回一段能直接粘的命令：
 
 ```bash
-npx -y macro-memory trust "/你的/项目目录"
+npx -y -p dsh-macro-memory macro-memory trust "/你的/项目目录"
 ```
 
 信任过的目录，DSH 那边立刻也认，反之亦然——**不需要两边各点一次**。
@@ -161,13 +161,15 @@ npx -y macro-memory trust "/你的/项目目录"
 不开 agent 也能自证：
 
 ```bash
-npx -y macro-memory doctor
-# 版本 0.8.0 / 数据目录 … / 工作区 … / 库 … / 信任：已信任
+npx -y -p dsh-macro-memory macro-memory doctor
+# 版本 0.8.1 / 数据目录 … / 工作区 … / 库 … / 信任：已信任
 # 引擎 meow=就绪 nebula=就绪 / 子工具 17 / 注入 L0 1266 字符
 # 结果：一切正常
 ```
 
 边界说在前面：0.8.0 交付的是「同一个引擎能被别的 agent 用起来」这一层地基。计划里的**三档模式**（`standalone` / `shared` / `readonly`，多 agent 抢同一个库时切到单写者服务）、每条记忆带 `owner` / `scope` / `visibility` 的多人共享、`macro-memory serve` 写队列、本地 UI 七页、以及把包拆成 `macro-memory` + `dsh-macro-memory` 两件——**这一版都还没做**，方案全文在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md)。
+
+**0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包不存在，于是报 `'macro-memory' is not recognized`；正确写法是 `npx -y -p dsh-macro-memory macro-memory …`（本页所有命令都已改成这个形式，`package.json` 里也补了同名 bin 别名，`npx -y dsh-macro-memory …` 同样可用）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/deepseek-ai/schemastery` + `vendor/deepseek-ai/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
 
 ---
 
@@ -228,7 +230,8 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.6.0 | 32 | 3,536 |
 | 0.6.73 | 67 | 4,616 |
 | 0.7.0 | 68 | 4,639 |
-| **0.8.0** | **69** | **4,663** |
+| 0.8.0 | 69 | 4,663 |
+| **0.8.1** | **69** | **4,667** |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -266,8 +269,8 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 
 | 项 | 现在 |
 | --- | --- |
-| 版本 | 0.8.0 |
-| 自证规模 | **69 支自检 / 4,663 条可执行断言** |
+| 版本 | 0.8.1 |
+| 自证规模 | **69 支自检 / 4,667 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 14,494 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |
