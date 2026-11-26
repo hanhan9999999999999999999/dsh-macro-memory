@@ -14836,3 +14836,63 @@ function id8(id) { return String(id).slice(0, 8) }
 | `tools/doctor.mjs` | 「两处不一致 1 个漂移：`tools/baselines.json`」 | `--update-baselines` 在**仓库树**写基线，`profile` 树还是旧的。顺序必须是：改代码 → `sync-trees --apply` → `--update-baselines` → **再** `sync-trees --apply` → `doctor`。最后这次 sync 最容易忘。 |
 
 顺带一条口径：`--update-baselines` 是**两阶段**的——它先让各支把新条数写盘，同一趟里的 `verify` / `probe-monotone` 仍按旧数字核对文档，所以那一趟必然红。正确姿势是跑完 `--update-baselines` 后**单独**跑 `node verify.mjs` 与 `node tools/probe-monotone.mjs`，再跑一次不带参数的 `node tools/check-all.mjs` 收口。
+
+### 9.285 0.9.0（开发中）：单写者服务 `serve`——两个写者同时开一个库，是唯一真会丢数据的坏
+
+**问题**。前面几刀（围栏 / 版本门 / 归属账 / 隔离 / 三段召回）都建立在「一个进程一个写连接」这个前提上。多 agent 接进来之后这个前提没了：Codex 一个进程、Claude Code 另一个、DSH 里还有第三个，各自 `Meow.getDb()` 各写各的。SQLite 的 WAL 能扛住并发读，扛不住「两个进程各自判断该不该写」的竞态——重复合并、`hit_count` 自增、`created_at` 覆盖，坏起来不报错，只是数据慢慢不对。这类损坏事后修不回来：你没法知道 `hit_count=7` 里哪三次是同一件事被数了三遍。
+
+**做法**（`lib/core/serve.js` + `lib/core/client.js`，PLAN §5、§6）：
+
+| 位置 | 干了什么 |
+| --- | --- |
+| `startServe(opts)` | 前台常驻。`port: 0` 随机端口（Windows 与 Unix 同一套），非 Windows 额外挂 UDS `<dataDir>/serve.sock`。端点信息写 `<dataDir>/serve.json`（token `randomBytes(24)`，`0600`） |
+| 写队列 | promise 链串行化，一条一个短事务；`requestId` 记进 `memo`（上限 5,000，超了按插入序丢最旧），重发同 id 直接回放上次回执并打 `deduped: true` |
+| 端点 | `POST /call`（通用，`/write` 是别名）、`GET /search`、`GET /read`、`POST /attach`、`POST /detach`、`GET /stats`、`GET /events`（SSE，UI 用）、`GET /health`。全部要 `Authorization: Bearer <token>` |
+| 引擎接线 | `createMacroEngine` 多一个 `serve: 'auto' \| 'off'`（默认 `auto`）。`call()` 在**信任门、版本门之后**插一层 `sharedCall()`：`standalone` 原样往下走，其余直接返回。`serve` 自己用 `serve: 'off'`，内部调用再带 `noServe: true`——否则服务会把自己也当成客户端，无限递归 |
+| `pending.jsonl` | 服务不通时的待补交队列，一行一条。补交时带**原** `requestId`，所以「其实已经写进去了」不会变成两条 |
+
+**三档模式与回执一一对应**（PLAN 第 5 节，这里把口径写死）：
+
+| 探测结果 | 模式 | 行为 |
+| --- | --- | --- |
+| 没有 `serve.json` | `standalone` | 直连本地库。**不装服务的人一次连接都不建**——一次 `fs.readFileSync` 失败就返回，零连接零等待 |
+| `serve.json` 在，`/stats` 回 200 | `shared` | 读写都走服务 |
+| `serve.json` 在，探不通 | `readonly` | 这次**不写库**，落 `pending.jsonl`，回执明说「没有写进库」+ 三条路（起 `serve` / 再调一次 / `detach` 认输） |
+| `serve.json` 在，令牌不对（401） | `standalone` | 当成「这不是我们的服务」，回落直连 |
+
+最后那一行是刻意的：**宁可漏拦一次，也不能把整台机器锁死**。`serve.json` 会残留（服务被 `kill -9`、换过 `dataDir`、另一个用户的旧文件），如果 401 也走 `readonly`，那么换个人用这台机器就永远只能排队等一个根本不该起的服务。
+
+**三条纪律**：
+
+1. **服务不通时绝不偷写。** 有 `serve.json` 说明这台机器上**本来**有个单写者；它可能只是正在重启。这时候自己开库写，就是两个写者同时写——正是这一刀要治的病。宁可让用户多敲一次 `serve`。
+2. **正常关闭要自己收拾。** `close()` 删 `serve.json`（只在 token 对得上时删，不撤别人的发现文件）、清 UDS 文件、等队列排空。这样「停服 → 回落直连」是自动的，不需要用户记着删文件。
+3. **常驻必须显式。** 默认前台、默认不装 LaunchAgent / 计划任务（PLAN U11）。`--install-agent` 这一版没做，文档与 HELP 都不假装它做了。
+
+**判据**（`tools/probe-serve.mjs`，17 条，`port: 0` 随机端口，临时目录，4.4s）：
+
+- V1 / V1b：没有 `serve.json` 时 `shareState()` 报 `standalone`、直连照常可写（不装服务不付代价）。
+- V2 / V2b：`serve.json` 落在数据目录里、pid 与 token 对得上；`/stats` 带对令牌能读。
+- V3 / V3b：经服务写的条目真的进了库；**同一 `requestId` 打两次只算一次写**（`deduped: true`，库里只多一条）。
+- V4 / V4b：**两个真实子进程各 POST 200 条**（U7）→ 库里 400 条、内容 400 种、`maxQueue ≥ 1`（证明是排队进的，不是各写各的）。
+- V5：令牌不对一律 401。
+- V6 / V6b / V6c：`close()` 后手工把 `serve.json` 写回去（模拟 `kill -9`）→ 写不进库、回执含「没有写进库」与三条路、`pending.jsonl` 里有这一条。
+- V7：服务回来 → 下次调用先补交（`flushed: 1`），库里有了、队列空了（U9 后半）。
+- V9：`noServe: true` 的调用不被自己的服务截走（否则递归）。
+- V10：`/events` 是 SSE，先来 `event: hello`。
+- V8 / V8b：正常关闭后 `serve.json` 自己消失、回落 `standalone`、端口不再接受连接。
+
+**踩坑**：
+
+1. **`require()` 在 ESM 里不存在**。探针第一版在 SSE 那段写了 `require('node:http').request(...)`，`ReferenceError` 一抛就被 `req.on('error')` 吞了、`check` 判了个 `status 0`——红得莫名其妙，改 `import http from 'node:http'` 才对。
+2. **`client.discover()` 用 `/stats` 探活，不用 `/health`**。`/health` 不鉴权（给探活用），但 `/stats` 带鉴权正好顺带验令牌：探活与鉴权一趟完成。代价是每次调用多一次往返——只在 `serve.json` 存在时付，没装服务的人不付。
+3. **`sharedCall()` 要放在版本门之后**。放前面的话，只读的库也会先往服务打一趟，服务那头再用 `noServe: true` 走同一套版本门——白绕一圈，且回执里会缺 `schema` 字段。
+4. **`ownerStoreFor` 的老坑在这里复现不了**：服务侧每调一次 `engine.call()` 都重新取库，`mem_owner` 在第一次写入时就被 `ensureTable()` 建好，所以归属不会丢。反过来说，这也是「单写者」白拿的好处——一条队列意味着一次建表。
+5. **Windows 上 `rmSync(tmp, {recursive:true})` 会 EPERM**：SQLite 句柄在 `engine.close()` 之后未必立刻释放。探针结尾用 `try/catch` 包住并把临时目录留给系统——这种清理失败不该让一根判据变红（真正该红的是「库里的数据不对」）。
+
+6. **平台判断只有 `lib/macro/platform.js` 一个入口**（`probe-platform` P8：`lib/` 全树除 `platform.js` 外不许出现 `process.platform` / `process.arch`）。新写的 `client.js` / `serve.js` 一开始各写了一次 `process.platform !== 'win32'`，判据立刻点出两个文件；改走 `isWindows()` / `platformName()`。**连注释里都不许出现那个字面量**——判据是正则扫全文，我第一次改完漏掉注释里的 `process.platform`，又红了一轮。
+
+**还没做（写在明处）**：
+
+- `--install-agent`（launchd / 计划任务 / systemd --user）没做；`serve` 只能前台跑。
+- `serve` 不接管 dream 的**定时**触发（现在 dream 仍是每次 `memory_dream` 调用时才跑）；「唯一 dream 执行者」目前只体现为「所有 agent 的调用都汇到这一条队列」。
+- UI 的 `/events` 只有心跳与 `call` 事件，没有增量快照。

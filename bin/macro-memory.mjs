@@ -52,6 +52,10 @@ const HELP = `macro-memory —— 一套记忆，所有 agent
   refresh             刷新 AGENTS.md 里的 L0（升级后跑一次即可）
   uninstall           摘掉 AGENTS.md 里的 L0，原有内容逐字节还原
   migrate             把库的 schema 版本抬到本适配层认识的版本（先出一致副本）
+  serve               起单写者服务（多 agent 共用一个库时，写只走它一条队列）
+  attach              加入共享：登记自己 + 把待补交的写交上去
+  detach              退出共享：删发现文件，回到直连（服务本身不动）
+  share               看共享状态：谁是写者、队列多长、服务在不在
   doctor              自检：引擎就绪、库位置、信任状态、路径
   stats               库规模与工具清单
 
@@ -63,6 +67,8 @@ const HELP = `macro-memory —— 一套记忆，所有 agent
   --json              机器可读输出
   --no-nebula         不挂星图引擎（更快、更省内存）
   --file <路径>       改哪个文件（默认 AGENTS.md；可给多次或逗号分隔）
+  --port <端口>       serve 监听端口（默认 0 = 系统挑一个，写进 serve.json）
+  --agent <名字>      attach 时自报的名字（同一份库靠它区分谁写的）
   -h, --help          看这个
 
 例子：
@@ -426,6 +432,8 @@ async function cmdDoctor(args) {
   lines.push(`  全局库：    ${trust.homeDir}`)
   const schema = eng.schemaState(cwd)
   lines.push(`  库版本：    适配层 v${schema.adapterVersion} / 库 ${schema.dbVersion === null ? '还没有库' : `v${schema.dbVersion}`}${schema.readOnly ? '（比适配层新：只读）' : ''}`)
+  const share = await eng.shareState()
+  lines.push(`  共享：      ${share.mode} —— ${share.mode === 'standalone' ? '直连本地库（没装服务，功能一条不少）' : share.mode === 'shared' ? `写交给 pid ${share.info?.pid}（${share.info?.url ?? ''}），已服务 ${share.stats?.calls ?? 0} 次` : `serve.json 还在但连不上：${share.reason}`}${share.pending > 0 ? `，待补交 ${share.pending} 条` : ''}`)
   lines.push(`  信任：      ${trust.trusted ? '已信任' : `未信任（跑 macro-memory trust "${cwd}"）`}`)
   lines.push(`  引擎：      meow=${eng.ready.meow ? '就绪' : '未就绪'}  nebula=${eng.ready.nebula ? '就绪' : '未就绪'}`)
   lines.push(`  子工具：    ${stats.captured} 个被融合层收下`)
@@ -437,6 +445,7 @@ async function cmdDoctor(args) {
   if (!eng.ready.nebula) problems.push('星图引擎未就绪：检索仍可用，只是没有关联扩散')
   if (!trust.trusted) problems.push('当前工作区未信任：写入会被拒绝（这是有意的防护）')
   if (schema.readOnly) problems.push(`库 schema v${schema.dbVersion} 比适配层 v${schema.adapterVersion} 新：读写暂停，升级 macro-memory 或显式跑 migrate`)
+  if (share.mode === 'readonly') problems.push(`serve.json 还在但服务连不上（${share.reason}）：现在写不进去，${share.pending} 条在排队——起 macro-memory serve 补交，或 macro-memory detach 认输回直连`)
   if (problems.length === 0) {
     lines.push('结果：一切正常。')
   } else {
@@ -455,6 +464,162 @@ async function cmdStats(args) {
   const res = await eng.call('memory_admin', { action: 'stats' }, { cwd: cwdOf(args), agentId: 'cli' })
   out(args.json === true ? JSON.stringify({ engine: eng.stats(), panel: res.text }) : res.text)
   await eng.close()
+}
+
+/** 共享层四个命令共用的最小装配：只要 dataDir 与探测，不要全套工具（省内存）。 */
+async function shareLite(args) {
+  const { resolveDataDir } = await import('../lib/core/paths.js')
+  const client = await import('../lib/core/client.js')
+  const dataDir = resolveDataDir({ dir: args['data-dir'] })
+  return { dataDir, client }
+}
+
+/**
+ * `serve`：前台常驻的单写者（PLAN 第 6 节）。
+ *
+ * 三件事只有它干：唯一写连接、唯一跑 dream 的、唯一打快照的。默认前台、默认不装
+ * 任何常驻（LaunchAgent / 计划任务得显式 `--install-agent`，这一版还没做，明写在文档里）。
+ */
+async function cmdServe(args) {
+  const { startServe } = await import('../lib/core/serve.js')
+  const port = args.port === undefined ? 0 : Number(args.port)
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    console.error('macro-memory serve：--port 要 0–65535 的整数')
+    process.exit(1)
+  }
+  const srv = await startServe({
+    dataDir: args['data-dir'],
+    projectDir: args['project-dir'],
+    homeDir: args['home-dir'],
+    cwd: cwdOf(args),
+    port,
+    verbose: args.verbose === true,
+  })
+  if (args.json === true) {
+    out(JSON.stringify({ url: srv.url, pid: srv.pid, token: srv.token, serveFile: srv.info.file, dataDir: srv.dataDir }))
+  } else {
+    out([
+      '单写者服务起来了（前台运行，Ctrl-C 停）。',
+      `  端点：      ${srv.url}`,
+      `  pid：       ${srv.pid}`,
+      `  令牌：      ${srv.token}`,
+      `  发现文件：  ${srv.info.file}`,
+      '',
+      '从现在起，本机所有走这套 core 的 agent 都会把写交给这条队列（各自不用改配置）。',
+      '  · 看状态：  macro-memory share',
+      '  · 退出共享：macro-memory detach（服务还活着，只是发现文件被摘掉）',
+      '  · 停服务：  Ctrl-C（serve.json 会自己删掉，大家回落直连）',
+    ].join('\n'))
+  }
+  let stopping = false
+  const stop = async (sig) => {
+    if (stopping) return
+    stopping = true
+    const r = await srv.close(sig)
+    if (args.json === true) out(JSON.stringify({ stopped: true, reason: r.reason, removed: r.removed }))
+    else out(`已停（${r.reason}）：serve.json ${r.removed ? '已删掉，回到直连' : '没删（不是本进程写的，或者已经被清过）'}。`)
+    process.exit(0)
+  }
+  process.on('SIGINT', () => void stop('SIGINT'))
+  process.on('SIGTERM', () => void stop('SIGTERM'))
+  await new Promise(() => {}) // 前台常驻，只等信号
+}
+
+/** `attach`：加入共享（登记 + 补交）。服务不在时如实说，并给出两条路。 */
+async function cmdAttach(args) {
+  const { dataDir, client } = await shareLite(args)
+  const info = client.readServeInfo(dataDir)
+  const agent = typeof args.agent === 'string' && args.agent.trim().length > 0 ? args.agent.trim() : `cli-${process.pid}`
+  if (!info) {
+    out([
+      '没有服务在跑（standalone）：直连本地库，记 / 查 / 注入 / dream 一条不少。',
+      `  发现文件：  ${client.serveFilePath(dataDir)}（不存在）`,
+      '',
+      '要让多个 agent 共用一个库、写只走一条队列：另开一个终端跑',
+      '  macro-memory serve',
+    ].join('\n'))
+    process.exit(0)
+  }
+  const found = await client.discover(dataDir)
+  if (found.mode !== 'shared') {
+    const pending = client.pendingCount(dataDir)
+    out([
+      `serve.json 在，但服务连不上（${found.reason}）：现在处于只读档。`,
+      `  端点：      ${info.url ?? info.socketPath}`,
+      `  pid：       ${info.pid}`,
+      `  待补交：    ${pending} 条（${path.join(dataDir, client.PENDING_FILE)}）`,
+      '',
+      '起服务就补交：macro-memory serve',
+      '不想用服务：macro-memory detach',
+    ].join('\n'))
+    process.exit(1)
+  }
+  const res = await client.request(info, 'POST', '/attach', { agent, cwd: cwdOf(args) })
+  const done = await client.flushPending(dataDir, info)
+  const st = res.json
+  out([
+    `已加入共享（mode=shared），自报名字：${st?.agent ?? agent}`,
+    `  端点：      ${info.url ?? info.socketPath}`,
+    `  写者：      pid ${info.pid}`,
+    `  这次补交：  ${done.sent} 条${done.left > 0 ? `，还剩 ${done.left} 条（服务那边还没写进去，下次再试）` : ''}`,
+    `  队列：      ${client.pendingCount(dataDir)} 条待补交`,
+  ].join('\n'))
+  process.exit(0)
+}
+
+/** `detach`：删发现文件，回落直连。服务本身不动（它可能还有别的 agent 在用）。 */
+async function cmdDetach(args) {
+  const { dataDir, client } = await shareLite(args)
+  const info = client.readServeInfo(dataDir)
+  const pending = client.pendingCount(dataDir)
+  const removed = client.removeServeInfo(dataDir)
+  const lines = []
+  if (!info) {
+    lines.push('本来就没在共享（没有 serve.json）：什么都不用做。')
+  } else {
+    lines.push(`已退出共享：发现文件${removed ? '删掉了' : '删不掉（权限？）'}，之后写库由本进程直连负责。`)
+    lines.push(`  被摘掉的写者：pid ${info.pid}（${info.url ?? info.socketPath}）—— 服务本身没被停，别人还能用。`)
+  }
+  if (pending > 0) {
+    lines.push('')
+    lines.push(`还有 ${pending} 条待补交（${path.join(dataDir, client.PENDING_FILE)}）。`)
+    lines.push('  直连模式下它们不会自动写进去（怕和服务的队列打架）。两条路：')
+    lines.push('  1. 先 `macro-memory serve` + `macro-memory attach` 把队列交上去，再 detach；')
+    lines.push('  2. 确认这几条不重要，直接删掉那个文件。')
+  }
+  out(args.json === true ? JSON.stringify({ removed, had: info ? { pid: info.pid, url: info.url } : null, pending }) : lines.join('\n'))
+  process.exit(0)
+}
+
+/** `share`：只读地看共享层现在什么样。 */
+async function cmdShare(args) {
+  const { dataDir, client } = await shareLite(args)
+  const info = client.readServeInfo(dataDir)
+  const found = await client.discover(dataDir)
+  const pending = client.pendingCount(dataDir)
+  const mode = found.mode === 'stale' ? 'readonly' : found.mode
+  const lines = []
+  lines.push('macro-memory share')
+  lines.push(`  数据目录：  ${dataDir}`)
+  lines.push(`  模式：      ${mode} —— ${client.modeNote(mode)}`)
+  lines.push(`  发现文件：  ${client.serveFilePath(dataDir)}${info ? '' : '（不存在）'}`)
+  if (info) {
+    lines.push(`  写者：      pid ${info.pid}  ${info.url ?? info.socketPath}`)
+    if (found.stats) {
+      const s = found.stats
+      lines.push(`  已服务：    ${s.calls} 次调用 / ${s.writes} 次写 / 去重 ${s.dedup} 次`)
+      lines.push(`  队列：      现在 ${s.queue} 条，历史峰值 ${s.maxQueue} 条`)
+      lines.push(`  连接过的 agent：${(s.agents ?? []).length === 0 ? '（还没有）' : s.agents.map((a) => `${a.agent}×${a.n}`).join('、')}`)
+      lines.push(`  运行时长：  ${Math.round((s.uptimeMs ?? 0) / 1000)} 秒（版本 ${s.version}）`)
+    }
+  }
+  lines.push(`  待补交：    ${pending} 条${pending > 0 ? `（${path.join(dataDir, client.PENDING_FILE)}）` : ''}`)
+  if (mode === 'standalone') {
+    lines.push('')
+    lines.push('直连模式：功能一条不少，只是没有一个统一的写队列。要共享就 macro-memory serve。')
+  }
+  out(args.json === true ? JSON.stringify({ mode, dataDir, info: info ? { pid: info.pid, url: info.url, startedAt: info.startedAt } : null, stats: found.stats ?? null, pending, reason: found.reason ?? null }, null, 2) : lines.join('\n'))
+  process.exit(mode === 'readonly' ? 1 : 0)
 }
 
 /**
@@ -490,6 +655,14 @@ async function main() {
       return cmdUninstall(args)
     case 'migrate':
       return cmdMigrate(args)
+    case 'serve':
+      return cmdServe(args)
+    case 'attach':
+      return cmdAttach(args)
+    case 'detach':
+      return cmdDetach(args)
+    case 'share':
+      return cmdShare(args)
     case 'doctor':
       return cmdDoctor(args)
     case 'stats':
