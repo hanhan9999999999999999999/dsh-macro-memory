@@ -14655,3 +14655,29 @@ function id8(id) { return String(id).slice(0, 8) }
 **判据**：`check-market` 48 条 ALL PASS（含「仓库根的 README.md 存在（详情页读它）」「镜像与主索引钉同一 commit」）、`check-all` 68 支 / 4,639 条不变、`doctor` 三树 ALL PASS（公开 README 14,692 B、提到 0.7.1、引用图 4 张全在）。
 
 **踩坑**：`--update-baselines` 不许与「正在改文件」并行——这一轮改了市场索引的那一刻，check-all 正好跑到 `check-market` 那一支，于是 verify 少 2 条（MT068 连带）、doctor 记成 160；等文件不动了干净重跑才收敛回 68 支 / 4,639 条。
+
+### 9.278 0.8.0：把记忆从「DSH 的器官」变成「一个能自己站住的库」
+
+**病根**：到 0.7.1，这套东西只有一条进路——DSH 宿主。引擎挂在 cordis 的 `ctx.tools` / `ctx.systemPrompt` / `ctx.get('settings')` 上，离开宿主就什么都注册不了；于是同一台机器上换到 Codex / Claude Code / Cursor，那份 `memory.db` 就只是一堆没人读的字节。0.8.0 做的是**把装配层剥出来**，让同一套引擎能被任何宿主挂上；记忆的位置、schema、七层语义、四道闸、注入文案一个字不改。
+
+**改动**（`vendor/` 两个引擎逐字未动）：
+
+1. `lib/core/engine.js`（239 行）：`createMacroEngine({dataDir,projectDir,homeDir,meow,nebula,macro,wait,trust})` → `{name,dataDir,projectDir,homeDir,tools,ready,def,call,injection,fullGuide,captured,stats,close,trustState,trust,trustedList}`。`makeExec({cwd,sessionId,agentId,homeDir})` 造出 `exec.agent.session.header.cwd`——与 `lib/macro/dreamledger.js:19 workspaceOfExec()`、`vendor/meow-memory/lib/index.js:7218 workspaceOf()` 取法完全一致，所以同一个工作区在两侧算出同一个库 key。`call()` 前置信任门：未信任返回 `{text, value:null, refused:true}`，不抛。
+2. `lib/core/mini-host.js`：最小 cordis 形状（`ctx.tools.register` / `ctx.systemPrompt.section|context` / `ctx.get|set|provide|on|once|before|after|effect` / `ctx.inject(deps,cb)`），外加三个服务实现——`settings`（`register(ns,schema,{base})` 返回 `{get,set,onChange,watch}`，**`watch` 才是 meow 真正调用的名字**）、`commands`（收下 `/dream`、`/meow-trust` 定义但不执行）、`webServer`（收 `register(route)`、`listening:false,port:0`，**不监听任何端口**）。后两个不做会白白等 20 秒：`vendor/meow-memory/lib/index.js:12427-12431` 的 `tryRegisterDreamRoutes(attempt)` 每 1 秒重试、最多 20 次。
+3. `lib/core/paths.js`：`defaultDataDir()` 三分支（Windows `%APPDATA%\macro-memory` / mac `~/Library/Application Support/macro-memory` / linux `$XDG_DATA_HOME/macro-memory`，`MACRO_MEMORY_HOME` 最优先）+ `detectHomeDir()`（见 12.1 节「库位置」）。平台判断只经 `lib/macro/platform.js` 的 `currentPlatform()`（0.8.0 新增，全仓唯一问 `process.platform` 的出口），因为 `probe-platform` 的 P8 会咬。
+4. `lib/core/trust.js`：逐字节复刻 meow #64 的信任表（`<activeHomeDir>/trusted-workspaces/<sha256(规范化路径)>.json`），`ensureTrust({policy})` 三档 `auto`/`always`/`never`。效果是 core 信任过的目录，DSH 的 `/meow-trust` 立刻也认，反之亦然。
+5. `lib/core/config.js`：`config.json` 的读写（`CONFIG_VERSION=1`、`sortKeys` 稳定键序、tmp+rename 原子写、末尾换行）。
+6. `lib/mcp/server.js`（约 250 行，零依赖）：手写 JSON-RPC stdio，协议版本 `2025-06-18` / `2025-03-26` / `2024-11-05`；`initialize` 把 L0 手册塞进 `instructions`（客户端不用自己拼提示词）、`tools/list` 从 `t.parameters` 出 `inputSchema`、`tools/call` 把工具抛错与 `refused` 都包成 `isError`；未知方法 `-32601`，坏 JSON `-32700` 且不断连接；**stdout 只出协议报文**（日志全走 stderr）。
+7. `bin/macro-memory.mjs`（约 390 行）：子命令 `mcp / init / trust / remember / search / read / project / injection / doctor / stats`；`cwdOf()` 认 `--cwd` 与 `MACRO_MEMORY_WORKSPACE`（MCP 客户端拉起的子进程 cwd 常是宿主目录）；`doctor` 一次把版本、数据目录、工作区、库目录、全局库、信任、两个引擎就绪、子工具数、工具面、L0 字符数全念出来，有问题逐条列并 exit 1。
+8. `package.json` 进 0.8.0 形态：`bin`、`exports` 加 `./core` `./mcp` `./cli`、`files` 首项 `bin`、scripts 加 `probe:core` / `mcp` / `doctor`、keywords 加 mcp / model-context-protocol / agent-memory / codex / claude-code / universal。engines 仍是 `>=24.0.0`（meow 顶部 `import { DatabaseSync } from "node:sqlite"`）。
+9. 门面：`README.md` 新增「一份记忆，任意 agent 都能用（0.8.0）」整节（三种接法表、`mcpServers` 片段、信任门、`doctor` 自证样例、边界声明）；`docs/CHANGELOG.md` 顶部 0.8.0 里程碑；`docs/PLAN-UNIVERSAL.md` 补 12.1/12.2/12.3 三节把实测结论钉住。
+10. 自检新支 `tools/probe-core.mjs`（24 条）：C0 七个文件在位 / C8 dataDir 三分支 / C10 全局库同源三态 / C1 装配就绪（ready 双 true、`captured 17`、8 个 `memory_*`）/ C2 remember→search→read 闭环 / C3 库在 `<ws>/.dsh-meow/memory.db` 且 dataDir 无 `.db` / C4 陌生库拒绝写且 trust 后不重启就能写 / C5 L0 ≤1,300 字符 / C6 MCP 四报文 / C7 CLI `--help` / C9 关掉之后不再静默成功。
+
+**判据**：`probe-core` 24 PASS；`probe-platform` 23/23（P8 新增「问平台只许在 platform.js」、P21 版本三处一致）；`verify.mjs` ALL PASS（`文档 4660 / 实测 4660`，本支 2,026）；`docs/EVAL-CLAIMS.md` 的健康基线行改成「69 支 / **4,660 断言**」——MT068 读的是这一行，不是 README。实测读数：装配 258 ms、`captured 17`（nebula 9 + meow 8）、remember 102 ms、检索冷 3,354 ms / 热 58 / 32 ms / 无关词 51 ms、L0 1,266 字符、库 102,400 B。
+
+**踩坑**（四条，都花了时间才认出来）：
+
+1. **meow 的 `apply` 是 async**。`createMacroEngine()` 返回时工具还没注册，`bridge.has('memory_remember')` 是 false；尾部必须 `await bridge.awaitTool('memory_remember', 5000)`。更阴的是 `Meow.activeHomeDir()` 也在这之后才切到新 homeDir——原来写成装配那一刻的常量，导致 core 把信任 marker 写进旧表、meow 读新表，于是「明明 trust 过还是报 #64」。改成 `const homeNow = () => Meow.activeHomeDir() ?? ''`，所有用到的地方调用时取值。
+2. **`close()` 之后 `def.execute` 照样能跑**（bridge 的 Map 还在），C9 实测「关了还在返回检索结果」。加 `let closed`，`call()` 第一行拦，抛「引擎已关闭，不再提供服务」；判据写成「抛错 或 明说不可用」二者皆算健康——要防的是**静默成功**。
+3. **指针文件带 BOM 就静默失效**。`<DSH_HOME>/storages/meow-memory-home.json` 被 PowerShell 的 `Set-Content -Encoding UTF8` 写进 BOM 后，meow 的 `JSON.parse` 抛错、`readHomePointer()` catch 成 `undefined`，`activeHomeDir()` 安静地退回 `~/.dsh-meow`——文件看着是对的，库却换了地方。改这个指针只用 node 写无 BOM。
+4. **自检换 `homeDir` 会改写真实指针**。meow 的 `switchHomeDir()` 在目标目录为空时会 copy/rename 旧库过去并写指针；`probe-core` 用临时 home 就属于这种，于是一次自检把宿主的全局库指针改到了 `E:\Temp\macro-core-XXXX\home`（temp 一删宿主就找不到库）。修法：探针开头 `process.env.DSH_HOME = join(tmp,'dsh-home')`，指针落在 temp 内随它消失。另外探针必须传 `meow:{autoMigrate:false}`，否则 meow 会把真实全局库整份复制到临时目录（warn 里会写「自 … 复制 19 项」）。

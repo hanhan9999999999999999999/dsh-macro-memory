@@ -11810,10 +11810,10 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       pkg030.repository?.url ?? '(缺 repository)',
     )
     check(
-      'HZ16 npm 包只发运行面：files 白名单只放运行面 + 门面图 + 单篇文档（docs/*.md），verify.mjs 与 tools/ 不进包',
+      'HZ16 npm 包只发运行面：files 白名单只放运行面（含 0.8.0 起的 bin/ CLI）+ 门面图 + 单篇文档（docs/*.md），verify.mjs 与 tools/ 不进包',
       JSON.stringify(
         pkg030.files.filter((f) => f !== 'docs/images' && !/^docs\/[A-Za-z0-9._-]+\.md$/.test(f)),
-      ) === JSON.stringify(['lib', 'vendor', 'cordis.patch.yml', 'README.md']) &&
+      ) === JSON.stringify(['bin', 'lib', 'vendor', 'cordis.patch.yml', 'README.md']) &&
         !pkg030.files.some((f) => f === 'tools' || f === 'verify.mjs' || f === 'docs') &&
         pkg030.dsh?.bundle?.patch === './cordis.patch.yml' &&
         pkg030.dsh?.client?.platform === 'web',

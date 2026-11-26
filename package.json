@@ -1,8 +1,9 @@
 {
   "name": "dsh-macro-memory",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": false,
-  "description": "宏观记忆调控插件：以 meow-memory 的记忆库为主库、dsh-memory-nebula 的星图为索引，融合成一套 8 个 memory_* 统一工具 + 一段最小注入；两个原插件退化为引擎，工具面与注入面由本插件统一接管并互相联动。",
+  "private": false,
+  "description": "宏观记忆调控：以 meow-memory 的记忆库为主库、dsh-memory-nebula 的星图为索引，融合成一套 8 个 memory_* 统一工具 + 一段最小注入。0.8.0 起同一份库可直接给 Codex / Claude Code / Cursor 等任意 MCP agent 用——装 DSH 是体验最好的路，但不再是唯一的路。",
   "type": "module",
   "repository": {
     "type": "git",
@@ -13,13 +14,20 @@
     "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory/issues"
   },
   "main": "lib/index.js",
+  "bin": {
+    "macro-memory": "./bin/macro-memory.mjs"
+  },
   "exports": {
     ".": "./lib/index.js",
+    "./core": "./lib/core/engine.js",
+    "./mcp": "./lib/mcp/server.js",
+    "./cli": "./bin/macro-memory.mjs",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
+    "bin",
     "lib",
     "vendor",
     "docs/images",
@@ -31,7 +39,10 @@
   "scripts": {
     "build:client": "node build.mjs",
     "verify": "node verify.mjs",
-    "probe": "node tools/probe-fusion.mjs"
+    "probe": "node tools/probe-fusion.mjs",
+    "probe:core": "node tools/probe-core.mjs",
+    "mcp": "node bin/macro-memory.mjs mcp",
+    "doctor": "node bin/macro-memory.mjs doctor"
   },
   "license": "MIT",
   "dsh": {
@@ -54,6 +65,12 @@
     "meow-memory",
     "memory-nebula",
     "fusion",
-    "unified-tools"
+    "unified-tools",
+    "mcp",
+    "model-context-protocol",
+    "agent-memory",
+    "codex",
+    "claude-code",
+    "universal"
   ]
 }

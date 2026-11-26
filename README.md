@@ -124,6 +124,53 @@ memory_update({ id: '0mww…', patch: [{ find: '600 秒', replace: '十分钟' }
 
 ---
 
+## 一份记忆，任意 agent 都能用（0.8.0）
+
+到 0.7.x 为止，这套东西长在 DSH 宿主上：换到 Codex、Claude Code、Cursor，同一台机器上那份 `memory.db` 就只是一堆没人读的字节。0.8.0 把**引擎装配**从宿主里剥了出来，于是同一套工具、同一段注入、同一张星图，可以给任意 agent 用——**库还是那一份，位置一个字节没挪**：
+
+| 接法 | 一句话 | 谁适合 |
+| --- | --- | --- |
+| **DSH 插件** | 市场装 `macro-memory`，重启即生效 | 用 DSH 的人——面板、`/dream`、`/meow-trust` 都在，体验最全 |
+| **MCP 服务器** | `npx -y macro-memory mcp` | Codex / Claude Code / Cursor 等一切支持 MCP 的宿主 |
+| **CLI** | `npx -y macro-memory search "…"` | 脚本、CI、不想开 agent 只想查一眼的时候 |
+
+挂进任何 MCP 宿主的配置就三行：
+
+```json
+{
+  "mcpServers": {
+    "macro-memory": {
+      "command": "npx",
+      "args": ["-y", "macro-memory", "mcp"],
+      "env": { "MACRO_MEMORY_WORKSPACE": "/你的/项目目录" }
+    }
+  }
+}
+```
+
+接上之后发生的事：`initialize` 阶段就把那段 1,266 字符的 L0 手册塞进 `instructions`（客户端不用自己拼提示词），`tools/list` 给出八个 `memory_*` 及完整 schema，`tools/call` 走同一套四道闸。**在 DSH 里记的东西，Codex 当场就查得到**——因为两边算的是同一个路径：workspace 库 `<工作区>/.dsh-meow/memory.db`、全局库 `~/.dsh-meow`（装了 DSH 就是 `$DSH_HOME/storages/meow-memory`）。平台数据目录（Windows `%APPDATA%\macro-memory`、mac `~/Library/Application Support/macro-memory`、linux `$XDG_DATA_HOME/macro-memory`）只放配置、注入块与日志，**不放记忆正文**。
+
+**信任门也搬到了命令行这一侧。** meow 有个 #64 的保护：工作区里躺着一个不是本机创建的记忆库时（clone 了别人的仓库），默认关掉读写，免得被塞一嘴别人的「记忆」。DSH 里的解法是手打 `/meow-trust`；MCP / CLI 没有斜杠命令，所以 core 复刻了**完全同一张表**（`<全局目录>/trusted-workspaces/<sha256(规范化路径)>.json`）。放进来的库（目录里有不是本插件产生的文件）一律不自动信任，只回一段能直接粘的命令：
+
+```bash
+npx -y macro-memory trust "/你的/项目目录"
+```
+
+信任过的目录，DSH 那边立刻也认，反之亦然——**不需要两边各点一次**。
+
+不开 agent 也能自证：
+
+```bash
+npx -y macro-memory doctor
+# 版本 0.8.0 / 数据目录 … / 工作区 … / 库 … / 信任：已信任
+# 引擎 meow=就绪 nebula=就绪 / 子工具 17 / 注入 L0 1266 字符
+# 结果：一切正常
+```
+
+边界说在前面：0.8.0 交付的是「同一个引擎能被别的 agent 用起来」这一层地基。计划里的**三档模式**（`standalone` / `shared` / `readonly`，多 agent 抢同一个库时切到单写者服务）、每条记忆带 `owner` / `scope` / `visibility` 的多人共享、`macro-memory serve` 写队列、本地 UI 七页、以及把包拆成 `macro-memory` + `dsh-macro-memory` 两件——**这一版都还没做**，方案全文在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md)。
+
+---
+
 ## 安装（三分钟）
 
 1. 在 DSH 市场装 `macro-memory`（或 `npm i dsh-macro-memory`），重启 DSH 生效。
@@ -181,7 +228,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.6.0 | 32 | 3,536 |
 | 0.6.73 | 67 | 4,616 |
 | 0.7.0 | 68 | 4,639 |
-| **0.7.1** | **68** | **4,639** |
+| **0.8.0** | **69** | **4,663** |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -219,8 +266,8 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 
 | 项 | 现在 |
 | --- | --- |
-| 版本 | 0.7.1 |
-| 自证规模 | **68 支自检 / 4,639 条可执行断言** |
+| 版本 | 0.8.0 |
+| 自证规模 | **69 支自检 / 4,663 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 14,494 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |
@@ -235,7 +282,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 ## 参与开发
 
 ```bash
-node tools/check-all.mjs      # 68 支自检，全绿才算改完
+node tools/check-all.mjs      # 69 支自检，全绿才算改完
 node tools/doctor.mjs         # 交付物体检：版本、字节数、图、市场索引
 node tools/check-market.mjs   # 市场索引能不能被宿主接受
 ```

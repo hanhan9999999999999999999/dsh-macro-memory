@@ -111,6 +111,7 @@ const STEPS = [
   ['tools/probe-drops.mjs', '落选名单（0.6.72）：四道闸（literal / floor / repeat / cap）各真的记一笔、成功注入的那一轮也点名落选且不在 picks 里、drops 元素形状与「永远是数组」、字数上限挤掉记 cap 而不记 floor、同话题抑制点名被压的条、格式只由 dropsTail 一处定义且 hook 沿用、日志三种写法各归各位（有值 / `-` / 字段缺席，缺席 ≠ 空）、坏段不炸、面板摘要（轮数 / 条次 / 去重 / 原因分布）、按次数排序并报「另有 N 条」、四种原因四种对策各归各位、明细行落选与 picks 分得清、整轮被挡时明细点名、收尾两句（闸只拦注入 + id 只有 8 位）、老日志与「没人落选」分开说、limit=0 统计照算、面板纯读'],
   ['tools/probe-margin.mjs', '陪跑线（0.6.73）：陪跑被砍且记成第五种落选原因 margin、第一名永远保留、并列第一不被误砍、关掉（0）三条照旧全进、开到 1 只留并列第一、被砍的条目不算「已注入」（不 bumpHit、不写 seen，下一轮能当第一名回来）、回执带 budget.margin、八处配置面（常量 / CONFIG_DEFAULTS / DEFAULT_OPTS / zod / reqNum / resolveConfig / 热生效白名单 / pre-step 透传）一处不落、日志 margin= 在位、面板有中文出口名与对策句、分布与点名行里看得见、明细行念得出「陪跑」、面板纯读、设置面出厂值与三语文案齐全'],
   ['tools/probe-platform.mjs', '平台账（0.7.0）：三平台宏目录与 DSH_HOME 优先级（有值用值 / 空白当没设 / 不展开 ~）、pathFor 分隔符、运行面没有盘符字面量与 Windows-only 环境变量、process.platform 只出自 platform.js、设置页 placeholder 无盘符、snapshot 惰性取 node:sqlite 且本机能取到、复原提示按平台给命令、四个自检工具各有平台分支、跨平台复原脚本在位、文档（MAC.md / README / CHANGELOG）与版本三处一致、坏样本必红的好样本必绿'],
+  ['tools/probe-core.mjs', 'core 层（0.8.0 全 agent 适配）：不依赖 DSH 也能跑——装配就绪 17 子工具 / remember→search→read 闭环 / 库落在 <ws>/.dsh-meow 与 DSH 同一文件 / 陌生库拒绝写且 trust 后能写 / L0 ≤1,300 字符 / MCP 握手四报文 / CLI --help / dataDir 三分支 / 关掉后不再静默成功'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]
 
