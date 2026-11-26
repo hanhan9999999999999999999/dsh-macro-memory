@@ -186,7 +186,7 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 
 ### 0.9 起：不只是「能用了」，还得「用得踏实」
 
-一份库给多个 agent 用，最先出事的从来不是「跑不起来」，而是「跑起来之后动了不该动的东西」。0.9 补的就是这八处：
+一份库给多个 agent 用，最先出事的从来不是「跑不起来」，而是「跑起来之后动了不该动的东西」。0.9 补的就是这九处：
 
 1. **往你的文件里写东西，得能还回去。** `init --agents` 把那段 L0 常驻注入写进 `AGENTS.md`（`CLAUDE.md`、`.cursorrules` 同一条路；`--file` 可多次出现或逗号分隔），`refresh` 原地刷新，`uninstall` 摘干净。判据不是「写进去了」，是**卸载后逐字节还原**——连你原文结尾那几个空行都算数。为此「当初插了几个换行」记在块标记里（`<!-- macro-memory:begin sep="2" v="1" -->`），而不是记在我们自己的某个账本上：卸载可能来自另一个进程、另一个工作区、另一台机器，只有文件自己带着「我是怎么被放进去的」才靠得住。坏块（只有 begin 没有 end）一律拒改，一个文件都不动——比自动猜边界、顺手删掉你半页笔记安全。
 2. **打开别人写的库，不许猜。** 库的 schema 比适配层新（说明被更新版本写过）时，读写一律停，回执说清谁比谁新、为什么停、两条真出路（升级 `dsh-macro-memory`，或确认后跑 `migrate`）。版本号用 SQLite 原生的 `PRAGMA user_version`——meow 自己从不碰它，所以不新建元表、不改表结构，老库「看起来没被改过」；写版本号只发生在你显式跑 `migrate` 的那一刻，且先 `vacuumInto` 出一份一致副本。
@@ -203,7 +203,9 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 
 8. **接得上，才算适配。** 前面七条都是「我们这边做对了」，MCP 这一面得反过来证：**别的宿主接进来，真的读写同一份库**。`probe-mcp` 11 条不造假：真起一个子进程跑 `macro-memory mcp`，用 stdio 发 JSON-RPC——`initialize` 回来的名字与版本跟根 `package.json` 同一个号，`instructions` 就是那段 1,266 字符的 L0 正文（宿主不用自己拼提示词），`tools/list` 的 8 个 schema 与引擎 IR 逐字段一致（不是另抄一份）；接着 `tools/call memory_remember` 写一条，**另一个引擎实例当场检索得到**，库里记的 owner 是客户端自报的名字。另外还有三条防「看起来能用」的：stdout 上只准出现 JSON-RPC 报文（一行杂音就够客户端把连接判死）、坏报文回 -32700 / 未知方法 -32601 / 未知工具 -32602 且列出可选项、工具自己出错走 `result.isError` 而不炸协议层。
 
-八条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）。
+9. **一个文件，双击就跑。** 上面八条都假设机器上有 Node、有 npm、能联网。`tools/build-sea.mjs` 把 `package.json` + `bin/` + `lib/` + `vendor/` 打进一个自定义容器（`MMB1`），交给 Node 的 SEA 塞进一份 node 可执行文件：产物是一个 92 MB 的 `macro-memory-win-x64.exe`，没有 npm、没有先装依赖，`--version` 报版本、`mcp` 直接能被 Codex / Claude Code 接上。**打进去的就是仓库里那份**——`probe-sea` 把包解开，185 个文件逐个与源比 sha256，一个字节都没被改写；包里也不许有 `tools/`、`docs/`，自检家底不该发给用户。CJS 引导器（`tools/sea-entry.cjs`）运行时把包解到临时目录（按包哈希分目录，同一版只解一次），并**抹平 SEA 的 argv 怪癖**（那里 `argv[1]` 就是 exe 自己，直接 `slice(2)` 会吃掉第一个参数）。mac 的签名与公证是单独一步 `tools/sign-mac.sh`（`codesign --options runtime` → 自验 → `notarytool submit --wait` → `stapler staple` → `spctl -a -vv`），因为那一步只能在 mac 上跑、要 Apple 开发者账号——**没有账号照样能跑，只是别人第一次打开要右键「打开」**。判据只验到「脚本四步齐全」这一层，`spctl` 通不通只有真机能答。
+
+九条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）。
 
 不开 agent 也能自证：
 
@@ -214,7 +216,7 @@ npx -y macro-memory doctor
 # 结果：一切正常
 ```
 
-边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、以及 MCP 面的真机自证，**每一件都有一支自检盯着**（见上面八条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、单文件二进制与 mac 公证、Homebrew tap、CI 矩阵——这五件属于 P2-4 之后，这一版没做就是没做。
+边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、MCP 面的真机自证、以及能双击跑的单文件二进制，**每一件都有一支自检盯着**（见上面九条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、mac 产物的真机签名与公证（脚本齐了，缺 Apple 开发者账号）、Homebrew tap、CI 矩阵——这五件属于 P2-4 之后，这一版没做就是没做。
 
 **0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包当时不存在，于是报 `'macro-memory' is not recognized`；0.8.1 的正确写法是 `npx -y -p dsh-macro-memory macro-memory mcp`（0.9 起通用包 `macro-memory` 自己上架，直接 `npx -y macro-memory mcp` 即可，本页其余命令已按 0.9 的写法）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/schemastery` + `vendor/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
 
@@ -279,7 +281,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
 | **0.8.1** | **69** | **4,671** |
-| 0.9.0（开发中） | 76 | 4,761 |
+| 0.9.0（开发中） | 77 | 4,781 |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -319,7 +321,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.9.0（开发中；最新发布 0.8.1） |
-| 自证规模 | **76 支自检 / 4,761 条可执行断言** |
+| 自证规模 | **77 支自检 / 4,781 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 15,153 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |
@@ -334,7 +336,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 ## 参与开发
 
 ```bash
-node tools/check-all.mjs      # 76 支自检，全绿才算改完
+node tools/check-all.mjs      # 77 支自检，全绿才算改完
 node tools/doctor.mjs         # 交付物体检：版本、字节数、图、市场索引
 node tools/check-market.mjs   # 市场索引能不能被宿主接受
 ```

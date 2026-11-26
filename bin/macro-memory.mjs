@@ -70,6 +70,7 @@ const HELP = `macro-memory —— 一套记忆，所有 agent
   --file <路径>       改哪个文件（默认 AGENTS.md；可给多次或逗号分隔）
   --port <端口>       serve 监听端口（默认 0 = 系统挑一个，写进 serve.json）
   --agent <名字>      attach 时自报的名字（同一份库靠它区分谁写的）
+  --version           只打版本号就退出（脚本里判断装的是哪一版）
   -h, --help          看这个
 
 例子：
@@ -673,6 +674,10 @@ async function cmdUi(args) {
  */
 async function main() {
   const args = parseArgv(process.argv.slice(2))
+  if (args.version === true || args._[0] === 'version') {
+    out(readVersion())
+    process.exit(0)
+  }
   if (args.help === true || args._.length === 0) {
     out(HELP)
     process.exit(args.help === true ? 0 : 1)

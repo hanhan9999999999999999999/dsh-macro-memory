@@ -118,6 +118,7 @@ const STEPS = [
   ['tools/probe-ui.mjs', '管理界面（PLAN §10 / P2-1）：只听 127.0.0.1、令牌不对连首页都不给、首屏 ≤200 KB、七页都在、分布账与注入体积一起给出、注入预览与引擎同一份字、界面改一条宿主下次检索立刻读到、自己起的服务不写发现文件、探到现成 serve 就借且关界面不停别人的服务、关掉后端口不再接受连接、空库只报空账不建目录'],
   ['tools/probe-mcp.mjs', 'MCP 面（PLAN §11 / P0-2、P2-3）：握手自报的名字与版本跟根 package.json 同一个号、instructions 就是引擎那份注入正文、8 个工具 schema 与引擎 IR 逐字段一致、MCP 写一条另一个引擎实例当场检索得到、owner 是客户端自报的名字、stdout 只有协议报文、坏报文回 -32700 与未知方法 -32601 与未知工具 -32602 且带可选清单、工具自己出错走 result.isError 不炸协议、ping 与 resources/prompts 明确回空、关 stdin 后进程自己退 0、工作区三条优先级各认一次'],
   ['tools/probe-dual.mjs', '双包（PLAN §11.1、§11.2 / P2-2）：core 面把装配/归属/共享三组都摆到门口、MCP 入口自报的版本与根 package.json 一致、通用包 exports 六条且目标文件都在、dsh 字段只在 DSH 包那一边、两包的 lib/bin/vendor 逐字节同源、版本映射由脚本灌而不是手填、装上去 core/mcp/ui 三个子路径 import 得了解析、两份 tarball 都出得来且不带自检家底、构建产物不许落在仓库里、脚本里没有 publish 调用'],
+  ['tools/probe-sea.mjs', '单文件二进制（PLAN §11.4 / P2-4）：构建默认不写盘且三条防呆都在、脚本里没有 publish、真打一个产物（记忆包 → SEA blob → 注入）、记忆包 MMB1 头与 185 个文件逐字节对得上仓库、包里没有 tools 与 docs、SEA 包盖住整个记忆包、config 指向 CJS 引导器、产物自己报得出正确版本、产物当 MCP 服务器握得上手且工具面 8 个、单文件形态下 stdout 零噪声、关 stdin 自己退 0、SHA256SUMS 与产物一致、mac 签名公证四步齐全且凭据不写死、引导器从自身取包并校验包头、引导器抹平 SEA 的 argv、解包按包哈希分目录'],
   ['tools/probe-share.mjs', '归属账与隔离（多 agent 共用一个库，PLAN P1-2 / U6）：A 写的 B 读到带 [agent:A]、自己搜到自己带 [self]、改内容不动主人只换 last_editor、没有归属记录的老条目不乱标、scope 三层默认值、正文里的同形 8 位串不误标、别人的 private 搜不到也读不到（明说「不给你看」而不是「查不到」）、owner 为空的老条目不被误藏、归属表坏掉记忆照旧写入'],
   ['tools/doctor.mjs', '体检：两棵树同步 + 加载面 + 注入长度 + 队列 + 备份'],
 ]

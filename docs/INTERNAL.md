@@ -14976,3 +14976,41 @@ PLAN §11.1 的要求只有一句「两者同一份 core，不 fork 代码；发
 1. **`engine.injection({maxChars})` 返回的是字符串，不是 `{text}`。** 第一版探针写 `eng.injection(...).text` → `undefined`，M2 直接红，而红的样子像「子进程的 instructions 不对」——差点去改 `server.js`（那边是对的）。教训：判据红的时候，先确认自己取的那一侧字段取对了。
 2. **`spawn` 的 `cwd` 必须是工作区。** `cmdMcp` 没把 `--cwd` 传给引擎，引擎的默认工作区就是 `process.cwd()`；探针里 `--data-dir` / `--home-dir` 走参数，工作区只能靠 spawn 的 cwd 给。这也顺带说明 `MACRO_MEMORY_WORKSPACE` 为什么只对 CLI 有用、对 `mcp` 子进程没用——那一条路留给「宿主启动子进程时 cwd 不在项目里」的场景，M11 单独验它的优先级就好。
 3. **探针结尾 `rmSync(tmp)` 要 try/catch 包住。** Windows 上偶尔 EPERM（句柄还没放完），那是收尾噪音，不该把 11 条判据的全绿变成一支红。
+
+### 9.289 0.9.0（开发中）：单文件二进制——「一个文件，双击就跑」这七个字得有人拆
+
+P2-4。前面几条已经把「任何人装得上」做完了：npm 两个名字、MCP 真机自证。这一条补的是最后一段路——**机器上没有 Node、没有 npm、也没有网**。产物是一个 92 MB 的可执行文件，`--version` 报版本，`mcp` 直接能被接上。
+
+| 决定 | 选了什么 | 为什么 |
+| --- | --- | --- |
+| 怎么把运行时带进产物 | Node 的 SEA（`node --experimental-sea-config`）+ `postject` 注入 | 官方路线。Tauri/pkg/nexe 各自带一套打包器，而我们的代码是纯 JS + 两个 vendor 引擎，没必要为了「打成一个文件」引进第二套构建体系 |
+| 代码怎么进产物 | 自定义容器 `MMB1`：magic + 单行 manifest JSON + 各文件原样拼接 | SEA 内嵌主脚本不能 `import` 外部模块，但 `node:sea` 的 `getAsset()` 能带任意二进制。所以不做打包不做 tree-shaking，只做搬运——**打进去的就是仓库里那份**，`probe-sea` 逐字节比回来 |
+| 引导器用什么模块格式 | **CJS**（`tools/sea-entry.cjs`） | SEA 把内嵌主脚本按 CommonJS 加载。`.mjs` 主脚本在 Node 24.17 上报「Failed to load the ES module … set "type": "module"」，而单文件产物里没有外层 `package.json` 可以设 `type`。CJS + `await import()` 两种情况都成立 |
+| 解包到哪 | `os.tmpdir()/macro-memory-sea-<包 sha256 前 16 位>` | 按包哈希分目录 = 同一版只解一次、换版自然换目录、不覆盖别人的。比「每次解一遍」省 4 MB 写盘，比「解到 exe 旁边」不脏用户的目录 |
+| 谁做注入 | 构建期 `npx --yes postject@1.0.0-alpha.6`，**不进仓库依赖** | 注入是构建动作不是运行时依赖；pin 版本是为了可复现（不 pin 就是「今天打得出、明天打不出」） |
+| 产物放哪 | `--out` 指定的新目录，三条防呆跟 `build-dual` 同一套 | 与 `tools/build-dual.mjs` 一致：目录名要带 macro-memory、不许落在仓库里（`tools/sync-trees.mjs` 的 robocopy /E 会把产物同步进装机树，插件体积翻倍）、不删已有目录 |
+| mac 签名公证放哪 | 单独 `tools/sign-mac.sh`，不进构建脚本 | 只能在 mac 上跑、要 Apple 开发者账号、要等 Apple 几分钟。放进构建脚本等于「没有账号的人连 Windows 产物都打不出来」 |
+
+引导器做四件事，别的什么都不做：从自身取包 → 校验 `MMB1` 头 → 解到临时目录 → 抹平 `process.argv` 后 `import()` 真入口。
+
+判据 20 条（`tools/probe-sea.mjs`，其中 S2/S6/S7 是**真打真跑**）：
+
+- S1 构建默认不写盘（`--apply` 才写），三条防呆都在；S1b 脚本里没有 publish
+- S2 **真打一个产物**（记忆包 → SEA blob → 注入），读到 JSON 报告里 `ok === true`
+- S3 记忆包有 `MMB1` 头；S3b 包内 185 个文件**逐个与仓库源比 sha256**；S3c 包内版本 = 根版本
+- S4 包里没有 `tools/` / `docs/` / `node_modules/`
+- S5 blob 体积 ≥ 整个记忆包；S5b `sea-config.json` 指向 CJS 引导器、带上包、关掉实验期警告
+- S6 **产物自己报得出正确版本**（真 spawn，不是看文件大小）
+- S7 **产物当 MCP 服务器握得上手**（`initialize` 回 `macro-memory` + 根版本）；S7b 工具面 8 个；S7c stdout 零噪声；S7d 关 stdin 自己退 0
+- S8 `SHA256SUMS.txt` 与产物实际校验和一致
+- S9 `tools/sign-mac.sh` 五步齐全（签名 / 自验 / 送公证 / 钉票 / Gatekeeper 检查）；S9b 凭据不写死
+- S10 引导器取包并校验 `MMB1`；S10b 抹平 SEA 的 argv；S10c 按包哈希分目录解包
+
+四个坑，第四个最值钱：
+
+1. **SEA 的 ESM 主脚本加载不了。** 第一次产出的 exe 一跑就报 `Failed to load the ES module: …main.mjs. Make sure to set "type": "module"`。单文件产物里没有外层 `package.json` 可以设，所以引导器必须是 CJS。CJS 里没有顶层 `await`，用 `boot().catch(...)` 包着 `await import()`。
+2. **SEA 的 argv 里有两次 exe。** 实测 `ARGV ["…\\macro-memory.exe","…\\macro-memory.exe","--version"]`——`argv[1]` 是 exe 自己（不是脚本路径），所以 `slice(2)` 会把第一个真参数吃掉；而「直接 `splice(1, 0, entry)`」又把 exe 挤成了命令名，报「没有这个命令：E:\Temp\…\macro-memory.exe」。修法是先判断 `argv[1] === process.execPath` 再决定从哪切，然后整体重写 `process.argv`，不猜。
+3. **`bin/macro-memory.mjs` 原本没有 `--version`。** `--version` 被 `parseArgv` 解成 `{version:true, _: []}`，接着命中「没有命令就打 HELP 并 exit 1」。一个 CLI 二进制连版本都报不出来，第一步就把人劝退。补了 `--version` 分支（在 `_: []` 判定之前）与 HELP 里的一行。
+4. **自检必须真跑产物，不能只看「文件生成了」。** 这一条的价值在 S6/S7：产物 92 MB、`SHA256SUMS` 也对得上、包内 185 个文件逐字节一致——**这些全对的时候，产物仍然可能一跑就崩**（坑 1 就是这样：所有静态判据都绿，第一跑才暴露）。静态判据证「材料对」，只有真跑证「成立」。写判据时先问一句：这条判据如果绿了，能不能推出「用户拿到手能用」？
+
+文件：`tools/build-sea.mjs`（构建）、`tools/sea-entry.cjs`（引导器）、`tools/probe-sea.mjs`（20 条）、`tools/sign-mac.sh`（mac 签名公证）。`package.json` 加了 `sea` / `pack:sea` 两个 script。

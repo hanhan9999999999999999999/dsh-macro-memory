@@ -22,7 +22,16 @@
 > 8. **MCP 面真机自证 + 首句去 dsh 化 + 能力矩阵**（PLAN §15.2、§15.3 / P2-3）：前三刀都在证「自己这边做对了」，这一刀反过来证**别的宿主接进来真能读写同一份库**——新增 `tools/probe-mcp.mjs` 11 条，真起一个子进程跑 `macro-memory mcp`，用 stdio 发 JSON-RPC：`initialize` 回来的名字与版本跟根 `package.json` 同一个号；`instructions` 就是那段 L0 正文（1120 字符，宿主不用自己拼提示词）；`tools/list` 的 8 个 schema 与引擎 IR 逐字段一致；`tools/call memory_remember` 写一条，**另一个引擎实例当场检索得到**，库里记的 owner 是 `initialize` 里自报的客户端名；stdout 上只准出现 JSON-RPC 报文（一行杂音就够客户端判死连接）；坏报文回 `-32700`、未知方法 `-32601`、未知工具 `-32602` 且带可选清单；工具自己出错走 `result.isError` 而不炸协议层；`ping` / `resources/list` / `prompts/list` 明确回空不装死；关 stdin 后进程自己退 0；工作区三条优先级（`--cwd` > `MACRO_MEMORY_WORKSPACE` > cwd）各认一次。
 >
 > README 首句从「一个插件接管 DSH 的全部记忆」改成「**给任何 agent 的本地记忆层**」，DSH 降为支持列表里的一行；徽章全部换 npm 维度（包名比仓库名稳定）。新插一节 **「一张表看清适配到哪一步」**：宿主 × 8 个工具 / 常驻注入 / 本地面板 / 斜杠命令 / 生命周期 hooks，每格标 ✅（本机探针验过）/ ◐（同契约实现、本机没装那个宿主）/ ❌（宿主没这一面），并写明降级路（非 DSH 宿主的面板降级成 `macro-memory ui`，hooks 只能靠定时或手动 `memory_dream`）。这张表是「是否真的适配」的唯一对外证据。
->> 计数口径：`check-all` **76 支 / 4,761 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条）。
+>>
+> **9. 单文件二进制（PLAN §11.4 / P2-4）**：上面八条都假设机器上有 Node、有 npm、能联网。新增 `tools/build-sea.mjs`：把 `package.json` + `bin/` + `lib/` + `vendor/` 打进一个自定义容器（`MMB1`：magic + 单行 manifest JSON + 各文件原样拼接），交给 Node 的 SEA 塞进一份 node 可执行文件，产出 `macro-memory-win-x64.exe`（92 MB，其中 4.23 MB 是记忆包）。默认只体检，`--apply` 才写，三条防呆跟 `build-dual` 同一套（目录名要带 macro-memory / 不许落在仓库里 / 不删已有目录），**永不 publish**。注入走 `npx --yes postject@1.0.0-alpha.6`（构建期取，不进仓库依赖），`--target` 支持 win/mac/linux × x64/arm64，交叉打要给 `--node-bin`。
+>
+> 引导器 `tools/sea-entry.cjs` 是 **CJS**——SEA 把内嵌主脚本按 CommonJS 加载，`.mjs` 主脚本在 Node 24.17 上直接报「Failed to load the ES module」，而单文件产物里没有外层 `package.json` 可以设 `type`。它做四件事：从自身取包、校验 `MMB1` 头、解到临时目录（按包 sha256 前 16 位分目录，同一版只解一次）、**抹平 SEA 的 argv**（那里 `argv[1]` 就是 exe 自己，直接 `slice(2)` 会吃掉第一个参数）后 `import()` 真入口。顺带给 `bin/macro-memory.mjs` 补了 `--version`：一个 CLI 二进制连版本都报不出来，第一步就把人劝退。
+>
+> mac 的签名与公证单独一步 `tools/sign-mac.sh`：`codesign --force --options runtime --timestamp` → 自验 → `xcrun notarytool submit --wait` → `xcrun stapler staple` → `spctl -a -vv`。只能在 mac 上跑、要 Apple 开发者账号，凭据走 keychain profile 不写进脚本。**没有账号照样能跑，只是别人第一次打开要右键「打开」**。
+>
+> 新增 `tools/probe-sea.mjs` 20 条：构建默认不写盘且三条防呆都在、脚本里没有 publish、**真打一个产物**（打包 → blob → 注入）、记忆包 185 个文件逐个与源比 sha256、包里没有 `tools/` 与 `docs/`、SEA 包盖住整个记忆包、config 指向 CJS 引导器、**产物自己报得出正确版本**、**产物当 MCP 服务器握得上手且工具面 8 个**、单文件形态下 stdout 零噪声、关 stdin 自己退 0、`SHA256SUMS.txt` 与产物一致、mac 脚本四步齐全且凭据不写死、引导器取包校验包头 / 抹平 argv / 按哈希分目录解包。
+>
+> 计数口径：`check-all` **77 支 / 4,781 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条 + `probe-sea` 20 条）。（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条）。
 
 ---
 

@@ -46,7 +46,9 @@
     "pack:dual": "node tools/build-dual.mjs --apply --pack",
     "probe:core": "node tools/probe-core.mjs",
     "mcp": "node bin/macro-memory.mjs mcp",
-    "doctor": "node bin/macro-memory.mjs doctor"
+    "doctor": "node bin/macro-memory.mjs doctor",
+    "sea": "node tools/build-sea.mjs",
+    "pack:sea": "node tools/build-sea.mjs --apply"
   },
   "license": "MIT",
   "dsh": {
