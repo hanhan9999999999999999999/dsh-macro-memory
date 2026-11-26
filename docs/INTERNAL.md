@@ -14948,3 +14948,31 @@ PLAN §11.1 的要求只有一句「两者同一份 core，不 fork 代码；发
 4. **判据的字面会过期，实体不会。** `probe-core` 的 C12 原本写着「文档里不许出现 `npx -y macro-memory`」，理由是 0.8.0 时那个包名在 npm 上不存在。P2-2 之后 `macro-memory` **真的成了包名**，同一句话变成推荐写法——这条判据没坏，是它的**口径过期了**。改法是把它从字面黑名单升级成实体校验：npx 要装的包名必须 ∈ 本仓会发布的两个名字（根 `package.json` 的 name + 双包模板的 name），写了 `-p <包> <命令>` 还要验 `<命令>` 落在那个包的 `bin` 里。**判据要盯「这件事现在是否成立」，不要盯「当初那句话长什么样」。** 顺带记一笔操作事故：用 `findIndex(l => l.includes('C12 npx 口径'))` 定位段落时，命中了文件头注释里那句同样开头的说明，回溯找 `/**` 一路回到第 1 行，把整个文件头与 import 一起换掉了——好在 `git checkout --` 一秒还原。**教训：按关键词定位代码段落时，锚点要选该段独有的句子，并且加上「起点不许太靠前」的断言。**
 
 5. **「基线少了一条」先查 WARN，别先查代码。** 记基线时 doctor 记下 165 条（前值 166），我一度以为是「两棵树不同步时 FAIL 那一路少走一段」。真因在 doctor 6.2：`tools/` 下每个脚本都得在 `docs/INTERNAL.md` 里露过名（正则 `tools/<名字>.mjs`），而 `tools/build-dual.mjs` 在正文里只写了裸名 `build-dual.mjs` → 那条断言从 `pass('脚本都有文档出处')` 变成 `warn('脚本缺文档出处')`，而 `countPass` **只数 PASS 行** → 少一条。补上 `tools/build-dual.mjs` 出处之后 doctor 回 `ALL PASS` + 166 条，基线合计 4,750。**教训：断言数掉了一条，先看有没有 PASS 变成了 WARN；改数字之前先把这条找出来。**
+
+### 9.288 0.9.0（开发中）：MCP 面真机自证——「支持 MCP」这四个字得有人来拆
+
+文档上从 0.8 起就写着「接得上 Codex / Claude Code / Cursor」，但在此之前**没有任何一支探针起过一个真实的 MCP 客户端连接**：`lib/mcp/server.js` 写完（0.9 之前就写完，196 行手写 JSON-RPC）之后，判据只到「文件里有 `serveStdio`」这一层。P2-3 的验收里有一条「MCP 跑通」，缺的正是这件证据——「代码在」不等于「别人家用起来真的能读能写」。
+
+**做了什么**
+
+新增 `tools/probe-mcp.mjs`（11 条）。它真起一个子进程跑 `macro-memory mcp`，用 stdio 发 JSON-RPC，**不在进程内直接调 `serveStdio`**——那样 stdin/stdout 是假的，「stdout 有没有杂音」这条根本测不到，而杂音正是客户端把连接判死的直接原因。
+
+| 决定 | 选择 | 为什么 |
+| --- | --- | --- |
+| 怎么验 | 真子进程 + 真 stdio | 进程内调不行：`output` 换成数组之后，协议层「写 stdout 失败」这条错误路径永远走不到 |
+| 判据挑哪几条 | 真写 / 零杂音 / 三种错误码 | 这三条是别的宿主接进来会立刻遇到的；schema 是否一致、版本是否同号这类「静态对得上」反倒好办 |
+| 写进去的 owner 是谁 | `initialize` 里的 `clientInfo.name` | 收不到才退 `'mcp'`。归属宁可是粗的，也不要编一个具体名字 |
+| 首句改不改 | 改 | 「接 DSH 的插件」是 0.7 的事实；0.8 剥出引擎、0.9 有双包之后，第一句还那么写，后面八条都白写 |
+| 能力矩阵写多细 | 每格标 ✅ / ◐ / ❌ | ◐ = 同契约实现、本机没装那个宿主。**不把「按 MCP 规范应该可以」写成「已验证」** |
+
+**11 条判据**（`probe-mcp`）：M1 握手名字与版本跟根 `package.json` 同一个号、协议版本在支持列表里｜M2 `instructions` 就是引擎那份 L0 正文（1120 字符，与 `engine.injection({maxChars:1200})` 逐字节相同）｜M3 `tools/list` 8 个 `memory_*` 的 schema 与引擎 IR 逐字段一致｜M4 **MCP 写一条，另一个引擎实例当场检索得到**｜M5 库里记的 owner 是客户端自报的名字｜M6 **stdout 每一行都是 JSON-RPC 报文**（日志只走 stderr）｜M7 坏报文 `-32700` / 未知方法 `-32601` / 未知工具 `-32602` 且带可选清单｜M8 工具自己出错走 `result.isError`、JSON-RPC 层没有 `error`｜M9 `ping` / `resources/list` / `prompts/list` 明确回空不装死｜M10 关 stdin 后进程自己退 0｜M11 工作区三条优先级（`--cwd` > `MACRO_MEMORY_WORKSPACE` > cwd）各认一次。
+
+**README 首句与能力矩阵**（PLAN §15.2、§15.3）：首句改成「**给任何 agent 的本地记忆层**」，DSH 降为支持列表里的一行；徽章全部换 npm 维度（`macro-memory`，包名比仓库名稳定）。新插一节「一张表看清适配到哪一步」：7 个宿主 × 6 个面（8 个工具 / 常驻注入 / 本地面板 / 斜杠命令 / 生命周期 hooks / 证据），每格标 ✅（本机探针验过）/ ◐（同契约实现、本机没装那个宿主）/ ❌（宿主没这一面），降级路写在右列。这张表是「是否真的适配」的唯一对外证据——所以「Codex / Claude / Cursor 真机没跑过」这件事必须写在表里，而不是写在免责段的角落。
+
+**改名连带改写**：GitHub 上把仓库改叫 `macro-memory` 这一步只能人来按（要凭据；在旧名下新建占位仓库会把 301 杀掉）。连带要改的字交给 `tools/rename-brand.mjs`：`package.json` 的 `repository` / `homepage` / `bugs`、两份市场索引里的 166 处 github 地址（含 77 条 `versions[].source.url`）、以及两份索引描述里 4 处 `npx -y -p dsh-macro-memory macro-memory mcp`。默认只体检，`--apply` 才写，而且写之前 `git ls-remote` 探一次新地址——探不到就停，要人加 `--force`。**不改**：市场条目 `name`（插件包名）、DSH 插件包名、装机目录名：改错这三样，已装用户就装不上更新。
+
+**踩到的三个坑**
+
+1. **`engine.injection({maxChars})` 返回的是字符串，不是 `{text}`。** 第一版探针写 `eng.injection(...).text` → `undefined`，M2 直接红，而红的样子像「子进程的 instructions 不对」——差点去改 `server.js`（那边是对的）。教训：判据红的时候，先确认自己取的那一侧字段取对了。
+2. **`spawn` 的 `cwd` 必须是工作区。** `cmdMcp` 没把 `--cwd` 传给引擎，引擎的默认工作区就是 `process.cwd()`；探针里 `--data-dir` / `--home-dir` 走参数，工作区只能靠 spawn 的 cwd 给。这也顺带说明 `MACRO_MEMORY_WORKSPACE` 为什么只对 CLI 有用、对 `mcp` 子进程没用——那一条路留给「宿主启动子进程时 cwd 不在项目里」的场景，M11 单独验它的优先级就好。
+3. **探针结尾 `rmSync(tmp)` 要 try/catch 包住。** Windows 上偶尔 EPERM（句柄还没放完），那是收尾噪音，不该把 11 条判据的全绿变成一支红。

@@ -1,10 +1,12 @@
 # 宏记忆 · Macro Memory
 
-**让 AI 记住你，而不是记住一堆噪声。**
+**给任何 agent 的本地记忆层。**
 
-一个插件接管 DSH 的全部记忆：8 个工具、常驻注入只占 **1,266 字符**、检索 **2.9 毫秒**。记得住事，也记得住分寸——该进的进来，不该进的写明为什么。
+一套引擎管住一个 agent 的全部记忆：8 个工具、常驻注入只占 **1,266 字符**、检索 **2.9 毫秒**。记得住事，也记得住分寸——该进的进来，不该进的写明为什么。
 
-![version](https://img.shields.io/npm/v/dsh-macro-memory?color=3BAEF0) ![license](https://img.shields.io/npm/l/dsh-macro-memory?color=2BD9C3) ![storage](https://img.shields.io/badge/storage-Local%20SQLite-0B1B2B) ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2BD9C3)
+接得上 DSH、Codex、Claude Code、Cursor，以及任何说 MCP 的宿主（[能力矩阵](#一张表看清适配到哪一步)把每一格都标了证据）。**库只有一份**：谁接进来，读的都是它。
+
+![version](https://img.shields.io/npm/v/macro-memory?color=3BAEF0) ![license](https://img.shields.io/npm/l/macro-memory?color=2BD9C3) ![node](https://img.shields.io/badge/node-%E2%89%A524-0B1B2B) ![mcp](https://img.shields.io/badge/MCP-2025--06--18-3BAEF0) ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2BD9C3)
 
 ![宏记忆](docs/images/hero.png)
 
@@ -16,6 +18,7 @@
 - **它怎么工作**：一轮对话里记忆只做四件事，四道闸各管一段
 - **八个工具**：一份手册、一套 schema、附调用示例
 - **三张对外面**：工具、命令、两块面板
+- **能力矩阵**：宿主 × 工具 / 注入 / 面板 / 命令 / hooks，每一格都标了证据与降级路
 - **安装**：Windows / macOS / Linux 同一套装法
 - **读数**：注入字符、schema 字节、延迟、命中率、自检规模
 - **不说满的地方**：口径、样本量、还没做的事
@@ -141,7 +144,7 @@ memory_update({ id: '0mww…', patch: [{ find: '600 秒', replace: '十分钟' }
   "mcpServers": {
     "macro-memory": {
       "command": "npx",
-      "args": ["-y", "-p", "dsh-macro-memory", "macro-memory", "mcp"],
+      "args": ["-y", "macro-memory", "mcp"],
       "env": { "MACRO_MEMORY_WORKSPACE": "/你的/项目目录" }
     }
   }
@@ -158,9 +161,32 @@ npx -y macro-memory trust "/你的/项目目录"
 
 信任过的目录，DSH 那边立刻也认，反之亦然——**不需要两边各点一次**。
 
+### 一张表看清「适配到哪一步」
+
+「支持 MCP」这四个字很好写，所以这张表把每一格拆开，并标出证据。「✅」= 本机探针真跑过；「◐」= 按同一份契约实现、本机没装那个宿主，没跑过真机；「❌」= 那个宿主本来就没有这一面，右列写降级路。
+
+| 宿主 | 8 个工具 | 常驻注入 | 本地面板 | 斜杠命令 | 生命周期 hooks | 证据 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **DSH 插件** | ✅ `memory_*` | ✅ L0 常驻 + 面板/星图 | ✅ 「宏记忆」「宏记忆 · 星图」 | ✅ `/dream`、`/meow-trust` | ✅ 会话生命周期 | `probe-share` 19 / `probe-ui` 12 / `probe-tools` |
+| **DSH（走 MCP）** | ✅ | ✅ `instructions` | ◐ 用 `macro-memory ui` | ❌ 宿主没有斜杠命令 | ❌ | `probe-mcp` 11 |
+| **Codex CLI** | ✅ | ✅ `instructions`；`init --agents` 写 `AGENTS.md` 围栏 | ◐ 用 `ui` | ❌ | ❌ | `probe-mcp`（协议层）+ `probe-fence` 11 |
+| **Claude Code** | ✅ | ✅ 同上；围栏文件换 `CLAUDE.md` | ◐ 用 `ui` | ❌ | ❌ | 同上 |
+| **Cursor** | ✅ | ◐ 围栏文件换 `.cursorrules`（格式更松，只做块围栏） | ◐ 用 `ui` | ❌ | ❌ | 同上 |
+| **任何 MCP 宿主** | ✅ | ✅ | ◐ | ❌ | ❌ | `probe-mcp` 11 条（真起子进程发 JSON-RPC） |
+| **CLI / CI** | ✅ 命令行子命令 | — | — | ✅ `init`/`remember`/`search`/`read`/`project`/`injection`/`refresh`/`uninstall`/`migrate`/`serve`/`attach`/`detach`/`share`/`ui`/`doctor`/`stats` | — | `probe-core` 30 |
+
+三条读法：
+
+1. **工具面是唯一不降级的**。8 个工具、同一套 schema、同一套四道闸（信任门 / 版本门 / 可见性 / 写路径），MCP 与 DSH 走的是同一份 `lib/core`，不是两套实现。
+2. **「面板」在非 DSH 宿主里降级成浏览器**：`macro-memory ui` 只听 `127.0.0.1`、一次性令牌放 URL，七页一样在。它**不是第二个写者**——探到在跑的 `serve` 就借，探不到就临时起一个且不写发现文件。
+3. **hooks 是宿主能力，不是这套东西的短板**：MCP 没有「会话开始 / 结束」的回调，所以 dream 整理与快照在非 DSH 侧只能靠定时（还没做）或手动 `memory_dream`。
+
+mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过的那个。
+
+
 ### 0.9 起：不只是「能用了」，还得「用得踏实」
 
-一份库给多个 agent 用，最先出事的从来不是「跑不起来」，而是「跑起来之后动了不该动的东西」。0.9 补的就是这七处：
+一份库给多个 agent 用，最先出事的从来不是「跑不起来」，而是「跑起来之后动了不该动的东西」。0.9 补的就是这八处：
 
 1. **往你的文件里写东西，得能还回去。** `init --agents` 把那段 L0 常驻注入写进 `AGENTS.md`（`CLAUDE.md`、`.cursorrules` 同一条路；`--file` 可多次出现或逗号分隔），`refresh` 原地刷新，`uninstall` 摘干净。判据不是「写进去了」，是**卸载后逐字节还原**——连你原文结尾那几个空行都算数。为此「当初插了几个换行」记在块标记里（`<!-- macro-memory:begin sep="2" v="1" -->`），而不是记在我们自己的某个账本上：卸载可能来自另一个进程、另一个工作区、另一台机器，只有文件自己带着「我是怎么被放进去的」才靠得住。坏块（只有 begin 没有 end）一律拒改，一个文件都不动——比自动猜边界、顺手删掉你半页笔记安全。
 2. **打开别人写的库，不许猜。** 库的 schema 比适配层新（说明被更新版本写过）时，读写一律停，回执说清谁比谁新、为什么停、两条真出路（升级 `dsh-macro-memory`，或确认后跑 `migrate`）。版本号用 SQLite 原生的 `PRAGMA user_version`——meow 自己从不碰它，所以不新建元表、不改表结构，老库「看起来没被改过」；写版本号只发生在你显式跑 `migrate` 的那一刻，且先 `vacuumInto` 出一份一致副本。
@@ -175,7 +201,9 @@ npx -y macro-memory trust "/你的/项目目录"
 
 7. **两个名字，一份代码。** 同一个包要同时讨好两类人：DSH 里装的是插件（要 `cordis.patch.yml`、要 `dsh` 字段），而 Codex / Claude Code / Cursor 只想 `npx -y macro-memory mcp` 一条命令。所以 npm 上有两个名字——`macro-memory`（通用入口：MCP / CLI / core / ui）与 `dsh-macro-memory`（DSH 插件与市场条目）——但**仓库里只有一份 `lib/`、`bin/`、`vendor/`**。通用包由 `tools/build-dual.mjs` 从同一份源现长出来：按白名单复制、把根的版本号灌进 `packages/macro-memory/package.json` 这份模板（模板里写的是 `0.0.0`，手填就会漂），然后**逐字节验** `lib` / `bin` / `vendor` 三棵树一致，再各打一次 tarball 确认不带自检家底。`probe-dual` 10 条盯着这件事，其中两条是这一刀真正的价值：**「装上去 `import 'macro-memory/core'` 真解析得了」**（exports 写错了要等到用户装完才发现），和**「脚本里没有 publish 调用」**——发包要有凭据、要有人看着版本号，这一步不该被脚本代劳。
 
-七条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）。
+8. **接得上，才算适配。** 前面七条都是「我们这边做对了」，MCP 这一面得反过来证：**别的宿主接进来，真的读写同一份库**。`probe-mcp` 11 条不造假：真起一个子进程跑 `macro-memory mcp`，用 stdio 发 JSON-RPC——`initialize` 回来的名字与版本跟根 `package.json` 同一个号，`instructions` 就是那段 1,266 字符的 L0 正文（宿主不用自己拼提示词），`tools/list` 的 8 个 schema 与引擎 IR 逐字段一致（不是另抄一份）；接着 `tools/call memory_remember` 写一条，**另一个引擎实例当场检索得到**，库里记的 owner 是客户端自报的名字。另外还有三条防「看起来能用」的：stdout 上只准出现 JSON-RPC 报文（一行杂音就够客户端把连接判死）、坏报文回 -32700 / 未知方法 -32601 / 未知工具 -32602 且列出可选项、工具自己出错走 `result.isError` 而不炸协议层。
+
+八条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 19 条（归属 13 条 + 隔离 6 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）。
 
 不开 agent 也能自证：
 
@@ -186,9 +214,9 @@ npx -y macro-memory doctor
 # 结果：一切正常
 ```
 
-边界说在前面：0.8.0 交付的是「同一个引擎能被别的 agent 用起来」这一层地基。计划里的**三档模式**（`standalone` / `shared` / `readonly`，多 agent 抢同一个库时切到单写者服务）、每条记忆带 `owner` / `scope` / `visibility` 的多人共享、`macro-memory serve` 写队列、本地 UI 七页、以及把包拆成 `macro-memory` + `dsh-macro-memory` 两件——**这一版都还没做**，方案全文在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md)。
+边界说在前面：0.8.x 交付的是「同一个引擎能被别的 agent 用起来」这一层地基；**0.9 把地基上的房子都盖了**——三档模式（`standalone` / `shared` / `readonly`）、每条记忆的 `owner` / `scope` / `visibility`、单写者 `serve` 写队列、七页本地 UI、双包 `macro-memory` + `dsh-macro-memory`、以及 MCP 面的真机自证，**每一件都有一支自检盯着**（见上面八条）。还没做的都在 [`docs/PLAN-UNIVERSAL.md`](docs/PLAN-UNIVERSAL.md) 里明码写着：`serve` 的 `--install-agent`（装成 LaunchAgent / 计划任务）、dream 的定时接管、单文件二进制与 mac 公证、Homebrew tap、CI 矩阵——这五件属于 P2-4 之后，这一版没做就是没做。
 
-**0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包不存在，于是报 `'macro-memory' is not recognized`；正确写法是 `npx -y macro-memory …`（本页所有命令都已改成这个形式，`package.json` 里也补了同名 bin 别名，`npx -y dsh-macro-memory …` 同样可用）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/schemastery` + `vendor/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
+**0.8.1 把这条路的地基补实了**：0.8.0 发到 npm 后 `npx` 其实起不来——两处断点。第一处是名字：npm 包叫 `dsh-macro-memory`、bin 叫 `macro-memory`，`npx -y macro-memory …` 会被当成「找一个叫 macro-memory 的包」，而那个包当时不存在，于是报 `'macro-memory' is not recognized`；0.8.1 的正确写法是 `npx -y -p dsh-macro-memory macro-memory mcp`（0.9 起通用包 `macro-memory` 自己上架，直接 `npx -y macro-memory mcp` 即可，本页其余命令已按 0.9 的写法）。第二处更深：`vendor/meow-memory` 里有 4 处裸名 `import` 伸进 DSH 的私有包（`@deepseek-ai/dsh-llm` × 3、`@deepseek-ai/schemastery` × 1），在本仓能跑只是因为 Node 向上解析撞见了 DSH 的 `node_modules`。0.8.1 把它们换成自带实现（`lib/core/compat/dsh-llm.js`，约 75 行）与自带整包（`vendor/schemastery` + `vendor/cosmokit`），于是**没有 node_modules 也能跑**。判据不是「本机通过」，而是裸包：把 `bin` / `lib` / `vendor` 照 `files` 白名单复制到一个空目录跑 `doctor`，引擎照样两个就绪、八个工具照样在、L0 照样 1,266 字符——这条已经钉进自检（`probe-core` 的 `C11` 与 `C12`）。0.8.0 在 npm 上已标 `deprecated`，请用 0.8.1。
 
 ---
 
@@ -251,7 +279,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
 | **0.8.1** | **69** | **4,671** |
-| 0.9.0（开发中） | 75 | 4,750 |
+| 0.9.0（开发中） | 76 | 4,761 |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -291,7 +319,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.9.0（开发中；最新发布 0.8.1） |
-| 自证规模 | **75 支自检 / 4,750 条可执行断言** |
+| 自证规模 | **76 支自检 / 4,761 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 15,153 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |
@@ -306,7 +334,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 ## 参与开发
 
 ```bash
-node tools/check-all.mjs      # 75 支自检，全绿才算改完
+node tools/check-all.mjs      # 76 支自检，全绿才算改完
 node tools/doctor.mjs         # 交付物体检：版本、字节数、图、市场索引
 node tools/check-market.mjs   # 市场索引能不能被宿主接受
 ```

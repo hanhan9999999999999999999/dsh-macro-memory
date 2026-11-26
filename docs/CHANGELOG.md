@@ -19,7 +19,10 @@
 >
 > 7. **双包**（`packages/macro-memory/package.json` + `tools/build-dual.mjs`，PLAN §11.1、§11.2 / P2-2）：npm 上要有两个名字——`macro-memory`（通用入口：MCP / CLI / core / ui，给 Codex / Claude Code / Cursor）与 `dsh-macro-memory`（DSH 插件与市场条目）——而仓库里只有**一份** `lib/`、`bin/`、`vendor/`。做法是把「同源」变成一条每次发版都跑的判据：`build-dual` 按白名单把源树复制成通用包、把根 `package.json` 的版本号灌进模板（模板里写的是 `0.0.0`，**手填就会漂**），再逐字节比 `lib` / `bin` / `vendor` 三棵树（183 个文件），最后各打一次 tarball 确认不带自检家底（`tools/`、内部笔记、规划稿）。顺带补齐两处一直空着的入口：`lib/core/index.js`（core 面，78 个导出，`import 'macro-memory/core'` 就能拿到装配/归属/共享三组）与 `lib/mcp/stdio.js`（`import 'macro-memory/mcp'` 或 `node lib/mcp/stdio.js` 直接起 stdio 服务器，工作区按 `--cwd` > `MACRO_MEMORY_WORKSPACE` > cwd 的顺序认）。`probe-dual` 10 条里有两条是这一刀真正的价值：**「装上去 `import 'macro-memory/core'` 真解析得了」**（exports 写错了要等用户装完才发现）与**「脚本里没有 publish 调用」**——发包要有凭据、要有人看着版本号，这一步不该被脚本代劳。
 >
-> 计数口径：`check-all` **75 支 / 4,750 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条）。
+> 8. **MCP 面真机自证 + 首句去 dsh 化 + 能力矩阵**（PLAN §15.2、§15.3 / P2-3）：前三刀都在证「自己这边做对了」，这一刀反过来证**别的宿主接进来真能读写同一份库**——新增 `tools/probe-mcp.mjs` 11 条，真起一个子进程跑 `macro-memory mcp`，用 stdio 发 JSON-RPC：`initialize` 回来的名字与版本跟根 `package.json` 同一个号；`instructions` 就是那段 L0 正文（1120 字符，宿主不用自己拼提示词）；`tools/list` 的 8 个 schema 与引擎 IR 逐字段一致；`tools/call memory_remember` 写一条，**另一个引擎实例当场检索得到**，库里记的 owner 是 `initialize` 里自报的客户端名；stdout 上只准出现 JSON-RPC 报文（一行杂音就够客户端判死连接）；坏报文回 `-32700`、未知方法 `-32601`、未知工具 `-32602` 且带可选清单；工具自己出错走 `result.isError` 而不炸协议层；`ping` / `resources/list` / `prompts/list` 明确回空不装死；关 stdin 后进程自己退 0；工作区三条优先级（`--cwd` > `MACRO_MEMORY_WORKSPACE` > cwd）各认一次。
+>
+> README 首句从「一个插件接管 DSH 的全部记忆」改成「**给任何 agent 的本地记忆层**」，DSH 降为支持列表里的一行；徽章全部换 npm 维度（包名比仓库名稳定）。新插一节 **「一张表看清适配到哪一步」**：宿主 × 8 个工具 / 常驻注入 / 本地面板 / 斜杠命令 / 生命周期 hooks，每格标 ✅（本机探针验过）/ ◐（同契约实现、本机没装那个宿主）/ ❌（宿主没这一面），并写明降级路（非 DSH 宿主的面板降级成 `macro-memory ui`，hooks 只能靠定时或手动 `memory_dream`）。这张表是「是否真的适配」的唯一对外证据。
+>> 计数口径：`check-all` **76 支 / 4,761 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 10 条 + `probe-mcp` 11 条）。
 
 ---
 
