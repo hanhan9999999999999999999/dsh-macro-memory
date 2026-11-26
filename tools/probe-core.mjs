@@ -15,6 +15,7 @@
  *   C10 全局库同源：装了 DSH 就落 <DSH_HOME>/storages/meow-memory，没装退 ~/.dsh-meow
  *   C11 裸包：把运行面复制到一个没有 node_modules 的目录，仍能装配（vendor 自足 + compat 层）
  *   C12 npx 口径：文档里的命令必须能真的被执行（包名 ≠ bin 名这坑只踩一次）
+ *   C13 库版本门：库 schema 比适配层新 → 只读并说清出路；v0 老库 migrate 到 v1 照旧能写
  *
  * 用法：node tools/probe-core.mjs
  */
@@ -71,11 +72,14 @@ const files = [
   'lib/core/trust.js',
   'lib/core/mini-host.js',
   'lib/core/config.js',
+  'lib/core/migrate.js',
+  'lib/core/fence.js',
+  'lib/core/agents-file.js',
   'lib/mcp/server.js',
   'bin/macro-memory.mjs',
 ]
 const missing = files.filter((f) => !existsSync(join(root, f)))
-check('C0 core 七个文件在位（engine/paths/trust/mini-host/config/mcp/cli）', missing.length === 0, missing.join(',') || '全在')
+check('C0 core 十个文件在位（engine/paths/trust/mini-host/config/migrate/fence/agents-file/mcp/cli）', missing.length === 0, missing.join(',') || '全在')
 
 /** C8 平台：纯函数，先测（与装配无关） */
 {
@@ -175,6 +179,46 @@ const wroteB = await eng.call('memory_remember', {
   importance: 1,
 }, { cwd: wsB })
 check('C4 trust 之后同一个库能写（不需要重启引擎）', trustedB.trusted === true && wroteB.refused !== true, String(wroteB.refused))
+
+// ── C13 库版本门（P0-5 / U8）：库比适配层新就只读，不猜新字段 ────────
+// 造一个「被更新版本写过」的库：user_version 抬到 99。meow 自己从不碰这个值
+// （`grep user_version vendor/meow-memory/lib/index.js` 零命中），所以它是安全的记账位。
+const MeowC = await mod('vendor/meow-memory/lib/index.js')
+const wsC = join(tmp, 'ws-c')
+mkdirSync(wsC, { recursive: true })
+MeowC.getDb(wsC, '.dsh-meow').db.exec('PRAGMA user_version = 99')
+const newerWrite = await eng.call('memory_remember', {
+  content: '探针：这条不该被写进 v99 的库',
+  project: '探针',
+  keywords: ['探针', '版本门'],
+  importance: 1,
+}, { cwd: wsC })
+check(
+  'C13 库 schema 比适配层新时拒绝写（refused，不抛异常，不猜字段）',
+  newerWrite.refused === true && /schema v99/.test(newerWrite.text) && newerWrite.schema?.readOnly === true,
+  newerWrite.text.split('\n')[0],
+)
+const migNewer = eng.migrateSchema(wsC, { dryRun: true })
+const v0State = eng.schemaState(wsA)
+const migOld = eng.migrateSchema(wsA, {})
+const v1State = eng.schemaState(wsA)
+const wroteAfterMig = await eng.call('memory_remember', {
+  content: '探针：迁移只动 user_version，写路径照旧',
+  project: '探针',
+  keywords: ['探针', '迁移后'],
+  importance: 1,
+}, { cwd: wsA })
+check(
+  'C13 拒绝话术给两条真出路、不降级；v0 老库 migrate 到 v1 后照旧写得进去',
+  newerWrite.text.includes('npm i -g dsh-macro-memory@latest') &&
+    newerWrite.text.includes('macro-memory migrate') &&
+    migNewer.reason === 'db-newer' &&
+    v0State.dbVersion === 0 &&
+    migOld.reason === 'stamped' && migOld.to === 1 && Boolean(migOld.backup) &&
+    v1State.dbVersion === 1 &&
+    wroteAfterMig.refused !== true,
+  `新版不降级=${migNewer.reason} / v0→v${migOld.to}（副本 ${migOld.backup ? '有' : '无'}）`,
+)
 
 // ── C5 注入 ─────────────────────────────────────────────────
 const inj = eng.injection()

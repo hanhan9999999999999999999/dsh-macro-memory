@@ -14697,3 +14697,79 @@ function id8(id) { return String(id).slice(0, 8) }
 **判据**：裸包 `node <bare>/bin/macro-memory.mjs doctor --no-nebula` → `meow=就绪` / `子工具：8 个被融合层收下` / `注入：L0 1266 字符`；`trust` → `已信任`；`remember` → `id=0mwxqj2u`；`search "裸包"` 命中真库历史记忆 + 星图扩散。`npm pack` 出的 tarball 实测两条路都能起：`npx -y -p <tgz> macro-memory doctor` 与 `npx -y <tgz> doctor`（别名）。`probe-core` 28 PASS / 0 FAIL（stderr 空）；`verify.mjs` ALL PASS（`文档 4667 / 实测 4667`）；`check-all` 69 支 / 4,671 条。
 
 **踩坑**：PowerShell 里 `Sub $path @(@('a','b'))` 这种嵌套数组会被展开成一维，`$pair[0]` 退化成「字符串第一个字符」——一次批量替换把四个文件里所有 `"` 换成了 `t`（`baselines.json` 直接变成非法 JSON）。批量改文本一律用 node 脚本 + `fs.writeFileSync(..., 'utf8')`，或逐条走编辑工具；坏文件先拷到 `D:\备份\<时间戳>-<任务名>\` 再从 git 恢复重做。
+
+### 9.280 0.9.0（开发中）：文件围栏——`AGENTS.md` 里那一块，卸载要能逐字节还回去
+
+**问题**：MCP 只解决「有工具」，不解决「会用」。宿主接上 8 个 `memory_*` 之后，agent 不会自动先查再写——需要一段常驻的规矩文本（L0，1,266 字符）出现在它每轮都能读到的地方。而往用户的 `AGENTS.md` 里写东西，是这个项目里**唯一会碰用户文件**的动作，也是最容易造成数据损失的一处：写多了、叠两层、卸载摘不干净，用户就再也不信了。
+
+**做法**（`lib/core/fence.js` + `lib/core/agents-file.js`，CLI 三条命令）：
+
+| 命令 | 做什么 | 判据 |
+| --- | --- | --- |
+| `init --agents [--file P]` | 装配引擎取 L0，写进 `AGENTS.md`（默认；`--file` 可多次或逗号分隔） | 已有文件只追加块，块外零改动 |
+| `refresh` | 原地重写块内 L0（升级后跑一次） | 连写两次字节相同，begin 只出现一次 |
+| `uninstall` | 摘掉块，按块里记的 `sep` 精确回收当初插入的换行 | 原文逐字节还原；摘完只剩空白则删文件 |
+
+三个设计决定，每个都有代价，写在这儿免得以后「优化」回去：
+
+1. **`sep` 记在块里**（`<!-- macro-memory:begin sep="2" v="1" -->`），不记外部账本。卸载可能来自另一个进程、另一个工作区、甚至另一台机器，只有文件自己带着「我是怎么被放进去的」才靠得住。代价：块标记不是纯注释，带一个属性——但它是标准 HTML 注释，渲染器与 linter 都不在意。
+2. **坏块一律拒改**（begin 在、end 不在）：`init --agents` 预检全部目标，有坏块就一个文件都不动、exit 2；`uninstall` 报坏块、exit 1、文件原样。代价：用户得手工修那半块——比自动猜边界删掉用户内容安全。
+3. **摘完只剩空白就删文件**：留一个空 `AGENTS.md` 在仓库里比不写更脏。代价：用户原本就有一个空 `AGENTS.md` 时会被删掉（空文件无内容可损失），回执里写明「文件一并删掉」。
+
+**判据**：`tools/probe-fence.mjs`（**11 条**，全部纯函数 + 一次 CLI 端到端，一秒跑完、不装引擎）：F1 空文件建块 / F2 幂等 / F3–F4b 三种结尾（无换行、一个、两个空行）摘完逐字节还原 / F5 CRLF 文件块内也是 CRLF（`/[^\r]\n/` 不匹配，git diff 不该整文件翻红）/ F6 坏块原样不动 / F7 块在中间只替换自己 / F8 定位 sep+version / F9 CLI `uninstall` 不装引擎也摘干净 / F10 `--help` 里有这三条命令。实测 11 PASS / 0 FAIL；端到端另测四种场景（用户原文带两尾空行 → SHA256 完全一致；空目录 → 新建后摘除并删文件；坏块 → exit 2 且未改动；多目标 `--file AGENTS.md --file CLAUDE.md`）。
+
+**踩坑**：`edit` 工具连续两次改同一处（想「只删空行」）会把 `console.log(...)` 和 `process.exit(...)` 拼成一行，ESM 直接 `SyntaxError: Unexpected identifier 'process'`——空行不是无害的，改完立刻跑一次才是判据。
+
+### 9.281 0.9.0（开发中）：库版本门——库比适配层新就只读
+
+**问题**：一份库会被多个版本、多个 agent 打开。新版本加了列、改了约束，老版本再往同一个文件里写，就是拿「我知道的表结构」去赌「我不知道的约束」——坏的结果不会立刻报错，而是过几天发现某几条记忆读出来是空的。PLAN 4.2 原本设计一张 `schema_version(version, applied_at)` 表，任一入口启动先校验，库版本高于适配层就只读降级。
+
+**做法**：`lib/core/migrate.js`（约 70 行）+ 引擎两道门。
+
+| 门 | 位置 | 行为 |
+| --- | --- | --- |
+| 信任门 | `call()` 里（0.8.0 已有） | 别人建好的库不读不写，给一条能粘的 `trust` 命令 |
+| 版本门 | 信任门之后 | 库 `user_version` > 适配层 → 一律拒绝，回执说清谁比谁新 + 两条出路 |
+
+**偏离 PLAN 的一处，写明理由**：没用 `schema_version` 表，用 SQLite 原生的 `PRAGMA user_version`。理由三条——① meow 自己从不碰它（`grep -n user_version vendor/meow-memory/lib/index.js` 零命中），这个位置是干净的；② 少一张表就少一次「建表」迁移，老库打开时**一个字节都不用改**，`doctor` 之类的只读检查也就没有副作用；③ 任何连接（包括 `sqlite3` 命令行）一行就能读到。代价：没有 `applied_at`——真要审计「哪天迁的」，那信息本来就该落在 PLAN 4.2 的 `audit` 表里，不该塞进版本号。
+
+**三条纪律**：
+1. **不主动写盘**：`checkSchema` 只读不写。写 `user_version` 只发生在用户显式跑 `macro-memory migrate`（`stampSchema` 在 `lib/core/migrate.js`，只被 `migrateSchema` 调用）。自动打戳会把「只读检查」变成「悄悄改库」。
+2. **库比适配层新时不降级**：`migrateSchema` 遇 `from > to` 直接回 `db-newer`、退出 1。降级等于替用户决定「新版本写进去的那几条不重要」，这决定只能人来做。
+3. **真写前先出一致副本**：`db.vacuumInto(file.bak-<ISO>)`，失败才退回 `copyFileSync`——WAL 里可能还有没落盘的页，`copyFile` 拿到的可能是半份。
+4. **检查不许创建库**：`schemaGate()` 先 `fs.existsSync(<ws>/<dir>/memory.db)`，存在才 `Meow.getDb`（`vendor/meow-memory/lib/index.js:1203` 那条路在库不存在时会 `new MemoryDb` + `registerCreatedWorkspace`，让「检查版本」顺手造一个空库）。
+
+**判据**：`tools/probe-core.mjs` 的 **C13 两条**——① 造一个 `PRAGMA user_version = 99` 的库 → `memory_remember` 回 `refused: true`、`schema.readOnly: true`、文本含 `schema v99`、含 `npm i -g dsh-macro-memory@latest` 与 `macro-memory migrate` 两条出路，同一库 `migrateSchema(dryRun)` 回 `db-newer`（不降级）；② v0 老库 `migrateSchema` 回 `stamped`、`to: 1`、有 `backup`，`schemaState` 读回 `dbVersion: 1`，迁移后 `memory_remember` 照旧写得进去。实测 30 PASS / 0 FAIL。
+
+**踩坑**：`MemoryDb` 只有 `p(sql)` 与 `this.db`，**没有自己的 `exec()`**（`vendor/meow-memory/lib/index.js:492`）——`stampSchema` 必须同时兼容 `db.exec` 与 `db.db.exec` 两种句柄，否则 CLI 迁得动、探针迁不动。
+
+### 9.282 0.9.0（开发中）：归属账——几个 agent 共用一个库，得知道这谁写的
+
+**问题**：0.8.0 之后同一份 `memory.db` 会被 DSH、Codex、Claude Code、Cursor 一起用。写进去的条目回执上只有一个 id，没人知道它出自谁；而「谁能看」这件事在 PLAN §4.1 里是要靠 `owner` / `scope` / `visibility` 三列表达的。给 meow 的七张层表各加三列是最直接的做法，代价是七个 `ALTER TABLE`、七次真迁移，而且把一个**只有宿主才知道**的概念（`agentId`）硬塞进它的表结构。
+
+**做法**：
+
+| 层次 | 位置 | 关键点 |
+| --- | --- | --- |
+| 存储 | `lib/core/owner.js` 的 `mem_owner` 旁表 | `CREATE TABLE IF NOT EXISTS`，老库第一次写入时自动补；不动 meow 任何表 |
+| 写侧 | `engine.js` 的 `recordOwnership()` | `owner` 只从 `exec.agent.id` 来；`memory_update` 走 `touch()` 只换 `last_editor` |
+| 读侧 | `engine.js` 的 `tagOwners()` | 回执里给已知 id 印 `[self]` / `[agent:x]` / `[global]`，没记录就不印 |
+| 来源 | `lib/mcp/server.js` `initialize` | `clientInfo.name` 存下来，`tools/call` 当 `agentId` 传下去 |
+
+**三条纪律（都是为了「登记失败不能变成事故」）**：
+
+1. **owner 不可由调用方伪造**：`memory_remember` 的入参里没有 `owner` 这一项，服务端填什么就是什么。MCP 的客户端名来自 `initialize`，CLI 固定 `cli`——粗，但它不是编的。
+2. **改内容 ≠ 改主人**：`memory_update` 命中已存在的归属行时执行 `UPDATE mem_owner SET last_editor = ?`，绝不碰 `owner`、`scope`、`visibility`。顺手把别人设的边界改回默认值，是最容易发生也最难发现的越权。
+3. **归属坏掉不让写入失败**：`createOwnerStore()` 里所有异常都被吞掉（`record` 返回 `false`，`ownersOf` 返回空 Map），`engine.call()` 外面还有一层 `try/catch` 只落日志。实测把 `mem_owner` 整张 `DROP` 掉，`memory_remember` 照旧写成。
+
+**为什么标签在文本层**：meow 的七层渲染散在十几处，改任何一处都要连带把「回执文案」这条资产重新验一遍（它还有 budget 裁剪、星图扩散、多模式拼接）。而「哪个 id 属于谁」是**查表来的事实**，标签只是把它印在 id 旁边。代价写在明处：如果某条记忆的正文里恰好出现了**方括号包起来的合法 id 形态**，它也会被印上标签——概率极低，且只对库里真实存在的 id 生效。实测的两种 id 形态都认：回执行里的 `[0mwxux1f6-709dde1a98df49729b9f192c10]`，以及行首裸写的 `0mwxux1f`。
+
+**判据**：`tools/probe-share.mjs` **13 条**（临时目录，两个 agent 共用一个工作区库）——codex 写、claude 搜到带 `[agent:codex]`；codex 自己搜到带 `[self]`；claude 改那条之后库里 `owner` 仍是 codex 而 `last_editor` 是 claude；删掉归属行后那条**不再带任何标签**；`soul` 默认 `private` / `rules` 默认 `workspace` / 显式 `global` 生效且别人看到 `[global]`；正文里的 `ab12cd34`、`deadbeef` 不被误标而同一行的真 id 照标；`DROP TABLE mem_owner` 之后记忆照旧写入。
+
+**踩坑**：
+
+- `memory_remember` 的 `project` 是**必填**的，连 `soul` / `rules` 层也一样（`vendor/meow-memory/lib/index.js:7507` 直接抛 `remember.error.project`）。探针里五条 `remember` 一开始都没带，第一条之后整支崩在未捕获异常上。
+- 回执里的 id 不是 8 位而是 `8 位短 id + "-" + 26 位` 的复合串，所以第一版 `/\[([0-9a-z]{8,40})\]/` 一个都匹配不到——`-` 不在字符集里。字符集改成 `[0-9a-z]{8}[0-9a-z-]{0,32}` 才对上。
+- PowerShell 里 `node -e "<多行脚本>"` 会被参数绑定拦下（`已指定 command 参数`），批量改文本一律写临时 `.mjs` 再 `node` 跑。
+
+**还没做（写在明处）**：`private` 现在只是「记账 + 标注」，跨 agent 的**硬隔离**没做——别人的私密条目仍然会出现在你的检索结果里。真隔离要落在 meow 的检索 SQL 上（或统一工具层的前置过滤），是 0.9.0 的下一刀。
