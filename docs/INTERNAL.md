@@ -15063,10 +15063,12 @@ P2-5。单文件二进制做出来之后，mac 与 Linux 上就有了第三条�
 
 判据（`tools/probe-ci.mjs`，14 条）：C1 两个 workflow 在位｜C2 矩阵三平台（windows/macos/ubuntu）× Node 主版本 ≥ `engines` 里的数字｜C3 有 `steps:` 的 job 都设了 `timeout-minutes`，且测试 job 有 `checkout` 与 `setup-node`｜C4 `ci.yml` 里没有 `npm publish`，`release.yml` 有且只由 `tags: ['v*']` 触发｜C5 `ci.yml` 可被 `workflow_call`，`release.yml` 用 `uses: ./.github/workflows/ci.yml`｜C6 两个文件都没有 `continue-on-error`，且 mac 上的 SEA 用 `runner.os != 'macOS'` 守卫｜C7 `publish` 依赖 `test`｜C8 `tag` 与 `package.json` 版本同号（`GITHUB_REF_NAME#v` + `require('./package.json').version` + `test "$tag" = "$ver"`）｜C9 凭据只从 `secrets.NPM_TOKEN` 取，没凭据时明说「这次不发 npm」｜C10 两个包都发（`build-dual --apply --pack` + `for tgz in`）、Release 附件带 `SHA256SUMS.txt`（`gh release create|upload`）｜C11 失败时 `upload-artifact` 带走日志与基线｜C12 旧仓库名仍能解析（301）｜C13 `ci.yml` 的 `--only` 名单（10 个名字）每个都能在 `check-all` 的 STEPS 里找到｜C14 YAML 形状：没有 tab、没有行尾空格、缩进是 2 的倍数。
 
-三个坑：
+四个坑：
 
 1. **正则数 YAML 的 job，会数到 `on:` 底下的事件名。** 第一版用 `ci.match(/^ {2}[a-zA-Z0-9_-]+:\s*$/gm)` 数 job，`push:` / `pull_request:` / `workflow_dispatch:` / `workflow_call:` 全是两缩进的键，于是「5 个 job / 1 个 timeout」判红。修法：先用 `/^jobs:\s*$/m` 切出 `jobs:` 之后那一段，再在段内按 `^ {2}([A-Za-z0-9_-]+):\s*$` 切 job 块。**YAML 是缩进语言，任何「按缩进数结构」的正则都得先锚住段**。
 2. **reusable workflow 的 job 不能设 `timeout-minutes`。** `release.yml` 的 `test: uses: ./.github/workflows/ci.yml` 那种 job 只允许 `uses` / `with` / `secrets` / `needs` 几个键，加了 timeout 会直接被拒。所以判据不能是「每个 job 都要有 timeout」，必须是「**含 `steps:` 的 job** 都要有 timeout」。
 3. **`--only` 的名单是字符串，改名或删支之后会静默跑空集。** `check-all --only=a,b,c` 里写错一个名字，那一支就是不跑，而「不跑」和「跑了且绿」在退出码上长得一模一样。C13 因此把名单里每个名字回查 `check-all` 的 STEPS —— 名字必须在真表里存在。**凡是「按名字点菜」的地方，都要有一条判据证明这些名字还点得到东西。**
+
+4. **静态判据全绿，真跑三平台全红。** 第一版 ci.yml 那条「旧仓库名仍能解析」探的是**改名目标** `github.com/<owner>/macro-memory`，可 remote 还没改名（`dsh-macro-memory` 才是活的），于是恒 404。`044de7f` push 上去，三个平台（windows / macos / ubuntu）全红，红的都是同一步。`probe-ci` 那 14 条为什么全绿？因为它只查「文件里有这条 URL 和 `200|301|302` 这个 case」——**它查的是字面，不是语义**。修法：两个名字都探（当前名必须 200/301/302；改名目标允许 404，改名之前不判红，只钉「两个名字不许同时死」；新名生效后再警告「旧名没跟着 301」），C12 也跟着从字面改成实体（缺当前名、缺 404 分支说明、或残留旧文案都判红），并在真 bash 里跑过一遍（当前名 200 / 目标名 404 / 判通过）。教训与 9.289 同源但更硬：**「静态判据绿」和「真跑得通」之间隔着一次真跑；写 CI 判据的人，第一次 push 之前永远不知道自己写的是字面还是语义。**
 
 文件：`.github/workflows/ci.yml`（三平台矩阵）、`.github/workflows/release.yml`（tag → 复用 CI → 双包 publish → 打二进制 → 建 Release）、`tools/probe-ci.mjs`（14 条）。`package.json` 加了 `ci` 这个 script。

@@ -366,21 +366,21 @@ meow 的 #64 保护（工作区自带非本机创建的记忆库时拒绝读写�
 
 | 步骤 | 动作 | 落点 | 验收 | 回滚 |
 | --- | --- | --- | --- | --- |
-| P0-1 | 抽 `MemoryEngine(options)`，core 不读环境变量 | 新 `lib/core/`；`platform.js` 降为 DSH adapter 的配置源 | `probe-core-purity` 零命中；core 单测纯 node 跑通 | 保留旧 `lib/index.js` 路径，删新目录即回退 |
-| P0-2 | 工具 IR + `registerMcp` | `lib/core/catalog.js`、`lib/mcp/stdio.js` | MCP Inspector 里 8 个工具全在、schema 与 IR 一致 | 入口不生效，DSH 侧不受影响 |
-| P0-3 | CLI 最小集：`init` / `remember` / `search` / `doctor` | `bin/` | 干净目录 init 后 remember → search 命中 | 删 bin 即回退 |
-| P0-4 | 数据目录按平台，`--data-dir` 可覆盖 | `lib/core/paths.js` | 三平台路径探针 | 配置项回退默认 |
-| P0-5 | `schema_version` + 迁移脚本框架 | `lib/core/migrate.js` | 版本门判据（库高→只读） | 迁移只在显式 `migrate` 时跑 |
+| P0-1 ✅ | 抽 `MemoryEngine(options)`，core 不读环境变量 | 新 `lib/core/`；`platform.js` 降为 DSH adapter 的配置源 | `probe-core-purity` 零命中；core 单测纯 node 跑通 | 保留旧 `lib/index.js` 路径，删新目录即回退 |
+| P0-2 ✅ | 工具 IR + `registerMcp` | `lib/core/catalog.js`、`lib/mcp/stdio.js` | MCP Inspector 里 8 个工具全在、schema 与 IR 一致 | 入口不生效，DSH 侧不受影响 |
+| P0-3 ✅ | CLI 最小集：`init` / `remember` / `search` / `doctor` | `bin/` | 干净目录 init 后 remember → search 命中 | 删 bin 即回退 |
+| P0-4 ✅ | 数据目录按平台，`--data-dir` 可覆盖 | `lib/core/paths.js` | 三平台路径探针 | 配置项回退默认 |
+| P0-5 ✅ | `schema_version` + 迁移脚本框架 | `lib/core/migrate.js` | 版本门判据（库高→只读） | 迁移只在显式 `migrate` 时跑 |
 
 ### P1（多 agent 共享 + 注入面）
 
 | 步骤 | 动作 | 验收 | 回滚 |
 | --- | --- | --- | --- |
-| P1-1 | `serve`：写队列 + UDS/端口 + attach/detach | 两进程各写 200 条，400 条不丢不重 | 停服回落 standalone |
-| P1-2 | `owner` / `scope` / `visibility` / 幂等索引 | 伪造 owner 被拒；A 写 B 读到带 `agent:A` | 列默认值回填，scope 默认 workspace |
-| P1-3 | 三段召回 + RRF + 来源标注 | private 对他人零命中（阴性对照验过） | 开关关闭=单池旧行为 |
-| P1-4 | 注入五策略 + 围栏 `init` / `refresh` / `uninstall` | 块外零改动；purge 切干净 | 关开关，恢复纯 DSH 注入 |
-| P1-5 | `probe-share` 四组判据进 check-all | 全绿；条数与基线一致 | 探针可单跑 |
+| P1-1 ✅ | `serve`：写队列 + UDS/端口 + attach/detach | 两进程各写 200 条，400 条不丢不重 | 停服回落 standalone |
+| P1-2 ✅ | `owner` / `scope` / `visibility` / 幂等索引 | 伪造 owner 被拒；A 写 B 读到带 `agent:A` | 列默认值回填，scope 默认 workspace |
+| P1-3 ✅ | 三段召回 + RRF + 来源标注 | private 对他人零命中（阴性对照验过） | 开关关闭=单池旧行为 |
+| P1-4 ✅ | 注入五策略 + 围栏 `init` / `refresh` / `uninstall` | 块外零改动；purge 切干净 | 关开关，恢复纯 DSH 注入 |
+| P1-5 ✅ | `probe-share` 四组判据进 check-all | 全绿；条数与基线一致（现 19 条：归属 13 + 隔离 6） | 探针可单跑 |
 
 ### P2（发行面与体验）
 
@@ -391,7 +391,7 @@ meow 的 #64 保护（工作区自带非本机创建的记忆库时拒绝读写�
 | P2-3 ◐ | 仓库改名 + README 首句 + 能力矩阵 | 三联条件里本地两件已做完：README 首句去 dsh 化 + 能力矩阵 ✅（`probe-mcp` 11 条把「MCP 跑通」从纸面变成真子进程）；**remote 改名待主人按**（需 GitHub 凭据，连带改写交给 `tools/rename-brand.mjs`，默认 dry-run，`--apply` 前先探新地址） |
 | P2-4 ◐ | 单文件二进制 + mac 签名公证 | 单文件 ✅：`tools/build-sea.mjs`（MMB1 容器 + `node --experimental-sea-config` + `postject` 注入）+ `tools/sea-entry.cjs`（CJS 引导器：取包 / 校验包头 / 解临时目录 / 抹平 SEA 的 argv）+ `tools/probe-sea.mjs` 20 条——真打出 `macro-memory-win-x64.exe`（92 MB，包 4.23 MB），`--version` 报 0.8.1、当 MCP 服务器握得上手、185 个文件逐字节与源一致；mac ⏳：`tools/sign-mac.sh` 四步齐全（`codesign --options runtime` → 自验 → `notarytool submit --wait` → `stapler staple` → `spctl -a -vv`），但 `spctl` 通不通要 Apple 开发者账号与真机，判据只能验到脚本层 |
 | P2-5 ◐ | Homebrew tap | 本地全做完 ✅：`packaging/homebrew/macro-memory.rb`（四个平台块各自 url + sha256，装的是单文件产物、不含 `depends_on "node"`，`test do` 钉 `--version` 与 `--help`）+ `tools/gen-formula.mjs`（从 `SHA256SUMS.txt` 灌版本与四个哈希、对齐 owner/repo、默认只体检、永不 publish/push，缺产物就留占位并点名）+ `tools/probe-homebrew.mjs` 11 条（含真喂假 SHA256SUMS 与只读性两条）；`brew install` 后 `mcp` 可跑 ⏳：``brew audit --strict --new`` 与真装要在 mac 上按，tap 仓库 `hanhan9999999999999999999/homebrew-tap` 要人推 |
-| P2-6 ◐ | CI 矩阵 win/mac/linux × Node 22/24 × 有/无 DSH | 全绿才发版 —— 本地全做完 ✅：`.github/workflows/ci.yml`（`windows-latest` / `macos-latest` / `ubuntu-latest` × Node 24，零依赖零 install，只跑**不需要宿主**的那批：`--only=probe-core,probe-fence,probe-rrf,probe-share,probe-mcp,probe-dual,probe-homebrew,probe-platform,probe-tools,probe-monotone`；宿主契约 `verify.mjs` 与本机流程备份的 `doctor.mjs` 留在人自己的机器上；mac 上的 SEA 用 `if: runner.os != 'macOS'` 守卫而不是 `continue-on-error`；失败时 `upload-artifact` 带走日志与基线；另含 PLAN §16 要求的「旧仓库名仍能解析」301 检查）+ `.github/workflows/release.yml`（只由 `v*` tag 触发、`needs: [test]` 复用 ci.yml、tag 与 `package.json` 版本必须同号、`secrets.NPM_TOKEN` 缺了就明说「这次不发 npm，只出二进制」、双包 publish + 打二进制 + 建 Release 带 `SHA256SUMS.txt`）+ `tools/probe-ci.mjs` 14 条；**「有/无 DSH」那一维 ⏳**：本机只验到「不需要宿主也能跑」的那批，真在 runner 上跑一遍、以及在没装 DSH 的机器上跑一遍要等第一次 push |
+| P2-6 ◐ | CI 矩阵 win/mac/linux × Node 22/24 × 有/无 DSH | 全绿才发版 —— 本地全做完 ✅：`.github/workflows/ci.yml`（`windows-latest` / `macos-latest` / `ubuntu-latest` × Node 24，零依赖零 install，只跑**不需要宿主**的那批：`--only=probe-core,probe-fence,probe-rrf,probe-share,probe-mcp,probe-dual,probe-homebrew,probe-platform,probe-tools,probe-monotone`；宿主契约 `verify.mjs` 与本机流程备份的 `doctor.mjs` 留在人自己的机器上；mac 上的 SEA 用 `if: runner.os != 'macOS'` 守卫而不是 `continue-on-error`；失败时 `upload-artifact` 带走日志与基线；另含 PLAN §16 要求的「旧仓库名仍能解析」301 检查）+ `.github/workflows/release.yml`（只由 `v*` tag 触发、`needs: [test]` 复用 ci.yml、tag 与 `package.json` 版本必须同号、`secrets.NPM_TOKEN` 缺了就明说「这次不发 npm，只出二进制」、双包 publish + 打二进制 + 建 Release 带 `SHA256SUMS.txt`）+ `tools/probe-ci.mjs` 14 条；**「有/无 DSH」那一维 ⏳**：本机只验到「不需要宿主也能跑」的那批，真在 runner 上跑一遍要等第一次 push —— **第一次 push（`044de7f`）已发生：三平台全红，红在同一步「旧仓库名仍能解析」**（那一版探的是改名目标，恒 404），已修成「两个名字都探」（当前名必须 200/301/302，改名目标允许 404，改名之前不判红），`probe-ci` 的 C12 同步改成实体判据，并在真 bash 里验过一遍；**没装 DSH 的机器**那一维仍待验 |
 
 ---
 
@@ -448,9 +448,9 @@ meow 的 #64 保护（工作区自带非本机创建的记忆库时拒绝读写�
 
 | # | 决策 | 选项 | 默认倾向 |
 | --- | --- | --- | --- |
-| D3 | `serve` 是否默认随 `init` 起 | 否 / 是（需明确告知常驻） | 否 |
-| D4 | 单文件二进制是否首版就给 | 否（P2 后）/ 是（工作量大） | 否 |
-| D5 | 私有 embedding reranker | 默认关的 P2 可选 / 不做 | 不做 |
+| D3 | `serve` 是否默认随 `init` 起 | 否 / 是（需明确告知常驻） | 否（仍未变：`init` 不起常驻服务，`--install-agent` 还没做） |
+| D4 | 单文件二进制是否首版就给 | 否（P2 后）/ 是（工作量大） | **已定：给**（0.9 做了，P2-4；`tools/build-sea.mjs` + `tools/sea-entry.cjs`，92 MB 一个文件） |
+| D5 | 私有 embedding reranker | 默认关的 P2 可选 / 不做 | 不做（仍未变：词面 + 星图扩散已经够，加向量要背模型体积） |
 
 ### 19.3 批准带来的两处文档修订
 

@@ -49,16 +49,38 @@ jobs:
         run: |
           node -e "const p=require('./package.json');const d=Object.keys(p.dependencies??{});const s=p.scripts??{};console.log('dependencies:',d.length,'install-script:',Object.keys(s).filter(k=>k==='install'||k==='postinstall').length);if(d.length||s.install||s.postinstall)process.exit(1)"
 
-      - name: 旧仓库名仍能解析（改名后 GitHub 给 301；链接别 404）
+      - name: 两个仓库名的可达性（当前名必须活；改名目标允许还没生效）
         shell: bash
         run: |
           set -euo pipefail
-          url="https://github.com/hanhan9999999999999999999/macro-memory"
-          code=$(curl -s -o /dev/null -w '%{http_code}' -I --max-time 20 "$url" || echo 000)
-          echo "旧名 $url → $code"
-          case "$code" in
+          owner=hanhan9999999999999999999
+          cur="https://github.com/$owner/dsh-macro-memory"
+          nxt="https://github.com/$owner/macro-memory"
+          code_of() { curl -s -o /dev/null -w '%{http_code}' -I --max-time 20 "$1" || echo 000; }
+
+          c=$(code_of "$cur")
+          n=$(code_of "$nxt")
+          echo "当前名 $cur → $c"
+          echo "改名目标 $nxt → $n"
+
+          case "$c" in
             200|301|302) ;;
-            *) echo "旧名解析不了（$code）：README 与 npm 上的历史链接会 404"; exit 1 ;;
+            *) echo "::error::当前仓库名解析不了（$c）——仓库没了，或改名把两边都改坏了"; exit 1 ;;
+          esac
+
+          case "$n" in
+            200|301|302)
+              echo "::notice::改名目标已生效（$n）"
+              case "$c" in
+                301|302) echo "::notice::旧名 301 跟随正常，历史链接不会 404" ;;
+                *) echo "::warning::新名已生效但当前名还是 $c（不是 301）——历史链接可能断，检查 GitHub 改名是否真的发生在这一侧" ;;
+              esac
+              ;;
+            404)
+              echo "::notice::改名目标 $nxt 还是 404：P2-3 的 remote 改名还没做（工具与文档已就位：tools/rename-brand.mjs）。这一条在改名之前不判红——判据只钉「两个名字不许同时死」。"
+              ;;
+            *)
+              echo "::error::改名目标返回 $n（既不是 404，也不是 200/301/302）——网络或权限问题，别当成改名已完成"; exit 1 ;;
           esac
 
       - name: 不需要宿主的那批自检

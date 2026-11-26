@@ -149,11 +149,15 @@ check(
   '否则 runner 一销毁就只剩一行红'
 )
 
-// C12 旧名 URL
+// C12 两个仓库名的可达性（当前名必须活；改名目标允许还没生效）
+const curUrl = /https:\/\/github\.com\/\$?\{?owner\}?\/dsh-macro-memory/.test(ci) || /github\.com\/[^\s"']+\/dsh-macro-memory/.test(ci)
+const nextUrl = /https:\/\/github\.com\/\$?\{?owner\}?\/macro-memory/.test(ci) || /github\.com\/[^\s"']+\/macro-memory/.test(ci)
+const allow404 = /^\s*404\)/m.test(ci) && ci.includes('不判红')
+const oldRed = /旧名解析不了/.test(ci)
 check(
-  'C12 旧仓库名仍能解析（改名后 301，链接不许 404）',
-  /github\.com\/[^\s"']+\/macro-memory/.test(ci) && /200\|301\|302/.test(ci),
-  'PLAN §16 第 2 条'
+  'C12 两个仓库名都探：当前名必须 200/301/302，改名目标允许 404（改名之前不判红，只钉「两个名字不许同时死」）',
+  curUrl && nextUrl && /200\|301\|302/.test(ci) && allow404 && !oldRed,
+  `${curUrl ? '有当前名' : '缺当前名'} / ${nextUrl ? '有改名目标' : '缺改名目标'} / ${allow404 ? '404 分支带说明' : '缺 404 说明'}`
 )
 
 // C13 --only 名单与 check-all 的 STEPS 对得上
