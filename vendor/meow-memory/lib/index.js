@@ -7209,6 +7209,85 @@ function coerceBoolean(raw) {
 // [macro-memory 0.9.0] 可见性过滤：别人的 private 条目不该出现在检索结果里。
 // 集合由宿主在每次调用前算好、挂在 exec.visibility.hidden 上——meow 不认识 owner 表，
 // 也不该认识：它只负责「问一句这个 id 能不能看」，谁写的、给谁看，归上层的账本管。
+// ── [macro-memory 0.9.0 · PLAN §9 / P1-3] 三段召回 + RRF ──────────────────────────
+// 分三段：private 是「我这个 agent 的私事」、workspace 是「这个工作区的共同事实」、
+// global 是「跨工作区都成立」。三者的可比性不同——词法分的绝对刻度受池子大小与 idf 分布支配，
+// 把三种条目塞进一个池子排序，等于拿三把尺子量同一张桌子。RRF 只吃名次（1/(k+rank)），
+// 正是为「刻度不同、名次可比」准备的；k 沿用仓库里既有的 RRF 惯例 60。
+//
+// 三条硬纪律：
+//   ① 只有一段非空时一个字都不改（走原 rankForSearch）：单池旧行为逐位一致，
+//      既有四千多条断言多数是单 agent 单 scope，它们不该被这一刀吵醒；
+//   ② 融合后把分数归一化到「榜首 = 三段里最高的那个原始榜首分」，
+//      下游的 min_rel 比例、band 断崖、回执里印的分数就还是同一套量级，
+//      不必为了换个排序去动十处阈值；
+//   ③ 偏置只作用在本 agent 的 private 段（默认 ×1.3，private_boost: 0 关掉），
+//      而且是用权重乘 RRF 贡献、不是给最终分数再乘一遍——后者会随段数变化而变味。
+const SEG_RRF_K = 60;
+const SEG_PRIVATE_BOOST = 1.3;
+
+function scopeBookOf(exec) {
+  const book = exec?.visibility?.scopes;
+  if (!book || typeof book.get !== "function" || typeof book.size !== "number" || book.size === 0) return null;
+  return book;
+}
+
+// 账本里存 8 位短 id，层表行 id 是「短 id + '-' + 32 位」——所以按前缀认（与 isHidden 同一个坑）。
+function scopeOfRow(id, book) {
+  if (!book) return "workspace";
+  const key = String(id);
+  const hit = book.get(key);
+  if (hit) return hit;
+  for (const [short, scope] of book) {
+    if (key.startsWith(String(short))) return scope;
+  }
+  return "workspace";
+}
+
+function privateBoostOf(parsed) {
+  const raw = parsed?.private_boost;
+  if (raw === void 0 || raw === null || raw === "") return SEG_PRIVATE_BOOST;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 10) return SEG_PRIVATE_BOOST;
+  return n;
+}
+
+async function rankScoped(query, docs, opts) {
+  const book = opts.scopes;
+  const pass = { k: opts.k, explain: opts.explain, bandKeep: opts.bandKeep };
+  if (opts.on === false || book === null || docs.length <= 1) return rankForSearch(query, docs, pass);
+  const bySeg = { personal: [], workspace: [], global: [] };
+  for (const d of docs) {
+    const scope = scopeOfRow(d?.id, book);
+    bySeg[scope === "private" ? "personal" : scope === "global" ? "global" : "workspace"].push(d);
+  }
+  const live = ["personal", "workspace", "global"].filter((s) => bySeg[s].length > 0);
+  if (live.length <= 1) return rankForSearch(query, docs, pass);
+  const per = {};
+  for (const seg of live) per[seg] = await rankForSearch(query, bySeg[seg], { ...pass, k: bySeg[seg].length });
+  const boost = Number.isFinite(opts.boost) && opts.boost >= 0 ? opts.boost : SEG_PRIVATE_BOOST;
+  const fused = new Map();
+  for (const seg of live) {
+    const weight = seg === "personal" ? boost : 1;
+    const list = per[seg];
+    for (let i = 0; i < list.length; i++) {
+      const h = list[i];
+      const key = String(h.id);
+      const add = weight / (SEG_RRF_K + i + 1);
+      const cur = fused.get(key);
+      if (cur) { cur.rrf += add; cur.segs.push(seg); continue; }
+      fused.set(key, { hit: h, rrf: add, seg, segs: [seg] });
+    }
+  }
+  const list = [...fused.values()].sort((a, b) => (b.rrf - a.rrf) || (Number(b.hit?.score ?? 0) - Number(a.hit?.score ?? 0)));
+  const head = list[0];
+  const rrf0 = head && head.rrf > 0 ? head.rrf : 0;
+  if (rrf0 <= 0) return list.map((x) => ({ ...x.hit }));
+  const rawTop = Math.max(0, ...live.map((seg) => Number(per[seg][0]?.score ?? 0)));
+  const top = rawTop > 0 ? rawTop : 1;
+  return list.map((x) => ({ ...x.hit, score: (top * x.rrf) / rrf0 }));
+}
+
 function hiddenOf(exec) {
   const s = exec?.visibility?.hidden;
   return s && typeof s.has === "function" && s.size > 0 ? s : null;
@@ -7961,7 +8040,16 @@ function searchTool(dir) {
       // [macro-fusion 0.2.167] band_keep：默认按置信档收口（0.2.165 的刀），
       // 但收了几条必须报得出来（见下面 bandNote），并且要有一个显式出口能关掉它。
       const bandKeep = parsed.band_keep !== false;
-      const ranked = await rankForSearch(query, docs, { k: docs.length, explain, bandKeep });
+      // [macro-memory 0.9.0 · P1-3] 三段召回：有分段账就分三段各自打分再 RRF 融合；
+      // 没有（老库 / 单 agent / rrf:false）就走原来那一句——两条路径只差这一次调用。
+      const ranked = await rankScoped(query, docs, {
+        k: docs.length,
+        explain,
+        bandKeep,
+        scopes: scopeBookOf(exec),
+        boost: privateBoostOf(parsed),
+        on: parsed.rrf !== false
+      });
       // [macro-fusion 0.2.155] 闸门在排序之后、裁剪之前：命中长得像，不等于问的是库里的事。
       const gate = await denseGate(query, docs, { k: docs.length, explain });
       if (gate.fired) ranked.length = 0;

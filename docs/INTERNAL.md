@@ -14799,3 +14799,40 @@ function id8(id) { return String(id).slice(0, 8) }
 **第二个坑**：`ownerStoreFor()` 在库文件不存在时返回 `null`（检查不该顺手建库）——而「第一次写入」正是库还不存在的场景。一开始把 store 只取一次并用它算可见性，结果**第一条记忆的归属永久丢失**（S0/S1 红）。现在取两次：执行前取一次算可见性（可能是 null）、执行后再取一次记账（此时库一定在）。
 
 **边界（写在明处）**：这道滤只挡 `memory_search` 与 `memory_read`。`memory_project` 的面板、星图扩散（`nebula_recall`）、`memory_dream` 的整理账**还没过这道滤**，那几处仍可能露出正文。当「别顺手读别人的私事」的护栏够用，当权限边界还早一步。
+
+
+### 9.284 0.9.0（开发中）：三段召回 + RRF——三种 scope 不该共用一把尺子
+
+**问题**：一次 `memory_search` 把七层的候选塞进**一个池子**打分排序。可 `private`（我这个 agent 的私事）、`workspace`（这个工作区的共同事实）、`global`（跨工作区都成立）三类条目的可比性并不相同，而词法分的绝对刻度受**池子大小与 idf 分布**支配——候选池里多混进十条长条目，同一条记忆的分数就换了个数。在一个池子里比绝对值，等于拿三把尺子量同一张桌子。
+
+**做法**（PLAN §9 / P1-3）：
+
+| 位置 | 关键点 |
+| --- | --- |
+| `lib/core/owner.js` `scopeMapFor()` | 一条窄 SQL `SELECT id, scope FROM mem_owner` 全表读成 `短 id → scope`；读失败返回空表（退化成单池，不炸） |
+| `lib/core/owner.js` `buildVisibility()` | 返回值多一个 `scopes`，与 `hidden` 同一趟算、同样不缓存——改 scope 的下一次调用就该生效 |
+| `vendor/meow-memory/lib/index.js` `rankScoped()` | 按 scope 切三段 → 各跑一次 `rankForSearch` → `1/(60+rank)` 融合 → 归一化分数 |
+| `lib/macro/defs/search.js` | 三处 `pick(args, […])` 白名单补 `rrf` / `private_boost`——不加就是「开关存在但按不动」 |
+
+**三条硬纪律**：
+
+1. **只有一段非空时一个字都不改**：直接走原来那一句 `rankForSearch`。单 agent / 单 scope 的库（既有四千多条断言几乎全是）必须逐位一致——否则这一刀会把所有旧读数一起改写，那就不是升级，是换了个产品。
+2. **分数归一化到「榜首 = 三段里最高的原始榜首分」**：下游 `min_rel` 的比例语义、band 断崖、回执里印的 `score=4.68` 都还是同一套量级。RRF 原始分是 0.0x，直接放回去会让 `min_rel=0.35` 变成「几乎全留」、回执印出「榜首 0.02 分」。
+3. **偏置乘在 RRF 贡献上**（`weight = private ? boost : 1`），不是给最终分数再乘一遍：后者会随「这一段有几条」而变味，说不清到底是偏置还是段大小在起作用。
+
+**代价（写在明处，别当它是 bug）**：RRF 里每一段的第一名都从 rank 1 起算，所以**段小就占便宜**。`private` 段通常只有几条，它的榜首天然压过 `workspace` 段的榜首——这就是偏置只取 **1.3** 而不是 3 的原因。要让「相关度」而不是「段大小」说话，得先量（PLAN 原话：调之前先量），这一版只把结构立起来、把开关和代价摆出来。
+
+**判据**（`tools/probe-rrf.mjs`，**8 条**）：单段逐字节退回单池（`默认 === rrf:false`）／三段齐了融合顺序与单池不同／**偏置把单池末位的私事抬到首位**／关掉偏置就回原位／`explain` 里榜首 `score` 仍是词法量级／别人的 private 不进任何一段／归属表被 `DROP` 后退化成单池／`private_boost: 'abc'` 不炸。数据是**故意构造**的：私事那条最短、原始分最低，它要上首位只可能是偏置挣来的。
+
+**踩坑**：① 第一版判据用「默认顺序 ≠ 单池顺序」，结果数据里 private 的原始分本来就最高，两条路径顺序碰巧相同——**判据必须让结论只有一个可能来源**；② `pick()` 白名单是三处（主路径、星图回退、`memory_ids` 支），只改一处会让「工具里能关、走别的入口却关不掉」；③ `min_rel` 会在关偏置后顺手收掉末位，所以「回到末位」这种断言会被裁条数打脸，改成断言「不再首位」。
+
+**收尾时被四支验收打脸（都是「实现改了、别处的锚点没跟上」）**：
+
+| 支 | 报的什么 | 真正的因果 |
+| --- | --- | --- |
+| `verify.mjs` HZ2 出口 | `band_keep`「一路接进 rankForSearch」判红 | 判据原来钉在字面 `{ k: docs.length, explain, bandKeep }` 上，而**实现换成了经 `rankScoped` 分发**。判据要的那件事没变（`band_keep` 必须真接到 `rankForSearch`，不能只躺在两处 schema 里），所以放宽成「直调形态 **或** `bandKeep: opts.bandKeep` + `{ ...pass, k: bySeg[seg].length }`」——改判据不改口径，两种实现都认。 |
+| `tools/param-audit.mjs` 1.3 | `memory_search.rrf`、`memory_search.private_boost` 来路不明 | 统一工具加参数必须在 `EXTRA['memory_search']` 登记，否则审计把它当成「没人用的空壳参数」。`rrf` / `private_boost` 是**我们这一层加的**（vendor 的 search 口只有单池排序），登记并写明理由。 |
+| `tools/probe-host.mjs` D3 | README / 市场主索引 / 市场镜像里的 schema 体积与实测不一致 | 加了两个参数，8 个工具的 schema 从 14,494 B 长到 **15,153 B**；三处对外文案（`README.md` 两处、`plugin-market/index.json` 与 `index.cn.json` 各两处）都要跟着改。这条判据是 0.2.121 漂过 2,889 B 才加的，正是防「改了实现忘了改宣传」。 |
+| `tools/doctor.mjs` | 「两处不一致 1 个漂移：`tools/baselines.json`」 | `--update-baselines` 在**仓库树**写基线，`profile` 树还是旧的。顺序必须是：改代码 → `sync-trees --apply` → `--update-baselines` → **再** `sync-trees --apply` → `doctor`。最后这次 sync 最容易忘。 |
+
+顺带一条口径：`--update-baselines` 是**两阶段**的——它先让各支把新条数写盘，同一趟里的 `verify` / `probe-monotone` 仍按旧数字核对文档，所以那一趟必然红。正确姿势是跑完 `--update-baselines` 后**单独**跑 `node verify.mjs` 与 `node tools/probe-monotone.mjs`，再跑一次不带参数的 `node tools/check-all.mjs` 收口。

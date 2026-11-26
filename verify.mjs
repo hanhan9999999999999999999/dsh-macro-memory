@@ -10824,7 +10824,11 @@ check('client: sub-plugin inject carried over', JSON.stringify(clientPlugins[1]?
       eng.includes('band_keep: {') &&
         readFileSync(join(root, 'lib/macro/defs/search.js'), 'utf8').includes("band_keep: { type: 'boolean'") &&
         eng.includes('const bandKeep = parsed.band_keep !== false;') &&
-        eng.includes('{ k: docs.length, explain, bandKeep }'),
+        // [macro-memory 0.9.0 · P1-3] 出口形状变了：从「一句直调 rankForSearch」变成
+        // 「经 rankScoped 分发（单池 / 三段两条路共用同一个 pass）」。判据仍然是那件事——
+        // band_keep 必须真接到 rankForSearch 上，不能只躺在两处 schema 里当摆设。
+        (eng.includes('{ k: docs.length, explain, bandKeep }') ||
+          (eng.includes('bandKeep: opts.bandKeep') && eng.includes('{ ...pass, k: bySeg[seg].length }'))),
     )
     const MeowHZ2 = await import(pathToFileURL(join(root, 'vendor', 'meow-memory', 'lib', 'index.js')).href)
     const hz2Corpus = []
