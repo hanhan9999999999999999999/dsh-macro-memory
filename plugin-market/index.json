@@ -62,8 +62,8 @@
     "zh": "宏记忆"
    },
    "description": {
-    "en": "Three memory plugins in one: eight unified memory_* tools and a single 1,266-character standing injection, backed by a seven-layer SQLite store with the graph demoted to a rebuildable index. Since 0.8.0 it is no longer tied to one host: npx -y macro-memory mcp attaches Codex / Claude Code / Cursor or any MCP agent to the very same store - same eight tools, same 1,266-character injection, same workspace-trust table - because the store never moved (<workspace>/.dsh-meow/memory.db and <DSH_HOME>/storages/meow-memory). It fixes forgetting, overspending and silence: every turn it gathers candidates (local scoring + graph neighbourhood + co-occurrence learned from your own keywords), passes four gates (literal floor, score floor, topic, runner-up margin) that each record why they dropped, injects by character budget instead of entry count, and writes a ledger of what went in, how long each entry was, what was blocked and the recent score. Cost: tool schema 56,759 B -> 14,494 B (-74.5%), standing injection 4,085 -> 1,266 characters (-69%), roughly 0.4K tokens per turn, retrieval 2.9 ms p50 on a 1,200-entry store with no model calls. Accuracy on our own 146-entry gold pool (106 distractors): verbatim hit@1 1.000, paraphrase 1.000, time anchor 0.889, false positives 0. Durability: the seven-layer store is the only source of truth - the graph can be deleted and rebuilt, writes land in the store first, links queue instead of vanishing, and every restore compares before it overwrites. Verified by 69 self-test branches and 4,660 executable assertions with negative controls. One package for Windows, macOS and Linux: no native dependencies, no install scripts. Figures come from our own gold set and self-tests, not a public benchmark - see docs/EVAL-CLAIMS.md.",
-    "zh": "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,266 字符常驻注入，主库是七层 SQLite，星图退成可重建的索引。0.8.0 起它不再只属于一个宿主：npx -y macro-memory mcp 一行就能让 Codex / Claude Code / Cursor 等任意 MCP agent 接上同一份库——同一套 8 个工具、同一段 1,266 字符注入、同一张信任表，在 DSH 里记的东西别的 agent 当场查得到（库位置一个字节没挪：<工作区>/.dsh-meow/memory.db 与 <DSH_HOME>/storages/meow-memory）。它要治的不是「存不下」，是「记不住、记太贵、说不清」：每轮取候选（本地打分 + 星图邻域 + 从你自己的关键词学出来的共现扩词）、过四道闸（字面兜底 / 分数线 / 同话题 / 陪跑线，挡下就写原因）、按字数注入（不按条数堆）、最后落账（进了哪几条、各多少字、被谁挡、最近分数）。省在哪：工具 schema 56,759 B → 14,494 B（−74.5%），常驻注入 4,085 → 1,266 字符（−69%），每轮固定开销约 0.4K token，检索 2.9 ms（1,200 条库 p50）且不调用任何模型。准在哪：自建 146 条宽池（含 106 条干扰）照抄 hit@1 1.000、换说法 1.000、时间锚 0.889、误伤 0。稳在哪：七层主库是唯一真源，星图坏了删掉重算、真身不动；写入先落主库，连不上星图的连线排队不丢；自动快照 + 复原前先只读比一次，空壳快照单独警告。自证 69 支自检 / 4,660 条可执行断言，每条判据都做过阴性对照。Windows / macOS / Linux 同一份包，无原生依赖、无 install 脚本。以上是自建 gold 与自测口径，不是公开榜单；口径与错例见仓库 docs/EVAL-CLAIMS.md。"
+    "en": "Three memory plugins in one: eight unified memory_* tools and a single 1,266-character standing injection, backed by a seven-layer SQLite store with the graph demoted to a rebuildable index. Since 0.8.1 it is no longer tied to one host: npx -y -p dsh-macro-memory macro-memory mcp attaches Codex / Claude Code / Cursor or any MCP agent to the very same store - same eight tools, same 1,266-character injection, same workspace-trust table - because the store never moved (<workspace>/.dsh-meow/memory.db and <DSH_HOME>/storages/meow-memory). It fixes forgetting, overspending and silence: every turn it gathers candidates (local scoring + graph neighbourhood + co-occurrence learned from your own keywords), passes four gates (literal floor, score floor, topic, runner-up margin) that each record why they dropped, injects by character budget instead of entry count, and writes a ledger of what went in, how long each entry was, what was blocked and the recent score. Cost: tool schema 56,759 B -> 14,494 B (-74.5%), standing injection 4,085 -> 1,266 characters (-69%), roughly 0.4K tokens per turn, retrieval 2.9 ms p50 on a 1,200-entry store with no model calls. Accuracy on our own 146-entry gold pool (106 distractors): verbatim hit@1 1.000, paraphrase 1.000, time anchor 0.889, false positives 0. Durability: the seven-layer store is the only source of truth - the graph can be deleted and rebuilt, writes land in the store first, links queue instead of vanishing, and every restore compares before it overwrites. Verified by 69 self-test branches and 4,667 executable assertions with negative controls. One package for Windows, macOS and Linux: no native dependencies, no install scripts. Figures come from our own gold set and self-tests, not a public benchmark - see docs/EVAL-CLAIMS.md.",
+    "zh": "一个记忆插件顶三个：8 个统一 memory_* 工具 + 一段 1,266 字符常驻注入，主库是七层 SQLite，星图退成可重建的索引。0.8.1 起它不再只属于一个宿主：npx -y -p dsh-macro-memory macro-memory mcp 一行就能让 Codex / Claude Code / Cursor 等任意 MCP agent 接上同一份库——同一套 8 个工具、同一段 1,266 字符注入、同一张信任表，在 DSH 里记的东西别的 agent 当场查得到（库位置一个字节没挪：<工作区>/.dsh-meow/memory.db 与 <DSH_HOME>/storages/meow-memory）。它要治的不是「存不下」，是「记不住、记太贵、说不清」：每轮取候选（本地打分 + 星图邻域 + 从你自己的关键词学出来的共现扩词）、过四道闸（字面兜底 / 分数线 / 同话题 / 陪跑线，挡下就写原因）、按字数注入（不按条数堆）、最后落账（进了哪几条、各多少字、被谁挡、最近分数）。省在哪：工具 schema 56,759 B → 14,494 B（−74.5%），常驻注入 4,085 → 1,266 字符（−69%），每轮固定开销约 0.4K token，检索 2.9 ms（1,200 条库 p50）且不调用任何模型。准在哪：自建 146 条宽池（含 106 条干扰）照抄 hit@1 1.000、换说法 1.000、时间锚 0.889、误伤 0。稳在哪：七层主库是唯一真源，星图坏了删掉重算、真身不动；写入先落主库，连不上星图的连线排队不丢；自动快照 + 复原前先只读比一次，空壳快照单独警告。自证 69 支自检 / 4,667 条可执行断言，每条判据都做过阴性对照。Windows / macOS / Linux 同一份包，无原生依赖、无 install 脚本。以上是自建 gold 与自测口径，不是公开榜单；口径与错例见仓库 docs/EVAL-CLAIMS.md。"
    },
    "icon": "icon.png",
    "author": "主人 & 小代码酱",
@@ -95,6 +95,15 @@
     "publishTimestamp": 1795706666
    },
    "versions": [
+    {
+     "version": "0.8.1",
+     "publishTimestamp": 1795709570,
+     "source": {
+      "type": "git",
+      "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
+      "commit": "e8f88ca527d9d80128dcf1e71c8d079eb3fa858d"
+     }
+    },
     {
      "version": "0.8.0",
      "publishTimestamp": 1795706666,
@@ -807,7 +816,7 @@
      }
     }
    ],
-   "version": "0.8.0",
+   "version": "0.8.1",
    "source": {
     "type": "git",
     "url": "https://github.com/hanhan9999999999999999999/dsh-macro-memory",
