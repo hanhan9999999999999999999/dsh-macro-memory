@@ -386,7 +386,7 @@ meow 的 #64 保护（工作区自带非本机创建的记忆库时拒绝读写�
 
 | 步骤 | 动作 | 验收 |
 | --- | --- | --- |
-| P2-1 | 一份 UI（七页，先概览/记忆/agent/注入预览） | UI 改一条，宿主下次检索立刻读到；关 UI 功能一条不少 |
+| P2-1 ✅ | 一份 UI（七页：概览 / 记忆 / 星图 / 注入预览 / agent / 共享 / 运维）——`macro-memory ui`，`lib/ui/server.js` + `lib/ui/page.js`，`probe-ui` 12 条 | UI 改一条，宿主下次检索立刻读到（U6）✅；关 UI 功能一条不少（单写者纪律不破：界面是 serve 的客户端，临时服务 `publish:false`）✅ |
 | P2-2 | 双包 `macro-memory` + `dsh-macro-memory` 别名 | 两包同源；npm 两处可查 |
 | P2-3 | 仓库改名 + README 首句 + 能力矩阵 | 301 生效；市场详情页正常 |
 | P2-4 | 单文件二进制 + mac 签名公证 | `spctl -a -vv` 通过；首次运行不被拦 |

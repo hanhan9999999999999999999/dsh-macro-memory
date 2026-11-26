@@ -14896,3 +14896,27 @@ function id8(id) { return String(id).slice(0, 8) }
 - `--install-agent`（launchd / 计划任务 / systemd --user）没做；`serve` 只能前台跑。
 - `serve` 不接管 dream 的**定时**触发（现在 dream 仍是每次 `memory_dream` 调用时才跑）；「唯一 dream 执行者」目前只体现为「所有 agent 的调用都汇到这一条队列」。
 - UI 的 `/events` 只有心跳与 `call` 事件，没有增量快照。
+
+
+### 9.286 0.9.0（开发中）：管理界面——它是 serve 的客户端，不是第二个写者
+
+PLAN §10 把界面放在「不是必需路径」的位置上，于是它的设计约束反而更硬：**要么轻到打开就能用，要么别进仓库**。一次实现里踩出来的东西，按可复用的顺序写在这里。
+
+| 决定 | 做法 | 为什么 |
+| --- | --- | --- |
+| 谁来读库 | 界面进程只跟 serve 说话：`discover()` 探到在跑的 serve 就借 `serve.json` 里的 url + token；探不到就在本进程里 `startServe({ publish: false })` 起一个 | 「多一个写者」是这类插件唯一真会丢数据的坏。界面顺手开一个库连接，就把「单写者」这条纪律废了——哪怕它只读，也会撞上 WAL 与快照 |
+| 临时服务写不写发现文件 | `publish: false`：`writeServeInfo` 直接返回 null；`close()` 里的 `removeServeInfo` 本来就有 token 校验，删不到别人的 | 界面没资格把别人的 `serve.json` 换成自己的。反过来，别人重启服务时也不该被这扇窗干扰 |
+| 只读面板能不能写盘 | `census()` 刻意**不** `ensureTable()`（对比 `agents()` / `scopeMapFor()` 都会建表）：库不存在、表不存在都返回空账 | 打开 UI 看一眼不该在任何工作区里留下 `.dsh-meow/`。空账不是错，是「这个库还没记过归属」 |
+| 首屏体积 | 整页 HTML 一个常量、vanilla JS、hash 路由，17,443 B | PLAN 判据 ≤200 KB；引入打包链就等于把 `npx` 这条路径废掉 |
+| 令牌 | `randomBytes(18)` 进 URL 的 `?t=`，之后每请求带 `x-mm-token`；连首页也校验 | 「先给页面再挡接口」等于把页面结构与端点名白送。实测 401 那条判据盯的就是首页 |
+| serve 的两块新数据面 | `GET /census`（总数 / 三档 / 七层 / 层 × scope 矩阵 / 写手）、`GET /inject`（L0 原文 + 字符数） | 界面不该自己算账：算账的口径只能有一份，放在 serve 这一侧 |
+
+**12 条判据**（`tools/probe-ui.mjs`）：U1 只听 127.0.0.1 / U1b 令牌不对连首页都不给 / U2 首屏 ≤200 KB / U3 七页都在 / U4 分布账与注入体积一起给出 / U5 `/api/inject` 与引擎同一份字 / U6 **界面写一条，另一个引擎实例下次检索立刻读到**（PLAN P2-1 原话）/ U7 自己起的服务不写发现文件 / U8 探到现成 serve 就借它 / U8b 关掉界面后共享服务还在跑 / U9 关掉之后端口不再接受连接 / U10 库不存在时只报空账不建目录。
+
+**踩到的坑**：
+
+1. **`CREATION_IGNORE` 漏了 `sessions`**——这是这一刀真正的产品级发现。meow 会把会话快照写进 `<workspace>/<库目录>/sessions/`（`vendor/meow-memory/lib/index.js:5723 sessionsFile()`），而信任门 `ensureTrust` 的 auto 分支拿 `CREATION_IGNORE` 过滤目录项，白名单里没有它，于是一个**本机建、本机用**的库在第二个进程眼里就成了「目录里有不是本插件产生的文件」。多 agent 场景下一天能撞十次：DSH 里用的库，轮到 MCP / CLI / 界面接手时全被判成「别处带来的库」。修法是补白名单（`sessions`、`archived-sessions`、`nebula.db*`、`dream-debug.log.old`）并把判定收成一个函数 `isCreationArtifact(name)`（带后缀的变体按前缀认）。**教训：护栏的白名单必须覆盖自己会写的一切，否则护栏会把自己人拦在门外；每加一种新产物都要回头补这里。**
+2. **`node --check` 不验 ESM 结构**——`createOwnerStore` 少一个闭合 `}` 时它照样 exit 0（按 CJS 检查），真跑起来才报 `SyntaxError: Unexpected token 'export'`，指向前面的 `export function`。以后改完 core 模块一律补一条 `node -e "import('file:///…').then(...)"`。
+3. **用 `edit` 插方法时别把实现体当锚点**——`old_string` 取「签名 + 整个实现」而 `new_string` 只留签名，会把整个方法体删掉（这一次删掉了 `agents()` 与 `schemaState()` 的实现）。锚点只取一行签名，`new_string` = 该行 + 新方法。
+4. **`String.raw` 模板里不能有反引号**——前端代码一律单引号 + `+` 拼接，也不用 `${}`。这既是技术约束，也顺手避免了「Node 模板字符串替前端插值」这类事故。
+5. **探针里的临时目录删不干净**——Windows 上 `rmSync(tmp, { recursive: true })` 常在 SQLite 句柄还没释放时 EPERM，判据之后统一 `try/catch` 包住（不影响结论）。

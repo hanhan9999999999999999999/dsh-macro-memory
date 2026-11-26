@@ -23,6 +23,7 @@
     "./core": "./lib/core/engine.js",
     "./mcp": "./lib/mcp/server.js",
     "./cli": "./bin/macro-memory.mjs",
+    "./ui": "./lib/ui/server.js",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"

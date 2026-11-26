@@ -56,6 +56,7 @@ const HELP = `macro-memory —— 一套记忆，所有 agent
   attach              加入共享：登记自己 + 把待补交的写交上去
   detach              退出共享：删发现文件，回到直连（服务本身不动）
   share               看共享状态：谁是写者、队列多长、服务在不在
+  ui                  开管理界面（只听 127.0.0.1，一次性令牌放 URL，关掉就消失）
   doctor              自检：引擎就绪、库位置、信任状态、路径
   stats               库规模与工具清单
 
@@ -623,6 +624,51 @@ async function cmdShare(args) {
 }
 
 /**
+ * `ui`：开一扇窗。
+ *
+ * 三种退出方式都算正常：Ctrl-C、关掉终端、或者直接在页面上用够了。关闭走 `close()`，
+ * 端口与临时服务一起消失——不留后台进程，不留端口，也不留 `serve.json`（它是客户端，
+ * 不是共享服务）。
+ */
+async function cmdUi(args) {
+  const { dataDir } = await shareLite(args)
+  const { startUi } = await import('../lib/ui/server.js')
+  const cwd = path.resolve(args.cwd ?? process.cwd())
+  const port = args.port === undefined ? 0 : Number(args.port)
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    out(`--port 要给 0–65535，收到 ${args.port}`)
+    process.exit(1)
+  }
+  const ui = await startUi({ dataDir, cwd, port, ...(args.agent ? { agent: String(args.agent) } : {}) })
+  if (args.json === true) {
+    out(JSON.stringify({ url: ui.url, port: ui.port, token: ui.token, upstream: ui.upstream, dataDir, cwd }, null, 2))
+  } else {
+    out(
+      [
+        'macro-memory ui',
+        `  地址：      ${ui.url}`,
+        `  上游：      ${ui.upstream === 'shared' ? '借用已在跑的 serve' : '界面自己临时起了一个（不写发现文件）'}`,
+        `  工作区：    ${cwd}`,
+        '',
+        '  浏览器打开上面那条地址（带 t= 的那条就是凭据，别贴给别人）。',
+        '  Ctrl-C 关掉：端口与临时服务一起消失，不留后台进程。',
+      ].join('\n'),
+    )
+  }
+  const bye = async (sig) => {
+    try {
+      await ui.close(sig)
+    } catch {
+      // 关不干净也要退
+    }
+    process.exit(0)
+  }
+  process.on('SIGINT', () => void bye('SIGINT'))
+  process.on('SIGTERM', () => void bye('SIGTERM'))
+  await new Promise(() => {})
+}
+
+/**
  * 组装 → 执行。所有命令共用一套：解析参数、选命令、异常兜底（打印到 stderr、退 2）。
  */
 async function main() {
@@ -663,6 +709,8 @@ async function main() {
       return cmdDetach(args)
     case 'share':
       return cmdShare(args)
+    case 'ui':
+      return cmdUi(args)
     case 'doctor':
       return cmdDoctor(args)
     case 'stats':

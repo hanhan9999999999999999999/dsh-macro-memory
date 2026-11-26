@@ -15,7 +15,9 @@
 >
 > 5. **单写者服务 `serve`**（`lib/core/serve.js` + `lib/core/client.js`，PLAN §5、§6 / P1-1 / U7、U9）：两个 agent 同时写一个库，是这类插件唯一真会丢数据的坏——其余都能修，丢的那条修不回来。`macro-memory serve` 起一个前台常驻的单写者，端点信息写进 `<数据目录>/serve.json`（含一次性令牌，`0600`），凡走这套 core 的 agent 探到它就**把读写都交出去**；写按 FIFO 一条一个短事务，请求带 `requestId`，重发同一条 id 只算一次写（服务端去重窗口 5,000 条）。它同时是唯一跑 dream 的、唯一打快照的。**默认不装任何常驻**（LaunchAgent / 计划任务得显式调用，这一版没做，写在明处）。三档模式与回执一一对应：没有 `serve.json` = `standalone` 直连（不装服务的人一次连接都不建、零成本）；探得通 = `shared`；`serve.json` 还在但连不上 = `readonly`——**客户端不偷偷自己写**，这一条落进 `pending.jsonl` 排队，回执明说「这次没有写进库」并给三条路（起服务 / 再调一次 / `detach` 认输），服务回来自动补交（按原 `requestId`，补交也不会写两遍）。唯一例外是令牌对不上（`401`）：当成「这不是我们的服务」回落直连，否则一个换过 dataDir 的旧文件能把整台机器锁成只读。CLI 四条命令：`serve` / `attach`（登记 + 补交）/ `detach`（摘发现文件，服务本身不动）/ `share`（只读看状态），`doctor` 多一行「共享」。新增自检支 `tools/probe-serve.mjs`（**17 条**：`port: 0` 随机端口，含**两个真实子进程各写 200 条 → 400 条不丢不重**、`requestId` 幂等、kill 服务后排队与回来补交、正常关闭后文件自己消失且端口不再接受连接、`noServe` 不被自己的服务截走、`/events` SSE）。
 >
-> 计数口径：`check-all` **73 支 / 4,728 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条）。
+> 6. **管理界面 `ui`**（`lib/ui/server.js` + `lib/ui/page.js`，PLAN §10 / P2-1）：看得见才敢信。`macro-memory ui` 起一页，只听 `127.0.0.1`、端口由系统挑、一次性令牌放在 URL 的 `?t=` 里；七页（概览 / 记忆 / 星图 / 注入预览 / agent / 共享 / 运维），首屏 17 KB（判据 ≤200 KB），不引框架、不打包、不联网。三条纪律写死在实现里：① **它不是第二个写者**——界面不直连库，探到在跑的 `serve` 就借它；探不到就在本进程里临时起一个，且 `publish:false`（**不写 `serve.json`、不撤别人的**），关界面就一起停；② 关掉之后进程与端口全消失（`server.close` + 临时 serve 的 `close`），不留守护进程；③ **只读面板一次写都不该有**——`census()` 刻意不建表（老库打开看一眼不该在工作区里落下 `.dsh-meow/`），空库就报空账。为此 serve 补了两块数据面：`GET /census`（分布账：总数 / 三档 scope / 七层 / 层 × scope 矩阵 / 写手）与 `GET /inject`（L0 注入预览与字符数）。判据照 PLAN 的原话：`probe-ui` 12 条里，「界面写一条，另一个引擎实例下次检索立刻读到」「探到现成 serve 就借它且关界面不停别人的服务」「关掉之后端口不再接受连接」「库不存在时只报空账」。
+>
+> 计数口径：`check-all` **74 支 / 4,740 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 19 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条）。
 
 ---
 
