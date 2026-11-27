@@ -250,7 +250,7 @@ ok(
 const pkg = JSON.parse(read('package.json'))
 const idx = read('lib/index.js')
 const idxVersion = /export const version = '([^']+)'/.exec(idx)?.[1]
-const clVersion = /\*\*([0-9]+\.[0-9]+\.[0-9]+) 里程碑\*\*/.exec(changelog)?.[1]
+const clVersion = /\*\*([0-9]+\.[0-9]+\.[0-9]+) (?:里程碑|修复)\*\*/.exec(changelog)?.[1]
 ok(
   'P21 版本三处一致（package.json / lib/index.js / CHANGELOG 最新里程碑）',
   pkg.version === idxVersion && pkg.version === clVersion,

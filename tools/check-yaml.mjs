@@ -21,8 +21,8 @@ for (const want of ['memory-nebula', 'meow-memory', 'macro-memory']) {
   for (const h of hits) console.log('    ' + JSON.stringify(h))
 }
 
-// bundles
-const pkg = JSON.parse(readFileSync(profileDir + '/package.json', 'utf8'))
+// bundles（宿主重写 manifest 时可能带 UTF-8 BOM，见 doctor.mjs 的同款注释）
+const pkg = JSON.parse(readFileSync(profileDir + '/package.json', 'utf8').replace(/^\uFEFF/, ''))
 const bundles = pkg?.dsh?.profile?.bundles ?? []
 console.log('bundles =', bundles.length)
 console.log('  has dsh-macro-memory:', bundles.includes('dsh-macro-memory'))

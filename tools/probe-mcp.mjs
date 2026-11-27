@@ -13,11 +13,12 @@
  *   M9  可选能力明确回空：`ping` / `resources/list` / `prompts/list` 不装死
  *   M10 收摊：关 stdin 之后进程自己退出，退出码 0，不留僵尸
  *   M11 工作区：`--cwd` > `MACRO_MEMORY_WORKSPACE` > cwd，三条优先级各认一次
+ *   M12 **交到底**：cwd 设在别处、只给 `--cwd`，子进程读的是 `--cwd` 的库，别处不建空库（0.9.1）
  *
  * 全部在临时目录里做，不碰真实库。
  * 用法：node tools/probe-mcp.mjs
  */
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -230,6 +231,54 @@ check(
   'M11 工作区：--cwd > MACRO_MEMORY_WORKSPACE > cwd，三条优先级各认一次',
   byCwd === join(tmp, 'from-arg') && byEnv === join(tmp, 'from-env') && byProc === process.cwd() && versionOf() === pkgRoot.version,
   `${byCwd.split(/[\\/]/).pop()} > ${byEnv.split(/[\\/]/).pop()} > ${byProc.split(/[\\/]/).pop()}`,
+)
+
+// ── M12：参数真要交到底（0.9.1） ────────────────────────────
+// 症状：桌面宿主每个对话新建一个 cwd，MCP 子进程落到那里现造空库 → 检索零命中。
+// M11 只验 `cwdOf()` 的返回值（纯函数层）；M12 起真进程，cwd 故意放别处、只给 --cwd，
+// 要求它读的是 --cwd 那个库，并且别处不留 `.dsh-meow/`。
+const elsewhere = join(tmp, 'elsewhere')
+mkdirSync(elsewhere, { recursive: true })
+const c2 = spawn(
+  process.execPath,
+  [join(root, 'bin', 'macro-memory.mjs'), 'mcp', '--data-dir', dataDir, '--home-dir', home, '--cwd', ws],
+  { cwd: elsewhere, env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] },
+)
+const lines2 = []
+readline.createInterface({ input: c2.stdout, crlfDelay: Infinity }).on('line', (line) => {
+  const text = line.trim()
+  if (text === '') return
+  try {
+    lines2.push(JSON.parse(text))
+  } catch {
+    /* 杂音自有 M6 管，这里只挑报文 */
+  }
+})
+const wait2 = async (pred, ms = 15000) => {
+  const t0 = Date.now()
+  for (;;) {
+    const hit = lines2.find(pred)
+    if (hit) return hit
+    if (Date.now() - t0 > ms) return null
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+let seq2 = 0
+const call2 = async (method, params) => {
+  const id = `s${++seq2}`
+  c2.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+  return wait2((m) => m.id === id)
+}
+await call2('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'elsewhere', version: '0' } })
+c2.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+const s2 = await call2('tools/call', { name: 'memory_search', arguments: { query: KEY, k: 3, budget: 600 } })
+const s2text = String(s2?.result?.content?.[0]?.text ?? '')
+const strayDb = existsSync(join(elsewhere, '.dsh-meow', 'memory.db'))
+c2.stdin.end()
+check(
+  'M12 参数交到底：cwd 在别处、只给 --cwd，读的是 --cwd 的库（别处不建空库）',
+  s2text.includes(KEY) && !strayDb,
+  `${s2text.includes(KEY) ? '命中' : '零命中'} / 别处建库 ${strayDb ? '是' : '否'}`,
 )
 
 // ── M10：关 stdin 之后自己退出 ──────────────────────────────

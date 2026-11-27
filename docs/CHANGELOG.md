@@ -5,6 +5,18 @@
 
 ---
 
+> **0.9.1 修复**：一个跑在你机器上、却读到空库的 bug。
+>
+> **症状**：Codex 桌面版接上宏记忆之后说「目前没有记忆库信息」。链路上每一环都自称正常——`codex mcp list` 是 `enabled`、`AGENTS.md` 里的 L0 注入在了、三次 `memory_*` 调用全部 `completed`——只有结果是零命中，`memory_admin stats` 还报「星图 0 条 / 0 连接」。
+>
+> **根因**：`serveStdio` 只认客户端 `tools/call` 里的 `params.cwd`，而 MCP 宿主从不传它（它不在协议里，是我们自己的便利参数），于是回落到 `process.cwd()`。CLI 里 cwd 就是工作区、看不出问题；**桌面宿主每个对话新建一个目录**（Codex 用 `~/Documents/Codex/<日期>/new-chat`），子进程便在那里现造了一份空的 `.dsh-meow/`——「没有记忆」不是坏了，是读到了另一份空库。
+>
+> **修法**（+9/−1）：`cmdMcp` 把 `cwdOf(args)`（`--cwd` > `MACRO_MEMORY_WORKSPACE` > `process.cwd()`）交给 `serveStdio`；server 侧存 `defaultCwd`，`params.cwd` 缺省时用它。一句话：**宿主可以不会传，我们自己会带**。
+>
+> **为什么上一版没挡住**：`M11` 验的是 `cwdOf()` 的返回值——纯函数、三条优先级各认一次、全绿；它没验「这个返回值真的交给了 `serveStdio`」，也没验「`params.cwd` 缺省时 server 用了它」。判据层级比症状低一层，bug 就从缝里过去。新增 **`M12`**：起真进程，cwd 故意设在别处、只给 `--cwd`，要求它检索到 `--cwd` 库里的条目、并且别处**不留** `.dsh-meow/`。摘掉那行传递，M12 立刻红（实测「零命中 / 别处建库 是」）。`probe-mcp` 11 → **12 条**，总账 **79 支 / 4,813 条**。
+>
+> **接入侧两行**（Codex 的 `config.toml`）：`args` 加 `--cwd <工作区>`；`env` 加 `DSH_HOME`，让星图也指向真库——不修后者，本地条目查得到、星图仍是空的。
+
 > **0.9.0 里程碑**：这一版开始把 PLAN 里「别的 agent 也能用得踏实」那半段补齐。前两刀都落在**最容易伤到人的两个地方**：往用户文件里写东西，和打开别人写的库。
 >
 > 1. **文件围栏**（`lib/core/fence.js` + `lib/core/agents-file.js`，PLAN §8.3 / U10）：`init --agents` 把 L0 常驻注入写进 `AGENTS.md`（`--file` 可多次或逗号分隔，`CLAUDE.md`、`.cursorrules` 同一条路），`refresh` 原地刷新，`uninstall` 摘干净。判据不是「能写进去」，是**卸载后逐字节还原**——这需要知道当初到底插了几个换行，所以 `sep` 记在块标记里（`<!-- macro-memory:begin sep="2" v="1" -->`）而不是外部账本：卸载可能来自另一个进程、另一个工作区、另一台机器，只有文件自己带着「我是怎么被放进去的」才靠得住。三种结尾（没有尾换行 / 一个 / 两个空行）各一条判据，CRLF 文件里块内也是 CRLF（否则 git diff 整文件翻红）；坏块（begin 在 end 不在）一律拒改，`init --agents` 预检全部目标、有坏块就一个文件都不动，`uninstall` 报坏块并保持文件原样——比自动猜边界删掉用户内容安全。新增自检支 `tools/probe-fence.mjs`（**11 条**，纯函数 + 一次 CLI 端到端，0.2s）。

@@ -65,7 +65,7 @@ if (!existsSync(PKG) || !existsSync(PATCH)) {
     : '只读模式：没有 DSH 安装就没得接，跳过（exit 0）。')
   process.exit(wantApply ? 1 : 0)
 }
-const pkgText = readFileSync(PKG, 'utf8')
+const pkgText = readFileSync(PKG, 'utf8').replace(/^\uFEFF/, '')
 const manifest = JSON.parse(pkgText)
 const bundles = manifest?.dsh?.profile?.bundles ?? []
 console.log('bundles:', bundles.join(', '))

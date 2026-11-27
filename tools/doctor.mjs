@@ -36,7 +36,12 @@ const verdict = makeVerdict()
 const { line, pass, fail, warn } = verdict
 
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
-const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
+const readJson = (file) => {
+  // DSH 本体重写 profile 的 package.json 时会带 UTF-8 BOM（2026-11-27 实测 `efbbbf7b`）。
+  // 读别人的文件要容忍它：JSON.parse 遇到 BOM 直接抛 SyntaxError，整支 doctor 会断在加载面。
+  const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '')
+  return JSON.parse(text)
+}
 
 /** 递归列出相对路径（跳过 node_modules / .probe-home / 临时文件）。 */
 function walk(dir, base = dir, out = []) {

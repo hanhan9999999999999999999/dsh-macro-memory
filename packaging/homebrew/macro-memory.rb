@@ -14,7 +14,7 @@
 class MacroMemory < Formula
   desc "Local memory layer for any agent — one library, every host"
   homepage "https://github.com/hanhan9999999999999999999/dsh-macro-memory"
-  version "0.9.0"
+  version "0.9.1"
   license "MIT"
 
   on_macos do
