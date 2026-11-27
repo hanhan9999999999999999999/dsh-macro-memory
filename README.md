@@ -365,6 +365,7 @@ node tools/check-market.mjs   # 市场索引能不能被宿主接受
 
 ## 文档
 
+- [0.9.0 发布介绍](https://github.com/hanhan9999999999999999999/dsh-macro-memory/blob/main/docs/INTRO.md)：这一版给了什么、全 agent 适配到哪一步、凭什么信。
 - [版本历史](docs/CHANGELOG.md)：每一版改了什么、读数多少、判据为什么这么画。
 - [内部日志](docs/INTERNAL.md)：逐轮开发记录与处方。
 - [评测口径](docs/EVAL-CLAIMS.md)：对外能说的数字，以及它怎么量出来的。

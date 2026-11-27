@@ -63,7 +63,13 @@
 >
 > 11.3 **发版前又抓到一例「参数写法不一致 → 静默走默认值」。** `release.yml` 里写的是 `--out "$RUNNER_TEMP/macro-memory-dual"`（空格形式），而 `tools/build-dual.mjs` 只认 `--out=DIR` —— 参数被静默忽略、产物落进 `mkdtemp`，紧接着 `ls -l "$RUNNER_TEMP/macro-memory-dual"` 找不到目录，**发版 job 必红**。本机永远撞不上（手打的是等号形式），CI 上也还没跑到那一步（前三次都红在第 7 步）。修法：两种写法都认（`--out=` 优先，其次 `--out` + 下一参数），并在 `probe-dual` 加 D11/D12——用「已存在的目录必须被拒」把它钉住：参数没被解析到时脚本会走 `mkdtemp` 正常退出、status 是 0，所以判据会红。`probe-dual` 10 → 12 条。
 >
-> 计数口径：`check-all` **79 支 / 4,812 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 23 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 12 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
+> 11.4 **发版收口：两个包、一个 tag、一份介绍。** `413f53c` 之后按顺序做完四件事：
+>
+> ① `npm publish` 两份 tarball：`dsh-macro-memory@0.9.0`（201 文件）与 `macro-memory@0.9.0`（200 文件，**首发**——这个名字在 npm 上一直是空的）。索引有约 40 秒延迟，`npm view` 期间 `dsh-macro-memory` 一度还报 `No match found for version 0.9.0` / `latest=0.8.1`，别急着判失败——过一会儿再看就对了。
+> ② `git tag -a v0.9.0` 推上去，`release.yml` 先 `needs: [test]` 复用 `ci.yml`（三平台 × Node 24）再出产物：run `45915845114` **conclusion=success**，Release `v0.9.0` 带 `macro-memory-linux-x64`（125.32 MB）与 `SHA256SUMS.txt`。二进制只在 ubuntu runner 上打一份（mac / windows 要各自的 runner 与凭据，P2-4 / P2-5 还没做），这是设计，不是漏。
+> ③ 从 npm 真装两份回来跑 `--version`，都是 `0.9.0`——发出去的东西能被装、能跑，才算发成了。
+> ④ 新增 `docs/INTRO.md`：面向「第一次听说」与「准备接上」的发布介绍——九处硬骨头、全 agent 适配矩阵（DSH / 任意 MCP 宿主 / Codex / Claude Code / Cursor / 脚本 / 单文件二进制）、79 支 4,812 条的自证、三分钟接上、不说满的地方。README 的「文档」节加了它的链接，用的是 GitHub 绝对 URL：**这一版的 tarball 白名单里还没有它**（加进去就与已经发出去的 0.9.0 不一致），进包等 0.9.1。
+>> 计数口径：`check-all` **79 支 / 4,812 条**（0.8.1 是 69 支 / 4,671 条；`probe-fence` 11 条 + `probe-core` 2 条 + `probe-share` 23 条 + `probe-rrf` 8 条 + `probe-serve` 17 条 + `probe-ui` 12 条 + `probe-dual` 12 条 + `probe-mcp` 11 条 + `probe-sea` 20 条 + `probe-homebrew` 11 条 + `probe-ci` 14 条）。
 
 ---
 
