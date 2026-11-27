@@ -186,6 +186,9 @@ async function cmdMcp(args) {
     engine: eng,
     version: readVersion(),
     name: 'macro-memory',
+    // 宿主不会在 tools/call 里带 cwd，所以把 --cwd / MACRO_MEMORY_WORKSPACE 的结论
+    // 作为默认工作区交下去；否则库会落在 MCP 子进程的 process.cwd()（宿主临时目录）里。
+    cwd: cwdOf(args),
     log: (m) => process.stderr.write(`${m}\n`),
   })
 }
