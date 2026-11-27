@@ -199,7 +199,7 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 6. **看得见，才敢信。** `macro-memory ui` 开一扇窗：只听 `127.0.0.1`、端口由系统挑、一次性令牌放在 URL 里，关掉窗口进程与端口一起消失。七页——概览（三档 scope 与七层分布、注入体积、写手）、记忆（搜索 + 点 id 看全文）、星图（graph 模式扩散）、注入预览（这一轮真的会被塞进上下文的那段字）、agent（谁写过、什么时候）、共享（层 × scope 矩阵、谁是写者、队列多长）、运维（体检 / 统计 / 快照 / 整理账）。**它不是第二个写者**：界面自己不直连库，探到在跑的 `serve` 就借它，探不到就在本进程里临时起一个且**不写发现文件**——所以开着界面永远不会把一个共享服务变成两个写者，关掉界面也不会带走别人的服务。判据照这条来：`probe-ui` 里「界面写一条，另一个引擎实例下次检索立刻读到」，以及「关掉之后端口不再接受连接」。
 
 
-7. **两个名字，一份代码。** 同一个包要同时讨好两类人：DSH 里装的是插件（要 `cordis.patch.yml`、要 `dsh` 字段），而 Codex / Claude Code / Cursor 只想 `npx -y macro-memory mcp` 一条命令。所以 npm 上有两个名字——`macro-memory`（通用入口：MCP / CLI / core / ui）与 `dsh-macro-memory`（DSH 插件与市场条目）——但**仓库里只有一份 `lib/`、`bin/`、`vendor/`**。通用包由 `tools/build-dual.mjs` 从同一份源现长出来：按白名单复制、把根的版本号灌进 `packages/macro-memory/package.json` 这份模板（模板里写的是 `0.0.0`，手填就会漂），然后**逐字节验** `lib` / `bin` / `vendor` 三棵树一致，再各打一次 tarball 确认不带自检家底。`probe-dual` 10 条盯着这件事，其中两条是这一刀真正的价值：**「装上去 `import 'macro-memory/core'` 真解析得了」**（exports 写错了要等到用户装完才发现），和**「脚本里没有 publish 调用」**——发包要有凭据、要有人看着版本号，这一步不该被脚本代劳。
+7. **两个名字，一份代码。** 同一个包要同时讨好两类人：DSH 里装的是插件（要 `cordis.patch.yml`、要 `dsh` 字段），而 Codex / Claude Code / Cursor 只想 `npx -y macro-memory mcp` 一条命令。所以 npm 上有两个名字——`macro-memory`（通用入口：MCP / CLI / core / ui）与 `dsh-macro-memory`（DSH 插件与市场条目）——但**仓库里只有一份 `lib/`、`bin/`、`vendor/`**。通用包由 `tools/build-dual.mjs` 从同一份源现长出来：按白名单复制、把根的版本号灌进 `packages/macro-memory/package.json` 这份模板（模板里写的是 `0.0.0`，手填就会漂），然后**逐字节验** `lib` / `bin` / `vendor` 三棵树一致，再各打一次 tarball 确认不带自检家底。`probe-dual` 12 条盯着这件事，其中两条是这一刀真正的价值：**「装上去 `import 'macro-memory/core'` 真解析得了」**（exports 写错了要等到用户装完才发现），和**「脚本里没有 publish 调用」**——发包要有凭据、要有人看着版本号，这一步不该被脚本代劳。
 
 8. **接得上，才算适配。** 前面七条都是「我们这边做对了」，MCP 这一面得反过来证：**别的宿主接进来，真的读写同一份库**。`probe-mcp` 11 条不造假：真起一个子进程跑 `macro-memory mcp`，用 stdio 发 JSON-RPC——`initialize` 回来的名字与版本跟根 `package.json` 同一个号，`instructions` 就是那段 1,266 字符的 L0 正文（宿主不用自己拼提示词），`tools/list` 的 8 个 schema 与引擎 IR 逐字段一致（不是另抄一份）；接着 `tools/call memory_remember` 写一条，**另一个引擎实例当场检索得到**，库里记的 owner 是客户端自报的名字。另外还有三条防「看起来能用」的：stdout 上只准出现 JSON-RPC 报文（一行杂音就够客户端把连接判死）、坏报文回 -32700 / 未知方法 -32601 / 未知工具 -32602 且列出可选项、工具自己出错走 `result.isError` 而不炸协议层。
 
@@ -209,7 +209,7 @@ mac / Linux 目前只做到「路径 + 探针就绪」，Windows 是真机跑过
 
 11. **三平台全绿才算发版。** `.github/workflows/ci.yml` 是一张矩阵：`windows-latest` / `macos-latest` / `ubuntu-latest` × Node 24（`engines` 写的就是 24），零依赖、不装任何东西，直接跑那批**不需要宿主**的自检。宿主契约（`verify.mjs`）与本机流程备份（`doctor.mjs` 的备份段）在 runner 上不存在——硬跑只会把「环境没有」当成「代码坏了」，这两支留给人自己的机器。mac 上打 SEA 产物要先 `codesign --remove-signature`，所以那一支用 `runner.os != 'macOS'` 守卫，**不是 `continue-on-error`**：不许有「失败了但放过」的开关。`release.yml` 只由 tag 触发，`needs: [test]`（复用的就是 ci.yml 那一份），先判「tag 与 `package.json` 版本同号」，再打两个包、两个名字分别 publish，附上二进制与 `SHA256SUMS.txt`；凭据只从 `secrets.NPM_TOKEN` 取，**没有凭据时脚本会说「这次不发 npm，只出二进制」然后正常退出**——不猜、不静默、不假装发过。CI 里还有一条 PLAN 要求的检查：**两个仓库名都探一遍**——当前名必须活着（200/301/302），改名目标允许还是 404（改名之前不判红，只钉「两个名字不许同时死」；新名一旦生效还会顺手警告「旧名没跟着 301」）。这条写错过一次：第一版只探了改名目标，于是**第一次真跑三平台全红**，而本地 14 条判据全绿（教训写进 [`docs/INTERNAL.md`](docs/INTERNAL.md) 的 9.291 第 4 个坑：静态判据证材料对，真跑证成立）。
 
-十一条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 23 条（归属 13 条 + 隔离 6 条 + 撞车 4 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 10 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）、`probe-ci` 14 条（含**ci 与 release 的分工**、**没有 `continue-on-error`**、**`--only` 名单每个名字都对得上**——改名后不许静默跑空集）。
+十一条各有自检支盯着：`probe-fence` 11 条、`probe-core` 的版本门 2 条、`probe-share` 23 条（归属 13 条 + 隔离 6 条 + 撞车 4 条）、`probe-rrf` 8 条、`probe-serve` 17 条（含**两个真实子进程各写 200 条**的并发判据）、`probe-ui` 12 条（含**界面改一条、宿主下次检索立刻读到**）、`probe-dual` 12 条（含**两包逐字节同源**与**子路径 import 真能解析**）、`probe-mcp` 11 条（含**另一个引擎实例当场读到 MCP 写的条目**与**stdout 零杂音**）、`probe-sea` 20 条（含**真打一个产物并让它当 MCP 服务器握手**与**包内 185 个文件逐字节对回仓库**）、`probe-homebrew` 11 条（含**真喂四个平台的假 SHA256SUMS 看四个哈希都进报告**与**不带 `--apply` 时 formula 一个字节都不动**）、`probe-ci` 14 条（含**ci 与 release 的分工**、**没有 `continue-on-error`**、**`--only` 名单每个名字都对得上**——改名后不许静默跑空集）。
 
 不开 agent 也能自证：
 
@@ -299,7 +299,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 0.7.0 | 68 | 4,639 |
 | 0.8.0 | 69 | 4,663 |
 | **0.8.1** | **69** | **4,671** |
-| 0.9.0 | 79 | 4,810 |
+| 0.9.0 | 79 | 4,812 |
 
 断言只用一套实现（`tools/criteria.mjs`），每条都要能「被打红」才算成立：给它造一个只该弄红那一条的输入，没红就说明这条判据是恒真的。
 
@@ -339,7 +339,7 @@ Windows、macOS、Linux 装的是同一份包、同一套代码：**没有原生
 | 项 | 现在 |
 | --- | --- |
 | 版本 | 0.9.0 |
-| 自证规模 | **79 支自检 / 4,810 条可执行断言** |
+| 自证规模 | **79 支自检 / 4,812 条可执行断言** |
 | 常驻注入 | 1,266 字符（模型每轮看到的全部手册） |
 | 工具 schema | 8 个，合计 15,153 B |
 | 检索 | 2.9 ms（p50，1,200 条库；热问句不重拼索引） |

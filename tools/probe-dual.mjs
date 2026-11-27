@@ -157,6 +157,32 @@ const bad = spawnSync(process.execPath, [join(root, 'tools', 'build-dual.mjs'), 
 })
 check('D9 构建产物不许落在仓库里（--out 在仓库内直接拒）', bad.status !== 0 && /不能落在仓库里/.test(String(bad.stderr)), String(bad.stderr).trim().split('\n')[0] ?? '')
 
+// D11/D12 `--out` 两种写法都得认：`--out DIR` 与 `--out=DIR`。
+// 为什么单列两条：`release.yml` 里写的是**空格形式**，而脚本曾经只认等号形式——参数被静默
+// 忽略后产物落进 mkdtemp，紧接着 `ls -l "$RUNNER_TEMP/macro-memory-dual"` 找不到目录，
+// 发版 job 必红。本机撞不上（手打的是等号形式），所以用「已存在的目录必须被拒」这种便宜
+// 判据把它钉住：一旦参数没被解析到，脚本会走 mkdtemp 正常退出、status 是 0。
+const taken = join(tmp, 'taken-macro-memory')
+mkdirSync(taken, { recursive: true })
+const spaced = spawnSync(process.execPath, [join(root, 'tools', 'build-dual.mjs'), '--apply', '--out', taken], {
+  cwd: root,
+  encoding: 'utf8',
+})
+check(
+  'D11 `--out DIR`（空格形式）被认出来，不是静默走默认落点',
+  spaced.status !== 0 && /--out 已存在/.test(String(spaced.stderr)) && String(spaced.stderr).includes(taken),
+  String(spaced.stderr).trim().split('\n')[0] || `exit=${spaced.status}`,
+)
+const eqForm = spawnSync(process.execPath, [join(root, 'tools', 'build-dual.mjs'), '--apply', `--out=${taken}`], {
+  cwd: root,
+  encoding: 'utf8',
+})
+check(
+  'D12 `--out=DIR`（等号形式）同样被认出',
+  eqForm.status !== 0 && /--out 已存在/.test(String(eqForm.stderr)),
+  String(eqForm.stderr).trim().split('\n')[0] || `exit=${eqForm.status}`,
+)
+
 // D10 不发包
 const src = readFileSync(join(root, 'tools', 'build-dual.mjs'), 'utf8')
 check(

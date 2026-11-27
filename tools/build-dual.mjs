@@ -18,6 +18,7 @@
  *   node tools/build-dual.mjs                    # 只看会复制什么、两版包元数据差在哪（不写盘）
  *   node tools/build-dual.mjs --apply            # 真在临时目录里长出来并逐字节校验同源
  *   node tools/build-dual.mjs --apply --out DIR  # 指定落点（目录名要带 macro-memory）
+ *                                                # `--out=DIR` 等价；写错了会报错，不会静默改落点
  *   node tools/build-dual.mjs --apply --pack     # 再各跑一次 npm pack，出两个 tarball
  *   node tools/build-dual.mjs --json             # 机器可读
  *
@@ -41,7 +42,17 @@ const argv = process.argv.slice(2)
 const APPLY = argv.includes('--apply')
 const PACK = argv.includes('--pack')
 const JSON_OUT = argv.includes('--json')
-const outArg = (argv.find((a) => a.startsWith('--out=')) ?? '').slice('--out='.length)
+// [0.9.0] `--out=DIR` 与 `--out DIR` 两种写法都认。
+// 为什么：`release.yml` 里写的是空格形式（`--out "$RUNNER_TEMP/macro-memory-dual"`），
+// 而这个脚本原来只认等号形式 —— 于是 CI 上参数被静默忽略、产物落进 mkdtemp，
+// 紧接着 `ls -l "$RUNNER_TEMP/macro-memory-dual"` 找不到目录，发版 job 必红。
+// 这类「参数写法不一致 → 静默走默认值」的坑，本机永远撞不上（本机手打的是等号形式）。
+const outArg = (() => {
+  const eq = argv.find((a) => a.startsWith('--out='))
+  if (eq) return eq.slice('--out='.length)
+  const i = argv.indexOf('--out')
+  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : ''
+})()
 
 /** 通用包里要带的东西。多一项就多一份要维护的面；少一项装上去就缺件。 */
 const COPY = ['bin', 'lib', 'vendor', 'docs/images', 'docs/MAC.md', 'docs/CHANGELOG.md', 'README.md', 'LICENSE']
